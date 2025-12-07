@@ -329,8 +329,8 @@ jobs:
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -343,7 +343,7 @@ jobs:
         id: meta
         run: |
           VERSION="${{ needs.version.outputs.version }}"
-          DOCKER_HUB_IMAGE="${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}"
+          DOCKER_HUB_IMAGE="${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}"
           GHCR_IMAGE="ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}"
           
           # Base tags
@@ -391,9 +391,9 @@ jobs:
         uses: peter-evans/dockerhub-description@v4
         if: github.ref == 'refs/heads/main'
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
-          repository: ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}
           short-description: ${{ steps.get-desc.outputs.short }}
           readme-filepath: ./docker/description/long.md
 
@@ -569,12 +569,12 @@ jobs:
       - name: Test Docker Hub image
         run: |
           echo "Pulling image from Docker Hub..."
-          docker pull ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.version }}
+          docker pull ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.version }}
           
           echo "Testing image..."
           docker run --rm \
             -e VERSION=${{ needs.version.outputs.version }} \
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.version }} \
+            ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.version }} \
             node --version
           
           echo "✅ Docker Hub image is working"
