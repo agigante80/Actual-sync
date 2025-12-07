@@ -23,6 +23,7 @@ Thumbs.db
 # IDE files
 .vscode/
 .idea/
+*.code-workspace
 *.swp
 *.swo
 *~
