@@ -551,6 +551,433 @@ docker scout cves actual-sync:latest
 
 ---
 
+## 🔍 Automated Security Scanning
+
+### CI/CD Security Pipeline
+
+Actual-sync includes automated security scanning in the CI/CD pipeline via GitHub Actions.
+
+**Workflow File**: `.github/workflows/ci-cd.yml`
+
+### Security Scanning Jobs
+
+#### 1. Dependency Auditing
+
+**Tool**: `npm audit`
+
+**Runs**: Every push, pull request, and manual trigger
+
+**Location**: Test job in CI/CD workflow
+
+**What It Checks**:
+- Known vulnerabilities in npm packages
+- Dependency tree for security issues
+- Severity levels: CRITICAL, HIGH, MEDIUM, LOW
+
+**Action on Findings**:
+- Pipeline continues (warnings only)
+- Results logged in workflow summary
+- Manual review recommended for HIGH/CRITICAL
+
+**Example**:
+```bash
+# In CI/CD pipeline:
+npm audit --audit-level=high
+```
+
+#### 2. Container Vulnerability Scanning
+
+**Tool**: [Trivy](https://github.com/aquasecurity/trivy) by Aqua Security
+
+**Runs**: After Docker test build completes
+
+**Location**: `security-scan` job in CI/CD workflow
+
+**What It Scans**:
+- Alpine Linux OS packages
+- Node.js application dependencies
+- Filesystem for misconfigurations
+- Hardcoded secrets (basic detection)
+
+**Scan Coverage**:
+```
+┌─────────────────────┐
+│  Docker Image Scan  │
+│                     │
+│  ├─ OS Packages     │  ← Alpine Linux CVEs
+│  ├─ npm Packages    │  ← Node.js vulnerabilities
+│  ├─ Filesystem      │  ← Config issues
+│  └─ Secrets         │  ← Hardcoded credentials
+└─────────────────────┘
+```
+
+**Severity Filters**:
+- **CRITICAL**: Actively exploited, fix immediately
+- **HIGH**: Serious vulnerabilities with known exploits
+- **MEDIUM**: Moderate risk issues
+
+**Report Formats**:
+1. **SARIF** - Uploaded to GitHub Security tab
+2. **Table** - Displayed in workflow summary
+3. **JSON** - Archived for historical tracking
+
+#### 3. SARIF Integration
+
+**What is SARIF?**: Static Analysis Results Interchange Format
+
+**Benefits**:
+- Centralized security findings in GitHub Security tab
+- Integration with GitHub Advanced Security
+- Automated alerts for new vulnerabilities
+- Historical vulnerability tracking
+- Pull request annotations
+
+**Where to View**:
+1. Repository → **Security** tab
+2. Click **Code scanning** alerts
+3. Filter by tool: **Trivy**
+
+**Alert Example**:
+```
+┌────────────────────────────────────────────┐
+│ High Severity - CVE-2024-12345             │
+│ Package: express@4.17.1                    │
+│ Fixed in: express@4.18.2                   │
+│ CVSS Score: 7.5                            │
+│ Description: XSS vulnerability in query... │
+└────────────────────────────────────────────┘
+```
+
+#### 4. Security Scanning Workflow
+
+```
+┌──────────────────┐
+│  Docker Build    │
+│  Completed       │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Build Image     │
+│  for Scanning    │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Run Trivy       │
+│  Scan (SARIF)    │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Upload SARIF    │
+│  to GitHub       │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Run Trivy       │
+│  Scan (Table)    │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Display Summary │
+│  in Workflow     │
+└──────────────────┘
+```
+
+**Duration**: ~2-3 minutes per scan
+
+### Scan Frequency
+
+| Event | Frequency | Purpose |
+|-------|-----------|---------|
+| **Push to main** | Every push | Production security validation |
+| **Push to develop** | Every push | Development build verification |
+| **Pull Requests** | Every PR | Pre-merge security check |
+| **Manual Trigger** | On-demand | Ad-hoc security validation |
+| **Scheduled** | (Optional) | Continuous monitoring |
+
+**Note**: Scheduled scans can be added via workflow cron trigger for continuous vulnerability monitoring.
+
+### Handling Scan Results
+
+#### Critical/High Severity Vulnerabilities
+
+**Immediate Actions**:
+1. Review finding in GitHub Security tab
+2. Click vulnerability for detailed information
+3. Check if exploit affects your use case
+4. Review suggested fixes from Trivy
+
+**Remediation Steps**:
+```bash
+# Update affected package
+npm update <package>
+
+# Or specific version
+npm install <package>@<fixed-version>
+
+# Run audit to verify fix
+npm audit
+
+# Test locally
+npm test
+
+# Commit and push
+git add package*.json
+git commit -m "fix: update <package> to resolve CVE-XXXX-XXXXX"
+git push
+```
+
+**Verification**:
+- New CI/CD run will re-scan
+- Check GitHub Security tab for resolution
+- Alert should auto-close if fixed
+
+#### Medium/Low Severity Vulnerabilities
+
+**Actions**:
+1. Track in issue tracker
+2. Prioritize in backlog
+3. Include in next maintenance release
+4. Monitor for exploit activity
+
+**Documentation**:
+- Add to `SECURITY_REMEDIATION_PLAN.md`
+- Link GitHub Security alert
+- Estimate fix effort
+
+#### False Positives
+
+**Suppression via .trivyignore**:
+```bash
+# Create suppression file
+cat > .trivyignore << 'EOF'
+# False positive: Not used in our code path
+CVE-2024-12345
+
+# Accepted risk: No fix available, low impact
+CVE-2024-67890
+
+# Waiting for upstream fix
+CVE-2024-11111
+EOF
+
+# Commit suppression
+git add .trivyignore
+git commit -m "chore: suppress false positive security alerts"
+git push
+```
+
+**Document Suppression**:
+- Add comment explaining why suppressed
+- Link to GitHub issue tracking fix
+- Set reminder to review quarterly
+
+### Security Scan Configuration
+
+#### Customizing Trivy Scan
+
+Edit `.github/workflows/ci-cd.yml`:
+
+```yaml
+- name: Run Trivy vulnerability scanner
+  uses: aquasecurity/trivy-action@master
+  with:
+    image-ref: ${{ env.DOCKER_IMAGE_NAME }}:scan
+    format: 'sarif'
+    output: 'trivy-results.sarif'
+    
+    # Severity levels to scan for
+    severity: 'CRITICAL,HIGH,MEDIUM'
+    
+    # Ignore vulnerabilities with no fix
+    ignore-unfixed: true
+    
+    # Exit code on findings (0 = continue, 1 = fail)
+    exit-code: '0'
+    
+    # Vulnerability database
+    vuln-type: 'os,library'
+    
+    # Scan secrets
+    scanners: 'vuln,secret'
+```
+
+#### Pipeline Failure Thresholds
+
+**Current Behavior**: Pipeline continues even with vulnerabilities (warnings only)
+
+**To Fail on Vulnerabilities**:
+```yaml
+- name: Run Trivy vulnerability scanner
+  uses: aquasecurity/trivy-action@master
+  with:
+    exit-code: '1'  # Fail pipeline on findings
+    severity: 'CRITICAL,HIGH'  # Only fail on serious issues
+```
+
+**Recommendation**: Keep as warnings initially, then enable failure after baseline fixes are complete.
+
+### Security Notifications
+
+#### GitHub Security Alerts
+
+**Automatic Notifications**:
+- GitHub sends email when new vulnerabilities detected
+- Dependabot alerts for dependency vulnerabilities
+- Code scanning alerts for Trivy findings
+
+**Configure**:
+1. Settings → Security & analysis
+2. Enable **Dependabot alerts**
+3. Enable **Dependabot security updates**
+4. Enable **Code scanning** (for Trivy)
+
+#### Custom Notifications
+
+Add to CI/CD workflow for Slack/Discord/Email:
+
+```yaml
+- name: Notify on security findings
+  if: steps.trivy.outputs.vulnerabilities != '0'
+  uses: slackapi/slack-github-action@v1
+  with:
+    webhook-url: ${{ secrets.SLACK_WEBHOOK }}
+    payload: |
+      {
+        "text": "⚠️ Security vulnerabilities found in ${{ github.repository }}",
+        "blocks": [
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "Security scan found vulnerabilities.\nCheck: ${{ github.server_url }}/${{ github.repository }}/security/code-scanning"
+            }
+          }
+        ]
+      }
+```
+
+### Security Metrics
+
+#### Tracking Security Posture
+
+**Metrics to Monitor**:
+1. **Vulnerability Count**: Total open security findings
+2. **Time to Remediation**: Days from discovery to fix
+3. **Critical/High Count**: Serious vulnerabilities only
+4. **Fix Rate**: Percentage resolved each sprint
+5. **False Positive Rate**: Suppressed vs. actual issues
+
+**View in GitHub**:
+- Security tab → Overview → Metrics
+- Insights tab → Security (for organizations)
+
+#### Security Dashboard
+
+Create custom dashboard using GitHub API:
+```javascript
+// Fetch code scanning alerts
+GET /repos/{owner}/{repo}/code-scanning/alerts
+
+// Filter by tool
+?tool_name=Trivy
+
+// Filter by severity
+&severity=critical,high
+
+// Get metrics
+&state=open
+```
+
+### Security Best Practices
+
+#### 1. Regular Dependency Updates
+
+**Schedule**: Monthly dependency updates
+
+**Process**:
+```bash
+# Check outdated packages
+npm outdated
+
+# Update non-breaking changes
+npm update
+
+# Check for security updates
+npm audit
+
+# Test after updates
+npm test
+
+# Commit if tests pass
+git add package*.json
+git commit -m "chore: update dependencies"
+git push
+```
+
+#### 2. Monitor Security Advisories
+
+**Resources**:
+- GitHub Security Advisories: https://github.com/advisories
+- npm Security Advisories: https://github.com/advisories?query=ecosystem%3Anpm
+- Node.js Security Releases: https://nodejs.org/en/blog/vulnerability/
+
+**Subscribe to**:
+- GitHub repository watch → Security alerts
+- npm security mailing list
+- Dependabot pull requests
+
+#### 3. Security Review Checklist
+
+Before each release:
+
+- [ ] Run `npm audit` and resolve HIGH/CRITICAL
+- [ ] Check GitHub Security tab for open alerts
+- [ ] Review `.trivyignore` suppressions (still valid?)
+- [ ] Update dependencies to latest patch versions
+- [ ] Run full test suite
+- [ ] Scan Docker image with Trivy locally
+- [ ] Review SECURITY_REMEDIATION_PLAN.md progress
+- [ ] Update security documentation if needed
+
+#### 4. Incident Response
+
+If critical vulnerability discovered:
+
+**Hour 0-1: Assessment**
+- Confirm vulnerability affects your deployment
+- Determine exploit likelihood
+- Assess potential impact
+
+**Hour 1-4: Mitigation**
+- Apply temporary workaround if available
+- Update to patched version
+- Run full test suite
+- Deploy fix to production
+
+**Hour 4-24: Verification**
+- Monitor for exploitation attempts
+- Verify fix resolves vulnerability
+- Update security documentation
+- Notify stakeholders
+
+**Day 1-7: Post-Incident**
+- Conduct post-mortem
+- Update incident response plan
+- Improve detection/prevention
+
+### Security Scanning Documentation
+
+For complete CI/CD documentation including security scanning setup, see:
+- **[docs/CI_CD.md](CI_CD.md)** - Comprehensive CI/CD guide
+- **Security Scanning section** - Trivy configuration, SARIF integration, troubleshooting
+
+---
+
 ## 🎓 Security Resources
 
 ### Documentation

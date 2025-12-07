@@ -449,4 +449,208 @@ Currently designed to run as a single process. Not suitable for:
 
 ---
 
-**Last Updated**: December 4, 2025
+## 🔄 CI/CD Pipeline
+
+### Overview
+
+Actual-sync uses a comprehensive GitHub Actions-based CI/CD pipeline for automated testing, building, and deployment.
+
+**Pipeline File**: `.github/workflows/ci-cd.yml`
+
+### Pipeline Architecture
+
+```
+┌─────────────┐
+│   Version   │
+│ Generation  │  ← Dynamic Git-based versioning
+└──────┬──────┘
+       │
+       ├─────────────┬────────────┬─────────────────┐
+       ▼             ▼            ▼                 ▼
+  ┌────────┐   ┌────────┐   ┌─────────┐   ┌──────────────┐
+  │  Lint  │   │  Test  │   │  Build  │   │  Validate    │
+  │        │   │        │   │         │   │ Docker Desc. │
+  └────┬───┘   └────┬───┘   └────┬────┘   └──────┬───────┘
+       │            │            │                │
+       └────────────┴────────────┴────────────────┘
+                         │
+                         ▼
+                ┌─────────────────┐
+                │  Docker Test    │
+                │     Build       │
+                └────────┬────────┘
+                         │
+            ┌────────────┴────────────┐
+            ▼                         ▼
+   ┌──────────────┐         ┌──────────────┐
+   │   Docker     │         │  Security    │
+   │   Publish    │         │    Scan      │
+   └──────┬───────┘         └──────┬───────┘
+          │                        │
+          └────────────┬───────────┘
+                       ▼
+              ┌─────────────────┐
+              │  Deployment     │
+              │     Test        │
+              └────────┬────────┘
+                       │
+                       ▼
+                 ┌──────────┐
+                 │ Release  │
+                 │ (if tag) │
+                 └──────────┘
+```
+
+### Pipeline Jobs
+
+| Job | Purpose | Duration |
+|-----|---------|----------|
+| **Version** | Generate dynamic version from Git context | ~10s |
+| **Lint** | Validate code syntax and formatting | ~30s |
+| **Test** | Run Jest tests with coverage | ~2-3min |
+| **Build** | Build application and verify artifacts | ~45s |
+| **Validate Docker Desc** | Ensure Docker Hub description ≤100 chars | ~5s |
+| **Docker Test** | Test Docker build without publishing | ~3-5min |
+| **Docker Publish** | Build and push multi-platform images | ~10-15min |
+| **Security Scan** | Trivy vulnerability scanning with SARIF | ~2-3min |
+| **Deployment Test** | Verify published images work correctly | ~1-2min |
+| **Release** | Create GitHub release (tagged builds only) | ~30s |
+
+**Total Pipeline Duration**: ~15-20 minutes for full run
+
+### Dynamic Versioning
+
+The pipeline uses `get_version.sh` to generate context-aware version strings:
+
+| Branch/Tag | Generated Version | Docker Tags |
+|------------|------------------|-------------|
+| `main` with tag `v1.0.0` | `1.0.0` | `latest`, `main`, `1.0.0` |
+| `main` without tag | `1.0.0-main-abc1234` | `main`, `1.0.0-main-abc1234` |
+| `develop` | `1.0.0-dev-abc1234` | `develop`, `1.0.0-dev-abc1234` |
+| `feature/auth` | `1.0.0-feature-auth-abc1234` | `1.0.0-feature-auth-abc1234` |
+
+**Format**: `<base_version>-<context>-<commit_hash>`
+
+**Base Version**: Read from `package.json`
+
+**Version Exposure**:
+- Environment variable: `VERSION`
+- Health endpoint: `/health` (includes version field)
+- Metrics endpoint: `/metrics` (includes version field)
+- Docker labels: OCI metadata
+- Application startup: Logged to console
+
+### Docker Publishing
+
+**Registries**:
+1. **Docker Hub**: `<username>/actual-sync:<tag>`
+2. **GitHub Container Registry**: `ghcr.io/<owner>/actual-sync:<tag>`
+
+**Platforms**:
+- `linux/amd64` (Intel/AMD 64-bit)
+- `linux/arm64` (ARM 64-bit, Apple Silicon, Raspberry Pi)
+
+**Build Strategy**:
+- Multi-stage build (builder + production)
+- Build cache via GitHub Actions cache
+- VERSION passed as build argument
+- OCI labels with version metadata
+
+### Security Scanning
+
+**Scanner**: [Trivy](https://github.com/aquasecurity/trivy) by Aqua Security
+
+**Scans**:
+- OS packages (Alpine Linux)
+- Application dependencies (npm packages)
+- Filesystem vulnerabilities
+- Hardcoded secrets (basic detection)
+
+**Severity Levels**: CRITICAL, HIGH, MEDIUM
+
+**Report Formats**:
+- SARIF → GitHub Security tab
+- Table → Workflow summary
+
+**Integration**: Results uploaded to GitHub Code Scanning for centralized tracking
+
+### Triggers
+
+| Trigger | Branches | Actions |
+|---------|----------|---------|
+| **Push** | `main`, `develop` | Full pipeline with Docker publish |
+| **Pull Request** | `main`, `develop` | Testing only (no publish) |
+| **Git Tags** | `v*` | Full pipeline + GitHub release |
+| **Manual** | Any branch | Configurable (skip tests, custom tags) |
+
+### Manual Workflow Dispatch
+
+The workflow supports manual triggers with options:
+
+**Parameters**:
+1. `skip_tests` - Skip test execution (emergency use)
+2. `skip_docker_publish` - Test pipeline without publishing
+3. `docker_tag_suffix` - Add custom tag suffix
+
+**Use Cases**:
+- Hotfix deployments
+- Testing pipeline changes
+- Custom-tagged builds
+- Emergency deployments
+
+### Required Secrets
+
+Configure in repository settings → Secrets → Actions:
+
+| Secret | Purpose | Where to Get |
+|--------|---------|--------------|
+| `DOCKER_USERNAME` | Docker Hub username | Docker Hub account |
+| `DOCKER_TOKEN` | Docker Hub access token | Docker Hub → Security → New Token |
+| `GITHUB_TOKEN` | GHCR authentication | Auto-provided by GitHub |
+
+### CI/CD Documentation
+
+See **[docs/CI_CD.md](CI_CD.md)** for comprehensive documentation including:
+- Complete setup instructions
+- Manual trigger examples
+- Troubleshooting guide
+- Security best practices
+- Workflow optimization tips
+
+### Deployment Verification
+
+The pipeline includes automated deployment testing:
+1. Pull published images from both registries
+2. Test container startup
+3. Verify version environment variable
+4. Confirm health check endpoint
+
+**Ensures**: Published images are immediately usable by end users
+
+### Release Management
+
+**Automated Releases**: Created for Git tags on `main` branch
+
+**Release Contents**:
+- Version number
+- Docker pull commands (Docker Hub + GHCR)
+- Generated changelog from commits
+- Security scan status link
+- Auto-generated release notes
+
+**Example**:
+```bash
+# Create release
+git tag -a v1.0.0 -m "Release v1.0.0"
+git push origin v1.0.0
+
+# Pipeline automatically:
+# 1. Runs full test suite
+# 2. Builds and publishes Docker images
+# 3. Scans for vulnerabilities
+# 4. Creates GitHub release with changelog
+```
+
+---
+
+**Last Updated**: December 7, 2025

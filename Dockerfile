@@ -25,13 +25,15 @@ COPY . .
 # Run tests to ensure build quality
 RUN npm test
 
-# Stage 2: Production
+# Stage 2: Production image
 FROM node:20-alpine
 
-# Install runtime dependencies
-RUN apk add --no-cache \
-    sqlite \
-    tini
+# Build arguments for dynamic versioning
+ARG VERSION=unknown
+ENV VERSION=${VERSION}
+
+# Install runtime dependencies and tini
+RUN apk add --no-cache sqlite tini
 
 # Create non-root user
 RUN addgroup -g 1001 -S actualuser && \
@@ -55,6 +57,13 @@ COPY --from=builder /app/index.js ./
 # Create directories with proper permissions
 RUN mkdir -p /app/data /app/logs && \
     chown -R actualuser:actualuser /app
+
+# OCI metadata labels
+LABEL org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.title="actual-sync" \
+      org.opencontainers.image.description="Automated bank synchronization service for Actual Budget with multi-server support" \
+      org.opencontainers.image.vendor="Actual-sync" \
+      org.opencontainers.image.licenses="MIT"
 
 # Switch to non-root user
 USER actualuser

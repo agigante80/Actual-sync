@@ -65,7 +65,8 @@ class HealthCheckService {
         status: 'UP',
         timestamp: new Date().toISOString(),
         uptime: uptime,
-        service: 'actual-sync'
+        service: 'actual-sync',
+        version: global.APP_VERSION || process.env.VERSION || 'unknown'
       };
 
       this.logger.debug('Health check requested', { uptime, remoteAddress: req.ip });
@@ -81,6 +82,7 @@ class HealthCheckService {
         timestamp: new Date().toISOString(),
         uptime: uptime,
         service: 'actual-sync',
+        version: global.APP_VERSION || process.env.VERSION || 'unknown',
         sync: {
           lastSyncTime: this.status.lastSyncTime,
           lastSyncStatus: this.status.lastSyncStatus,
