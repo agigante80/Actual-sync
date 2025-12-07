@@ -69,8 +69,8 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "📦 Generated version: $VERSION"
           
-          # Determine if this is a release (tagged on main branch)
-          if [[ "$GITHUB_REF" == refs/tags/v* ]] && [[ "$GITHUB_REF_NAME" == "main" ]]; then
+          # Determine if this is a release (triggered by version tag)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "is_release=true" >> $GITHUB_OUTPUT
             echo "🚀 This is a release build"
           else
