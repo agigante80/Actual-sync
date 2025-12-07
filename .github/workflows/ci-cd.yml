@@ -1,5 +1,11 @@
 name: CI/CD Pipeline
 
+# Set permissions for GHCR
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
 on:
   push:
     branches:
