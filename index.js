@@ -8,6 +8,17 @@
 const fs = require('fs');
 const path = require('path');
 
+// Get version from environment or package.json
+const VERSION = process.env.VERSION || (() => {
+    try {
+        return require('./package.json').version;
+    } catch (error) {
+        return 'unknown';
+    }
+})();
+
+console.log(`\n🏦 Starting Actual-sync v${VERSION}\n`);
+
 // Validate environment and configuration before starting
 function validateStartup() {
     const errors = [];
@@ -109,6 +120,9 @@ function validateStartup() {
 
 // Run validation
 validateStartup();
+
+// Export version for use by other modules
+global.APP_VERSION = VERSION;
 
 // Start the sync service
 require('./src/syncService');
