@@ -1,0 +1,183 @@
+# Prometheus Alert Rules for Actual-sync
+#
+# These rules define alerts based on actual-sync metrics.
+# Customize thresholds and durations based on your requirements.
+
+groups:
+  - name: actual-sync-alerts
+    interval: 60s
+    rules:
+      # ===== Sync Reliability Alerts =====
+      
+      - alert: SyncDelayed
+        expr: (time() - actual_sync_last_sync_timestamp{status="success"}) > 7200
+        for: 5m
+        labels:
+          severity: warning
+          component: sync
+        annotations:
+          summary: "Sync delayed for {{ $labels.server }}"
+          description: "No successful sync in over 2 hours for server {{ $labels.server }}. Last sync was {{ $value | humanizeDuration }} ago."
+          
+      - alert: SyncStalledCritical
+        expr: (time() - actual_sync_last_sync_timestamp{status="success"}) > 14400
+        for: 10m
+        labels:
+          severity: critical
+          component: sync
+        annotations:
+          summary: "Sync critically delayed for {{ $labels.server }}"
+          description: "No successful sync in over 4 hours for server {{ $labels.server }}. Immediate investigation required."
+          
+      - alert: LowSuccessRate
+        expr: actual_sync_success_rate < 0.8
+        for: 10m
+        labels:
+          severity: warning
+          component: sync
+        annotations:
+          summary: "Low success rate for {{ $labels.server }}"
+          description: "Success rate for {{ $labels.server }} is {{ $value | humanizePercentage }}. Expected > 80%."
+          
+      - alert: CriticalSuccessRate
+        expr: actual_sync_success_rate < 0.5
+        for: 5m
+        labels:
+          severity: critical
+          component: sync
+        annotations:
+          summary: "Critical success rate for {{ $labels.server }}"
+          description: "Success rate for {{ $labels.server }} is only {{ $value | humanizePercentage }}. Majority of syncs failing."
+          
+      - alert: HighFailureCount
+        expr: increase(actual_sync_total{status="error"}[1h]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: sync
+        annotations:
+          summary: "High failure count for {{ $labels.server }}"
+          description: "{{ $value }} sync failures in the last hour for server {{ $labels.server }}."
+          
+      # ===== Account Processing Alerts =====
+      
+      - alert: AccountSyncFailures
+        expr: actual_sync_accounts_failed > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: accounts
+        annotations:
+          summary: "Account sync failures on {{ $labels.server }}"
+          description: "{{ $value }} accounts failed to sync on server {{ $labels.server }}."
+          
+      - alert: HighAccountFailureRate
+        expr: actual_sync_accounts_failed / (actual_sync_accounts_processed + actual_sync_accounts_failed) > 0.2
+        for: 10m
+        labels:
+          severity: critical
+          component: accounts
+        annotations:
+          summary: "High account failure rate on {{ $labels.server }}"
+          description: "{{ $value | humanizePercentage }} of accounts are failing on server {{ $labels.server }}."
+          
+      # ===== Performance Alerts =====
+      
+      - alert: SlowSync
+        expr: rate(actual_sync_duration_seconds_sum[5m]) / rate(actual_sync_duration_seconds_count[5m]) > 60
+        for: 10m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "Slow sync operations for {{ $labels.server }}"
+          description: "Average sync duration is {{ $value }}s for server {{ $labels.server }}. Expected < 60s."
+          
+      - alert: VerySlowSync
+        expr: rate(actual_sync_duration_seconds_sum[5m]) / rate(actual_sync_duration_seconds_count[5m]) > 300
+        for: 5m
+        labels:
+          severity: critical
+          component: performance
+        annotations:
+          summary: "Very slow sync operations for {{ $labels.server }}"
+          description: "Average sync duration is {{ $value }}s (over 5 minutes) for server {{ $labels.server }}."
+          
+      # ===== Error Pattern Alerts =====
+      
+      - alert: RateLimitErrors
+        expr: increase(actual_sync_errors_total{error_code="RATE_LIMIT"}[1h]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          component: sync
+        annotations:
+          summary: "Rate limit errors on {{ $labels.server }}"
+          description: "{{ $value }} rate limit errors in the last hour on server {{ $labels.server }}. Consider reducing sync frequency."
+          
+      - alert: AuthenticationErrors
+        expr: increase(actual_sync_errors_total{error_code=~"AUTH.*|UNAUTHORIZED"}[30m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "Authentication errors on {{ $labels.server }}"
+          description: "Authentication errors detected on server {{ $labels.server }}. Check credentials and access."
+          
+      # ===== System Health Alerts =====
+      
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes > 536870912
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value | humanize }}B. Expected < 512MB."
+          
+      - alert: CriticalMemoryUsage
+        expr: process_resident_memory_bytes > 1073741824
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Critical memory usage"
+          description: "Memory usage is {{ $value | humanize }}B (> 1GB). Possible memory leak."
+          
+      - alert: HighEventLoopLag
+        expr: rate(nodejs_eventloop_lag_seconds[1m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High event loop lag"
+          description: "Event loop lag is {{ $value }}s. Application may be unresponsive."
+          
+      - alert: CriticalEventLoopLag
+        expr: rate(nodejs_eventloop_lag_seconds[1m]) > 5
+        for: 2m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Critical event loop lag"
+          description: "Event loop lag is {{ $value }}s. Application is likely frozen."
+
+  # ===== Recording Rules =====
+  # Pre-calculate expensive queries for faster dashboards
+  
+  - name: actual-sync-recordings
+    interval: 60s
+    rules:
+      - record: job:actual_sync_duration_seconds:avg5m
+        expr: rate(actual_sync_duration_seconds_sum[5m]) / rate(actual_sync_duration_seconds_count[5m])
+        
+      - record: job:actual_sync_total:rate1h
+        expr: rate(actual_sync_total[1h])
+        
+      - record: job:actual_sync_success_rate:avg
+        expr: avg(actual_sync_success_rate)

@@ -1,0 +1,78 @@
+{
+  "$schema": "./config.schema.json",
+  "servers": [
+    {
+      "name": "Main",
+      "url": "http://actual-main:5006",
+      "password": "your_password_here",
+      "syncId": "your_sync_id_here",
+      "dataDir": "/app/dataDir_Main_temp"
+    },
+    {
+      "name": "Secondary",
+      "url": "http://actual-Secondary:5006",
+      "password": "your_password_here",
+      "syncId": "your_sync_id_here",
+      "dataDir": "/app/dataDir_Secondary_temp",
+      "sync": {
+        "schedule": "0 4 * * *",
+        "maxRetries": 3
+      }
+    }
+  ],
+  "sync": {
+    "maxRetries": 5,
+    "baseRetryDelayMs": 3000,
+    "schedule": "03 03 */2 * *"
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "pretty"
+  },
+  "healthCheck": {
+    "port": 3000,
+    "host": "0.0.0.0"
+  },
+  "syncHistory": {
+    "dbPath": "data/sync-history.db",
+    "retentionDays": 90
+  },
+  "prometheus": {
+    "enabled": true,
+    "includeDefaultMetrics": true
+  },
+  "notifications": {
+    "email": {
+      "enabled": false,
+      "host": "smtp.gmail.com",
+      "port": 587,
+      "secure": false,
+      "auth": {
+        "user": "your-email@gmail.com",
+        "pass": "your-app-specific-password"
+      },
+      "from": "your-email@gmail.com",
+      "to": ["admin@example.com"]
+    },
+    "telegram": {
+      "enabled": false,
+      "botToken": "YOUR_BOT_TOKEN",
+      "chatId": "YOUR_CHAT_ID",
+      "notifyOnSuccess": "errors_only"
+    },
+    "webhooks": {
+      "slack": [],
+      "discord": [],
+      "teams": []
+    },
+    "thresholds": {
+      "consecutiveFailures": 3,
+      "failureRate": 0.5,
+      "ratePeriodMinutes": 60
+    },
+    "rateLimit": {
+      "minIntervalMinutes": 15,
+      "maxPerHour": 4
+    }
+  }
+}

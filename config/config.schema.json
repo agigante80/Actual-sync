@@ -1,0 +1,371 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Actual-sync Configuration",
+  "description": "Configuration schema for Actual-sync service",
+  "type": "object",
+  "required": ["servers"],
+  "properties": {
+    "servers": {
+      "type": "array",
+      "description": "Array of Actual Budget server configurations",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "url", "password", "syncId", "dataDir"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Human-readable name for the server",
+            "minLength": 1
+          },
+          "url": {
+            "type": "string",
+            "description": "Actual Budget server URL",
+            "pattern": "^https?://.*",
+            "examples": ["http://localhost:5006", "https://actual.example.com"]
+          },
+          "password": {
+            "type": "string",
+            "description": "Server password",
+            "minLength": 1
+          },
+          "syncId": {
+            "type": "string",
+            "description": "Budget sync ID from Actual Budget settings",
+            "minLength": 1
+          },
+          "dataDir": {
+            "type": "string",
+            "description": "Local directory for budget file cache",
+            "minLength": 1
+          },
+          "sync": {
+            "type": "object",
+            "description": "Server-specific sync configuration (overrides global settings)",
+            "properties": {
+              "maxRetries": {
+                "type": "integer",
+                "description": "Maximum number of retry attempts for this server",
+                "minimum": 0,
+                "maximum": 10
+              },
+              "baseRetryDelayMs": {
+                "type": "integer",
+                "description": "Base delay in milliseconds for exponential backoff for this server",
+                "minimum": 1000,
+                "maximum": 10000
+              },
+              "schedule": {
+                "type": "string",
+                "description": "Cron expression for sync schedule for this server",
+                "pattern": "^[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+$",
+                "examples": ["0 2 * * *", "*/30 * * * *"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "description": "Global sync behavior configuration (can be overridden per server)",
+      "properties": {
+        "maxRetries": {
+          "type": "integer",
+          "description": "Maximum number of retry attempts",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 5
+        },
+        "baseRetryDelayMs": {
+          "type": "integer",
+          "description": "Base delay in milliseconds for exponential backoff",
+          "minimum": 1000,
+          "maximum": 10000,
+          "default": 3000
+        },
+        "schedule": {
+          "type": "string",
+          "description": "Cron expression for sync schedule",
+          "pattern": "^[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+$",
+          "default": "03 03 */2 * *",
+          "examples": ["0 2 * * *", "*/30 * * * *"]
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "description": "Logging configuration",
+      "properties": {
+        "level": {
+          "type": "string",
+          "description": "Log level (DEBUG, INFO, WARN, ERROR)",
+          "enum": ["DEBUG", "INFO", "WARN", "ERROR", "debug", "info", "warn", "error"],
+          "default": "INFO"
+        },
+        "format": {
+          "type": "string",
+          "description": "Log output format",
+          "enum": ["pretty", "json"],
+          "default": "pretty"
+        },
+        "logDir": {
+          "type": "string",
+          "description": "Directory for log files (optional, logs to console if not set)"
+        }
+      }
+    },
+    "healthCheck": {
+      "type": "object",
+      "description": "Health check HTTP endpoint configuration",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "description": "HTTP port for health check endpoints",
+          "minimum": 1024,
+          "maximum": 65535,
+          "default": 3000
+        },
+        "host": {
+          "type": "string",
+          "description": "Host to bind health check server",
+          "default": "0.0.0.0",
+          "examples": ["0.0.0.0", "127.0.0.1", "localhost"]
+        }
+      }
+    },
+    "syncHistory": {
+      "type": "object",
+      "description": "Sync history persistence configuration",
+      "properties": {
+        "dbPath": {
+          "type": "string",
+          "description": "Path to SQLite database file for sync history",
+          "default": "data/sync-history.db"
+        },
+        "retentionDays": {
+          "type": "integer",
+          "description": "Number of days to retain sync history",
+          "minimum": 1,
+          "maximum": 365,
+          "default": 90
+        }
+      }
+    },
+    "prometheus": {
+      "type": "object",
+      "description": "Prometheus metrics export configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable Prometheus metrics endpoint",
+          "default": true
+        },
+        "includeDefaultMetrics": {
+          "type": "boolean",
+          "description": "Include Node.js default metrics (memory, CPU, etc.)",
+          "default": true
+        }
+      }
+    },
+    "notifications": {
+      "type": "object",
+      "description": "Error notification configuration",
+      "properties": {
+        "email": {
+          "type": "object",
+          "description": "Email notification settings",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable email notifications",
+              "default": false
+            },
+            "host": {
+              "type": "string",
+              "description": "SMTP server host",
+              "default": "smtp.gmail.com",
+              "examples": ["smtp.gmail.com", "smtp.sendgrid.net"]
+            },
+            "port": {
+              "type": "integer",
+              "description": "SMTP server port",
+              "minimum": 1,
+              "maximum": 65535,
+              "default": 587
+            },
+            "secure": {
+              "type": "boolean",
+              "description": "Use TLS for SMTP connection",
+              "default": false
+            },
+            "auth": {
+              "type": "object",
+              "description": "SMTP authentication credentials",
+              "properties": {
+                "user": {
+                  "type": "string",
+                  "description": "SMTP username"
+                },
+                "pass": {
+                  "type": "string",
+                  "description": "SMTP password or app-specific password"
+                }
+              }
+            },
+            "from": {
+              "type": "string",
+              "description": "From email address",
+              "format": "email"
+            },
+            "to": {
+              "type": "array",
+              "description": "Recipient email addresses",
+              "items": {
+                "type": "string",
+                "format": "email"
+              }
+            }
+          }
+        },
+        "telegram": {
+          "type": "object",
+          "description": "Telegram bot settings for notifications and commands",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable Telegram bot",
+              "default": false
+            },
+            "botToken": {
+              "type": "string",
+              "description": "Telegram bot token from @BotFather",
+              "pattern": "^[0-9]+:[A-Za-z0-9_-]+$"
+            },
+            "chatId": {
+              "type": "string",
+              "description": "Chat ID (user ID, group ID, or channel username)"
+            },
+            "notifyOnSuccess": {
+              "type": "string",
+              "description": "When to send sync notifications",
+              "enum": ["always", "errors_only", "never"],
+              "default": "errors_only"
+            }
+          },
+          "required": ["botToken", "chatId"]
+        },
+        "webhooks": {
+          "type": "object",
+          "description": "Webhook notification settings",
+          "properties": {
+            "slack": {
+              "type": "array",
+              "description": "Slack webhook configurations",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Webhook name for identification"
+                  },
+                  "url": {
+                    "type": "string",
+                    "description": "Slack webhook URL",
+                    "pattern": "^https://hooks\\.slack\\.com/.*"
+                  }
+                },
+                "required": ["url"]
+              }
+            },
+            "discord": {
+              "type": "array",
+              "description": "Discord webhook configurations",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Webhook name for identification"
+                  },
+                  "url": {
+                    "type": "string",
+                    "description": "Discord webhook URL",
+                    "pattern": "^https://discord\\.com/api/webhooks/.*"
+                  }
+                },
+                "required": ["url"]
+              }
+            },
+            "teams": {
+              "type": "array",
+              "description": "Microsoft Teams webhook configurations",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Webhook name for identification"
+                  },
+                  "url": {
+                    "type": "string",
+                    "description": "Teams webhook URL",
+                    "pattern": "^https://.*\\.webhook\\.office\\.com/.*"
+                  }
+                },
+                "required": ["url"]
+              }
+            }
+          }
+        },
+        "thresholds": {
+          "type": "object",
+          "description": "Notification threshold settings",
+          "properties": {
+            "consecutiveFailures": {
+              "type": "integer",
+              "description": "Number of consecutive failures before notification",
+              "minimum": 1,
+              "maximum": 20,
+              "default": 3
+            },
+            "failureRate": {
+              "type": "number",
+              "description": "Failure rate (0-1) threshold over rate period",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.5
+            },
+            "ratePeriodMinutes": {
+              "type": "integer",
+              "description": "Time period in minutes for failure rate calculation",
+              "minimum": 5,
+              "maximum": 1440,
+              "default": 60
+            }
+          }
+        },
+        "rateLimit": {
+          "type": "object",
+          "description": "Notification rate limiting settings",
+          "properties": {
+            "minIntervalMinutes": {
+              "type": "integer",
+              "description": "Minimum minutes between notifications",
+              "minimum": 1,
+              "maximum": 1440,
+              "default": 15
+            },
+            "maxPerHour": {
+              "type": "integer",
+              "description": "Maximum notifications per hour",
+              "minimum": 1,
+              "maximum": 20,
+              "default": 4
+            }
+          }
+        }
+      }
+    }
+  }
+}

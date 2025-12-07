@@ -1,0 +1,41 @@
+# Prometheus configuration for Actual-sync monitoring
+#
+# This configuration scrapes metrics from the actual-sync service
+# and optionally sets up alerting rules.
+
+global:
+  scrape_interval: 30s       # Default scrape interval
+  evaluation_interval: 30s   # How often to evaluate rules
+  scrape_timeout: 10s       # Timeout for scrapes
+  
+  # External labels added to all time series
+  external_labels:
+    environment: 'production'
+    service: 'actual-sync'
+
+# Scrape configurations
+scrape_configs:
+  # Actual-sync service metrics
+  - job_name: 'actual-sync'
+    static_configs:
+      - targets: ['actual-sync:3000']
+    metrics_path: '/metrics/prometheus'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+# Alert rule files
+rule_files:
+  - 'alerts.yml'
+
+# Alerting configuration
+# Uncomment and configure if using Alertmanager
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#             - 'alertmanager:9093'

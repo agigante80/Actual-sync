@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+
+# Configuration (contains sensitive data)
+config/config.json
+
+# Data directories
+dataDir_*/
+/app/dataDir_*/
+data/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+test-temp/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Backup files
+*.backup
+*.bak
+*_backup.js
+
+# SQLite databases (outside data/ directory)
+*.db
+*.db-shm
+*.db-wal
+
+# npm/yarn logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files (multi-environment)
+.env.*
+!.env.example
+
+# macOS
+.DS_Store?
+.AppleDouble
+.LSOverride
