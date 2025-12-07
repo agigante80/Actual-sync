@@ -2,7 +2,8 @@
 # Optimized for minimal image size and production deployment
 
 # Stage 1: Builder
-FROM node:20-alpine AS builder
+# Use native platform for building to avoid QEMU emulation issues
+FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache \
