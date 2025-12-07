@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  actual-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: actual-sync:latest
+    container_name: actual-sync
+    restart: unless-stopped
+    
+    # Environment variables (optional, overrides config.json)
+    environment:
+      - TZ=Europe/Madrid
+      - NODE_ENV=production
+    
+    # Mount config and data volumes
+    volumes:
+      # Configuration file
+      - ./config/config.json:/app/config/config.json:ro
+      
+      # Persistent data directories
+      - actual-sync-data:/app/data
+      - actual-sync-logs:/app/logs
+      
+      # If using custom data directories for budget files
+      # - ./budget-data:/budget-data
+    
+    # Expose health check port
+    ports:
+      - "3000:3000"
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Network configuration
+    networks:
+      - actual-network
+
+  # Optional: Actual Budget server
+  # Uncomment if you want to run Actual Budget alongside sync service
+  # actual-server:
+  #   image: actualbudget/actual-server:latest
+  #   container_name: actual-server
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5006:5006"
+  #   volumes:
+  #     - actual-server-data:/data
+  #   networks:
+  #     - actual-network
+
+  # Optional: Monitoring with Prometheus
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: prometheus
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #     - prometheus-data:/prometheus
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+  #     - '--storage.tsdb.path=/prometheus'
+  #   networks:
+  #     - actual-network
+
+  # Optional: Grafana for visualization
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: grafana
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3001:3000"
+  #   volumes:
+  #     - grafana-data:/var/lib/grafana
+  #   environment:
+  #     - GF_SECURITY_ADMIN_PASSWORD=admin
+  #   networks:
+  #     - actual-network
+
+networks:
+  actual-network:
+    driver: bridge
+
+volumes:
+  actual-sync-data:
+    driver: local
+  actual-sync-logs:
+    driver: local
+  # actual-server-data:
+  #   driver: local
+  # prometheus-data:
+  #   driver: local
+  # grafana-data:
+  #   driver: local

@@ -1,0 +1,1 @@
+Automated bank synchronization service for Actual Budget with multi-server support and monitoring
