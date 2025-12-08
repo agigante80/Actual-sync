@@ -394,7 +394,7 @@ jobs:
             org.opencontainers.image.source=${{ github.repositoryUrl }}
 
       - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@v5
         if: github.ref == 'refs/heads/main'
         with:
           username: ${{ secrets.DOCKERHUB_USER }}
