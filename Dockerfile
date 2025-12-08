@@ -42,12 +42,9 @@ RUN addgroup -g 1001 -S actualuser && \
 
 WORKDIR /app
 
-# Copy package files
+# Copy package files and node_modules from builder
 COPY package*.json ./
-
-# Install production dependencies only
-RUN npm ci --omit=dev && \
-    npm cache clean --force
+COPY --from=builder /app/node_modules ./node_modules
 
 # Copy application files from builder
 COPY --from=builder /app/src ./src
