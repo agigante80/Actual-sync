@@ -392,16 +392,52 @@ Each budget on the same Actual Budget server needs a separate entry:
 
 ## Updating
 
-### Pull Latest Image
+### Automated Updates
+
+This project uses automated dependency monitoring to track new releases of the Actual Budget API:
+
+- **Daily checks** for `@actual-app/api` updates
+- **Automatic PRs** created when new versions are available
+- **GitHub releases** automatically built and published after PR merge
+
+When a new version is detected, you'll receive a GitHub notification with a PR containing:
+- Version comparison
+- Migration compatibility notes
+- Testing checklist
+
+**To apply updates:**
+
+1. Review and merge the automated PR
+2. Wait for the CI/CD pipeline to complete (~10 minutes)
+3. Pull the updated image (see below)
+
+### Manual Update
+
+**Pull Latest Image:**
 
 ```bash
 docker compose pull actual-sync
 docker compose up -d actual-sync
 ```
 
+**Verify Version:**
+
+```bash
+docker exec actual-sync-service node -e "console.log(require('@actual-app/api/package.json').version)"
+```
+
 ### View Release Notes
 
 Check the [GitHub Releases](https://github.com/agigante80/Actual-sync/releases) page for changelogs and upgrade notes.
+
+### Version Compatibility
+
+⚠️ **Important:** The `@actual-app/api` version in the container must be compatible with your Actual Budget server version. Migration mismatches will cause sync failures.
+
+**Check compatibility:**
+- Container API version: See Docker image tags or `package.json`
+- Server version: Check Actual Budget UI → Settings → About
+- If you see "out-of-sync-migrations" errors, update to the latest container version
 
 ## Troubleshooting
 
