@@ -12,6 +12,50 @@ const { NotificationService } = require('./services/notificationService');
 const { TelegramBotService } = require('./services/telegramBot');
 const PrometheusService = require('./services/prometheusService');
 
+// Get version
+const VERSION = process.env.VERSION || (() => {
+    try {
+        return require('../package.json').version;
+    } catch (error) {
+        return 'unknown';
+    }
+})();
+
+/**
+ * Convert cron schedule to human-readable format
+ * @param {string} cron - Cron expression (e.g., "0 5 * * 2")
+ * @returns {string} Human-readable description
+ */
+function cronToHuman(cron) {
+    const parts = cron.split(' ');
+    if (parts.length !== 5) return cron;
+    
+    const [minute, hour, , , dayOfWeek] = parts;
+    
+    // Day names
+    const days = {
+        '0': 'Sunday', '1': 'Monday', '2': 'Tuesday', '3': 'Wednesday',
+        '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'
+    };
+    
+    let timeStr = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+    
+    if (dayOfWeek === '*') {
+        return `Daily at ${timeStr}`;
+    }
+    
+    const daysList = dayOfWeek.split(',').map(d => days[d.trim()]);
+    if (daysList.length === 7) {
+        return `Daily at ${timeStr}`;
+    } else if (daysList.length === 5 && !daysList.includes('Saturday') && !daysList.includes('Sunday')) {
+        return `Weekdays at ${timeStr}`;
+    } else if (daysList.length === 1) {
+        return `Every ${daysList[0]} at ${timeStr}`;
+    } else {
+        return `${daysList.join(', ')} at ${timeStr}`;
+    }
+}
+
 // Load environment variables
 require('dotenv').config();
 
@@ -508,7 +552,7 @@ async function run() {
             try {
                 const serverNames = servers.map(s => s.name).join(', ');
                 const scheduleInfo = scheduledJobs.map(sj => 
-                    `  - ${sj.servers.map(s => s.name).join(', ')}: ${sj.schedule}`
+                    `  • ${sj.servers.map(s => s.name).join(', ')}\n    ${cronToHuman(sj.schedule)} (${sj.schedule})`
                 ).join('\n');
                 const nextSync = scheduledJobs[0]?.job.nextInvocation();
                 const nextSyncStr = nextSync ? nextSync.toLocaleString('en-US', { 
@@ -519,7 +563,8 @@ async function run() {
                 
                 await notificationService.sendTelegramMessage(
                     `🚀 Actual-sync Service Started\n\n` +
-                    `✅ Service is now running\n\n` +
+                    `✅ Service is now running\n` +
+                    `📦 Version: ${VERSION}\n\n` +
                     `Servers: ${serverNames}\n\n` +
                     `Schedules:\n${scheduleInfo}\n\n` +
                     `Next sync: ${nextSyncStr}\n\n` +
