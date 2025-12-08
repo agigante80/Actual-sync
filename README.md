@@ -680,6 +680,52 @@ See **[docs/ROADMAP.md](docs/ROADMAP.md)** for detailed roadmap and **[docs/IMPR
 
 ---
 
+## 🔄 Automated Dependency Updates
+
+This project automatically monitors and updates dependencies to ensure compatibility with the latest Actual Budget releases:
+
+### How It Works
+
+1. **Daily Checks** - GitHub Actions workflow runs daily at 6:00 AM UTC
+2. **Version Detection** - Compares current `@actual-app/api` version with npm registry
+3. **Automatic PRs** - Creates pull request when new versions are available
+4. **CI/CD Pipeline** - Merging triggers automated build and release
+5. **Docker Images** - New images published to Docker Hub and GHCR
+
+### What You Get
+
+- 🔔 **GitHub notifications** when updates are available
+- 📝 **Detailed PRs** with version comparison and testing checklist
+- 🚀 **Automatic builds** after merging (multi-platform: amd64/arm64)
+- 📦 **Tagged releases** with semantic versioning
+
+### Update Your Deployment
+
+When you see an update notification:
+
+```bash
+# Review the PR on GitHub
+# After merge completes (~10 min), pull new image:
+docker compose pull actual-sync
+docker compose up -d actual-sync
+
+# Verify updated version:
+docker exec actual-sync-service node -e \
+  "console.log(require('@actual-app/api/package.json').version)"
+```
+
+### Why This Matters
+
+Actual Budget releases include database migrations. Running an outdated API version against a newer server causes sync failures:
+```
+Error: out-of-sync-migrations
+No budget file is open
+```
+
+Automated updates ensure your deployment stays compatible with your Actual Budget server version.
+
+---
+
 ## 🤝 Contributing
 
 We welcome contributions! Here's how to get started:
