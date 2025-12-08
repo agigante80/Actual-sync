@@ -100,11 +100,45 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 
 ## 🚀 Quick Start
 
-Get up and running in 5 minutes:
+### Option 1: Docker (Recommended)
+
+Get up and running in 2 minutes:
+
+```bash
+# Using Docker Hub
+docker run -d \
+  --name actual-sync \
+  --restart unless-stopped \
+  -v ./config:/app/config:ro \
+  -v ./data:/app/data \
+  -v ./logs:/app/logs \
+  -p 3000:3000 \
+  -e TZ=America/New_York \
+  agigante80/actual-sync:latest
+
+# OR using GitHub Container Registry
+docker run -d \
+  --name actual-sync \
+  --restart unless-stopped \
+  -v ./config:/app/config:ro \
+  -v ./data:/app/data \
+  -v ./logs:/app/logs \
+  -p 3000:3000 \
+  -e TZ=America/New_York \
+  ghcr.io/agigante80/actual-sync:latest
+```
+
+Create `config/config.json` in your mounted directory and you're ready to go!
+
+See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for complete Docker setup.
+
+### Option 2: NPM Installation
+
+For development or manual setup:
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/yourusername/actual-sync.git
+git clone https://github.com/agigante80/actual-sync.git
 cd actual-sync
 npm install
 
@@ -124,17 +158,6 @@ npm run sync
 npm start
 ```
 
-**Docker Quick Start:**
-
-```bash
-docker run -d \
-  --name actual-sync \
-  -v ./config:/app/config \
-  -v ./data:/app/data \
-  -p 3000:3000 \
-  yourusername/actual-sync:latest
-```
-
 ---
 
 ## 📦 Installation
@@ -146,7 +169,52 @@ docker run -d \
 - **GoCardless/Nordigen** - Open banking API credentials configured in Actual Budget
 - **Docker** (optional) - For containerized deployment
 
-### Method 1: NPM Installation (Recommended for Development)
+### Method 1: Docker (Recommended for Production)
+
+Pull from Docker Hub or GitHub Container Registry:
+
+```bash
+# Option A: Docker Hub
+docker pull agigante80/actual-sync:latest
+
+# Option B: GitHub Container Registry
+docker pull ghcr.io/agigante80/actual-sync:latest
+
+# Run container
+docker run -d \
+  --name actual-sync \
+  --restart unless-stopped \
+  -v $(pwd)/config:/app/config:ro \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -p 3000:3000 \
+  -e TZ=America/New_York \
+  agigante80/actual-sync:latest
+```
+
+**Docker Compose:**
+
+```yaml
+version: '3.8'
+services:
+  actual-sync:
+    image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest
+    container_name: actual-sync
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - TZ=America/New_York
+      - NODE_ENV=production
+```
+
+See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for advanced Docker configuration.
+
+### Method 2: NPM Installation (Recommended for Development)
 
 ```bash
 # Clone repository
@@ -161,26 +229,6 @@ npm test
 npm run list-accounts --help
 ```
 
-### Method 2: Docker (Recommended for Production)
-
-```bash
-# Pull image
-docker pull yourusername/actual-sync:latest
-
-# Or build locally
-docker build -t actual-sync:latest .
-
-# Run container
-docker run -d \
-  --name actual-sync \
-  --restart unless-stopped \
-  -v $(pwd)/config:/app/config:ro \
-  -v $(pwd)/data:/app/data \
-  -v $(pwd)/logs:/app/logs \
-  -p 3000:3000 \
-  actual-sync:latest
-```
-
 ### Method 3: System Service (Linux)
 
 ```bash
@@ -191,7 +239,7 @@ sudo systemctl enable actual-sync
 sudo systemctl start actual-sync
 ```
 
-See **[docs/DOCKER.md](docs/DOCKER.md)** for detailed Docker deployment instructions.
+
 
 ---
 
@@ -309,6 +357,15 @@ See **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** for Telegram bot setup.
 
 ## 🐳 Docker Deployment
 
+### Available Registries
+
+Actual-sync is published to two registries:
+
+- **Docker Hub**: `agigante80/actual-sync:latest`
+- **GitHub Container Registry**: `ghcr.io/agigante80/actual-sync:latest`
+
+Both registries contain identical multi-platform images (amd64/arm64).
+
 ### Docker Compose (Recommended)
 
 ```yaml
@@ -316,7 +373,7 @@ version: '3.8'
 
 services:
   actual-sync:
-    image: yourusername/actual-sync:latest
+    image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest
     container_name: actual-sync
     restart: unless-stopped
     

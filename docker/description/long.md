@@ -15,6 +15,7 @@
 ## Quick Start
 
 ```bash
+# Using Docker Hub
 docker run -d \
   --name actual-sync \
   --restart unless-stopped \
@@ -23,7 +24,18 @@ docker run -d \
   -v ./logs:/app/logs \
   -p 3000:3000 \
   -e TZ=America/New_York \
-  yourusername/actual-sync:latest
+  agigante80/actual-sync:latest
+
+# OR using GitHub Container Registry
+docker run -d \
+  --name actual-sync \
+  --restart unless-stopped \
+  -v ./config:/app/config:ro \
+  -v ./data:/app/data \
+  -v ./logs:/app/logs \
+  -p 3000:3000 \
+  -e TZ=America/New_York \
+  ghcr.io/agigante80/actual-sync:latest
 ```
 
 ## Configuration
@@ -64,7 +76,7 @@ Create `config/config.json`:
 version: '3.8'
 services:
   actual-sync:
-    image: yourusername/actual-sync:latest
+    image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest
     container_name: actual-sync
     restart: unless-stopped
     ports:
@@ -92,9 +104,9 @@ services:
 ## Documentation
 
 Full documentation available at:
-- GitHub: https://github.com/yourusername/actual-sync
-- Configuration Guide: https://github.com/yourusername/actual-sync/blob/main/docs/CONFIG.md
-- Docker Deployment: https://github.com/yourusername/actual-sync/blob/main/docs/DOCKER.md
+- GitHub: https://github.com/agigante80/Actual-sync
+- Configuration Guide: https://github.com/agigante80/Actual-sync/blob/main/docs/CONFIG.md
+- Docker Deployment: https://github.com/agigante80/Actual-sync/blob/main/docs/DOCKER_DEPLOYMENT.md
 
 ## Image Details
 
@@ -106,9 +118,9 @@ Full documentation available at:
 
 ## Support
 
-- 📖 Documentation: https://github.com/yourusername/actual-sync/tree/main/docs
-- 🐛 Issues: https://github.com/yourusername/actual-sync/issues
-- 💬 Discussions: https://github.com/yourusername/actual-sync/discussions
-- 🔐 Security: security@example.com
+- 📖 Documentation: https://github.com/agigante80/Actual-sync/tree/main/docs
+- 🐛 Issues: https://github.com/agigante80/Actual-sync/issues
+- 💬 Discussions: https://github.com/agigante80/Actual-sync/discussions
+- ☕ Support: https://ko-fi.com/agigante80
 
 Built with ❤️ for the Actual Budget community
