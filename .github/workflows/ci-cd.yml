@@ -355,16 +355,17 @@ jobs:
           # Base tags
           TAGS="${DOCKER_HUB_IMAGE}:${VERSION},${GHCR_IMAGE}:${VERSION}"
           
-          # Add latest tag for main branch releases
-          if [[ "${{ needs.version.outputs.is_release }}" == "true" ]]; then
-            TAGS="${TAGS},${DOCKER_HUB_IMAGE}:latest,${GHCR_IMAGE}:latest"
-          fi
-          
           # Add branch-specific tags
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
             TAGS="${TAGS},${DOCKER_HUB_IMAGE}:main,${GHCR_IMAGE}:main"
+            TAGS="${TAGS},${DOCKER_HUB_IMAGE}:latest,${GHCR_IMAGE}:latest"
           elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
             TAGS="${TAGS},${DOCKER_HUB_IMAGE}:develop,${GHCR_IMAGE}:develop"
+          fi
+          
+          # Add latest tag for version tag releases
+          if [[ "${{ needs.version.outputs.is_release }}" == "true" ]]; then
+            TAGS="${TAGS},${DOCKER_HUB_IMAGE}:latest,${GHCR_IMAGE}:latest"
           fi
           
           # Add custom suffix if provided
