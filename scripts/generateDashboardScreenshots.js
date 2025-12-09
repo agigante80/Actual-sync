@@ -383,7 +383,7 @@ async function takeScreenshot(browser, scenario, filename, description) {
     await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle0' });
     
     // Wait for charts to render
-    await page.waitForTimeout(2000);
+    await new Promise(resolve => setTimeout(resolve, 2000));
     
     // Scroll to show all content
     await page.evaluate(() => window.scrollTo(0, 0));
