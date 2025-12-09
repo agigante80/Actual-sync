@@ -2,7 +2,7 @@
 
 **Automated bank synchronization service for Actual Budget with multi-server support**
 
-Actual-sync is a production-ready Node.js service that automates bank transaction synchronization for [Actual Budget](https://actualbudget.org) servers. Built with 98.73% test coverage (255 tests), comprehensive error handling, and enterprise monitoring capabilities.
+Actual-sync is a production-ready Node.js service that automates bank transaction synchronization for [Actual Budget](https://actualbudget.org) servers. Built with 84.77% test coverage (309 tests), comprehensive error handling, and enterprise monitoring capabilities.
 
 ---
 
@@ -67,7 +67,7 @@ Actual-sync is a production-ready Node.js service that automates bank transactio
 
 5. **Run tests (optional but recommended):**
    ```bash
-   # Run all tests (255 tests)
+   # Run all tests (309 tests)
    npm test
    
    # Run with coverage report (83.44% coverage)
@@ -119,7 +119,7 @@ npm run list-accounts
 |----------|-------------|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | System design, component relationships, and sync flow |
 | [CONFIG.md](./CONFIG.md) | Complete configuration reference and examples |
-| [TESTING.md](./TESTING.md) | Testing guide (98.73% coverage, 255 tests) |
+| [TESTING.md](./TESTING.md) | Testing guide (84.77% coverage, 309 tests) |
 | [DOCKER_DEPLOYMENT.md](./DOCKER_DEPLOYMENT.md) | Docker and Docker Compose setup |
 
 ### Features & Integrations
@@ -131,7 +131,7 @@ npm run list-accounts
 | [PROMETHEUS.md](./PROMETHEUS.md) | Metrics export and Grafana dashboards |
 | [HEALTH_CHECK.md](./HEALTH_CHECK.md) | Health endpoints and status monitoring |
 | [SYNC_HISTORY.md](./SYNC_HISTORY.md) | SQLite sync tracking and history queries |
-| [LOGGING.md](./LOGGING.md) | Structured logging with correlation IDs |
+| [LOGGING.md](./LOGGING.md) | Enhanced logging with rotation, syslog, performance tracking |
 
 ### Operations & Development
 

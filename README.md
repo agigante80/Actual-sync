@@ -3,11 +3,11 @@
 > Automated bank synchronization service for Actual Budget with multi-server support, health monitoring, and comprehensive error handling
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
-![Version](https://img.shields.io/badge/version-1.4.0-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Node](https://img.shields.io/badge/node-%3E%3D14.0.0-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-98.73%25-brightgreen)
-![Tests](https://img.shields.io/badge/tests-255%20passing-success)
+![Coverage](https://img.shields.io/badge/coverage-84.77%25-brightgreen)
+![Tests](https://img.shields.io/badge/tests-309%20passing-success)
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
 
 ---
@@ -51,7 +51,7 @@
 
 Manually syncing bank transactions is tedious and error-prone. Actual-sync runs unattended in Docker or as a system service, keeping your budgets up-to-date with zero intervention. Perfect for personal finance enthusiasts, multi-user households, and anyone running self-hosted Actual Budget instances.
 
-**Built for production** with 98.73% test coverage (255 tests), comprehensive error handling, structured logging, and enterprise-grade monitoring capabilities.
+**Built for production** with 84.77% test coverage (309 tests), comprehensive error handling, structured logging, and enterprise-grade monitoring capabilities.
 
 ---
 
@@ -74,6 +74,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Health Check Endpoints** - HTTP endpoints for monitoring (`/health`, `/metrics`, `/ready`)
 - ✅ **Prometheus Metrics** - Comprehensive metrics export for Prometheus/Grafana dashboards
 - ✅ **Structured Logging** - JSON and pretty formats with correlation IDs and file output
+- ✅ **Enhanced Logging System** - Log rotation with compression, syslog support, performance tracking, per-server log levels
 - ✅ **Sync History Database** - SQLite persistence with query interface and CLI tool (`npm run history`)
 - ✅ **Status Tracking** - Real-time health status (HEALTHY/DEGRADED/UNHEALTHY/PENDING)
 - ✅ **WebSocket Streaming** - Live log broadcast to connected dashboard clients
@@ -87,7 +88,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 
 ### 🛡️ Reliability & Security
 
-- ✅ **Comprehensive Testing** - 98.73% code coverage with 255 passing tests
+- ✅ **Comprehensive Testing** - 84.77% code coverage with 309 passing tests
 - ✅ **Docker Support** - Production-ready containerization (229MB Alpine-based image)
 - ✅ **Security Best Practices** - Non-root user, credential warnings, HTTPS enforcement
 - ✅ **Graceful Shutdown** - Proper cleanup handlers (SIGTERM/SIGINT)
