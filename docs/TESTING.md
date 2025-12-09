@@ -11,8 +11,13 @@ The project uses **Jest** as the testing framework with comprehensive unit and i
 - Retry logic with exponential backoff
 - Sync service integration
 - Startup validation
+- Health check endpoints
+- Notification services
+- Prometheus metrics
+- Telegram bot commands
+- Sync history tracking
 
-**Current Test Coverage**: 80.47% statements, 72.53% branches, 91.53% functions, 80.52% lines
+**Current Test Coverage**: 83.44% statements, 75.04% branches, 91.53% functions, 83.54% lines
 
 ---
 
@@ -37,7 +42,7 @@ npm run test:coverage
 Test Suites: 11 passed, 11 total
 Tests:       255 passed, 255 total
 Snapshots:   0 total
-Coverage:    80.47% statements, 72.53% branches, 91.53% functions, 80.52% lines
+Coverage:    83.44% statements, 75.04% branches, 91.53% functions, 83.54% lines
 ```
 
 ---

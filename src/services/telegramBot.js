@@ -83,6 +83,10 @@ class TelegramBotService {
       '/errors': {
         description: 'Show recent errors',
         handler: this.handleErrors.bind(this)
+      },
+      '/sync': {
+        description: 'Trigger sync for a server (/sync ServerName)',
+        handler: this.handleSync.bind(this)
       }
     };
   }
@@ -534,6 +538,73 @@ class TelegramBotService {
       await this.sendMessage(message);
     } catch (error) {
       await this.sendMessage(`❌ Error getting errors: ${error.message}`);
+    }
+  }
+
+  /**
+   * Handle /sync command
+   */
+  async handleSync(args) {
+    try {
+      const syncBank = this.services.syncBank;
+      const getServerConfig = this.services.getServerConfig;
+
+      if (!syncBank) {
+        await this.sendMessage('❌ Sync function not available');
+        return;
+      }
+
+      if (!getServerConfig) {
+        await this.sendMessage('❌ Server configuration not available');
+        return;
+      }
+
+      // Get server name from args
+      const serverName = args.join(' ').trim();
+      if (!serverName) {
+        await this.sendMessage(
+          '❌ Please specify a server name\n\n' +
+          'Usage: /sync ServerName\n\n' +
+          'Use /servers to see available servers'
+        );
+        return;
+      }
+
+      // Find the server
+      const servers = getServerConfig();
+      const server = servers.find(s => s.name === serverName);
+
+      if (!server) {
+        const availableServers = servers.map(s => s.name).join('\n  • ');
+        await this.sendMessage(
+          `❌ Server "${serverName}" not found\n\n` +
+          `Available servers:\n  • ${availableServers}`
+        );
+        return;
+      }
+
+      // Send starting message
+      await this.sendMessage(`🔄 Starting sync for ${serverName}...`);
+
+      // Trigger the sync
+      this.logger.info('Manual sync triggered via Telegram', {
+        server: serverName,
+        chatId: this.config.chatId
+      });
+
+      await syncBank(server);
+
+      // Success message will be sent by notifySync if configured
+      // Send confirmation if notifications are disabled
+      if (this.config.notifyOnSuccess === 'never') {
+        await this.sendMessage(`✅ Sync completed for ${serverName}`);
+      }
+    } catch (error) {
+      this.logger.error('Sync command failed', {
+        error: error.message,
+        errorCode: error.code
+      });
+      await this.sendMessage(`❌ Sync failed: ${error.message}`);
     }
   }
 

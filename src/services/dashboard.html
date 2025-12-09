@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Actual-sync Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        header h1 {
+            color: #60a5fa;
+            font-size: 2rem;
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            color: #94a3b8;
+            font-size: 0.9rem;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+
+        .status-healthy { background: #10b981; color: white; }
+        .status-degraded { background: #f59e0b; color: white; }
+        .status-unhealthy { background: #ef4444; color: white; }
+        .status-pending { background: #6366f1; color: white; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .card h2 {
+            color: #60a5fa;
+            font-size: 1.25rem;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #334155;
+            padding-bottom: 10px;
+        }
+
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #334155;
+        }
+
+        .metric:last-child {
+            border-bottom: none;
+        }
+
+        .metric-label {
+            color: #94a3b8;
+        }
+
+        .metric-value {
+            color: #e2e8f0;
+            font-weight: 600;
+        }
+
+        .server-list {
+            list-style: none;
+        }
+
+        .server-item {
+            background: #0f172a;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            border-left: 4px solid #60a5fa;
+        }
+
+        .server-item.error {
+            border-left-color: #ef4444;
+        }
+
+        .server-name {
+            font-weight: 600;
+            color: #60a5fa;
+            margin-bottom: 5px;
+        }
+
+        .server-info {
+            font-size: 0.85rem;
+            color: #94a3b8;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #2563eb;
+        }
+
+        button:disabled {
+            background: #475569;
+            cursor: not-allowed;
+        }
+
+        button.danger {
+            background: #ef4444;
+        }
+
+        button.danger:hover {
+            background: #dc2626;
+        }
+
+        button.secondary {
+            background: #6366f1;
+        }
+
+        button.secondary:hover {
+            background: #4f46e5;
+        }
+
+        #logs {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 6px;
+            height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            border: 1px solid #334155;
+        }
+
+        .log-entry {
+            padding: 4px 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .log-error { color: #ef4444; }
+        .log-warn { color: #f59e0b; }
+        .log-info { color: #60a5fa; }
+        .log-debug { color: #94a3b8; }
+
+        #history-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        #history-table th {
+            background: #0f172a;
+            padding: 10px;
+            text-align: left;
+            color: #60a5fa;
+            font-weight: 600;
+        }
+
+        #history-table td {
+            padding: 10px;
+            border-bottom: 1px solid #334155;
+        }
+
+        #history-table tr:hover {
+            background: #0f172a;
+        }
+
+        .status-icon {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-icon.success { background: #10b981; }
+        .status-icon.failure { background: #ef4444; }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #94a3b8;
+        }
+
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+            
+            header h1 {
+                font-size: 1.5rem;
+            }
+            
+            .button-group {
+                flex-direction: column;
+            }
+        }
+
+        .error-message {
+            background: #7f1d1d;
+            color: #fca5a5;
+            padding: 10px;
+            border-radius: 6px;
+            margin-top: 10px;
+        }
+
+        .success-message {
+            background: #064e3b;
+            color: #6ee7b7;
+            padding: 10px;
+            border-radius: 6px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>
+                🏦 Actual-sync Dashboard
+                <span id="status-badge" class="status-badge status-pending">Loading...</span>
+            </h1>
+            <div class="subtitle">Automated bank synchronization monitoring</div>
+        </header>
+
+        <div class="grid">
+            <!-- System Status -->
+            <div class="card">
+                <h2>System Status</h2>
+                <div class="metric">
+                    <span class="metric-label">Version</span>
+                    <span class="metric-value" id="version">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Uptime</span>
+                    <span class="metric-value" id="uptime">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Last Sync</span>
+                    <span class="metric-value" id="last-sync">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Last Status</span>
+                    <span class="metric-value" id="last-status">-</span>
+                </div>
+            </div>
+
+            <!-- Sync Statistics -->
+            <div class="card">
+                <h2>Sync Statistics</h2>
+                <div class="metric">
+                    <span class="metric-label">Total Syncs</span>
+                    <span class="metric-value" id="total-syncs">0</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Successful</span>
+                    <span class="metric-value" id="successful-syncs">0</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Failed</span>
+                    <span class="metric-value" id="failed-syncs">0</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Success Rate</span>
+                    <span class="metric-value" id="success-rate">N/A</span>
+                </div>
+            </div>
+
+            <!-- Manual Sync Control -->
+            <div class="card">
+                <h2>Manual Sync</h2>
+                <div id="server-buttons" class="loading">Loading servers...</div>
+                <div id="sync-message"></div>
+            </div>
+        </div>
+
+        <!-- Servers -->
+        <div class="card">
+            <h2>Configured Servers</h2>
+            <ul id="servers" class="server-list">
+                <li class="loading">Loading servers...</li>
+            </ul>
+        </div>
+
+        <!-- Real-time Logs -->
+        <div class="card">
+            <h2>Real-time Logs</h2>
+            <div id="logs">
+                <div class="log-entry log-info">Connecting to log stream...</div>
+            </div>
+        </div>
+
+        <!-- Sync History -->
+        <div class="card">
+            <h2>Recent Sync History</h2>
+            <div style="overflow-x: auto;">
+                <table id="history-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Server</th>
+                            <th>Status</th>
+                            <th>Duration</th>
+                            <th>Accounts</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-body">
+                        <tr><td colspan="5" class="loading">Loading history...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        // Fetch and update dashboard data
+        async function updateDashboard() {
+            try {
+                const response = await fetch('/api/dashboard/status');
+                const data = await response.json();
+
+                // Update system status
+                document.getElementById('version').textContent = data.version || 'unknown';
+                document.getElementById('uptime').textContent = formatUptime(data.uptime);
+                document.getElementById('last-sync').textContent = data.sync.lastSyncTime 
+                    ? formatTime(data.sync.lastSyncTime) 
+                    : 'Never';
+                document.getElementById('last-status').textContent = data.sync.lastSyncStatus || '-';
+
+                // Update statistics
+                document.getElementById('total-syncs').textContent = data.sync.totalSyncs;
+                document.getElementById('successful-syncs').textContent = data.sync.successfulSyncs;
+                document.getElementById('failed-syncs').textContent = data.sync.failedSyncs;
+                document.getElementById('success-rate').textContent = data.sync.successRate;
+
+                // Update status badge
+                const statusBadge = document.getElementById('status-badge');
+                statusBadge.textContent = data.status;
+                statusBadge.className = `status-badge status-${data.status.toLowerCase()}`;
+
+                // Update servers list
+                updateServersList(data.servers);
+
+                // Update server buttons
+                updateServerButtons(data.servers);
+
+            } catch (error) {
+                console.error('Failed to update dashboard:', error);
+            }
+        }
+
+        function updateServersList(servers) {
+            const serversList = document.getElementById('servers');
+            if (!servers || Object.keys(servers).length === 0) {
+                serversList.innerHTML = '<li class="server-item">No servers configured</li>';
+                return;
+            }
+
+            serversList.innerHTML = Object.entries(servers).map(([name, status]) => `
+                <li class="server-item ${status.status === 'failure' ? 'error' : ''}">
+                    <div class="server-name">${name}</div>
+                    <div class="server-info">
+                        Last sync: ${status.lastSync ? formatTime(status.lastSync) : 'Never'}
+                        ${status.error ? `<br>Error: ${status.error}` : ''}
+                    </div>
+                </li>
+            `).join('');
+        }
+
+        function updateServerButtons(servers) {
+            const container = document.getElementById('server-buttons');
+            if (!servers || Object.keys(servers).length === 0) {
+                container.innerHTML = '<div class="loading">No servers available</div>';
+                return;
+            }
+
+            container.innerHTML = `
+                <div class="button-group">
+                    <button onclick="triggerSync('all')" class="secondary">Sync All Servers</button>
+                </div>
+                <div class="button-group" style="margin-top: 10px;">
+                    ${Object.keys(servers).map(name => 
+                        `<button onclick="triggerSync('${name}')">${name}</button>`
+                    ).join('')}
+                </div>
+            `;
+        }
+
+        async function triggerSync(serverName) {
+            const messageDiv = document.getElementById('sync-message');
+            messageDiv.innerHTML = '<div class="loading">Triggering sync...</div>';
+
+            try {
+                const response = await fetch('/api/dashboard/sync', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ server: serverName })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    messageDiv.innerHTML = `<div class="success-message">✓ Sync triggered for ${serverName === 'all' ? 'all servers' : serverName}</div>`;
+                    setTimeout(() => { messageDiv.innerHTML = ''; updateDashboard(); }, 3000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error-message">✗ ${result.error || 'Failed to trigger sync'}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error-message">✗ Error: ${error.message}</div>`;
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                const response = await fetch('/api/dashboard/history?limit=10');
+                const history = await response.json();
+
+                const tbody = document.getElementById('history-body');
+                if (history.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No sync history available</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = history.map(record => `
+                    <tr>
+                        <td>${formatTime(record.timestamp)}</td>
+                        <td>${record.server_name}</td>
+                        <td>
+                            <span class="status-icon ${record.status}"></span>
+                            ${record.status}
+                        </td>
+                        <td>${record.duration_ms}ms</td>
+                        <td>${record.accounts_processed || '-'}</td>
+                    </tr>
+                `).join('');
+            } catch (error) {
+                console.error('Failed to load history:', error);
+            }
+        }
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                reconnectAttempts = 0;
+                addLogEntry('info', 'Connected to log stream');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const log = JSON.parse(event.data);
+                    addLogEntry(log.level, log.message, log.metadata);
+                } catch (e) {
+                    addLogEntry('info', event.data);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                addLogEntry('error', 'WebSocket connection error');
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                addLogEntry('warn', 'Disconnected from log stream');
+                
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    setTimeout(connectWebSocket, 3000);
+                }
+            };
+        }
+
+        function addLogEntry(level, message, metadata) {
+            const logsDiv = document.getElementById('logs');
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${level.toLowerCase()}`;
+            
+            const timestamp = new Date().toLocaleTimeString();
+            const metaStr = metadata ? ` ${JSON.stringify(metadata)}` : '';
+            entry.textContent = `[${timestamp}] [${level.toUpperCase()}] ${message}${metaStr}`;
+            
+            logsDiv.appendChild(entry);
+            
+            // Keep only last 100 log entries
+            while (logsDiv.children.length > 100) {
+                logsDiv.removeChild(logsDiv.firstChild);
+            }
+            
+            // Auto-scroll to bottom
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+        }
+
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            
+            if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+            if (hours > 0) return `${hours}h ${minutes}m`;
+            return `${minutes}m`;
+        }
+
+        function formatTime(isoString) {
+            const date = new Date(isoString);
+            const now = new Date();
+            const diff = now - date;
+            
+            if (diff < 60000) return 'Just now';
+            if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+            if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+            
+            return date.toLocaleString();
+        }
+
+        // Initialize
+        updateDashboard();
+        loadHistory();
+        connectWebSocket();
+
+        // Refresh dashboard every 30 seconds
+        setInterval(updateDashboard, 30000);
+        setInterval(loadHistory, 60000);
+    </script>
+</body>
+</html>

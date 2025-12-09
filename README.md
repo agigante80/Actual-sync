@@ -304,7 +304,8 @@ See **[docs/CONFIG.md](docs/CONFIG.md)** for complete configuration reference in
 | Script | Command | Description |
 |--------|---------|-------------|
 | `npm start` | `node index.js` | Start scheduled sync service (background) |
-| `npm run sync` | `node index.js --force-run` | Run immediate sync (skip schedule wait) |
+| `npm run sync` | `node index.js --force-run` | Run immediate sync for all servers (skip schedule wait) |
+| `npm run sync -- --server "ServerName"` | `node index.js --force-run --server "ServerName"` | Run immediate sync for specific server only |
 | `npm run list-accounts` | `node scripts/listAccounts.js` | List all configured bank accounts |
 | `npm run history` | `node scripts/viewHistory.js` | View sync history and statistics |
 | `npm run validate-config` | `node scripts/validateConfig.js` | Validate configuration file |
@@ -329,6 +330,22 @@ npm run list-accounts
 # 3. Credit Card (ID: acct_789) - Last sync: 2025-12-07
 ```
 
+**Run sync for all servers:**
+
+```bash
+npm run sync
+```
+
+**Run sync for a specific server:**
+
+```bash
+npm run sync -- --server "Main Budget"
+
+# Example output:
+# Starting sync for server: Main Budget
+# ✅ Sync completed successfully
+```
+
 **View sync history:**
 
 ```bash
@@ -345,9 +362,14 @@ npm run history -- --errors
 If you've configured the Telegram bot, you can interact with the service:
 
 - `/status` - Show current sync status and health
-- `/history` - View recent sync history
-- `/errors` - Show recent errors
-- `/sync` - Trigger manual sync
+- `/history [count]` - View recent sync history (default: last 5)
+- `/errors [count]` - Show recent errors (default: last 5)
+- `/stats` - Show sync statistics
+- `/servers` - List configured servers
+- `/sync ServerName` - Trigger manual sync for specific server
+- `/notify [always|errors|never]` - Change notification preferences
+- `/help` - Show all available commands
+- `/ping` - Test bot connectivity
 - `/stats` - Show sync statistics
 - `/help` - List available commands
 

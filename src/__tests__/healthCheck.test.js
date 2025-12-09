@@ -236,7 +236,7 @@ describe('HealthCheckService', () => {
       
       expect(response.statusCode).toBe(404);
       expect(response.body.error).toBe('Not Found');
-      expect(response.body.availableEndpoints).toEqual(['/health', '/metrics', '/ready']);
+      expect(response.body.availableEndpoints).toEqual(['/health', '/metrics', '/ready', '/dashboard']);
     });
   });
 
