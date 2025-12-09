@@ -122,6 +122,13 @@ try {
         }
     });
     
+    // Connect logger to WebSocket broadcasting
+    logger.setBroadcastCallback((level, message, metadata) => {
+        if (healthCheck && healthCheck.broadcastLog) {
+            healthCheck.broadcastLog(level, message, metadata);
+        }
+    });
+    
     // Initialize notification service
     notificationService = new NotificationService(
         config.notifications || {},
