@@ -237,6 +237,29 @@ class HealthCheckService {
     this.app.get('/api/dashboard/status', this.dashboardAuth(), (req, res) => {
       const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
       
+      // Get all configured servers from getServers function
+      let allServers = {};
+      if (this.getServers) {
+        try {
+          const configuredServers = this.getServers();
+          // Initialize all servers with default status
+          configuredServers.forEach(server => {
+            allServers[server.name] = this.status.serverStatuses[server.name] || {
+              status: 'pending',
+              lastSync: null,
+              error: null
+            };
+          });
+        } catch (error) {
+          this.logger.error('Failed to get configured servers', { error: error.message });
+          // Fall back to only servers with sync history
+          allServers = this.status.serverStatuses;
+        }
+      } else {
+        // Fall back to only servers with sync history
+        allServers = this.status.serverStatuses;
+      }
+      
       res.json({
         status: this.getOverallStatus(),
         version: global.APP_VERSION || process.env.VERSION || 'unknown',
@@ -251,7 +274,7 @@ class HealthCheckService {
             ? ((this.status.successCount / this.status.syncCount) * 100).toFixed(2) + '%'
             : 'N/A'
         },
-        servers: this.status.serverStatuses
+        servers: allServers
       });
     });
 
