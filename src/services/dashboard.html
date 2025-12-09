@@ -400,6 +400,14 @@
             </ul>
         </div>
 
+        <!-- Sync Schedules -->
+        <div class="card">
+            <h2>Sync Schedules</h2>
+            <div id="schedules" style="font-size: 0.95rem; line-height: 1.8;">
+                <div class="loading">Loading schedules...</div>
+            </div>
+        </div>
+
         <!-- Real-time Logs -->
         <div class="card">
             <h2>Real-time Logs</h2>
@@ -1053,10 +1061,46 @@
             }
         }
 
+        // Fetch and display sync schedules
+        async function loadSchedules() {
+            try {
+                const response = await fetch('/api/dashboard/schedules', getFetchOptions());
+                if (response.ok) {
+                    const data = await response.json();
+                    const schedulesDiv = document.getElementById('schedules');
+                    
+                    if (data.schedules && data.schedules.length > 0) {
+                        schedulesDiv.innerHTML = data.schedules.map(schedule => {
+                            const serverNames = schedule.servers.join(', ');
+                            const color = getServerColor(schedule.servers[0]);
+                            return `
+                                <div style="margin-bottom: 12px; padding: 10px; background: rgba(100, 116, 139, 0.1); border-radius: 6px; border-left: 3px solid ${color};">
+                                    <div style="color: ${color}; font-weight: 600; margin-bottom: 4px;">
+                                        • ${serverNames}
+                                    </div>
+                                    <div style="color: #94a3b8; font-size: 0.9rem; margin-left: 12px;">
+                                        ${schedule.cronHuman} <span style="color: #64748b;">(${schedule.cron})</span>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    } else {
+                        schedulesDiv.innerHTML = '<div style="color: #94a3b8;">No schedules configured</div>';
+                    }
+                } else {
+                    document.getElementById('schedules').innerHTML = '<div style="color: #ef4444;">Failed to load schedules</div>';
+                }
+            } catch (error) {
+                console.error('Failed to fetch schedules:', error);
+                document.getElementById('schedules').innerHTML = '<div style="color: #ef4444;">Error loading schedules</div>';
+            }
+        }
+
         // Initialize
         fetchServerInfo().then(() => {
             updateDashboard();
             loadHistory();
+            loadSchedules();
             updateCharts();
             connectWebSocket();
         });
