@@ -28,14 +28,7 @@ class Logger {
     constructor(options = {}) {
         this.level = options.level || 'INFO';
         this.format = options.format || 'pretty'; // 'pretty' or 'json'
-        // Default logDir: use /app/logs in production (when running from /app), null otherwise
-        if (options.logDir !== undefined) {
-            this.logDir = options.logDir;
-        } else if (process.cwd().startsWith('/app')) {
-            this.logDir = '/app/logs';
-        } else {
-            this.logDir = null;
-        }
+        this.logDir = options.logDir || null;
         this.serviceName = options.serviceName || 'actual-sync';
         this.correlationId = null;
         this.broadcastCallback = options.broadcastCallback || null;
