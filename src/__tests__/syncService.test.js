@@ -290,4 +290,60 @@ describe('syncService Integration Tests', () => {
             expect(actual.shutdown).toHaveBeenCalled();
         });
     });
+
+    describe('CLI flags', () => {
+        let originalArgv;
+
+        beforeEach(() => {
+            originalArgv = process.argv;
+        });
+
+        afterEach(() => {
+            process.argv = originalArgv;
+        });
+
+        test('should parse --server flag correctly', () => {
+            process.argv = ['node', 'script.js', '--force-run', '--server', 'Main Budget'];
+
+            const serverFlag = process.argv.indexOf('--server');
+            const serverName = serverFlag !== -1 ? process.argv[serverFlag + 1] : null;
+
+            expect(serverName).toBe('Main Budget');
+        });
+
+        test('should handle missing --server value', () => {
+            process.argv = ['node', 'script.js', '--force-run', '--server'];
+
+            const serverFlag = process.argv.indexOf('--server');
+            const serverName = serverFlag !== -1 ? process.argv[serverFlag + 1] : null;
+
+            expect(serverName).toBeUndefined();
+        });
+
+        test('should filter servers by name', () => {
+            const servers = [
+                { name: 'Main Budget', url: 'http://server1:5006' },
+                { name: 'Test Budget', url: 'http://server2:5006' },
+                { name: 'Dev Budget', url: 'http://server3:5006' }
+            ];
+
+            const serverName = 'Test Budget';
+            const server = servers.find(s => s.name === serverName);
+
+            expect(server).toBeDefined();
+            expect(server.name).toBe('Test Budget');
+            expect(server.url).toBe('http://server2:5006');
+        });
+
+        test('should handle server not found', () => {
+            const servers = [
+                { name: 'Main Budget', url: 'http://server1:5006' }
+            ];
+
+            const serverName = 'Invalid Server';
+            const server = servers.find(s => s.name === serverName);
+
+            expect(server).toBeUndefined();
+        });
+    });
 });

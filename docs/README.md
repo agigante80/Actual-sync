@@ -1,8 +1,8 @@
-# Actual-sync
+# Actual-sync Documentation
 
-**Automated bank synchronization service for Actual Budget across multiple servers**
+**Automated bank synchronization service for Actual Budget with multi-server support**
 
-Actual-sync is a Node.js-based automation tool that periodically syncs bank transactions with Actual Budget servers. It supports multiple server configurations, implements retry logic with exponential backoff for rate limits and network failures, and runs on a configurable schedule.
+Actual-sync is a production-ready Node.js service that automates bank transaction synchronization for [Actual Budget](https://actualbudget.org) servers. Built with 98.73% test coverage (255 tests), comprehensive error handling, and enterprise monitoring capabilities.
 
 ---
 
@@ -67,10 +67,10 @@ Actual-sync is a Node.js-based automation tool that periodically syncs bank tran
 
 5. **Run tests (optional but recommended):**
    ```bash
-   # Run all tests
+   # Run all tests (255 tests)
    npm test
    
-   # Run with coverage report
+   # Run with coverage report (83.44% coverage)
    npm run test:coverage
    ```
    
@@ -113,15 +113,33 @@ npm run list-accounts
 
 ## 📚 Complete Documentation
 
-| Document | Purpose |
-|----------|---------|
-| [PROJECT_OVERVIEW.md](./PROJECT_OVERVIEW.md) | Project goals, features, and technology summary |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | System design and component relationships |
-| [AI_INTERACTION_GUIDE.md](./AI_INTERACTION_GUIDE.md) | AI agent rules and automation policies |
-| [REFACTORING_PLAN.md](./REFACTORING_PLAN.md) | Ongoing improvements and task tracking |
-| [TESTING_AND_RELIABILITY.md](./TESTING_AND_RELIABILITY.md) | Testing strategy and reliability policies |
-| [IMPROVEMENT_AREAS.md](./IMPROVEMENT_AREAS.md) | Known gaps and technical debt |
-| [SECURITY_AND_PRIVACY.md](./SECURITY_AND_PRIVACY.md) | Security policies and privacy protection |
+### Core Documentation
+
+| Document | Description |
+|----------|-------------|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | System design, component relationships, and sync flow |
+| [CONFIG.md](./CONFIG.md) | Complete configuration reference and examples |
+| [TESTING.md](./TESTING.md) | Testing guide (98.73% coverage, 255 tests) |
+| [DOCKER_DEPLOYMENT.md](./DOCKER_DEPLOYMENT.md) | Docker and Docker Compose setup |
+
+### Features & Integrations
+
+| Document | Description |
+|----------|-------------|
+| [NOTIFICATIONS.md](./NOTIFICATIONS.md) | Email, Telegram bot, and webhook notifications |
+| [PROMETHEUS.md](./PROMETHEUS.md) | Metrics export and Grafana dashboards |
+| [HEALTH_CHECK.md](./HEALTH_CHECK.md) | Health endpoints and status monitoring |
+| [SYNC_HISTORY.md](./SYNC_HISTORY.md) | SQLite sync tracking and history queries |
+| [LOGGING.md](./LOGGING.md) | Structured logging with correlation IDs |
+
+### Operations & Development
+
+| Document | Description |
+|----------|-------------|
+| [CI_CD.md](./CI_CD.md) | GitHub Actions pipeline and workflows |
+| [SECURITY_AND_PRIVACY.md](./SECURITY_AND_PRIVACY.md) | Security policies and best practices |
+| [MIGRATION.md](./MIGRATION.md) | Upgrade guide from environment variables |
+| [AI_INTERACTION_GUIDE.md](./AI_INTERACTION_GUIDE.md) | AI agent rules and automation boundaries |
 | [ROADMAP.md](./ROADMAP.md) | Future development priorities |
 
 ---

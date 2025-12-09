@@ -65,7 +65,8 @@
     "node-schedule": "^2.1.1",
     "nodemailer": "^7.0.11",
     "prom-client": "^15.1.3",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "ws": "^8.18.3"
   },
   "engines": {
     "node": ">=14.0.0"

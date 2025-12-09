@@ -615,4 +615,117 @@ describe('TelegramBotService', () => {
       expect(bot.getNotificationMode()).toBe('always');
     });
   });
+
+  describe('/sync command', () => {
+    test('should trigger sync for specified server', async () => {
+      const mockSyncBank = jest.fn().mockResolvedValue();
+      const mockServers = [
+        { name: 'Main Budget', url: 'http://server1:5006' },
+        { name: 'Test Budget', url: 'http://server2:5006' }
+      ];
+      
+      const bot = new TelegramBotService(
+        { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'never' },
+        {
+          syncBank: mockSyncBank,
+          getServerConfig: jest.fn().mockReturnValue(mockServers)
+        }
+      );
+      
+      await bot.handleSync(['Main', 'Budget']);
+      
+      expect(mockSyncBank).toHaveBeenCalledWith(mockServers[0]);
+      expect(mockRequest.write).toHaveBeenCalled();
+      const calls = mockRequest.write.mock.calls;
+      expect(calls.some(call => {
+        const payload = JSON.parse(call[0]);
+        return payload.text.includes('Starting sync for Main Budget');
+      })).toBe(true);
+    });
+    
+    test('should handle server not found', async () => {
+      const mockSyncBank = jest.fn();
+      const mockServers = [
+        { name: 'Main Budget', url: 'http://server1:5006' }
+      ];
+      
+      const bot = new TelegramBotService(
+        { botToken: '123:ABC', chatId: '456' },
+        {
+          syncBank: mockSyncBank,
+          getServerConfig: jest.fn().mockReturnValue(mockServers)
+        }
+      );
+      
+      await bot.handleSync(['Invalid', 'Server']);
+      
+      expect(mockSyncBank).not.toHaveBeenCalled();
+      expect(mockRequest.write).toHaveBeenCalled();
+      const payload = JSON.parse(mockRequest.write.mock.calls[0][0]);
+      expect(payload.text).toContain('Server "Invalid Server" not found');
+      expect(payload.text).toContain('Main Budget');
+    });
+    
+    test('should require server name parameter', async () => {
+      const mockSyncBank = jest.fn();
+      
+      const bot = new TelegramBotService(
+        { botToken: '123:ABC', chatId: '456' },
+        {
+          syncBank: mockSyncBank,
+          getServerConfig: jest.fn().mockReturnValue([])
+        }
+      );
+      
+      await bot.handleSync([]);
+      
+      expect(mockSyncBank).not.toHaveBeenCalled();
+      expect(mockRequest.write).toHaveBeenCalled();
+      const payload = JSON.parse(mockRequest.write.mock.calls[0][0]);
+      expect(payload.text).toContain('Please specify a server name');
+      expect(payload.text).toContain('Usage: /sync ServerName');
+    });
+    
+    test('should handle sync errors gracefully', async () => {
+      const mockSyncBank = jest.fn().mockRejectedValue(
+        new Error('Connection failed')
+      );
+      const mockServers = [
+        { name: 'Main Budget', url: 'http://server1:5006' }
+      ];
+      
+      const bot = new TelegramBotService(
+        { botToken: '123:ABC', chatId: '456' },
+        {
+          syncBank: mockSyncBank,
+          getServerConfig: jest.fn().mockReturnValue(mockServers)
+        }
+      );
+      
+      await bot.handleSync(['Main', 'Budget']);
+      
+      expect(mockSyncBank).toHaveBeenCalled();
+      expect(mockRequest.write).toHaveBeenCalled();
+      const calls = mockRequest.write.mock.calls;
+      expect(calls.some(call => {
+        const payload = JSON.parse(call[0]);
+        return payload.text.includes('Sync failed: Connection failed');
+      })).toBe(true);
+    });
+    
+    test('should handle missing syncBank service', async () => {
+      const bot = new TelegramBotService(
+        { botToken: '123:ABC', chatId: '456' },
+        {
+          getServerConfig: jest.fn().mockReturnValue([])
+        }
+      );
+      
+      await bot.handleSync(['Main']);
+      
+      expect(mockRequest.write).toHaveBeenCalled();
+      const payload = JSON.parse(mockRequest.write.mock.calls[0][0]);
+      expect(payload.text).toContain('Sync function not available');
+    });
+  });
 });

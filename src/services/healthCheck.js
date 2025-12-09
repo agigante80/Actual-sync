@@ -7,6 +7,7 @@
 
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const path = require('path');
 const { createLogger } = require('../lib/logger');
 
 class HealthCheckService {
@@ -15,16 +16,23 @@ class HealthCheckService {
    * @param {number} options.port - HTTP port for health check endpoints
    * @param {string} options.host - Host to bind to
    * @param {Object} options.prometheusService - PrometheusService instance (optional)
+   * @param {Object} options.syncHistory - SyncHistoryService instance (optional)
+   * @param {Function} options.syncBank - Sync function for manual triggers (optional)
+   * @param {Function} options.getServers - Function to get server list (optional)
    * @param {Object} options.loggerConfig - Logger configuration
    */
   constructor(options = {}) {
     this.port = options.port || 3000;
     this.host = options.host || '0.0.0.0';
     this.prometheusService = options.prometheusService;
+    this.syncHistory = options.syncHistory;
+    this.syncBank = options.syncBank;
+    this.getServers = options.getServers;
     this.logger = createLogger(options.loggerConfig || {});
     
     this.app = express();
     this.server = null;
+    this.wsClients = new Set();
     
     // Health status tracking
     this.status = {
@@ -37,6 +45,9 @@ class HealthCheckService {
       lastError: null,
       serverStatuses: {}
     };
+    
+    // Parse JSON bodies
+    this.app.use(express.json());
     
     this.setupRoutes();
   }
@@ -148,6 +159,126 @@ class HealthCheckService {
       }
     });
 
+    // Dashboard UI
+    this.app.get('/dashboard', (req, res) => {
+      res.sendFile(path.join(__dirname, 'dashboard.html'));
+    });
+
+    // Dashboard API: Get status
+    this.app.get('/api/dashboard/status', (req, res) => {
+      const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
+      
+      res.json({
+        status: this.getOverallStatus(),
+        version: global.APP_VERSION || process.env.VERSION || 'unknown',
+        uptime: uptime,
+        sync: {
+          lastSyncTime: this.status.lastSyncTime,
+          lastSyncStatus: this.status.lastSyncStatus,
+          totalSyncs: this.status.syncCount,
+          successfulSyncs: this.status.successCount,
+          failedSyncs: this.status.failureCount,
+          successRate: this.status.syncCount > 0 
+            ? ((this.status.successCount / this.status.syncCount) * 100).toFixed(2) + '%'
+            : 'N/A'
+        },
+        servers: this.status.serverStatuses
+      });
+    });
+
+    // Dashboard API: Trigger sync
+    this.app.post('/api/dashboard/sync', async (req, res) => {
+      if (!this.syncBank) {
+        return res.status(503).json({ 
+          error: 'Sync function not available',
+          message: 'Manual sync is not configured'
+        });
+      }
+
+      if (!this.getServers) {
+        return res.status(503).json({ 
+          error: 'Server list not available'
+        });
+      }
+
+      try {
+        const { server } = req.body;
+        
+        if (!server) {
+          return res.status(400).json({ error: 'Server name required' });
+        }
+
+        const servers = this.getServers();
+        
+        if (server === 'all') {
+          // Trigger sync for all servers
+          this.logger.info('Manual sync triggered for all servers via dashboard', {
+            remoteAddress: req.ip
+          });
+          
+          // Don't await - trigger async
+          Promise.all(servers.map(s => this.syncBank(s).catch(err => {
+            this.logger.error('Manual sync failed', { 
+              server: s.name, 
+              error: err.message 
+            });
+          })));
+          
+          res.json({ success: true, message: 'Sync triggered for all servers' });
+        } else {
+          // Trigger sync for specific server
+          const targetServer = servers.find(s => s.name === server);
+          
+          if (!targetServer) {
+            return res.status(404).json({ 
+              error: 'Server not found',
+              availableServers: servers.map(s => s.name)
+            });
+          }
+
+          this.logger.info('Manual sync triggered via dashboard', {
+            server: server,
+            remoteAddress: req.ip
+          });
+          
+          // Don't await - trigger async
+          this.syncBank(targetServer).catch(err => {
+            this.logger.error('Manual sync failed', { 
+              server: server, 
+              error: err.message 
+            });
+          });
+          
+          res.json({ success: true, message: `Sync triggered for ${server}` });
+        }
+      } catch (error) {
+        this.logger.error('Dashboard sync trigger failed', {
+          error: error.message
+        });
+        res.status(500).json({ error: 'Failed to trigger sync' });
+      }
+    });
+
+    // Dashboard API: Get sync history
+    this.app.get('/api/dashboard/history', (req, res) => {
+      if (!this.syncHistory) {
+        return res.status(503).json({ 
+          error: 'Sync history not available'
+        });
+      }
+
+      try {
+        const limit = parseInt(req.query.limit) || 10;
+        const history = this.syncHistory.getHistory({ limit });
+        res.json(history);
+      } catch (error) {
+        this.logger.error('Failed to get sync history', {
+          error: error.message
+        });
+        res.status(500).json({ error: 'Failed to retrieve history' });
+      }
+    });
+
     // 404 handler
     this.app.use((req, res) => {
       this.logger.warn('Unknown endpoint requested', { 
@@ -156,7 +287,7 @@ class HealthCheckService {
         remoteAddress: req.ip 
       });
       
-      const endpoints = ['/health', '/metrics', '/ready'];
+      const endpoints = ['/health', '/metrics', '/ready', '/dashboard'];
       if (this.prometheusService) {
         endpoints.push('/metrics/prometheus');
       }
@@ -232,17 +363,83 @@ class HealthCheckService {
   }
 
   /**
-   * Start the health check HTTP server
+   * Broadcast log to WebSocket clients
+   * @param {string} level - Log level
+   * @param {string} message - Log message
+   * @param {Object} metadata - Additional metadata
+   */
+  broadcastLog(level, message, metadata = {}) {
+    const logData = JSON.stringify({
+      level,
+      message,
+      metadata,
+      timestamp: new Date().toISOString()
+    });
+
+    this.wsClients.forEach(client => {
+      try {
+        if (client.readyState === 1) { // WebSocket.OPEN
+          client.send(logData);
+        }
+      } catch (error) {
+        this.logger.error('Failed to send log to WebSocket client', {
+          error: error.message
+        });
+      }
+    });
+  }
+
+  /**
+   * Start the health check HTTP server with WebSocket support
    * @returns {Promise<void>}
    */
   async start() {
     return new Promise((resolve, reject) => {
       try {
-        this.server = this.app.listen(this.port, this.host, () => {
+        const http = require('http');
+        const WebSocket = require('ws');
+
+        // Create HTTP server
+        this.server = http.createServer(this.app);
+
+        // Create WebSocket server
+        this.wss = new WebSocket.Server({ 
+          server: this.server,
+          path: '/ws/logs'
+        });
+
+        this.wss.on('connection', (ws, req) => {
+          this.logger.info('WebSocket client connected', {
+            remoteAddress: req.socket.remoteAddress
+          });
+
+          this.wsClients.add(ws);
+
+          ws.on('close', () => {
+            this.logger.info('WebSocket client disconnected');
+            this.wsClients.delete(ws);
+          });
+
+          ws.on('error', (error) => {
+            this.logger.error('WebSocket client error', {
+              error: error.message
+            });
+            this.wsClients.delete(ws);
+          });
+
+          // Send welcome message
+          ws.send(JSON.stringify({
+            level: 'info',
+            message: 'Connected to Actual-sync log stream',
+            timestamp: new Date().toISOString()
+          }));
+        });
+
+        this.server.listen(this.port, this.host, () => {
           this.logger.info('Health check service started', {
-            host: this.host,
             port: this.port,
-            endpoints: ['/health', '/metrics', '/ready']
+            host: this.host,
+            dashboard: `http://${this.host === '0.0.0.0' ? 'localhost' : this.host}:${this.port}/dashboard`
           });
           resolve();
         });
@@ -272,6 +469,18 @@ class HealthCheckService {
       if (!this.server) {
         resolve();
         return;
+      }
+
+      // Close WebSocket connections
+      if (this.wss) {
+        this.wsClients.forEach(client => {
+          client.close();
+        });
+        this.wsClients.clear();
+        
+        this.wss.close(() => {
+          this.logger.info('WebSocket server closed');
+        });
       }
 
       this.server.close((error) => {

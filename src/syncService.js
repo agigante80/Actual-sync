@@ -112,6 +112,9 @@ try {
         port: config.healthCheck?.port || 3000,
         host: config.healthCheck?.host || '0.0.0.0',
         prometheusService: prometheusService,
+        syncHistory: syncHistory,
+        syncBank: syncBank,
+        getServers: () => config.servers,
         loggerConfig: {
             level: config.logging.level,
             format: config.logging.format,
@@ -140,7 +143,8 @@ try {
             {
                 syncHistory: syncHistory,
                 healthCheck: healthCheck,
-                getServerConfig: () => config.servers
+                getServerConfig: () => config.servers,
+                syncBank: syncBank
             },
             {
                 level: config.logging.level,
@@ -479,14 +483,37 @@ async function syncAllBanks() {
     }
 }
 
-// Check for the force run argument.
+// Check for the force run argument and optional server filter
 async function run() {
     const forceRun = process.argv.includes('--force-run');
+    const serverFlag = process.argv.indexOf('--server');
+    const serverName = serverFlag !== -1 ? process.argv[serverFlag + 1] : null;
 
     if (forceRun) {
-        logger.info('Force running bank sync...', { forceRun: true });
-        await syncAllBanks();
-        logger.info('Forced bank sync complete');
+        if (serverName) {
+            // Sync specific server only
+            const server = servers.find(s => s.name === serverName);
+            if (!server) {
+                logger.error('Server not found', { 
+                    requestedServer: serverName,
+                    availableServers: servers.map(s => s.name)
+                });
+                console.error(`\n❌ Error: Server "${serverName}" not found in configuration.`);
+                console.error(`\nAvailable servers: ${servers.map(s => s.name).join(', ')}\n`);
+                process.exit(1);
+            }
+            logger.info('Force running bank sync for specific server', { 
+                forceRun: true, 
+                server: serverName 
+            });
+            await syncBank(server);
+            logger.info('Forced bank sync complete for server', { server: serverName });
+        } else {
+            // Sync all servers
+            logger.info('Force running bank sync for all servers', { forceRun: true });
+            await syncAllBanks();
+            logger.info('Forced bank sync complete');
+        }
     } else {
         // Group servers by their effective schedule
         const scheduleGroups = new Map();

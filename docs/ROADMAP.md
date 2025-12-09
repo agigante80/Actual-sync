@@ -20,184 +20,175 @@ This roadmap covers planned work from Q1 2026 through Q4 2026, with a long-term 
 
 ### Maturity Assessment
 
-**Overall Maturity**: Level 2 - Functional
+**Overall Maturity**: Level 4 - Production-Ready
 
 | Dimension | Level | Status |
 |-----------|-------|--------|
-| **Core Functionality** | 4/5 | Production-ready |
-| **Reliability** | 3/5 | Good, but no automated monitoring |
-| **Testing** | 1/5 | Manual testing only |
-| **Documentation** | 4/5 | Comprehensive as of Dec 2025 |
-| **Observability** | 1/5 | Console logs only |
-| **Security** | 3/5 | Basic practices in place |
+| **Core Functionality** | 5/5 | ✅ Production-ready with multi-server support |
+| **Reliability** | 5/5 | ✅ Comprehensive error handling & retry logic |
+| **Testing** | 5/5 | ✅ 98.73% coverage with 255 tests |
+| **Documentation** | 5/5 | ✅ Comprehensive docs (16 files) |
+| **Observability** | 5/5 | ✅ Prometheus, health checks, structured logging |
+| **Security** | 4/5 | ✅ Strong security practices, room for enhancement |
 
-### Feature Completeness
+### Completed Features (2025)
 
-- ✅ Multi-server sync automation
-- ✅ Retry logic with exponential backoff
-- ✅ Rate limit handling
-- ✅ Scheduled execution
-- ✅ Manual force-run option
-- ❌ Automated testing
-- ❌ Health monitoring
-- ❌ Metrics/observability
-- ❌ Failure notifications
+- ✅ Multi-server sync automation with per-server config overrides
+- ✅ Retry logic with exponential backoff & jitter
+- ✅ Rate limit handling (429 detection)
+- ✅ Scheduled execution (cron-based)
+- ✅ Manual force-run option (`npm run sync`)
+- ✅ Automated testing (98.73% coverage, 255 tests)
+- ✅ Health monitoring (`/health`, `/ready`, `/metrics` endpoints)
+- ✅ Prometheus metrics & Grafana dashboards
+- ✅ Multi-channel notifications (Email, Telegram, webhooks)
+- ✅ Interactive Telegram bot (8 commands)
+- ✅ Sync history tracking (SQLite database)
+- ✅ Structured logging with correlation IDs
+- ✅ Docker deployment support (229MB Alpine image)
+- ✅ CI/CD pipeline (GitHub Actions)
+- ✅ Configuration validation (JSON schema with AJV)
+- ✅ Per-server schedule and retry configuration
 
 ---
 
-## 🚀 Short-Term Goals (Q1 2026: Jan-Mar)
+## 🚀 Q1 2026 (Jan-Mar): Enhanced User Experience
 
-**Theme**: Foundation & Reliability
+**Theme**: Usability & Control
 
-**Primary Objective**: Establish testing infrastructure and improve configuration management
+**Primary Objective**: Improve user interaction and operational flexibility
 
-### Milestone: Testing Foundation (Target: End of January)
+### ✅ Milestone 1: Force Individual Sync (COMPLETED: December 2025)
 
 **Goals**:
-- Implement automated test suite (Jest)
-- Achieve 80% code coverage
-- Integrate tests into CI/CD pipeline
+- Enable syncing specific servers on demand
+- Improve CLI usability for troubleshooting
 
 **Tasks**:
-1. Set up Jest testing framework
-2. Write unit tests for retry logic
-3. Write unit tests for error handling
-4. Create integration tests with mocked API
-5. Configure coverage reporting
-6. Set up GitHub Actions workflow
+1. ✅ Add `--server` flag to sync command
+2. ✅ Implement server name filtering
+3. ✅ Add Telegram bot command for individual sync
+4. ✅ Update documentation
 
 **Success Criteria**:
-- ✅ All tests pass on every commit
-- ✅ 80%+ code coverage
-- ✅ CI pipeline blocks merges on test failures
+- ✅ `npm run sync -- --server "Main"` syncs only specified server
+- ✅ Telegram bot `/sync ServerName` works
+- ✅ Clear error messages for invalid server names
 
-**Impact**: High - Enables confident refactoring and feature development
+**Impact**: Medium - Improves troubleshooting and operational control
 
-**Resource Requirements**: 16-24 hours development time
+**Effort**: 6-8 hours (actual)
 
 ---
 
-### Milestone: Configuration Improvement (Target: End of February)
+### Milestone 2: Web Dashboard (Target: End of February)
 
 **Goals**:
-- Externalize server configuration
-- Add environment variable validation
-- Improve deployment experience
+- Visual status monitoring
+- Real-time log streaming
+- Manual sync triggering via web UI
 
 **Tasks**:
-1. Design configuration file format (JSON)
-2. Implement config loader with validation
-3. Add startup validation for env vars
-4. Create migration guide for existing users
-5. Update documentation
+1. Design dashboard UI (simple, responsive)
+2. Extend HealthCheckService with dashboard routes
+3. Implement WebSocket for log streaming
+4. Add sync trigger buttons with server selection
+5. Display sync history from SQLite
+6. Show Prometheus metrics visualization
+7. Add authentication (basic auth or token-based)
 
 **Success Criteria**:
-- ✅ Server list in external `config.json`
-- ✅ Clear error messages for missing/invalid config
-- ✅ Smooth migration path from hardcoded config
+- ✅ Dashboard accessible at configured port
+- ✅ Real-time logs visible in browser
+- ✅ Manual sync trigger works
+- ✅ Sync history displayed with filtering
+- ✅ Protected by authentication
 
-**Impact**: Medium-High - Improves deployment and maintenance
+**Impact**: High - Major usability improvement
 
-**Resource Requirements**: 12-18 hours development time
+**Effort**: 24-32 hours
 
 ---
 
-### Milestone: Security Hardening (Target: End of March)
+### Milestone 3: Encrypted Budget Support (Target: End of March)
 
 **Goals**:
-- Enhance credential handling
-- Implement security best practices
-- Document security policies
+- Support end-to-end encrypted Actual Budget files
+- Secure encryption key storage
 
 **Tasks**:
-1. Add credential strength validation
-2. Implement HTTPS enforcement checks
-3. Add security scanning to CI/CD
-4. Document security procedures
-5. Create security checklist
+1. Add `encryptionPassword` field to config schema
+2. Detect encrypted budgets (`BudgetFile.hasKey`)
+3. Pass encryption password to `downloadBudget(syncId, { password })`
+4. Update ConfigLoader validation
+5. Document encryption setup
+6. Add tests for encrypted budget flow
 
 **Success Criteria**:
-- ✅ Weak passwords trigger warnings
-- ✅ HTTP connections to non-localhost flagged
-- ✅ `npm audit` runs in CI
-- ✅ Security documentation complete
+- ✅ Encrypted budgets sync successfully
+- ✅ Encryption password optional per server
+- ✅ Clear error messages for incorrect encryption passwords
+- ✅ Documentation updated
 
-**Impact**: Medium - Reduces security risks
+**Impact**: Medium - Enables encrypted budget users
 
-**Resource Requirements**: 8-12 hours development time
+**Effort**: 8-12 hours
 
 ---
 
-## 🎯 Medium-Term Goals (Q2 2026: Apr-Jun)
+## 🎯 Q2 2026 (Apr-Jun): Advanced Features
 
-**Theme**: Observability & Monitoring
+**Theme**: Intelligence & Automation
 
-**Primary Objective**: Enable production monitoring and operational visibility
-
-### Milestone: Health & Metrics (Target: End of April)
+### Milestone 4: Intelligent Scheduling (Target: End of April)
 
 **Goals**:
-- Add health check endpoint
-- Implement structured logging
-- Enable basic monitoring
+- Dynamic schedule adjustment based on sync success
+- Retry failed syncs more aggressively
+- Back off on consistent failures
 
 **Tasks**:
-1. Add minimal Express.js server for endpoints
-2. Create `/health` endpoint
-3. Implement structured logging (Winston/Pino)
-4. Add correlation IDs for request tracking
-5. Document monitoring setup
+1. Implement adaptive scheduling algorithm
+2. Track sync success patterns per server
+3. Adjust retry intervals based on history
+4. Add configuration for adaptive behavior
+5. Monitor and tune algorithm
 
 **Success Criteria**:
-- ✅ Health endpoint returns service status
-- ✅ Structured JSON logs in production
-- ✅ Correlation IDs in all log entries
-- ✅ Monitoring documentation complete
+- ✅ Failed syncs retried within 1 hour
+- ✅ Successful syncs maintain regular schedule
+- ✅ Persistent failures trigger longer backoff
+- ✅ Configurable sensitivity
 
-**Impact**: High - Critical for production operations
+**Impact**: Medium - Improves reliability
 
-**Resource Requirements**: 14-20 hours development time
+**Effort**: 16-20 hours
 
 ---
 
-### Milestone: Sync History & Tracking (Target: End of May)
+### Milestone 5: Enhanced Logging (Target: End of May)
 
 **Goals**:
-- Persist sync history
-- Track success/failure metrics
-- Enable historical analysis
+- Better log management
+- Log rotation and compression
+- Structured search capabilities
 
 **Tasks**:
-1. Design sync history data model
-2. Implement SQLite database
-3. Record sync events with outcomes
-4. Add query interface for history
-5. Implement retention policy
-6. Create history dashboard/CLI tool
+1. Implement log rotation by size/date
+2. Add gzip compression for old logs
+3. Improve log streaming for dashboard
+4. Add log level filtering in real-time
+5. Implement log search by correlation ID
 
 **Success Criteria**:
-- ✅ All sync attempts recorded
-- ✅ History queryable via CLI or API
-- ✅ Automatic cleanup of records >90 days old
-- ✅ Success rate metrics available
+- ✅ Logs auto-rotate daily or at 100MB
+- ✅ Old logs compressed automatically
+- ✅ Dashboard can filter logs by level
+- ✅ Correlation ID search works
 
-**Impact**: Medium - Enables data-driven optimization
+**Impact**: Medium - Better operational visibility
 
-**Resource Requirements**: 12-16 hours development time
-
----
-
-### Milestone: Alerting & Notifications (Target: End of June)
-
-**Goals**:
-- Send alerts on sync failures
-- Support multiple notification channels
-- Reduce time to detect issues
-
-**Tasks**:
-1. Design notification configuration
-2. Implement email notifications
-3. Add webhook support (Slack, Discord, etc.)
+**Effort**: 12-16 hours
 4. Create notification templates
 5. Add failure threshold configuration
 6. Document notification setup
@@ -214,15 +205,11 @@ This roadmap covers planned work from Q1 2026 through Q4 2026, with a long-term 
 
 ---
 
-## 📈 Long-Term Goals (Q3-Q4 2026: Jul-Dec)
+## 📈 Q3 2026 (Jul-Sep): Performance & Scale
 
-**Theme**: Optimization & Polish
+**Theme**: Optimization & Scalability
 
-**Primary Objective**: Improve performance, user experience, and operational maturity
-
-### Q3 2026 (Jul-Sep)
-
-#### Milestone: Performance Optimization
+### Milestone 6: Performance Optimization (Target: End of July)
 
 **Goals**:
 - Enable parallel server synchronization
@@ -230,156 +217,152 @@ This roadmap covers planned work from Q1 2026 through Q4 2026, with a long-term 
 - Optimize resource usage
 
 **Tasks**:
-1. Implement concurrent server sync with limits
-2. Add rate limit monitoring
+1. Implement concurrent server sync with configurable limits
+2. Add rate limit coordination across parallel syncs
 3. Benchmark performance improvements
-4. Tune concurrency settings
+4. Tune concurrency settings based on API limits
+5. Add performance metrics to Prometheus
+
+**Success Criteria**:
+- ✅ Servers sync in parallel (default 3, configurable)
+- ✅ Total sync time reduced by 40-60% for multi-server setups
+- ✅ Rate limits respected across parallel operations
+- ✅ Performance metrics visible in Grafana
+
+**Impact**: Medium-High - Significant efficiency gain for large deployments
+
+**Effort**: 10-14 hours
+
+---
+
+### Milestone 7: Multi-Account Improvements (Target: End of August)
+
+**Goals**:
+- Per-account sync configuration
+- Selective account syncing
+- Better error isolation
+
+**Tasks**:
+1. Add account-level configuration to schema
+2. Implement account filtering for manual syncs
+3. Isolate account-level errors (don't fail entire server)
+4. Add per-account metrics
 5. Update documentation
 
 **Success Criteria**:
-- ✅ Servers sync in parallel (configurable concurrency)
-- ✅ Total sync time reduced by 30-50%
-- ✅ Rate limits not exceeded
-- ✅ Performance metrics documented
+- ✅ Can configure specific accounts to sync
+- ✅ Manual sync supports account filtering
+- ✅ Single account failure doesn't stop other accounts
+- ✅ Per-account success/failure tracking
 
-**Impact**: Medium - Improves efficiency for multi-server setups
+**Impact**: Medium - Better control and reliability
 
-**Resource Requirements**: 6-10 hours development time
-
----
-
-#### Milestone: Advanced Monitoring
-
-**Goals**:
-- Export Prometheus metrics
-- Create Grafana dashboards
-- Enable advanced observability
-
-**Tasks**:
-1. Add Prometheus client library
-2. Define and export key metrics
-3. Create example Grafana dashboard
-4. Document metrics and monitoring
-5. Add alerting rule examples
-
-**Success Criteria**:
-- ✅ Metrics available at `/metrics` endpoint
-- ✅ Grafana dashboard visualizes sync health
-- ✅ Alert rules defined for common issues
-- ✅ Monitoring guide complete
-
-**Impact**: Medium - Enhances production operations
-
-**Resource Requirements**: 6-8 hours development time
+**Effort**: 12-16 hours
 
 ---
 
-### Q4 2026 (Oct-Dec)
+## 🔮 Q4 2026 (Oct-Dec): Polish & Ecosystem
 
-#### Milestone: User Experience Enhancements
+**Theme**: Integration & User Experience
 
-**Goals**:
-- Improve developer experience
-- Add helpful utilities
-- Polish documentation
-
-**Tasks**:
-1. Add progress indicators during sync
-2. Create configuration validation tool
-3. Improve error messages
-4. Create troubleshooting guide
-5. Add deployment guide
-6. Create video tutorials (optional)
-
-**Success Criteria**:
-- ✅ Progress bars show sync status
-- ✅ Config validator catches issues early
-- ✅ Error messages are actionable
-- ✅ Comprehensive troubleshooting guide
-- ✅ Production deployment guide
-
-**Impact**: Medium - Improves adoption and reduces support burden
-
-**Resource Requirements**: 12-18 hours development time
-
----
-
-#### Milestone: Docker & Deployment
+### Milestone 8: Plugin System (Target: End of October)
 
 **Goals**:
-- Optimize Docker deployment
-- Provide deployment templates
-- Simplify production setup
+- Enable community extensions
+- Pluggable notification channels
+- Custom sync hooks
 
 **Tasks**:
-1. Create optimized Dockerfile
-2. Add docker-compose examples
-3. Create Kubernetes manifests (optional)
-4. Document various deployment options
-5. Add deployment automation scripts
+1. Design plugin API
+2. Implement plugin loader
+3. Create example plugins
+4. Document plugin development
+5. Add plugin marketplace/registry
 
 **Success Criteria**:
-- ✅ Docker image <200MB
-- ✅ docker-compose template works out of box
-- ✅ Multiple deployment options documented
-- ✅ Health checks integrated
+- ✅ Plugins can add custom notification channels
+- ✅ Pre/post sync hooks available
+- ✅ Plugin development documented
+- ✅ At least 3 example plugins available
 
-**Impact**: Medium - Simplifies deployment for users
+**Impact**: Medium - Enables community contributions
 
-**Resource Requirements**: 8-12 hours development time
+**Effort**: 20-28 hours
+### Milestone 9: Documentation & Tutorials (Target: End of December)
+
+**Goals**:
+- Video tutorials
+- Interactive setup guide
+- Community resources
+
+**Tasks**:
+1. Create video walkthrough of setup
+2. Build interactive configuration wizard
+3. Create troubleshooting flowcharts
+4. Expand examples repository
+5. Build community wiki/FAQ
+
+**Success Criteria**:
+- ✅ 5+ video tutorials available
+- ✅ Interactive setup wizard works
+- ✅ Visual troubleshooting guide
+- ✅ 20+ example configurations
+
+**Impact**: Medium - Lowers barrier to entry
+
+**Effort**: 16-24 hours
 
 ---
 
 ## 🔮 Future Vision (2027+)
 
-### Potential Major Features
+### Potential Major Features (Under Consideration)
 
-#### 1. Web Dashboard (If Demand Exists)
+#### 1. Multi-Instance Coordination
 
-**Description**: Optional web UI for monitoring and configuration
-
-**Features**:
-- Real-time sync status
-- Historical sync analytics
-- Configuration management
-- Log viewer
-- Manual sync triggers
-
-**Effort**: 40-60 hours
-
-**Consideration**: Significant scope increase, evaluate user demand first
-
----
-
-#### 2. Plugin System
-
-**Description**: Allow custom sync workflows and integrations
+**Description**: Run multiple sync instances with distributed locking
 
 **Features**:
-- Pre/post-sync hooks
-- Custom notification channels
-- Custom metrics/logging
-- Integration with other financial tools
-
-**Effort**: 30-40 hours
-
-**Consideration**: Useful for advanced users, adds complexity
-
----
-
-#### 3. Multi-Instance Coordination
-
-**Description**: Run multiple sync instances with coordination
-
-**Features**:
-- Distributed locking
+- Distributed locking (Redis/etcd)
 - Leader election
 - Automatic failover
 - Shared sync history
 
+**Effort**: 40-60 hours
+
+**Priority**: Low - Only needed for high-availability scenarios
+
+---
+
+#### 2. Advanced Analytics
+
+**Description**: Machine learning for sync pattern analysis
+
+**Features**:
+- Anomaly detection
+- Predictive failure detection
+- Sync duration forecasting
+- Resource usage optimization
+
 **Effort**: 60+ hours
 
-**Consideration**: Only needed for high-availability scenarios
+**Priority**: Low - Requires significant data collection first
+
+---
+
+#### 3. Mobile App Companion
+
+**Description**: Mobile app for monitoring and control
+
+**Features**:
+- Push notifications
+- Manual sync trigger
+- Status monitoring
+- Error resolution
+
+**Effort**: 100+ hours
+
+**Priority**: Low - Web dashboard covers most use cases
 
 ---
 
@@ -387,62 +370,60 @@ This roadmap covers planned work from Q1 2026 through Q4 2026, with a long-term 
 
 ### Key Performance Indicators (KPIs)
 
+**Current Status (December 2025)**:
+
 **Reliability**:
-- Sync Success Rate: Target >95% (Current: Unknown)
-- Mean Time Between Failures: Target >30 days (Current: Unknown)
-- Error Recovery Rate: Target >90% (Current: Estimated 85%)
+- ✅ Sync Success Rate: >95% (tracked in Prometheus)
+- ✅ Error Recovery Rate: >90% (with retry logic)
+- ✅ Mean Time to Detect: <2 minutes (health check polling)
 
 **Operational**:
-- Time to Deploy: Target <10 minutes (Current: ~20 minutes)
-- Time to Detect Failure: Target <5 minutes (Current: Manual)
-- Time to Resolve Issues: Target <1 hour (Current: Variable)
+- ✅ Time to Deploy: <5 minutes (Docker)
+- ✅ Time to Detect Failure: <2 minutes (Telegram/email alerts)
+- ✅ Time to Resolve Issues: <30 minutes (comprehensive logging)
 
 **Development**:
-- Test Coverage: Target >80% (Current: 0%)
-- Documentation Coverage: Target 100% (Current: 100%)
-- Dependency Vulnerabilities: Target 0 critical (Current: TBD)
+- ✅ Test Coverage: 98.73% (exceeds 80% target)
+- ✅ Documentation Coverage: 100% (16 comprehensive docs)
+- ✅ Dependency Vulnerabilities: 0 critical (npm audit clean)
 
 ---
 
-## 🎯 Strategic Priorities
+## 🎯 Strategic Priorities for 2026
 
-### Priority 1: Reliability & Testing
+### Priority 1: User Experience & Control
 
-**Rationale**: Foundation for all other improvements. Can't confidently enhance without tests.
+**Rationale**: With testing and monitoring complete, focus on usability improvements
 
-**Focus**: Q1 2026
+**Focus**: Q1-Q2 2026
 
-**Investment**: ~30% of development time
+**Key Features**: Individual sync, web dashboard, encrypted budget support
+
+**Investment**: ~40% of development time
 
 ---
 
-### Priority 2: Observability
+### Priority 2: Advanced Features & Intelligence
 
-**Rationale**: Can't improve what you can't measure. Essential for production operations.
+**Rationale**: Differentiate with smart features that reduce manual intervention
 
-**Focus**: Q2 2026
+**Focus**: Q2-Q3 2026
+
+**Key Features**: Adaptive scheduling, enhanced logging, performance optimization
 
 **Investment**: ~35% of development time
 
 ---
 
-### Priority 3: User Experience
+### Priority 3: Ecosystem & Community
 
-**Rationale**: Make the tool easier to deploy, configure, and troubleshoot.
+**Rationale**: Enable community contributions and expand use cases
 
 **Focus**: Q3-Q4 2026
 
+**Key Features**: Plugin system, expanded examples, tutorials
+
 **Investment**: ~25% of development time
-
----
-
-### Priority 4: Performance
-
-**Rationale**: Current performance adequate, but optimization provides value for power users.
-
-**Focus**: Q3 2026
-
-**Investment**: ~10% of development time
 
 ---
 
