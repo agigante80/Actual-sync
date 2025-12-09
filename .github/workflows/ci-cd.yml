@@ -405,14 +405,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USER }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}
-          short-description: ${{ steps.get-desc.outputs.short }}
           readme-filepath: ./docker/description/long.md
-
-      - name: Read Docker descriptions
-        id: get-desc
-        run: |
-          SHORT_DESC=$(cat docker/description/short.md)
-          echo "short=${SHORT_DESC}" >> $GITHUB_OUTPUT
 
       - name: Docker publish summary
         run: |
