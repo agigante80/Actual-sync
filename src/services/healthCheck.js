@@ -376,19 +376,24 @@ class HealthCheckService {
         servers.forEach(server => {
           const serverSyncs = recentSyncs.filter(s => s.serverName === server);
           const successCount = serverSyncs.filter(s => s.status === 'success').length;
-          const failureCount = serverSyncs.filter(s => s.status === 'error').length;
-          const avgDuration = serverSyncs.reduce((sum, s) => sum + s.duration, 0) / serverSyncs.length;
+          const failureCount = serverSyncs.filter(s => s.status === 'failure').length;
+          
+          // Calculate average duration (handle null values)
+          const durationsWithValues = serverSyncs.filter(s => s.duration != null);
+          const avgDuration = durationsWithValues.length > 0
+            ? durationsWithValues.reduce((sum, s) => sum + s.duration, 0) / durationsWithValues.length
+            : 0;
           
           serverMetrics[server] = {
             totalSyncs: serverSyncs.length,
             successCount,
             failureCount,
-            successRate: successCount / serverSyncs.length,
+            successRate: serverSyncs.length > 0 ? successCount / serverSyncs.length : 0,
             avgDuration: Math.round(avgDuration),
             recentSyncs: serverSyncs.slice(0, 10).map(s => ({
               timestamp: s.timestamp,
               status: s.status,
-              duration: s.duration
+              duration: s.duration || 0
             }))
           };
         });
@@ -396,7 +401,7 @@ class HealthCheckService {
         // Overall metrics
         const totalSyncs = recentSyncs.length;
         const successCount = recentSyncs.filter(s => s.status === 'success').length;
-        const failureCount = recentSyncs.filter(s => s.status === 'error').length;
+        const failureCount = recentSyncs.filter(s => s.status === 'failure').length;
 
         res.json({
           overall: {

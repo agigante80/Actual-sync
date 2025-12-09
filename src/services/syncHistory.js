@@ -403,6 +403,48 @@ class SyncHistoryService {
   }
 
   /**
+   * Get recent syncs for dashboard display
+   * @param {number} limit - Maximum number of records to return
+   * @returns {Array} - Array of sync records formatted for dashboard
+   */
+  getRecentSyncs(limit = 50) {
+    try {
+      const stmt = this.db.prepare(`
+        SELECT 
+          id,
+          timestamp,
+          server_name as serverName,
+          status,
+          duration_ms as duration,
+          accounts_processed as accountsProcessed,
+          accounts_succeeded as accountsSucceeded,
+          accounts_failed as accountsFailed,
+          error_message as errorMessage,
+          error_code as errorCode,
+          correlation_id as correlationId
+        FROM sync_history
+        ORDER BY timestamp DESC
+        LIMIT ?
+      `);
+
+      const records = stmt.all(limit);
+
+      this.logger.debug('Retrieved recent syncs for dashboard', {
+        count: records.length,
+        limit
+      });
+
+      return records;
+    } catch (error) {
+      this.logger.error('Failed to retrieve recent syncs', {
+        error: error.message,
+        limit
+      });
+      throw error;
+    }
+  }
+
+  /**
    * Clean up old records based on retention policy
    * @returns {number} - Number of records deleted
    */

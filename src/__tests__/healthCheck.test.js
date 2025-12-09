@@ -505,7 +505,7 @@ describe('HealthCheckService', () => {
           },
           {
             serverName: 'Server1',
-            status: 'error',
+            status: 'failure',
             duration: 3000,
             timestamp: new Date().toISOString()
           }
