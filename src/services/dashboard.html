@@ -461,7 +461,7 @@
                 GitHub
             </a>
             <span class="separator">•</span>
-            <a href="https://github.com/agigante80/Actual-sync/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
+            <a href="https://github.com/agigante80/Actual-sync/blob/development/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
             <span class="separator">•</span>
             <a href="https://actualbudget.org" target="_blank" rel="noopener noreferrer">Actual Budget</a>
         </div>
@@ -501,6 +501,9 @@
         // Fetch and update dashboard data
         async function updateDashboard() {
             try {
+                // Refresh server info (encryption and schedules) first
+                await fetchServerInfo();
+                
                 const response = await fetch('/api/dashboard/status', getFetchOptions());
                 const data = await response.json();
 
@@ -523,7 +526,7 @@
                 statusBadge.textContent = data.status;
                 statusBadge.className = `status-badge status-${data.status.toLowerCase()}`;
 
-                // Update servers list
+                // Update servers list (now with fresh schedule info)
                 updateServersList(data.servers);
 
                 // Update server buttons
