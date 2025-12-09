@@ -416,9 +416,27 @@
     <script>
         let ws = null;
         let reconnectAttempts = 0;
-        const maxReconnectAttempts = 5;
+        let reconnectDelay = 1000; // Start with 1 second
+        const maxReconnectDelay = 30000; // Cap at 30 seconds
+        let isPageVisible = true;
+        let lastPingTime = Date.now();
+        let pingInterval = null;
+        
+        // Ring buffer for logs (memory efficient)
+        const MAX_LOGS = 500; // Increased from 100
+        const logBuffer = [];
+        let logBufferIndex = 0;
 
         // Get auth headers from current page request
+        // Page visibility handling - pause log streaming when tab is hidden
+        document.addEventListener('visibilitychange', () => {
+            isPageVisible = !document.hidden;
+            if (isPageVisible && ws && ws.readyState !== WebSocket.OPEN) {
+                console.log('Tab became visible, reconnecting WebSocket...');
+                connectWebSocket();
+            }
+        });
+        
         // Browser will automatically include credentials for same-origin requests
         function getFetchOptions() {
             return {
@@ -570,60 +588,145 @@
         }
 
         function connectWebSocket() {
+            // Don't reconnect if tab is hidden
+            if (!isPageVisible) {
+                console.log('Tab hidden, deferring WebSocket connection');
+                return;
+            }
+            
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
 
-            ws = new WebSocket(wsUrl);
+            try {
+                ws = new WebSocket(wsUrl);
 
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-                reconnectAttempts = 0;
-                addLogEntry('info', 'Connected to log stream');
-            };
+                ws.onopen = () => {
+                    console.log('WebSocket connected');
+                    reconnectAttempts = 0;
+                    reconnectDelay = 1000; // Reset backoff
+                    addLogEntry('info', 'Connected to log stream');
+                    
+                    // Start keep-alive ping
+                    startKeepAlive();
+                };
 
-            ws.onmessage = (event) => {
-                try {
-                    const log = JSON.parse(event.data);
-                    addLogEntry(log.level, log.message, log.metadata);
-                } catch (e) {
-                    addLogEntry('info', event.data);
-                }
-            };
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        
+                        // Handle pong response
+                        if (data.type === 'pong') {
+                            lastPingTime = Date.now();
+                            return;
+                        }
+                        
+                        // Handle log message
+                        if (data.level) {
+                            addLogEntry(data.level, data.message, data.metadata);
+                        }
+                    } catch (e) {
+                        // Plain text message
+                        addLogEntry('info', event.data);
+                    }
+                };
 
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-                addLogEntry('error', 'WebSocket connection error');
-            };
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    addLogEntry('error', 'WebSocket connection error');
+                };
 
-            ws.onclose = () => {
-                console.log('WebSocket disconnected');
-                addLogEntry('warn', 'Disconnected from log stream');
-                
-                if (reconnectAttempts < maxReconnectAttempts) {
+                ws.onclose = () => {
+                    console.log('WebSocket disconnected');
+                    addLogEntry('warn', 'Disconnected from log stream. Reconnecting...');
+                    
+                    // Stop keep-alive
+                    stopKeepAlive();
+                    
+                    // Infinite retry with exponential backoff
                     reconnectAttempts++;
-                    setTimeout(connectWebSocket, 3000);
+                    const delay = Math.min(reconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
+                    console.log(`Reconnect attempt ${reconnectAttempts} in ${delay}ms`);
+                    setTimeout(connectWebSocket, delay);
+                };
+            } catch (error) {
+                console.error('Failed to create WebSocket:', error);
+                // Retry on connection failure
+                setTimeout(connectWebSocket, reconnectDelay);
+            }
+        }
+        
+        function startKeepAlive() {
+            stopKeepAlive(); // Clear any existing interval
+            pingInterval = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'ping' }));
+                    
+                    // Check if last pong was too long ago (60s timeout)
+                    if (Date.now() - lastPingTime > 60000) {
+                        console.warn('Keep-alive timeout, reconnecting...');
+                        ws.close();
+                    }
                 }
-            };
+            }, 30000); // Ping every 30 seconds
+        }
+        
+        function stopKeepAlive() {
+            if (pingInterval) {
+                clearInterval(pingInterval);
+                pingInterval = null;
+            }
         }
 
         function addLogEntry(level, message, metadata) {
-            const logsDiv = document.getElementById('logs');
-            const entry = document.createElement('div');
-            entry.className = `log-entry log-${level.toLowerCase()}`;
+            // Add to ring buffer
+            const logEntry = {
+                timestamp: new Date().toLocaleTimeString(),
+                level: level.toLowerCase(),
+                message: message,
+                metadata: metadata
+            };
             
-            const timestamp = new Date().toLocaleTimeString();
-            const metaStr = metadata ? ` ${JSON.stringify(metadata)}` : '';
-            entry.textContent = `[${timestamp}] [${level.toUpperCase()}] ${message}${metaStr}`;
-            
-            logsDiv.appendChild(entry);
-            
-            // Keep only last 100 log entries
-            while (logsDiv.children.length > 100) {
-                logsDiv.removeChild(logsDiv.firstChild);
+            if (logBuffer.length < MAX_LOGS) {
+                logBuffer.push(logEntry);
+            } else {
+                // Overwrite oldest entry in ring buffer
+                logBuffer[logBufferIndex] = logEntry;
+                logBufferIndex = (logBufferIndex + 1) % MAX_LOGS;
             }
             
-            // Auto-scroll to bottom
-            logsDiv.scrollTop = logsDiv.scrollHeight;
+            // Only update DOM if page is visible (reduce CPU usage)
+            if (!isPageVisible) return;
+            
+            renderLogs();
+        }
+        
+        function renderLogs() {
+            const logsDiv = document.getElementById('logs');
+            const shouldAutoScroll = logsDiv.scrollHeight - logsDiv.scrollTop <= logsDiv.clientHeight + 50;
+            
+            // Batch DOM updates for better performance
+            const fragment = document.createDocumentFragment();
+            
+            // Get last 200 logs to display (more than visible, less than buffer)
+            const displayLogs = logBuffer.slice(-200);
+            
+            // Clear existing (prevents memory leak from orphaned nodes)
+            logsDiv.innerHTML = '';
+            
+            displayLogs.forEach(log => {
+                const entry = document.createElement('div');
+                entry.className = `log-entry log-${log.level}`;
+                const metaStr = log.metadata ? ` ${JSON.stringify(log.metadata)}` : '';
+                entry.textContent = `[${log.timestamp}] [${log.level.toUpperCase()}] ${log.message}${metaStr}`;
+                fragment.appendChild(entry);
+            });
+            
+            logsDiv.appendChild(fragment);
+            
+            // Auto-scroll to bottom only if user was already at bottom
+            if (shouldAutoScroll) {
+                logsDiv.scrollTop = logsDiv.scrollHeight;
+            }
         }
 
         function formatUptime(seconds) {
