@@ -232,6 +232,16 @@ async function injectFakeData(page, scenario) {
                     'Emergency Fund': { status: 'success', lastSync: new Date(Date.now() - 720000).toISOString() }
                 }
             },
+            serverEncryption: {
+                servers: [
+                    { name: 'Main Budget', encrypted: true },
+                    { name: 'Personal Budget', encrypted: false },
+                    { name: 'Family Budget', encrypted: true },
+                    { name: 'Business Budget', encrypted: true },
+                    { name: 'Investments', encrypted: false },
+                    { name: 'Emergency Fund', encrypted: false }
+                ]
+            },
             metrics: {
                 overall: { totalSyncs: 60, successCount: 58, failureCount: 2, successRate: 0.967 },
                 byServer: {
@@ -315,6 +325,11 @@ async function injectFakeData(page, scenario) {
                 return Promise.resolve({
                     ok: true,
                     json: () => Promise.resolve(window.__mockData.status)
+                });
+            } else if (url.includes('/api/dashboard/servers')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve(window.__mockData.serverEncryption || { servers: [] })
                 });
             } else if (url.includes('/api/dashboard/metrics')) {
                 return Promise.resolve({
