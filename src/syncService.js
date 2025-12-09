@@ -407,10 +407,15 @@ async function syncBank(server) {
         serverLogger.info('Final file sync completed');
         
         // Calculate sync duration and log performance
-        const durationMs = endTimer({ 
+        let durationMs = endTimer({ 
             accountsProcessed: accountsSucceeded,
             accountsFailed 
         });
+        
+        // Fallback to manual calculation if performance tracking is disabled
+        if (durationMs === undefined || isNaN(durationMs)) {
+            durationMs = Date.now() - syncStartTime;
+        }
         
         // Update health check with successful sync
         if (healthCheck) {
@@ -464,7 +469,13 @@ async function syncBank(server) {
         }
         
     } catch (error) {
-        const durationMs = endTimer({ error: error.message });
+        let durationMs = endTimer({ error: error.message });
+        
+        // Fallback to manual calculation if performance tracking is disabled
+        if (durationMs === undefined || isNaN(durationMs)) {
+            durationMs = Date.now() - syncStartTime;
+        }
+        
         serverLogger.error(`Error syncing bank for server`, {
             error: error.message,
             errorCode: error.code,
