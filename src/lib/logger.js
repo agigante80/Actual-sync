@@ -59,32 +59,52 @@ class Logger {
         };
         
         // Ensure log directory exists
-        if (this.logDir && !fs.existsSync(this.logDir)) {
-            fs.mkdirSync(this.logDir, { recursive: true });
+        if (this.logDir) {
+            try {
+                if (!fs.existsSync(this.logDir)) {
+                    fs.mkdirSync(this.logDir, { recursive: true });
+                    console.log(`✅ Created log directory: ${this.logDir}`);
+                }
+                // Test write permissions
+                const testFile = path.join(this.logDir, '.write-test');
+                fs.writeFileSync(testFile, 'test', 'utf8');
+                fs.unlinkSync(testFile);
+            } catch (error) {
+                console.error(`❌ Cannot write to log directory ${this.logDir}: ${error.message}`);
+                console.error('   Logs will only be output to console.');
+                console.error('   Check directory permissions and user/group ownership.');
+                this.logDir = null; // Disable file logging if directory is not writable
+            }
         }
         
         // Setup rotating file stream if enabled
         this.rotatingStream = null;
         if (this.logDir && this.rotation.enabled) {
-            const streamOptions = {
-                path: this.logDir,
-                size: this.rotation.maxSize,
-                maxFiles: this.rotation.maxFiles
-            };
-            
-            // Add compress option if enabled
-            if (this.rotation.compress === 'gzip') {
-                streamOptions.compress = 'gzip';
+            try {
+                const streamOptions = {
+                    path: this.logDir,
+                    size: this.rotation.maxSize,
+                    maxFiles: this.rotation.maxFiles
+                };
+                
+                // Add compress option if enabled
+                if (this.rotation.compress === 'gzip') {
+                    streamOptions.compress = 'gzip';
+                }
+                
+                this.rotatingStream = createStream(
+                    (time, index) => {
+                        if (!time) return `${this.serviceName}.log`;
+                        const date = time.toISOString().split('T')[0];
+                        return `${this.serviceName}-${date}.log`;
+                    },
+                    streamOptions
+                );
+                console.log(`✅ Rotating log stream enabled: ${this.logDir}/${this.serviceName}-*.log`);
+            } catch (error) {
+                console.error(`❌ Failed to setup rotating log stream: ${error.message}`);
+                this.rotatingStream = null;
             }
-            
-            this.rotatingStream = createStream(
-                (time, index) => {
-                    if (!time) return `${this.serviceName}.log`;
-                    const date = time.toISOString().split('T')[0];
-                    return `${this.serviceName}-${date}.log`;
-                },
-                streamOptions
-            );
         }
         
         // Setup syslog client if enabled
