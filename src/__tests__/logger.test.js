@@ -338,4 +338,79 @@ describe('Logger', () => {
             expect(logger.level).toBe('ERROR');
         });
     });
+
+    describe('Broadcast Callback', () => {
+        test('should set broadcast callback', () => {
+            const logger = new Logger();
+            const callback = jest.fn();
+            
+            logger.setBroadcastCallback(callback);
+            
+            expect(logger.broadcastCallback).toBe(callback);
+        });
+
+        test('should call broadcast callback on log', () => {
+            const callback = jest.fn();
+            const logger = new Logger({
+                level: 'INFO',
+                broadcastCallback: callback
+            });
+            
+            const suppress = suppressConsole();
+            logger.info('Test message', { key: 'value' });
+            suppress.restore();
+            
+            expect(callback).toHaveBeenCalledTimes(1);
+            expect(callback).toHaveBeenCalledWith('INFO', 'Test message', { key: 'value' });
+        });
+
+        test('should not break logging if broadcast callback throws', () => {
+            const callback = jest.fn(() => {
+                throw new Error('Broadcast error');
+            });
+            const logger = new Logger({
+                level: 'INFO',
+                broadcastCallback: callback
+            });
+            
+            const suppress = suppressConsole();
+            expect(() => {
+                logger.info('Test message');
+            }).not.toThrow();
+            suppress.restore();
+            
+            expect(callback).toHaveBeenCalledTimes(1);
+        });
+
+        test('should not call broadcast callback if not set', () => {
+            const logger = new Logger({ level: 'INFO' });
+            
+            const suppress = suppressConsole();
+            expect(() => {
+                logger.info('Test message');
+            }).not.toThrow();
+            suppress.restore();
+        });
+
+        test('should broadcast all log levels', () => {
+            const callback = jest.fn();
+            const logger = new Logger({
+                level: 'DEBUG',
+                broadcastCallback: callback
+            });
+            
+            const suppress = suppressConsole();
+            logger.error('Error message');
+            logger.warn('Warn message');
+            logger.info('Info message');
+            logger.debug('Debug message');
+            suppress.restore();
+            
+            expect(callback).toHaveBeenCalledTimes(4);
+            expect(callback).toHaveBeenNthCalledWith(1, 'ERROR', 'Error message', {});
+            expect(callback).toHaveBeenNthCalledWith(2, 'WARN', 'Warn message', {});
+            expect(callback).toHaveBeenNthCalledWith(3, 'INFO', 'Info message', {});
+            expect(callback).toHaveBeenNthCalledWith(4, 'DEBUG', 'Debug message', {});
+        });
+    });
 });

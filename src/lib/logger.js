@@ -29,11 +29,19 @@ class Logger {
         this.logDir = options.logDir || null;
         this.serviceName = options.serviceName || 'actual-sync';
         this.correlationId = null;
+        this.broadcastCallback = options.broadcastCallback || null;
         
         // Ensure log directory exists
         if (this.logDir && !fs.existsSync(this.logDir)) {
             fs.mkdirSync(this.logDir, { recursive: true });
         }
+    }
+    
+    /**
+     * Set broadcast callback for WebSocket log streaming
+     */
+    setBroadcastCallback(callback) {
+        this.broadcastCallback = callback;
     }
 
     /**
@@ -123,6 +131,16 @@ class Logger {
             const date = new Date().toISOString().split('T')[0];
             const logFile = path.join(this.logDir, `${this.serviceName}-${date}.log`);
             fs.appendFileSync(logFile, formattedLog + '\n', 'utf8');
+        }
+        
+        // Broadcast to WebSocket clients if callback is set
+        if (this.broadcastCallback) {
+            try {
+                this.broadcastCallback(level.toUpperCase(), message, meta);
+            } catch (error) {
+                // Don't let broadcast errors break logging
+                console.error('Failed to broadcast log:', error.message);
+            }
         }
     }
 
