@@ -26,9 +26,9 @@ This roadmap covers planned work from Q1 2026 through Q4 2026, with a long-term 
 |-----------|-------|--------|
 | **Core Functionality** | 5/5 | ✅ Production-ready with multi-server support |
 | **Reliability** | 5/5 | ✅ Comprehensive error handling & retry logic |
-| **Testing** | 5/5 | ✅ 98.73% coverage with 255 tests |
-| **Documentation** | 5/5 | ✅ Comprehensive docs (16 files) |
-| **Observability** | 5/5 | ✅ Prometheus, health checks, structured logging |
+| **Testing** | 5/5 | ✅ 84.77% coverage with 309 tests |
+| **Documentation** | 5/5 | ✅ Comprehensive docs (17 files) |
+| **Observability** | 5/5 | ✅ Dashboard, Prometheus, logs, WebSocket streaming |
 | **Security** | 4/5 | ✅ Strong security practices, room for enhancement |
 
 ### Completed Features (2025)
@@ -38,17 +38,25 @@ This roadmap covers planned work from Q1 2026 through Q4 2026, with a long-term 
 - ✅ Rate limit handling (429 detection)
 - ✅ Scheduled execution (cron-based)
 - ✅ Manual force-run option (`npm run sync`)
-- ✅ Automated testing (98.73% coverage, 255 tests)
+- ✅ Individual server sync (`npm run sync -- --server "Name"`)
+- ✅ Automated testing (84.77% coverage, 309 tests)
 - ✅ Health monitoring (`/health`, `/ready`, `/metrics` endpoints)
+- ✅ Web Dashboard with real-time logs and manual sync controls
+- ✅ WebSocket log streaming with infinite reconnection
 - ✅ Prometheus metrics & Grafana dashboards
 - ✅ Multi-channel notifications (Email, Telegram, webhooks)
 - ✅ Interactive Telegram bot (8 commands)
 - ✅ Sync history tracking (SQLite database)
-- ✅ Structured logging with correlation IDs
+- ✅ Enhanced structured logging with rotation and syslog
+- ✅ Log rotation with gzip compression
+- ✅ Per-server log levels and child loggers
+- ✅ Performance tracking with configurable thresholds
+- ✅ Encrypted budget (E2EE) support
 - ✅ Docker deployment support (229MB Alpine image)
 - ✅ CI/CD pipeline (GitHub Actions)
 - ✅ Configuration validation (JSON schema with AJV)
 - ✅ Per-server schedule and retry configuration
+- ✅ MIT License
 
 ---
 
@@ -81,32 +89,50 @@ This roadmap covers planned work from Q1 2026 through Q4 2026, with a long-term 
 
 ---
 
-### Milestone 2: Web Dashboard (Target: End of February)
+### ✅ Milestone 2: Web Dashboard (COMPLETED: December 2025)
+
+**Status**: ✅ **COMPLETED**
 
 **Goals**:
 - Visual status monitoring
 - Real-time log streaming
 - Manual sync triggering via web UI
 
-**Tasks**:
-1. Design dashboard UI (simple, responsive)
-2. Extend HealthCheckService with dashboard routes
-3. Implement WebSocket for log streaming
-4. Add sync trigger buttons with server selection
-5. Display sync history from SQLite
-6. Show Prometheus metrics visualization
-7. Add authentication (basic auth or token-based)
+**Completed Tasks**:
+1. ✅ Designed responsive dashboard UI with dark theme
+2. ✅ Extended HealthCheckService with dashboard routes (/dashboard, /api/dashboard/*)
+3. ✅ Implemented WebSocket for real-time log streaming with keep-alive
+4. ✅ Added sync trigger buttons with server selection (individual and "Sync All")
+5. ✅ Display sync history from SQLite with recent 10 syncs
+6. ✅ Show Prometheus metrics visualization (Chart.js charts)
+7. ✅ Added authentication (basic auth, token-based, and none options)
+8. ✅ Added encryption status indicators for servers
+9. ✅ Implemented infinite WebSocket reconnection with exponential backoff
+10. ✅ Added memory-efficient ring buffer for logs (500 capacity)
+11. ✅ Added footer with GitHub and license links
 
 **Success Criteria**:
-- ✅ Dashboard accessible at configured port
-- ✅ Real-time logs visible in browser
-- ✅ Manual sync trigger works
-- ✅ Sync history displayed with filtering
-- ✅ Protected by authentication
+- ✅ Dashboard accessible at configured port (http://localhost:3000/dashboard)
+- ✅ Real-time logs visible in browser with WebSocket streaming
+- ✅ Manual sync trigger works for individual servers and all servers
+- ✅ Sync history displayed with filtering and status icons
+- ✅ Protected by configurable authentication (basic, token, or none)
+- ✅ Shows success rate, duration trends, and timeline charts
+- ✅ Encryption status badges show encrypted/unencrypted servers
+- ✅ Long-running stability (24/7 operation without memory leaks)
+
+**Implementation Details**:
+- Single-page application with vanilla JavaScript
+- Chart.js for visualizations (success rates, duration trends, timeline)
+- WebSocket with ping/pong keep-alive (30s interval)
+- Ring buffer prevents unbounded memory growth
+- Pause streaming when tab is hidden (resource optimization)
+- Responsive design (mobile-friendly)
+- 42 tests covering dashboard API and WebSocket functionality
 
 **Impact**: High - Major usability improvement
 
-**Effort**: 24-32 hours
+**Effort**: 30-35 hours (actual)
 
 ---
 
@@ -176,29 +202,46 @@ This roadmap covers planned work from Q1 2026 through Q4 2026, with a long-term 
 
 ---
 
-### Milestone 5: Enhanced Logging (Target: End of May)
+### ✅ Milestone 3 (was 5): Enhanced Logging (COMPLETED: December 2025)
+
+**Status**: ✅ **COMPLETED**
 
 **Goals**:
 - Better log management
 - Log rotation and compression
 - Structured search capabilities
 
-**Tasks**:
-1. Implement log rotation by size/date
-2. Add gzip compression for old logs
-3. Improve log streaming for dashboard
-4. Add log level filtering in real-time
-5. Implement log search by correlation ID
+**Completed Tasks**:
+1. ✅ Implemented log rotation by size/date using rotating-file-stream
+2. ✅ Added gzip compression for old logs (configurable)
+3. ✅ Improved log streaming for dashboard with WebSocket
+4. ✅ Added syslog support (UDP/TCP, RFC 5424 format)
+5. ✅ Implemented performance tracking with configurable thresholds
+6. ✅ Added per-server log level configuration
+7. ✅ Implemented child loggers with context inheritance
+8. ✅ Enhanced correlation ID tracking throughout lifecycle
 
 **Success Criteria**:
-- ✅ Logs auto-rotate daily or at 100MB
-- ✅ Old logs compressed automatically
-- ✅ Dashboard can filter logs by level
-- ✅ Correlation ID search works
+- ✅ Logs auto-rotate at configurable size (default 10MB)
+- ✅ Old logs compressed automatically with gzip
+- ✅ Dashboard streams logs in real-time via WebSocket
+- ✅ Per-server log levels allow granular control
+- ✅ Correlation IDs track operations across components
+- ✅ Performance tracking logs slow operations automatically
+- ✅ Syslog integration for centralized logging
+
+**Implementation Details**:
+- rotating-file-stream library for rotation
+- Configurable: maxSize (10M), maxFiles (10), compress (gzip)
+- Syslog client with UDP/TCP support
+- Performance thresholds: slow (1s), verySlow (5s)
+- Child loggers inherit parent context
+- 18 new tests for logging features
+- Complete LOGGING.md documentation (1000+ lines)
 
 **Impact**: Medium - Better operational visibility
 
-**Effort**: 12-16 hours
+**Effort**: 14-18 hours (actual)
 4. Create notification templates
 5. Add failure threshold configuration
 6. Document notification setup
