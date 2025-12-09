@@ -75,7 +75,10 @@ try {
     logger = createLogger({
         level: config.logging.level,
         format: config.logging.format,
-        logDir: config.logging.logDir
+        logDir: config.logging.logDir,
+        rotation: config.logging.rotation,
+        syslog: config.logging.syslog,
+        performance: config.logging.performance
     });
     
     logger.info('Configuration loaded successfully', { 
@@ -232,9 +235,24 @@ async function syncBank(server) {
     // Get sync configuration for this server (server-specific or global)
     const syncConfig = getSyncConfig(server);
     
+    // Create server-specific logger with per-server log level if configured
+    const serverLogger = server.logging ? logger.child({
+        server: name,
+        ...(server.logging.level && { level: server.logging.level }),
+        ...(server.logging.format && { format: server.logging.format })
+    }) : logger.child({ server: name });
+    
+    // Override logger level if server-specific level is set
+    if (server.logging?.level) {
+        serverLogger.level = server.logging.level;
+    }
+    
     // Create correlation ID for this sync operation
-    const correlationId = logger.generateCorrelationId();
-    logger.setCorrelationId(correlationId);
+    const correlationId = serverLogger.generateCorrelationId();
+    serverLogger.setCorrelationId(correlationId);
+    
+    // Start performance timer
+    const endTimer = serverLogger.startTimer(`sync-${name}`);
     
     // Track sync start time and account stats
     const syncStartTime = Date.now();
@@ -243,8 +261,7 @@ async function syncBank(server) {
     let accountsFailed = 0;
     
     try {
-        logger.info(`Starting sync for server: ${name}`, { 
-            server: name, 
+        serverLogger.info(`Starting sync for server: ${name}`, { 
             url, 
             dataDir,
             maxRetries: syncConfig.maxRetries,
@@ -252,37 +269,37 @@ async function syncBank(server) {
             schedule: syncConfig.schedule
         });
         
-        logger.debug(`Checking if data directory exists: ${dataDir}`, { dataDir });
+        serverLogger.debug(`Checking if data directory exists: ${dataDir}`, { dataDir });
         await fs.mkdir(dataDir, { recursive: true });
-        logger.debug('Data directory ready', { dataDir });
+        serverLogger.debug('Data directory ready', { dataDir });
 
-        logger.info(`Connecting to Actual server`, { server: name, url });
+        serverLogger.info(`Connecting to Actual server`, { url });
         await actual.init({
             serverURL: url,
             password: password,
             dataDir: dataDir,
         });
-        logger.info('Connected to Actual server', { server: name });
+        serverLogger.info('Connected to Actual server');
 
-        logger.info(`Loading budget file`, { server: name, syncId: syncIdLog });
+        serverLogger.info(`Loading budget file`, { syncId: syncIdLog });
         await runWithRetries(
             async () => await actual.downloadBudget(syncId),
             syncConfig.maxRetries,
             syncConfig.baseRetryDelayMs
         );
-        logger.info('Budget file loaded successfully', { server: name });
+        serverLogger.info('Budget file loaded successfully');
 
-        logger.debug('Fetching accounts...', { server: name });
+        serverLogger.debug('Fetching accounts...');
         const accounts = await actual.getAccounts();
-        logger.info('Accounts fetched successfully', { server: name, accountCount: accounts?.length || 0 });
+        serverLogger.info('Accounts fetched successfully', { accountCount: accounts?.length || 0 });
 
-        logger.info('Starting file sync', { server: name });
+        serverLogger.info('Starting file sync');
         await runWithRetries(
             async () => await actual.sync(),
             syncConfig.maxRetries,
             syncConfig.baseRetryDelayMs
         ); // Add this before runBankSync
-        logger.info('File sync completed', { server: name });
+        serverLogger.info('File sync completed');
             
         const succeededAccounts = [];
         const failedAccounts = [];
@@ -290,8 +307,8 @@ async function syncBank(server) {
         if (accounts && accounts.length > 0) {
             for (const account of accounts) {
                 accountsProcessed++;
-                logger.info(`Starting bank sync for account`, { 
-                    server: name, 
+                const accountTimer = serverLogger.startTimer(`account-sync-${account.id}`);
+                serverLogger.info(`Starting bank sync for account`, { 
                     accountId: account.id,
                     accountName: account.name 
                 });
@@ -303,9 +320,10 @@ async function syncBank(server) {
                     );
                     accountsSucceeded++;
                     succeededAccounts.push(account.name);
-                    logger.info('Bank sync completed for account', { 
-                        server: name, 
-                        accountId: account.id 
+                    const accountDuration = accountTimer();
+                    serverLogger.info('Bank sync completed for account', { 
+                        accountId: account.id,
+                        durationMs: accountDuration
                     });
                 } catch (bankSyncError) { // catch bankSyncError
                     accountsFailed++;
@@ -313,8 +331,8 @@ async function syncBank(server) {
                         name: account.name,
                         error: bankSyncError.message
                     });
-                    logger.error('Error syncing bank for account', {
-                        server: name,
+                    accountTimer();
+                    serverLogger.error('Error syncing bank for account', {
                         accountId: account.id,
                         error: bankSyncError.message,
                         errorCode: bankSyncError.code
@@ -322,19 +340,22 @@ async function syncBank(server) {
                 }
             }
         } else {
-            logger.warn('No accounts found to sync', { server: name });
+            serverLogger.warn('No accounts found to sync');
         }
 
-        logger.info('Starting final file sync', { server: name });
+        serverLogger.info('Starting final file sync');
         await runWithRetries(
             async () => await actual.sync(),
             syncConfig.maxRetries,
             syncConfig.baseRetryDelayMs
         );
-        logger.info('Final file sync completed', { server: name });
+        serverLogger.info('Final file sync completed');
         
-        // Calculate sync duration
-        const durationMs = Date.now() - syncStartTime;
+        // Calculate sync duration and log performance
+        const durationMs = endTimer({ 
+            accountsProcessed: accountsSucceeded,
+            accountsFailed 
+        });
         
         // Update health check with successful sync
         if (healthCheck) {
@@ -388,15 +409,12 @@ async function syncBank(server) {
         }
         
     } catch (error) {
-        logger.error(`Error syncing bank for server`, {
-            server: name,
+        const durationMs = endTimer({ error: error.message });
+        serverLogger.error(`Error syncing bank for server`, {
             error: error.message,
             errorCode: error.code,
             errorStack: error.stack
         });
-        
-        // Calculate sync duration
-        const durationMs = Date.now() - syncStartTime;
         
         // Update health check with failed sync
         if (healthCheck) {
@@ -472,16 +490,15 @@ async function syncBank(server) {
         }
     } finally {
         try {
-            logger.debug('Shutting down Actual API connection', { server: name });
+            serverLogger.debug('Shutting down Actual API connection');
             await actual.shutdown();
-            logger.debug('Shutdown complete', { server: name });
+            serverLogger.debug('Shutdown complete');
         } catch (shutdownError) {
-            logger.error('Error during shutdown', {
-                server: name,
+            serverLogger.error('Error during shutdown', {
                 error: shutdownError.message
             });
         }
-        logger.clearCorrelationId();
+        serverLogger.clearCorrelationId();
     }
 }
 

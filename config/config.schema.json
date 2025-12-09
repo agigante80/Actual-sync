@@ -62,6 +62,22 @@
                 "examples": ["0 2 * * *", "*/30 * * * *"]
               }
             }
+          },
+          "logging": {
+            "type": "object",
+            "description": "Server-specific logging configuration (overrides global settings)",
+            "properties": {
+              "level": {
+                "type": "string",
+                "description": "Log level for this server (DEBUG, INFO, WARN, ERROR)",
+                "enum": ["DEBUG", "INFO", "WARN", "ERROR", "debug", "info", "warn", "error"]
+              },
+              "format": {
+                "type": "string",
+                "description": "Log output format for this server",
+                "enum": ["pretty", "json"]
+              }
+            }
           }
         }
       }
@@ -99,7 +115,7 @@
       "properties": {
         "level": {
           "type": "string",
-          "description": "Log level (DEBUG, INFO, WARN, ERROR)",
+          "description": "Global log level (DEBUG, INFO, WARN, ERROR)",
           "enum": ["DEBUG", "INFO", "WARN", "ERROR", "debug", "info", "warn", "error"],
           "default": "INFO"
         },
@@ -112,6 +128,99 @@
         "logDir": {
           "type": "string",
           "description": "Directory for log files (optional, logs to console if not set)"
+        },
+        "rotation": {
+          "type": "object",
+          "description": "Log rotation settings",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable log rotation",
+              "default": false
+            },
+            "maxSize": {
+              "type": "string",
+              "description": "Maximum size per log file (e.g., '10M', '100K')",
+              "default": "10M"
+            },
+            "maxFiles": {
+              "type": "integer",
+              "description": "Maximum number of log files to keep",
+              "minimum": 1,
+              "default": 10
+            },
+            "compress": {
+              "type": "string",
+              "description": "Compression format for archived logs",
+              "enum": ["gzip", "none"],
+              "default": "gzip"
+            }
+          }
+        },
+        "syslog": {
+          "type": "object",
+          "description": "Syslog centralized logging configuration",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable syslog output",
+              "default": false
+            },
+            "host": {
+              "type": "string",
+              "description": "Syslog server hostname",
+              "default": "localhost"
+            },
+            "port": {
+              "type": "integer",
+              "description": "Syslog server port",
+              "minimum": 1,
+              "maximum": 65535,
+              "default": 514
+            },
+            "protocol": {
+              "type": "string",
+              "description": "Protocol to use (udp or tcp)",
+              "enum": ["udp", "tcp"],
+              "default": "udp"
+            },
+            "facility": {
+              "type": "integer",
+              "description": "Syslog facility code (0-23)",
+              "minimum": 0,
+              "maximum": 23,
+              "default": 16
+            }
+          }
+        },
+        "performance": {
+          "type": "object",
+          "description": "Performance logging settings",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable performance metrics logging",
+              "default": false
+            },
+            "thresholds": {
+              "type": "object",
+              "description": "Performance thresholds in milliseconds",
+              "properties": {
+                "slow": {
+                  "type": "integer",
+                  "description": "Threshold for slow operations (ms)",
+                  "minimum": 100,
+                  "default": 1000
+                },
+                "verySlow": {
+                  "type": "integer",
+                  "description": "Threshold for very slow operations (ms)",
+                  "minimum": 100,
+                  "default": 5000
+                }
+              }
+            }
+          }
         }
       }
     },
