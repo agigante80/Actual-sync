@@ -28,6 +28,7 @@ class HealthCheckService {
     this.syncHistory = options.syncHistory;
     this.syncBank = options.syncBank;
     this.getServers = options.getServers;
+    this.dashboardConfig = options.dashboardConfig || { enabled: true, auth: { type: 'none' } };
     this.logger = createLogger(options.loggerConfig || {});
     
     this.app = express();
@@ -50,6 +51,74 @@ class HealthCheckService {
     this.app.use(express.json());
     
     this.setupRoutes();
+  }
+
+  /**
+   * Dashboard authentication middleware
+   */
+  dashboardAuth() {
+    return (req, res, next) => {
+      // Skip if dashboard is disabled
+      if (!this.dashboardConfig.enabled) {
+        return res.status(403).json({ error: 'Dashboard is disabled' });
+      }
+
+      const authConfig = this.dashboardConfig.auth || {};
+      const authType = authConfig.type || 'none';
+
+      // No authentication required
+      if (authType === 'none') {
+        return next();
+      }
+
+      // Basic authentication
+      if (authType === 'basic') {
+        const authHeader = req.headers.authorization;
+        
+        if (!authHeader || !authHeader.startsWith('Basic ')) {
+          res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
+          return res.status(401).json({ error: 'Authentication required' });
+        }
+
+        const base64Credentials = authHeader.substring(6);
+        const credentials = Buffer.from(base64Credentials, 'base64').toString('utf8');
+        const [username, password] = credentials.split(':');
+
+        if (username === authConfig.username && password === authConfig.password) {
+          return next();
+        }
+
+        this.logger.warn('Dashboard authentication failed', { 
+          username, 
+          remoteAddress: req.ip 
+        });
+        res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+
+      // Token authentication
+      if (authType === 'token') {
+        const authHeader = req.headers.authorization;
+        
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+          return res.status(401).json({ error: 'Authentication required' });
+        }
+
+        const token = authHeader.substring(7);
+
+        if (token === authConfig.token) {
+          return next();
+        }
+
+        this.logger.warn('Dashboard token authentication failed', { 
+          remoteAddress: req.ip 
+        });
+        return res.status(401).json({ error: 'Invalid token' });
+      }
+
+      // Unknown auth type
+      return res.status(500).json({ error: 'Invalid authentication configuration' });
+    };
   }
 
   /**
@@ -159,13 +228,13 @@ class HealthCheckService {
       }
     });
 
-    // Dashboard UI
-    this.app.get('/dashboard', (req, res) => {
+    // Dashboard UI (with authentication)
+    this.app.get('/dashboard', this.dashboardAuth(), (req, res) => {
       res.sendFile(path.join(__dirname, 'dashboard.html'));
     });
 
-    // Dashboard API: Get status
-    this.app.get('/api/dashboard/status', (req, res) => {
+    // Dashboard API: Get status (with authentication)
+    this.app.get('/api/dashboard/status', this.dashboardAuth(), (req, res) => {
       const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
       
       res.json({
@@ -186,8 +255,8 @@ class HealthCheckService {
       });
     });
 
-    // Dashboard API: Trigger sync
-    this.app.post('/api/dashboard/sync', async (req, res) => {
+    // Dashboard API: Trigger sync (with authentication)
+    this.app.post('/api/dashboard/sync', this.dashboardAuth(), async (req, res) => {
       if (!this.syncBank) {
         return res.status(503).json({ 
           error: 'Sync function not available',
@@ -259,8 +328,8 @@ class HealthCheckService {
       }
     });
 
-    // Dashboard API: Get sync history
-    this.app.get('/api/dashboard/history', (req, res) => {
+    // Dashboard API: Get sync history (with authentication)
+    this.app.get('/api/dashboard/history', this.dashboardAuth(), (req, res) => {
       if (!this.syncHistory) {
         return res.status(503).json({ 
           error: 'Sync history not available'
