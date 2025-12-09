@@ -542,7 +542,10 @@
             }
 
             serversList.innerHTML = Object.entries(servers).map(([name, status]) => {
-                const isEncrypted = serverEncryptionStatus[name] === true;
+                const serverData = serverScheduleInfo[name] || {};
+                const isEncrypted = serverData.encrypted === true;
+                const schedule = serverData.schedule;
+                
                 const encryptionBadge = isEncrypted 
                     ? `<span class="encryption-badge encrypted">
                         <svg class="encryption-icon" fill="currentColor" viewBox="0 0 20 20">
@@ -557,12 +560,23 @@
                         Unencrypted
                     </span>`;
                 
+                const scheduleInfo = schedule ? `<br><span style="color: #60a5fa;">⏰</span> Next sync: ${schedule}` : '';
+                
+                const errorDisplay = status.error ? `
+                    <br>
+                    <span style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+                        <span style="color: #ef4444;">Error: ${status.error}</span>
+                        <button onclick="dismissError('${name}')" style="padding: 2px 8px; font-size: 0.75rem; background: #7f1d1d; border-radius: 4px;">Dismiss</button>
+                    </span>
+                ` : '';
+                
                 return `
-                    <li class="server-item ${status.status === 'failure' ? 'error' : ''}">
+                    <li class="server-item ${status.status === 'failure' ? 'error' : ''}" id="server-${name.replace(/[^a-zA-Z0-9]/g, '_')}">
                         <div class="server-name">${name}${encryptionBadge}</div>
                         <div class="server-info">
                             Last sync: ${status.lastSync ? formatTime(status.lastSync) : 'Never'}
-                            ${status.error ? `<br>Error: ${status.error}` : ''}
+                            ${scheduleInfo}
+                            ${errorDisplay}
                         </div>
                     </li>
                 `;
@@ -813,7 +827,19 @@
         let successRateChart = null;
         let durationChart = null;
         let timelineChart = null;
-        let serverEncryptionStatus = {};
+        let serverScheduleInfo = {};
+        
+        function dismissError(serverName) {
+            const serverId = 'server-' + serverName.replace(/[^a-zA-Z0-9]/g, '_');
+            const serverElement = document.getElementById(serverId);
+            if (serverElement) {
+                serverElement.classList.remove('error');
+                const errorSpan = serverElement.querySelector('.server-info span[style*="color: #ef4444"]');
+                if (errorSpan && errorSpan.parentElement) {
+                    errorSpan.parentElement.remove();
+                }
+            }
+        }
 
         async function updateCharts() {
             try {
@@ -985,24 +1011,27 @@
             return colors[Math.abs(hash) % colors.length];
         }
 
-        // Fetch server encryption status
-        async function fetchServerEncryption() {
+        // Fetch server information (encryption and schedules)
+        async function fetchServerInfo() {
             try {
                 const response = await fetch('/api/dashboard/servers', getFetchOptions());
                 if (response.ok) {
                     const data = await response.json();
-                    serverEncryptionStatus = {};
+                    serverScheduleInfo = {};
                     data.servers.forEach(server => {
-                        serverEncryptionStatus[server.name] = server.encrypted;
+                        serverScheduleInfo[server.name] = {
+                            encrypted: server.encrypted,
+                            schedule: server.schedule
+                        };
                     });
                 }
             } catch (error) {
-                console.error('Failed to fetch server encryption status:', error);
+                console.error('Failed to fetch server information:', error);
             }
         }
 
         // Initialize
-        fetchServerEncryption().then(() => {
+        fetchServerInfo().then(() => {
             updateDashboard();
             loadHistory();
             updateCharts();

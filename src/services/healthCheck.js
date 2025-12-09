@@ -19,6 +19,7 @@ class HealthCheckService {
    * @param {Object} options.syncHistory - SyncHistoryService instance (optional)
    * @param {Function} options.syncBank - Sync function for manual triggers (optional)
    * @param {Function} options.getServers - Function to get server list (optional)
+   * @param {Function} options.getSchedules - Function to get schedule info (optional)
    * @param {Object} options.loggerConfig - Logger configuration
    */
   constructor(options = {}) {
@@ -28,6 +29,7 @@ class HealthCheckService {
     this.syncHistory = options.syncHistory;
     this.syncBank = options.syncBank;
     this.getServers = options.getServers;
+    this.getSchedules = options.getSchedules;
     this.dashboardConfig = options.dashboardConfig || { enabled: true, auth: { type: 'none' } };
     this.logger = createLogger(options.loggerConfig || {});
     
@@ -278,7 +280,7 @@ class HealthCheckService {
       });
     });
 
-    // Dashboard API: Get server encryption status
+    // Dashboard API: Get server encryption status and schedules
     this.app.get('/api/dashboard/servers', this.dashboardAuth(), (req, res) => {
       if (!this.getServers) {
         return res.status(503).json({ 
@@ -288,14 +290,17 @@ class HealthCheckService {
 
       try {
         const servers = this.getServers();
+        const schedules = this.getSchedules ? this.getSchedules() : {};
+        
         const serverInfo = servers.map(server => ({
           name: server.name,
-          encrypted: !!(server.encryptionPassword && server.encryptionPassword.trim())
+          encrypted: !!(server.encryptionPassword && server.encryptionPassword.trim()),
+          schedule: schedules[server.name] || null
         }));
         
         res.json({ servers: serverInfo });
       } catch (error) {
-        this.logger.error('Failed to get server encryption status', { error: error.message });
+        this.logger.error('Failed to get server information', { error: error.message });
         res.status(500).json({ error: 'Failed to get server information' });
       }
     });
