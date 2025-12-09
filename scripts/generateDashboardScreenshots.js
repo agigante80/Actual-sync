@@ -83,11 +83,11 @@ async function injectFakeData(page, scenario) {
                     failedSyncs: 5,
                     successRate: '96.67%'
                 },
-                servers: [
-                    { name: 'Main Budget', status: 'success', lastSync: new Date(Date.now() - 300000).toISOString() },
-                    { name: 'Personal Budget', status: 'success', lastSync: new Date(Date.now() - 600000).toISOString() },
-                    { name: 'Family Budget', status: 'success', lastSync: new Date(Date.now() - 900000).toISOString() }
-                ]
+                servers: {
+                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 300000).toISOString() },
+                    'Personal Budget': { status: 'success', lastSync: new Date(Date.now() - 600000).toISOString() },
+                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 900000).toISOString() }
+                }
             },
             metrics: {
                 overall: { totalSyncs: 50, successCount: 48, failureCount: 2, successRate: 0.96 },
@@ -149,12 +149,12 @@ async function injectFakeData(page, scenario) {
                     failedSyncs: 30,
                     successRate: '85.00%'
                 },
-                servers: [
-                    { name: 'Main Budget', status: 'success', lastSync: new Date(Date.now() - 1800000).toISOString() },
-                    { name: 'Personal Budget', status: 'error', lastSync: new Date(Date.now() - 3600000).toISOString() },
-                    { name: 'Family Budget', status: 'success', lastSync: new Date(Date.now() - 2400000).toISOString() },
-                    { name: 'Business Budget', status: 'error', lastSync: new Date(Date.now() - 5400000).toISOString() }
-                ]
+                servers: {
+                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 1800000).toISOString() },
+                    'Personal Budget': { status: 'error', lastSync: new Date(Date.now() - 3600000).toISOString() },
+                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 2400000).toISOString() },
+                    'Business Budget': { status: 'error', lastSync: new Date(Date.now() - 5400000).toISOString() }
+                }
             },
             metrics: {
                 overall: { totalSyncs: 50, successCount: 40, failureCount: 10, successRate: 0.80 },
@@ -223,14 +223,14 @@ async function injectFakeData(page, scenario) {
                     failedSyncs: 15,
                     successRate: '97.00%'
                 },
-                servers: [
-                    { name: 'Main Budget', status: 'success', lastSync: new Date(Date.now() - 180000).toISOString() },
-                    { name: 'Personal Budget', status: 'success', lastSync: new Date(Date.now() - 240000).toISOString() },
-                    { name: 'Family Budget', status: 'success', lastSync: new Date(Date.now() - 360000).toISOString() },
-                    { name: 'Business Budget', status: 'success', lastSync: new Date(Date.now() - 480000).toISOString() },
-                    { name: 'Investments', status: 'success', lastSync: new Date(Date.now() - 600000).toISOString() },
-                    { name: 'Emergency Fund', status: 'success', lastSync: new Date(Date.now() - 720000).toISOString() }
-                ]
+                servers: {
+                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 180000).toISOString() },
+                    'Personal Budget': { status: 'success', lastSync: new Date(Date.now() - 240000).toISOString() },
+                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 360000).toISOString() },
+                    'Business Budget': { status: 'success', lastSync: new Date(Date.now() - 480000).toISOString() },
+                    'Investments': { status: 'success', lastSync: new Date(Date.now() - 600000).toISOString() },
+                    'Emergency Fund': { status: 'success', lastSync: new Date(Date.now() - 720000).toISOString() }
+                }
             },
             metrics: {
                 overall: { totalSyncs: 60, successCount: 58, failureCount: 2, successRate: 0.967 },
