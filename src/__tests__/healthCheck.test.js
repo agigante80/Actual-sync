@@ -324,4 +324,172 @@ describe('HealthCheckService', () => {
       expect(healthCheck.getStatus().syncCount).toBe(0);
     });
   });
+
+  describe('Dashboard Authentication', () => {
+    test('should allow access with auth type none', async () => {
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      
+      await hc.start();
+      const response = await httpGet(`http://127.0.0.1:${testPort}/dashboard`);
+      expect(response.statusCode).toBe(200);
+      await hc.stop();
+    });
+
+    test('should reject dashboard access when disabled', async () => {
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: false },
+        loggerConfig: { level: 'ERROR' }
+      });
+      
+      await hc.start();
+      const response = await httpGet(`http://127.0.0.1:${testPort}/dashboard`);
+      expect(response.statusCode).toBe(403);
+      expect(response.body.error).toBe('Dashboard is disabled');
+      await hc.stop();
+    });
+
+    test('should require basic authentication', async () => {
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { 
+          enabled: true, 
+          auth: { type: 'basic', username: 'admin', password: 'secret' } 
+        },
+        loggerConfig: { level: 'ERROR' }
+      });
+      
+      await hc.start();
+      
+      // Without credentials
+      const response1 = await httpGet(`http://127.0.0.1:${testPort}/dashboard`);
+      expect(response1.statusCode).toBe(401);
+      
+      // With wrong credentials
+      const wrongAuth = Buffer.from('admin:wrong').toString('base64');
+      const response2 = await new Promise((resolve) => {
+        const req = http.get({
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/dashboard',
+          headers: { 'Authorization': `Basic ${wrongAuth}` }
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            resolve({ statusCode: res.statusCode, body: JSON.parse(data) });
+          });
+        });
+      });
+      expect(response2.statusCode).toBe(401);
+      
+      // With correct credentials
+      const correctAuth = Buffer.from('admin:secret').toString('base64');
+      const response3 = await new Promise((resolve) => {
+        const req = http.get({
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/dashboard',
+          headers: { 'Authorization': `Basic ${correctAuth}` }
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            resolve({ statusCode: res.statusCode });
+          });
+        });
+      });
+      expect(response3.statusCode).toBe(200);
+      
+      await hc.stop();
+    });
+
+    test('should require token authentication', async () => {
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { 
+          enabled: true, 
+          auth: { type: 'token', token: 'my-secret-token' } 
+        },
+        loggerConfig: { level: 'ERROR' }
+      });
+      
+      await hc.start();
+      
+      // Without token
+      const response1 = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/status`);
+      expect(response1.statusCode).toBe(401);
+      
+      // With wrong token
+      const response2 = await new Promise((resolve) => {
+        const req = http.get({
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/dashboard/status',
+          headers: { 'Authorization': 'Bearer wrong-token' }
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            resolve({ statusCode: res.statusCode, body: JSON.parse(data) });
+          });
+        });
+      });
+      expect(response2.statusCode).toBe(401);
+      
+      // With correct token
+      const response3 = await new Promise((resolve) => {
+        const req = http.get({
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/dashboard/status',
+          headers: { 'Authorization': 'Bearer my-secret-token' }
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            resolve({ statusCode: res.statusCode, body: JSON.parse(data) });
+          });
+        });
+      });
+      expect(response3.statusCode).toBe(200);
+      
+      await hc.stop();
+    });
+
+    test('should protect all dashboard routes', async () => {
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { 
+          enabled: true, 
+          auth: { type: 'token', token: 'test-token' } 
+        },
+        loggerConfig: { level: 'ERROR' }
+      });
+      
+      await hc.start();
+      
+      const routes = [
+        '/dashboard',
+        '/api/dashboard/status',
+        '/api/dashboard/history'
+      ];
+      
+      for (const route of routes) {
+        const response = await httpGet(`http://127.0.0.1:${testPort}${route}`);
+        expect(response.statusCode).toBe(401);
+      }
+      
+      await hc.stop();
+    });
+  });
 });

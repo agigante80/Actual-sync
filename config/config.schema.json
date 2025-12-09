@@ -131,6 +131,41 @@
           "description": "Host to bind health check server",
           "default": "0.0.0.0",
           "examples": ["0.0.0.0", "127.0.0.1", "localhost"]
+        },
+        "dashboard": {
+          "type": "object",
+          "description": "Dashboard authentication and access control",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable web dashboard access",
+              "default": true
+            },
+            "auth": {
+              "type": "object",
+              "description": "Authentication configuration for dashboard",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "description": "Authentication type",
+                  "enum": ["none", "basic", "token"],
+                  "default": "none"
+                },
+                "username": {
+                  "type": "string",
+                  "description": "Username for basic authentication (required if type=basic)"
+                },
+                "password": {
+                  "type": "string",
+                  "description": "Password for basic authentication (required if type=basic)"
+                },
+                "token": {
+                  "type": "string",
+                  "description": "Bearer token for token authentication (required if type=token)"
+                }
+              }
+            }
+          }
         }
       }
     },

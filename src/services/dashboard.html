@@ -369,10 +369,18 @@
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
 
+        // Get auth headers from current page request
+        // Browser will automatically include credentials for same-origin requests
+        function getFetchOptions() {
+            return {
+                credentials: 'include'
+            };
+        }
+
         // Fetch and update dashboard data
         async function updateDashboard() {
             try {
-                const response = await fetch('/api/dashboard/status');
+                const response = await fetch('/api/dashboard/status', getFetchOptions());
                 const data = await response.json();
 
                 // Update system status
@@ -448,6 +456,7 @@
 
             try {
                 const response = await fetch('/api/dashboard/sync', {
+                    ...getFetchOptions(),
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ server: serverName })
@@ -468,7 +477,7 @@
 
         async function loadHistory() {
             try {
-                const response = await fetch('/api/dashboard/history?limit=10');
+                const response = await fetch('/api/dashboard/history?limit=10', getFetchOptions());
                 const history = await response.json();
 
                 const tbody = document.getElementById('history-body');
