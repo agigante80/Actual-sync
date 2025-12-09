@@ -9,6 +9,7 @@
     "list-accounts": "node scripts/listAccounts.js",
     "history": "node scripts/viewHistory.js",
     "validate-config": "node scripts/validateConfig.js",
+    "screenshots": "node scripts/generateDashboardScreenshots.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage"
@@ -73,6 +74,7 @@
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
-    "jest": "^30.2.0"
+    "jest": "^30.2.0",
+    "puppeteer": "^21.11.0"
   }
 }
