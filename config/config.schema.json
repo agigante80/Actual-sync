@@ -131,8 +131,9 @@
           "default": "pretty"
         },
         "logDir": {
-          "type": "string",
-          "description": "Directory for log files (optional, logs to console if not set)"
+          "type": ["string", "null"],
+          "description": "Directory for log files (defaults to /app/logs, set to null to disable file logging)",
+          "default": "/app/logs"
         },
         "rotation": {
           "type": "object",
