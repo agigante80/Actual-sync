@@ -160,11 +160,11 @@ class PrometheusService {
       const servers = this.getUniqueServers();
 
       for (const server of servers) {
-        const stats = this.syncHistory.getStatisticsByServer(server);
+        const stats = this.syncHistory.getStatistics({ serverName: server });
 
         if (stats) {
           // Update success rate
-          const rate = stats.totalSyncs > 0 ? stats.successfulSyncs / stats.totalSyncs : 0;
+          const rate = stats.total_syncs > 0 ? stats.successful_syncs / stats.total_syncs : 0;
           this.successRate.labels(server).set(rate);
 
           this.logger.debug('Updated success rate from history', { server, rate });
