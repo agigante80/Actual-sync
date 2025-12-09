@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Actual-sync Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -342,6 +343,25 @@
             </div>
         </div>
 
+        <!-- Metrics Charts -->
+        <div class="card">
+            <h2>Metrics & Analytics</h2>
+            <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-top: 20px;">
+                <div>
+                    <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Success Rate by Server</h3>
+                    <canvas id="successRateChart" style="max-height: 300px;"></canvas>
+                </div>
+                <div>
+                    <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Sync Duration Trend</h3>
+                    <canvas id="durationChart" style="max-height: 300px;"></canvas>
+                </div>
+            </div>
+            <div style="margin-top: 20px;">
+                <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Sync Status Timeline (Last 20 Syncs)</h3>
+                <canvas id="timelineChart" style="max-height: 200px;"></canvas>
+            </div>
+        </div>
+
         <!-- Sync History -->
         <div class="card">
             <h2>Recent Sync History</h2>
@@ -582,14 +602,195 @@
             return date.toLocaleString();
         }
 
+        // Chart.js configuration
+        Chart.defaults.color = '#94a3b8';
+        Chart.defaults.borderColor = '#334155';
+        Chart.defaults.backgroundColor = 'rgba(59, 130, 246, 0.1)';
+
+        let successRateChart = null;
+        let durationChart = null;
+        let timelineChart = null;
+
+        async function updateCharts() {
+            try {
+                const response = await fetch('/api/dashboard/metrics', getFetchOptions());
+                const metrics = await response.json();
+
+                // Success Rate Chart (Bar Chart)
+                const servers = Object.keys(metrics.byServer);
+                const successRates = servers.map(s => (metrics.byServer[s].successRate * 100).toFixed(1));
+                
+                if (successRateChart) {
+                    successRateChart.data.labels = servers;
+                    successRateChart.data.datasets[0].data = successRates;
+                    successRateChart.update();
+                } else {
+                    const ctx1 = document.getElementById('successRateChart').getContext('2d');
+                    successRateChart = new Chart(ctx1, {
+                        type: 'bar',
+                        data: {
+                            labels: servers,
+                            datasets: [{
+                                label: 'Success Rate (%)',
+                                data: successRates,
+                                backgroundColor: 'rgba(34, 197, 94, 0.5)',
+                                borderColor: 'rgba(34, 197, 94, 1)',
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: true,
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    max: 100,
+                                    grid: { color: '#334155' }
+                                },
+                                x: { grid: { display: false } }
+                            },
+                            plugins: {
+                                legend: { display: false }
+                            }
+                        }
+                    });
+                }
+
+                // Duration Chart (Line Chart)
+                const durationData = servers.map(s => {
+                    const recentSyncs = metrics.byServer[s].recentSyncs || [];
+                    return {
+                        label: s,
+                        data: recentSyncs.map((sync, idx) => ({
+                            x: idx,
+                            y: (sync.duration / 1000).toFixed(1)
+                        })),
+                        borderColor: getServerColor(s),
+                        backgroundColor: getServerColor(s, 0.1),
+                        tension: 0.3
+                    };
+                });
+
+                if (durationChart) {
+                    durationChart.data.datasets = durationData;
+                    durationChart.update();
+                } else {
+                    const ctx2 = document.getElementById('durationChart').getContext('2d');
+                    durationChart = new Chart(ctx2, {
+                        type: 'line',
+                        data: { datasets: durationData },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: true,
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: { display: true, text: 'Duration (seconds)' },
+                                    grid: { color: '#334155' }
+                                },
+                                x: {
+                                    type: 'linear',
+                                    title: { display: true, text: 'Recent Syncs' },
+                                    grid: { color: '#334155' }
+                                }
+                            },
+                            plugins: {
+                                legend: { position: 'top' }
+                            }
+                        }
+                    });
+                }
+
+                // Timeline Chart (Bar Chart showing success/failure over time)
+                const timelineLabels = metrics.timeline.map((s, idx) => {
+                    const date = new Date(s.timestamp);
+                    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                });
+                const timelineData = metrics.timeline.map(s => s.status === 'success' ? 1 : -1);
+                const timelineColors = metrics.timeline.map(s => 
+                    s.status === 'success' ? 'rgba(34, 197, 94, 0.7)' : 'rgba(239, 68, 68, 0.7)'
+                );
+
+                if (timelineChart) {
+                    timelineChart.data.labels = timelineLabels;
+                    timelineChart.data.datasets[0].data = timelineData;
+                    timelineChart.data.datasets[0].backgroundColor = timelineColors;
+                    timelineChart.update();
+                } else {
+                    const ctx3 = document.getElementById('timelineChart').getContext('2d');
+                    timelineChart = new Chart(ctx3, {
+                        type: 'bar',
+                        data: {
+                            labels: timelineLabels,
+                            datasets: [{
+                                label: 'Sync Status',
+                                data: timelineData,
+                                backgroundColor: timelineColors,
+                                borderWidth: 0
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: true,
+                            scales: {
+                                y: {
+                                    display: false,
+                                    min: -1.5,
+                                    max: 1.5
+                                },
+                                x: {
+                                    grid: { display: false }
+                                }
+                            },
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            const sync = metrics.timeline[context.dataIndex];
+                                            return [
+                                                `Server: ${sync.server}`,
+                                                `Status: ${sync.status}`,
+                                                `Duration: ${(sync.duration / 1000).toFixed(1)}s`
+                                            ];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to update charts:', error);
+            }
+        }
+
+        function getServerColor(serverName, alpha = 1) {
+            const colors = [
+                `rgba(59, 130, 246, ${alpha})`,   // blue
+                `rgba(168, 85, 247, ${alpha})`,   // purple
+                `rgba(236, 72, 153, ${alpha})`,   // pink
+                `rgba(251, 146, 60, ${alpha})`,   // orange
+                `rgba(34, 197, 94, ${alpha})`,    // green
+                `rgba(14, 165, 233, ${alpha})`,   // sky
+            ];
+            let hash = 0;
+            for (let i = 0; i < serverName.length; i++) {
+                hash = serverName.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            return colors[Math.abs(hash) % colors.length];
+        }
+
         // Initialize
         updateDashboard();
         loadHistory();
+        updateCharts();
         connectWebSocket();
 
         // Refresh dashboard every 30 seconds
         setInterval(updateDashboard, 30000);
         setInterval(loadHistory, 60000);
+        setInterval(updateCharts, 30000);
     </script>
 </body>
 </html>

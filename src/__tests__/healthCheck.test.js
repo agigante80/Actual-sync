@@ -492,4 +492,114 @@ describe('HealthCheckService', () => {
       await hc.stop();
     });
   });
+
+  describe('Dashboard Metrics API', () => {
+    test('should return metrics when services are available', async () => {
+      const mockSyncHistory = {
+        getRecentSyncs: jest.fn().mockReturnValue([
+          {
+            serverName: 'Server1',
+            status: 'success',
+            duration: 5000,
+            timestamp: new Date().toISOString()
+          },
+          {
+            serverName: 'Server1',
+            status: 'error',
+            duration: 3000,
+            timestamp: new Date().toISOString()
+          }
+        ])
+      };
+
+      const mockPrometheusService = {
+        getMetrics: jest.fn().mockResolvedValue('mock metrics')
+      };
+
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        syncHistory: mockSyncHistory,
+        prometheusService: mockPrometheusService,
+        loggerConfig: { level: 'ERROR' }
+      });
+
+      await hc.start();
+      const response = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/metrics`);
+      
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toHaveProperty('overall');
+      expect(response.body).toHaveProperty('byServer');
+      expect(response.body).toHaveProperty('timeline');
+      expect(response.body.overall.totalSyncs).toBe(2);
+      expect(response.body.overall.successCount).toBe(1);
+      expect(response.body.overall.failureCount).toBe(1);
+      
+      await hc.stop();
+    });
+
+    test('should return 503 when prometheus service not available', async () => {
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        loggerConfig: { level: 'ERROR' }
+      });
+
+      await hc.start();
+      const response = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/metrics`);
+      
+      expect(response.statusCode).toBe(503);
+      expect(response.body.error).toBe('Metrics not available');
+      
+      await hc.stop();
+    });
+
+    test('should require authentication for metrics endpoint', async () => {
+      const mockSyncHistory = {
+        getRecentSyncs: jest.fn().mockReturnValue([])
+      };
+
+      const mockPrometheusService = {
+        getMetrics: jest.fn().mockResolvedValue('mock metrics')
+      };
+
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        syncHistory: mockSyncHistory,
+        prometheusService: mockPrometheusService,
+        dashboardConfig: { 
+          enabled: true, 
+          auth: { type: 'token', token: 'secret-token' } 
+        },
+        loggerConfig: { level: 'ERROR' }
+      });
+
+      await hc.start();
+      
+      // Without token
+      const response1 = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/metrics`);
+      expect(response1.statusCode).toBe(401);
+      
+      // With correct token
+      const response2 = await new Promise((resolve) => {
+        http.get({
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/dashboard/metrics',
+          headers: { 'Authorization': 'Bearer secret-token' }
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            resolve({ statusCode: res.statusCode, body: JSON.parse(data) });
+          });
+        });
+      });
+      expect(response2.statusCode).toBe(200);
+      
+      await hc.stop();
+    });
+  });
 });
+

@@ -328,6 +328,78 @@ class HealthCheckService {
       }
     });
 
+    // Dashboard API: Get metrics in JSON format (with authentication)
+    this.app.get('/api/dashboard/metrics', this.dashboardAuth(), async (req, res) => {
+      if (!this.prometheusService) {
+        return res.status(503).json({ 
+          error: 'Metrics not available',
+          message: 'Prometheus service not configured'
+        });
+      }
+
+      if (!this.syncHistory) {
+        return res.status(503).json({ 
+          error: 'Sync history not available'
+        });
+      }
+
+      try {
+        // Get recent sync history for charts
+        const recentSyncs = this.syncHistory.getRecentSyncs(50);
+        
+        // Calculate metrics by server
+        const serverMetrics = {};
+        const servers = [...new Set(recentSyncs.map(s => s.serverName))];
+        
+        servers.forEach(server => {
+          const serverSyncs = recentSyncs.filter(s => s.serverName === server);
+          const successCount = serverSyncs.filter(s => s.status === 'success').length;
+          const failureCount = serverSyncs.filter(s => s.status === 'error').length;
+          const avgDuration = serverSyncs.reduce((sum, s) => sum + s.duration, 0) / serverSyncs.length;
+          
+          serverMetrics[server] = {
+            totalSyncs: serverSyncs.length,
+            successCount,
+            failureCount,
+            successRate: successCount / serverSyncs.length,
+            avgDuration: Math.round(avgDuration),
+            recentSyncs: serverSyncs.slice(0, 10).map(s => ({
+              timestamp: s.timestamp,
+              status: s.status,
+              duration: s.duration
+            }))
+          };
+        });
+
+        // Overall metrics
+        const totalSyncs = recentSyncs.length;
+        const successCount = recentSyncs.filter(s => s.status === 'success').length;
+        const failureCount = recentSyncs.filter(s => s.status === 'error').length;
+
+        res.json({
+          overall: {
+            totalSyncs,
+            successCount,
+            failureCount,
+            successRate: totalSyncs > 0 ? successCount / totalSyncs : 0
+          },
+          byServer: serverMetrics,
+          timeline: recentSyncs.slice(0, 20).reverse().map(s => ({
+            timestamp: s.timestamp,
+            server: s.serverName,
+            status: s.status,
+            duration: s.duration
+          }))
+        });
+      } catch (error) {
+        this.logger.error('Failed to get dashboard metrics', { error: error.message });
+        res.status(500).json({ 
+          error: 'Failed to retrieve metrics',
+          message: error.message
+        });
+      }
+    });
+
     // Dashboard API: Get sync history (with authentication)
     this.app.get('/api/dashboard/history', this.dashboardAuth(), (req, res) => {
       if (!this.syncHistory) {
