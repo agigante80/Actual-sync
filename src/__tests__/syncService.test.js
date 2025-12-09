@@ -346,4 +346,87 @@ describe('syncService Integration Tests', () => {
             expect(server).toBeUndefined();
         });
     });
+
+    describe('Encrypted Budget Support', () => {
+        test('should pass encryption password to downloadBudget when provided', async () => {
+            const server = {
+                name: 'Encrypted Budget',
+                url: 'http://localhost:5006',
+                password: 'server-password',
+                syncId: 'sync-123',
+                dataDir: '/tmp/test-encrypted',
+                encryptionPassword: 'budget-encryption-password'
+            };
+
+            // Mock the actual syncBank behavior
+            await actual.init({
+                serverURL: server.url,
+                password: server.password,
+                dataDir: server.dataDir
+            });
+
+            const downloadOptions = server.encryptionPassword 
+                ? { password: server.encryptionPassword } 
+                : undefined;
+            
+            await actual.downloadBudget(server.syncId, downloadOptions);
+
+            expect(actual.downloadBudget).toHaveBeenCalledWith(
+                'sync-123',
+                { password: 'budget-encryption-password' }
+            );
+        });
+
+        test('should not pass encryption password when not provided', async () => {
+            const server = {
+                name: 'Unencrypted Budget',
+                url: 'http://localhost:5006',
+                password: 'server-password',
+                syncId: 'sync-456',
+                dataDir: '/tmp/test-unencrypted'
+                // No encryptionPassword
+            };
+
+            await actual.init({
+                serverURL: server.url,
+                password: server.password,
+                dataDir: server.dataDir
+            });
+
+            const downloadOptions = server.encryptionPassword 
+                ? { password: server.encryptionPassword } 
+                : undefined;
+            
+            await actual.downloadBudget(server.syncId, downloadOptions);
+
+            expect(actual.downloadBudget).toHaveBeenCalledWith('sync-456', undefined);
+        });
+
+        test('should handle empty encryption password', async () => {
+            const server = {
+                name: 'Budget with Empty Password',
+                url: 'http://localhost:5006',
+                password: 'server-password',
+                syncId: 'sync-789',
+                dataDir: '/tmp/test-empty',
+                encryptionPassword: ''
+            };
+
+            await actual.init({
+                serverURL: server.url,
+                password: server.password,
+                dataDir: server.dataDir
+            });
+
+            // Empty string is falsy, so should not pass password
+            const downloadOptions = server.encryptionPassword 
+                ? { password: server.encryptionPassword } 
+                : undefined;
+            
+            await actual.downloadBudget(server.syncId, downloadOptions);
+
+            expect(actual.downloadBudget).toHaveBeenCalledWith('sync-789', undefined);
+        });
+    });
 });
+

@@ -6,7 +6,8 @@
       "url": "http://actual-main:5006",
       "password": "your_password_here",
       "syncId": "your_sync_id_here",
-      "dataDir": "/app/dataDir_Main_temp"
+      "dataDir": "/app/dataDir_Main_temp",
+      "encryptionPassword": "your_budget_encryption_password_if_encrypted"
     },
     {
       "name": "Secondary",

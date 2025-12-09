@@ -37,7 +37,8 @@
       "url": "https://budget.example.com",
       "password": "SecurePassword123!",
       "syncId": "abc-123-def-456",
-      "dataDir": "/var/lib/actual-sync/production"
+      "dataDir": "/var/lib/actual-sync/production",
+      "encryptionPassword": "MyBudgetEncryptionKey"
     },
     {
       "name": "Testing",
@@ -92,6 +93,14 @@ Array of Actual Budget server configurations. At least one server is required.
   - Must be writable by the service user
   - Each server should have a unique directory
   - Example: `"/var/lib/actual-sync/main"`
+
+- **encryptionPassword** (optional, string): Budget file encryption password
+  - Only required if your budget uses end-to-end encryption (E2EE)
+  - This is **separate** from the server password
+  - Found in Actual Budget → Settings → Encryption
+  - Leave empty/omitted for unencrypted budgets
+  - Example: `"MySecretBudgetPassword123!"`
+  - ⚠️ **Security Note**: Store securely, never commit to version control
 
 - **sync** (optional, object): Per-server sync configuration overrides
   - Overrides global `sync` settings for this specific server
@@ -488,6 +497,76 @@ const prodServer = loader.getServer('Production');
 console.log('Schedule:', config.sync.schedule);
 console.log('Max retries:', config.sync.maxRetries);
 ```
+
+---
+
+## Encrypted Budgets (E2EE)
+
+Actual Budget supports end-to-end encryption (E2EE) for budget files. If your budget is encrypted, you need to provide the encryption password.
+
+### How to Configure
+
+1. **Check if your budget is encrypted:**
+   - Open Actual Budget web interface
+   - Go to Settings → Encryption
+   - If encryption is enabled, you'll see "Budget is encrypted"
+
+2. **Add encryption password to config:**
+
+```json
+{
+  "servers": [
+    {
+      "name": "Encrypted Budget",
+      "url": "https://actual.example.com",
+      "password": "server-password-here",
+      "syncId": "your-sync-id",
+      "dataDir": "/app/data/encrypted",
+      "encryptionPassword": "your-budget-encryption-password"
+    }
+  ]
+}
+```
+
+### Important Notes
+
+- **Server Password ≠ Encryption Password**:
+  - `password`: Authenticates to the Actual Budget server
+  - `encryptionPassword`: Decrypts the budget file itself
+
+- **Security Best Practices**:
+  - Never commit encryption passwords to version control
+  - Use environment variables or secrets management
+  - Keep encryption passwords separate from server passwords
+  - Regularly rotate encryption passwords
+
+- **Troubleshooting**:
+  - If sync fails with "decryption error", verify encryption password
+  - Unencrypted budgets don't need `encryptionPassword` field
+  - Empty string is treated as no encryption (budget must be unencrypted)
+
+### Example with Docker
+
+```yaml
+services:
+  actual-sync:
+    image: actual-sync:latest
+    volumes:
+      - ./config:/app/config:ro
+    environment:
+      - BUDGET_ENCRYPTION_PASSWORD=${BUDGET_ENCRYPTION_PASSWORD}
+```
+
+Then reference in config:
+```json
+{
+  "servers": [{
+    "encryptionPassword": "${BUDGET_ENCRYPTION_PASSWORD}"
+  }]
+}
+```
+
+**Note**: Environment variable substitution requires additional tooling (not built-in).
 
 ---
 
