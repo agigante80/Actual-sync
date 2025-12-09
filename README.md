@@ -68,11 +68,14 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 
 ### 📊 Monitoring & Observability
 
+- ✅ **Web Dashboard** - Real-time monitoring UI with live logs, charts, and manual sync controls
+- ✅ **Interactive Charts** - Success rates, duration trends, and sync timeline visualizations
 - ✅ **Health Check Endpoints** - HTTP endpoints for monitoring (`/health`, `/metrics`, `/ready`)
 - ✅ **Prometheus Metrics** - Comprehensive metrics export for Prometheus/Grafana dashboards
 - ✅ **Structured Logging** - JSON and pretty formats with correlation IDs and file output
 - ✅ **Sync History Database** - SQLite persistence with query interface and CLI tool (`npm run history`)
 - ✅ **Status Tracking** - Real-time health status (HEALTHY/DEGRADED/UNHEALTHY/PENDING)
+- ✅ **WebSocket Streaming** - Live log broadcast to connected dashboard clients
 
 ### 🔔 Notifications & Alerts
 
@@ -445,6 +448,31 @@ See **[docs/DOCKER.md](docs/DOCKER.md)** for Kubernetes deployment and advanced 
 
 ## 📊 Monitoring & Observability
 
+### Web Dashboard
+
+Access the interactive dashboard at `http://localhost:3000/dashboard`:
+
+![Dashboard Features](https://img.shields.io/badge/dashboard-enabled-blue)
+
+**Dashboard Capabilities:**
+- 📈 **Real-time Charts** - Success rates, duration trends, sync timelines
+- 🖥️ **System Status** - Live uptime, statistics, and server health
+- 🎮 **Manual Controls** - Trigger syncs for all servers or individual ones
+- 📡 **Live Logs** - WebSocket-streamed logs with color-coding
+- 📊 **Metrics Visualization** - Interactive Chart.js graphs
+- 🔒 **Authentication** - Optional basic auth or token-based security
+
+**Quick Access:**
+```bash
+# Default (no auth)
+open http://localhost:3000/dashboard
+
+# With authentication configured
+curl -u admin:password http://localhost:3000/dashboard
+```
+
+See **[docs/DASHBOARD.md](docs/DASHBOARD.md)** for complete dashboard documentation including authentication setup, API endpoints, and reverse proxy configuration.
+
 ### Health Check Endpoints
 
 Actual-sync exposes HTTP endpoints for monitoring:
@@ -454,6 +482,7 @@ Actual-sync exposes HTTP endpoints for monitoring:
 | `GET /health` | Basic alive check | `200 OK` or `503 Service Unavailable` |
 | `GET /metrics` | Detailed sync statistics | JSON with per-server status |
 | `GET /ready` | Kubernetes readiness probe | `200 OK` when service is ready |
+| `GET /dashboard` | Web dashboard UI | HTML dashboard interface |
 
 **Example - Health Check:**
 

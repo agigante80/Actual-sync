@@ -126,6 +126,7 @@ npm run list-accounts
 
 | Document | Description |
 |----------|-------------|
+| [DASHBOARD.md](./DASHBOARD.md) | **NEW!** Web dashboard with charts, live logs, and manual controls |
 | [NOTIFICATIONS.md](./NOTIFICATIONS.md) | Email, Telegram bot, and webhook notifications |
 | [PROMETHEUS.md](./PROMETHEUS.md) | Metrics export and Grafana dashboards |
 | [HEALTH_CHECK.md](./HEALTH_CHECK.md) | Health endpoints and status monitoring |
