@@ -398,23 +398,6 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.repositoryUrl }}
 
-      - name: Read Docker descriptions
-        id: get-desc
-        if: github.ref == 'refs/heads/main'
-        run: |
-          SHORT_DESC=$(cat docker/description/short.md)
-          echo "short=${SHORT_DESC}" >> $GITHUB_OUTPUT
-
-      - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@v4
-        if: github.ref == 'refs/heads/main'
-        with:
-          username: ${{ secrets.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}
-          short-description: ${{ steps.get-desc.outputs.short }}
-          readme-filepath: ./docker/description/long.md
-
       - name: Docker publish summary
         run: |
           echo "### 🐳 Docker Images Published" >> $GITHUB_STEP_SUMMARY
@@ -490,7 +473,45 @@ jobs:
           echo "📊 Full results available in the Security tab" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
-  # Job 9: Create GitHub Release
+  # Job 9: Update Docker Hub Description
+  # ============================================================================
+  docker-hub-description:
+    name: Update Docker Hub Description
+    runs-on: ubuntu-latest
+    needs: [version, docker-publish]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      needs.docker-publish.result == 'success'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read Docker descriptions
+        id: get-desc
+        run: |
+          SHORT_DESC=$(cat docker/description/short.md)
+          echo "short=${SHORT_DESC}" >> $GITHUB_OUTPUT
+          echo "Short description: ${SHORT_DESC}"
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}
+          short-description: ${{ steps.get-desc.outputs.short }}
+          readme-filepath: ./docker/description/long.md
+
+      - name: Docker Hub update summary
+        run: |
+          echo "### 🐳 Docker Hub Description Updated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Short Description**: ${{ steps.get-desc.outputs.short }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Long Description**: Updated from docker/description/long.md" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # Job 10: Create GitHub Release
   # ============================================================================
   release:
     name: Create Release
