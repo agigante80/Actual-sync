@@ -292,15 +292,29 @@ class HealthCheckService {
         const servers = this.getServers();
         const schedules = this.getSchedules ? this.getSchedules() : {};
         
-        // Import formatNextSync helper once
-        const { formatNextSync } = require('../syncService');
-        
         const serverInfo = servers.map(server => {
           const nextSync = schedules[server.name];
           let formattedSchedule = null;
           
           if (nextSync) {
-            formattedSchedule = formatNextSync(nextSync);
+            // Format next sync time in human-readable format
+            const now = new Date();
+            const diff = nextSync - now;
+            const hours = Math.floor(diff / (1000 * 60 * 60));
+            const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+            const days = Math.floor(hours / 24);
+            
+            if (days > 1) {
+              formattedSchedule = `in ${days} days`;
+            } else if (days === 1) {
+              formattedSchedule = `tomorrow at ${nextSync.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+            } else if (hours >= 1) {
+              formattedSchedule = `in ${hours}h ${minutes}m`;
+            } else if (minutes > 0) {
+              formattedSchedule = `in ${minutes} minutes`;
+            } else {
+              formattedSchedule = 'very soon';
+            }
           }
           
           return {
