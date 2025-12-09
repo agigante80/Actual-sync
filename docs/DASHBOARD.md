@@ -14,6 +14,19 @@ The dashboard is a single-page web application built into the health check servi
 - **Sync History** - Detailed history of recent sync operations
 - **Authentication** - Optional basic auth or token-based authentication
 
+### Dashboard Preview
+
+See [screenshots](screenshots/) directory for visual examples:
+- Healthy system with multiple servers
+- Degraded system with error tracking
+- Multi-server setup (6+ instances)
+
+**Regenerate screenshots:**
+```bash
+npm start  # Start service first
+npm run screenshots  # Generate screenshots
+```
+
 ## Accessing the Dashboard
 
 ### Default Access

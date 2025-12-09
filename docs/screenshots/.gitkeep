@@ -1,0 +1,10 @@
+# Screenshot Placeholder
+
+Screenshots will be generated when you run:
+
+```bash
+npm start  # Start the service first
+npm run screenshots  # Generate screenshots
+```
+
+This placeholder indicates that screenshots need to be generated.

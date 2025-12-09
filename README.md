@@ -312,6 +312,7 @@ See **[docs/CONFIG.md](docs/CONFIG.md)** for complete configuration reference in
 | `npm run list-accounts` | `node scripts/listAccounts.js` | List all configured bank accounts |
 | `npm run history` | `node scripts/viewHistory.js` | View sync history and statistics |
 | `npm run validate-config` | `node scripts/validateConfig.js` | Validate configuration file |
+| `npm run screenshots` | `node scripts/generateDashboardScreenshots.js` | Generate dashboard screenshots with fake data |
 | `npm test` | `jest` | Run test suite |
 | `npm run test:watch` | `jest --watch` | Run tests in watch mode |
 | `npm run test:coverage` | `jest --coverage` | Generate coverage report |
@@ -454,6 +455,32 @@ Access the interactive dashboard at `http://localhost:3000/dashboard`:
 
 ![Dashboard Features](https://img.shields.io/badge/dashboard-enabled-blue)
 
+#### Dashboard Screenshots
+
+**Healthy System - Main Dashboard View**
+
+![Dashboard Overview](docs/screenshots/dashboard-overview.png)
+
+*Real-time monitoring with success metrics, interactive charts, and live log streaming*
+
+---
+
+**Degraded System - Multiple Servers with Errors**
+
+![Dashboard Degraded](docs/screenshots/dashboard-degraded.png)
+
+*Dashboard showing failure detection across multiple budget servers with detailed error tracking*
+
+---
+
+**Multi-Server Setup - 6 Budget Instances**
+
+![Dashboard Multi-Server](docs/screenshots/dashboard-multi-server.png)
+
+*Managing multiple budget instances with per-server status and consolidated metrics*
+
+---
+
 **Dashboard Capabilities:**
 - 📈 **Real-time Charts** - Success rates, duration trends, sync timelines
 - 🖥️ **System Status** - Live uptime, statistics, and server health
@@ -469,6 +496,17 @@ open http://localhost:3000/dashboard
 
 # With authentication configured
 curl -u admin:password http://localhost:3000/dashboard
+```
+
+**Regenerating Screenshots:**
+
+When dashboard features change, regenerate screenshots:
+```bash
+# Start the service first
+npm start
+
+# In another terminal, generate screenshots
+npm run screenshots
 ```
 
 See **[docs/DASHBOARD.md](docs/DASHBOARD.md)** for complete dashboard documentation including authentication setup, API endpoints, and reverse proxy configuration.
