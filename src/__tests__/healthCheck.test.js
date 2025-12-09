@@ -711,5 +711,118 @@ describe('HealthCheckService', () => {
       await hc.stop();
     });
   });
+
+  describe('WebSocket Keep-Alive', () => {
+    test('should respond to ping with pong', async () => {
+      const WebSocket = require('ws');
+      
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        loggerConfig: { level: 'ERROR' }
+      });
+
+      await hc.start();
+
+      return new Promise((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${testPort}/ws/logs`);
+        
+        ws.on('open', () => {
+          // Send ping
+          ws.send(JSON.stringify({ type: 'ping' }));
+        });
+
+        ws.on('message', (data) => {
+          const message = JSON.parse(data);
+          
+          // Skip welcome message
+          if (message.level) return;
+          
+          // Check for pong response
+          if (message.type === 'pong') {
+            expect(message.type).toBe('pong');
+            expect(message.timestamp).toBeDefined();
+            ws.close();
+            hc.stop().then(resolve);
+          }
+        });
+      });
+    });
+
+    test('should handle multiple WebSocket clients', async () => {
+      const WebSocket = require('ws');
+      
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        loggerConfig: { level: 'ERROR' }
+      });
+
+      await hc.start();
+
+      return new Promise((resolve) => {
+        let pongCount = 0;
+        const clients = [];
+
+        for (let i = 0; i < 3; i++) {
+          const ws = new WebSocket(`ws://127.0.0.1:${testPort}/ws/logs`);
+          clients.push(ws);
+          
+          ws.on('open', () => {
+            ws.send(JSON.stringify({ type: 'ping' }));
+          });
+
+          ws.on('message', (data) => {
+            const message = JSON.parse(data);
+            if (message.type === 'pong') {
+              pongCount++;
+              if (pongCount === 3) {
+                clients.forEach(client => client.close());
+                hc.stop().then(resolve);
+              }
+            }
+          });
+        }
+      });
+    });
+
+    test('should broadcast logs to all connected clients', async () => {
+      const WebSocket = require('ws');
+      
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        loggerConfig: { level: 'ERROR' }
+      });
+
+      await hc.start();
+
+      return new Promise((resolve) => {
+        let receivedCount = 0;
+        const clients = [];
+
+        for (let i = 0; i < 2; i++) {
+          const ws = new WebSocket(`ws://127.0.0.1:${testPort}/ws/logs`);
+          clients.push(ws);
+          
+          ws.on('message', (data) => {
+            const message = JSON.parse(data);
+            if (message.message === 'Test broadcast') {
+              receivedCount++;
+              if (receivedCount === 2) {
+                clients.forEach(client => client.close());
+                hc.stop().then(resolve);
+              }
+            }
+          });
+        }
+
+        // Wait for connections to establish
+        setTimeout(() => {
+          hc.broadcastLog('INFO', 'Test broadcast', {});
+        }, 100);
+      });
+    });
+  });
 });
 

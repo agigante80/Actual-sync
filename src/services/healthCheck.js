@@ -577,6 +577,19 @@ class HealthCheckService {
           });
 
           this.wsClients.add(ws);
+          
+          // Handle incoming messages (ping/pong keep-alive)
+          ws.on('message', (data) => {
+            try {
+              const message = JSON.parse(data);
+              if (message.type === 'ping') {
+                // Respond to ping with pong
+                ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
+              }
+            } catch (error) {
+              // Ignore invalid messages
+            }
+          });
 
           ws.on('close', () => {
             this.logger.info('WebSocket client disconnected');

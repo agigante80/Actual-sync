@@ -459,3 +459,103 @@ interface ReadyResponse {
   reason?: string;          // Present when NOT_READY
 }
 ```
+
+---
+
+## WebSocket Real-Time Logs
+
+The health check service provides WebSocket endpoint for streaming real-time logs to dashboard clients.
+
+### WS /ws/logs
+
+Real-time log streaming via WebSocket connection.
+
+**Connection:**
+```javascript
+const ws = new WebSocket('ws://localhost:3000/ws/logs');
+```
+
+**Message Format (Received):**
+```json
+{
+  "level": "INFO",
+  "message": "Starting sync for server: Main Budget",
+  "metadata": {
+    "server": "Main Budget",
+    "correlationId": "abc123-def456"
+  },
+  "timestamp": "2025-12-09T10:30:00.000Z"
+}
+```
+
+**Keep-Alive (Client → Server):**
+```json
+{ "type": "ping" }
+```
+
+**Keep-Alive Response (Server → Client):**
+```json
+{
+  "type": "pong",
+  "timestamp": "2025-12-09T10:30:00.000Z"
+}
+```
+
+### WebSocket Features
+
+- **Infinite Reconnection**: Automatically reconnects with exponential backoff (1s to 30s cap)
+- **Keep-Alive**: Ping/pong every 30 seconds to detect dead connections
+- **Pause on Hidden**: Stops streaming when browser tab is hidden (saves resources)
+- **Memory Efficient**: Ring buffer stores up to 500 logs, displays last 200
+- **Broadcast to All**: All connected clients receive the same log stream
+
+### Connection Behavior
+
+1. **Initial Connection**: Client connects and receives welcome message
+2. **Log Streaming**: All logs are broadcast to connected clients in real-time
+3. **Keep-Alive**: Client sends ping every 30s, server responds with pong
+4. **Timeout Detection**: If no pong received within 60s, client reconnects
+5. **Auto-Reconnect**: On disconnect, client retries with exponential backoff
+6. **Tab Visibility**: Streaming pauses when tab is hidden, resumes when visible
+
+### Long-Running Stability
+
+The WebSocket implementation is designed for 24/7 operation:
+
+- ✅ **No memory leaks**: Ring buffer prevents unbounded memory growth
+- ✅ **Infinite retry**: Never stops trying to reconnect
+- ✅ **Connection monitoring**: Keep-alive detects silent failures
+- ✅ **Resource efficiency**: Pauses when not needed
+- ✅ **Batch DOM updates**: Reduces CPU usage and browser lag
+
+### Example Usage
+
+```javascript
+const ws = new WebSocket('ws://localhost:3000/ws/logs');
+
+ws.onopen = () => {
+  console.log('Connected to log stream');
+  
+  // Start keep-alive
+  setInterval(() => {
+    ws.send(JSON.stringify({ type: 'ping' }));
+  }, 30000);
+};
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  
+  if (data.type === 'pong') {
+    console.log('Keep-alive pong received');
+    return;
+  }
+  
+  // Handle log message
+  console.log(`[${data.level}] ${data.message}`);
+};
+
+ws.onclose = () => {
+  console.log('Disconnected, reconnecting...');
+  setTimeout(connect, 3000); // Reconnect after 3 seconds
+};
+```
