@@ -629,7 +629,7 @@ async function run() {
         // Update the reference for health check service
         scheduledJobsRef = scheduledJobs;
 
-        const now = moment().tz('Europe/Madrid');        const now = moment().tz('Europe/Madrid');
+        const now = moment().tz('Europe/Madrid');
         logger.info('Sync service initialized', {
             timezone: 'Europe/Madrid',
             currentTime: now.format(),
