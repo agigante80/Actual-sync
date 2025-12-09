@@ -262,7 +262,8 @@ Configuration is managed via `config/config.json` with JSON schema validation.
       "url": "https://budget.example.com",
       "password": "your_secure_password",
       "syncId": "your_sync_id_from_actual",
-      "dataDir": "/app/data/main"
+      "dataDir": "/app/data/main",
+      "encryptionPassword": "MyBudgetEncryptionKey"
     }
   ],
   "sync": {
@@ -280,6 +281,12 @@ Configuration is managed via `config/config.json` with JSON schema validation.
     "host": "0.0.0.0"
   }
 }
+```
+
+**Configuration Notes:**
+
+- **`encryptionPassword`** (optional): Required only if your budget file has end-to-end encryption (E2EE) enabled. This is separate from the server password.
+- **`logDir`**: Set to `/app/logs` for Docker deployments, or `./logs` for local development. Set to `null` to disable file logging and log only to console.
 ```
 
 ### Configuration Validation
@@ -446,6 +453,99 @@ curl http://localhost:3000/health
 ```
 
 See **[docs/DOCKER.md](docs/DOCKER.md)** for Kubernetes deployment and advanced configurations.
+
+---
+
+## 📝 Logging
+
+Actual-sync provides comprehensive logging with multiple output formats and destinations.
+
+### Log Configuration
+
+Configure logging in `config/config.json`:
+
+```json
+{
+  "logging": {
+    "level": "INFO",
+    "format": "json",
+    "logDir": "/app/logs",
+    "rotation": {
+      "enabled": true,
+      "maxSize": "10M",
+      "maxFiles": 10,
+      "compress": "gzip"
+    }
+  }
+}
+```
+
+### Log Levels
+
+- **`ERROR`**: Critical failures requiring immediate attention
+- **`WARN`**: Warnings and retry attempts
+- **`INFO`**: Normal operations (recommended for production)
+- **`DEBUG`**: Detailed tracing for troubleshooting
+
+### Log Formats
+
+**Pretty Format** (Human-readable, for development):
+```
+2025-12-09T22:06:15.204Z [INFO] Starting sync for server: Vega II
+2025-12-09T22:06:15.564Z [INFO] Connected to Actual server
+2025-12-09T22:06:16.440Z [INFO] Accounts fetched successfully
+```
+
+**JSON Format** (Machine-readable, for production):
+```json
+{"timestamp":"2025-12-09T22:06:15.204Z","level":"INFO","service":"actual-sync","message":"Starting sync for server: Vega II","server":"Vega II","correlationId":"9a313fa1-8901-4e3f-a167-5e3e1e8cbee3"}
+```
+
+### Log Destinations
+
+**File Logging** (Docker):
+```bash
+# Logs are written to /app/logs inside the container
+# Mount this directory to persist logs on the host
+docker run -v ./logs:/app/logs agigante80/actual-sync:latest
+
+# View logs
+tail -f ./logs/actual-sync-2025-12-09.log
+```
+
+**Console Only** (Disable file logging):
+```json
+{
+  "logging": {
+    "level": "INFO",
+    "format": "pretty",
+    "logDir": null
+  }
+}
+```
+
+**Docker Logs** (Recommended for Docker deployments):
+```bash
+# View real-time logs
+docker logs -f actual-sync
+
+# View last 100 lines
+docker logs --tail 100 actual-sync
+
+# View logs since specific time
+docker logs --since 2025-12-09T00:00:00 actual-sync
+```
+
+### Log Rotation
+
+When file logging is enabled, logs are automatically rotated to prevent disk space issues:
+
+- **Max Size**: 10MB per file (configurable)
+- **Max Files**: 10 files kept (configurable)
+- **Compression**: Old logs compressed with gzip
+- **Daily Rotation**: New file created each day
+
+See **[docs/LOGGING.md](docs/LOGGING.md)** for advanced logging configuration including syslog support and performance tracking.
 
 ---
 
