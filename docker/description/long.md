@@ -5,11 +5,14 @@
 ## Key Features
 
 - ✅ **Multi-Server Support** - Manage unlimited Actual Budget instances with independent configurations
+- ✅ **Encrypted Budget Support** - Full support for end-to-end encrypted (E2EE) budget files
 - ✅ **Flexible Scheduling** - Global and per-server cron schedules with timezone support
+- ✅ **Web Dashboard** - Interactive monitoring UI with real-time logs, charts, and manual sync controls
 - ✅ **Health Monitoring** - HTTP endpoints (`/health`, `/metrics`, `/ready`) and Prometheus metrics
 - ✅ **Multi-Channel Notifications** - Telegram bot, email, Slack, Discord, Microsoft Teams alerts
 - ✅ **Sync History** - SQLite database with CLI query tools for troubleshooting
-- ✅ **Production Ready** - 98.73% test coverage (255 tests), comprehensive error handling
+- ✅ **Comprehensive Logging** - File rotation, multiple formats (JSON/pretty), syslog support
+- ✅ **Production Ready** - 84.77% test coverage (309 tests), comprehensive error handling
 - ✅ **Secure by Default** - Non-root user, credential warnings, HTTPS enforcement
 
 ## Quick Start
@@ -50,17 +53,29 @@ Create `config/config.json`:
       "url": "https://budget.example.com",
       "password": "your_secure_password",
       "syncId": "your_sync_id",
-      "dataDir": "/app/data/main"
+      "dataDir": "/app/data/main",
+      "encryptionPassword": "MyBudgetEncryptionKey"
     }
   ],
   "sync": {
     "schedule": "0 2 * * *",
     "maxRetries": 5
   },
+  "logging": {
+    "level": "INFO",
+    "format": "json",
+    "logDir": "/app/logs"
+  },
   "healthCheck": {
     "port": 3000
   }
 }
+```
+
+**Configuration Notes:**
+- `encryptionPassword` is optional and only needed for E2EE encrypted budgets
+- `logDir` should be set to `/app/logs` to persist logs in the mounted volume
+- Set `logDir` to `null` to disable file logging (console only)
 ```
 
 ## Monitoring
