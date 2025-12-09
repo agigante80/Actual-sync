@@ -60,6 +60,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 ### 🎯 Core Capabilities
 
 - ✅ **Multi-Server Support** - Manage unlimited Actual Budget instances with independent configurations
+- ✅ **Encrypted Budget Support** - Full support for end-to-end encrypted (E2EE) budget files
 - ✅ **Flexible Scheduling** - Global and per-server cron schedules with timezone support
 - ✅ **Intelligent Retry Logic** - Exponential backoff with rate limit detection and handling
 - ✅ **Account Discovery** - List all accessible bank accounts across servers

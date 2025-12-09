@@ -39,6 +39,11 @@
             "description": "Local directory for budget file cache",
             "minLength": 1
           },
+          "encryptionPassword": {
+            "type": "string",
+            "description": "Budget file encryption password (optional, only needed if budget is encrypted with end-to-end encryption)",
+            "minLength": 1
+          },
           "sync": {
             "type": "object",
             "description": "Server-specific sync configuration (overrides global settings)",

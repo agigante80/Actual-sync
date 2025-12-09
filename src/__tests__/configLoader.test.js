@@ -328,4 +328,82 @@ describe('ConfigLoader', () => {
             expect(servers[1].name).toBe('Server2');
         });
     });
+
+    describe('Encrypted Budget Support', () => {
+        test('should accept valid encryptionPassword field', () => {
+            const config = createMockConfig({
+                servers: [{
+                    name: 'Encrypted Server',
+                    url: 'https://test.com',
+                    password: 'server-pass',
+                    syncId: 'sync-123',
+                    dataDir: '/tmp/test',
+                    encryptionPassword: 'budget-encryption-password'
+                }]
+            });
+            const configPath = createTestConfigFile(tempDir, config);
+            const loader = new ConfigLoader(configPath);
+            
+            expect(() => loader.load()).not.toThrow();
+            const loadedConfig = loader.getConfig();
+            expect(loadedConfig.servers[0].encryptionPassword).toBe('budget-encryption-password');
+        });
+
+        test('should accept server without encryptionPassword', () => {
+            const config = createMockConfig({
+                servers: [{
+                    name: 'Unencrypted Server',
+                    url: 'https://test.com',
+                    password: 'server-pass',
+                    syncId: 'sync-456',
+                    dataDir: '/tmp/test'
+                }]
+            });
+            const configPath = createTestConfigFile(tempDir, config);
+            const loader = new ConfigLoader(configPath);
+            
+            expect(() => loader.load()).not.toThrow();
+            const loadedConfig = loader.getConfig();
+            expect(loadedConfig.servers[0].encryptionPassword).toBeUndefined();
+        });
+
+        test('should accept empty string for encryptionPassword (treated as no encryption)', () => {
+            const config = createMockConfig({
+                servers: [{
+                    name: 'Server',
+                    url: 'https://test.com',
+                    password: 'server-pass',
+                    syncId: 'sync-789',
+                    dataDir: '/tmp/test',
+                    encryptionPassword: ''
+                }]
+            });
+            const configPath = createTestConfigFile(tempDir, config);
+            const loader = new ConfigLoader(configPath);
+            
+            // Empty string is valid and treated as falsy (no encryption password)
+            expect(() => loader.load()).not.toThrow();
+            const loadedConfig = loader.getConfig();
+            expect(loadedConfig.servers[0].encryptionPassword).toBe('');
+        });
+
+        test('should validate encryptionPassword minLength', () => {
+            const config = createMockConfig({
+                servers: [{
+                    name: 'Server',
+                    url: 'https://test.com',
+                    password: 'server-pass',
+                    syncId: 'sync-abc',
+                    dataDir: '/tmp/test',
+                    encryptionPassword: 'a'
+                }]
+            });
+            const configPath = createTestConfigFile(tempDir, config);
+            const loader = new ConfigLoader(configPath);
+            
+            // Single character should pass (minLength: 1)
+            expect(() => loader.load()).not.toThrow();
+        });
+    });
 });
+

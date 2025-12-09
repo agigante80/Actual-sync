@@ -229,7 +229,7 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
 }
 
 async function syncBank(server) {
-    const { name, url, password, syncId, dataDir } = server;
+    const { name, url, password, syncId, dataDir, encryptionPassword } = server;
     const syncIdLog = syncId ? syncId : "your_budget_name";
     
     // Get sync configuration for this server (server-specific or global)
@@ -281,13 +281,21 @@ async function syncBank(server) {
         });
         serverLogger.info('Connected to Actual server');
 
-        serverLogger.info(`Loading budget file`, { syncId: syncIdLog });
+        serverLogger.info(`Loading budget file`, { 
+            syncId: syncIdLog,
+            encrypted: !!encryptionPassword
+        });
+        
+        // Download budget with encryption password if provided
+        const downloadOptions = encryptionPassword ? { password: encryptionPassword } : undefined;
         await runWithRetries(
-            async () => await actual.downloadBudget(syncId),
+            async () => await actual.downloadBudget(syncId, downloadOptions),
             syncConfig.maxRetries,
             syncConfig.baseRetryDelayMs
         );
-        serverLogger.info('Budget file loaded successfully');
+        serverLogger.info('Budget file loaded successfully', {
+            encrypted: !!encryptionPassword
+        });
 
         serverLogger.debug('Fetching accounts...');
         const accounts = await actual.getAccounts();

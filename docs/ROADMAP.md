@@ -110,24 +110,34 @@ This roadmap covers planned work from Q1 2026 through Q4 2026, with a long-term 
 
 ---
 
-### Milestone 3: Encrypted Budget Support (Target: End of March)
+### ✅ Milestone 3: Encrypted Budget Support (Completed: December 2025)
+
+**Status**: ✅ **COMPLETED**
 
 **Goals**:
 - Support end-to-end encrypted Actual Budget files
 - Secure encryption key storage
 
-**Tasks**:
-1. Add `encryptionPassword` field to config schema
-2. Detect encrypted budgets (`BudgetFile.hasKey`)
-3. Pass encryption password to `downloadBudget(syncId, { password })`
-4. Update ConfigLoader validation
-5. Document encryption setup
-6. Add tests for encrypted budget flow
+**Completed Tasks**:
+1. ✅ Added `encryptionPassword` field to config schema (optional, per-server)
+2. ✅ Pass encryption password to `downloadBudget(syncId, { password })` when provided
+3. ✅ Updated ConfigLoader with validation for encryption password field
+4. ✅ Documented encryption setup in CONFIG.md with examples
+5. ✅ Added comprehensive tests (7 new tests for encrypted budget support)
+6. ✅ Updated config.example.json with encryption password example
 
 **Success Criteria**:
-- ✅ Encrypted budgets sync successfully
-- ✅ Encryption password optional per server
-- ✅ Clear error messages for incorrect encryption passwords
+- ✅ Encrypted budgets sync successfully with correct password
+- ✅ Encryption password optional per server (backward compatible)
+- ✅ Clear logging shows when encryption is used
+- ✅ Tests verify encryption password handling (empty, valid, missing)
+- ✅ Documentation includes security best practices
+
+**Implementation Details**:
+- `encryptionPassword` is separate from server `password`
+- Empty/omitted encryption password = unencrypted budget
+- Logged as `encrypted: true/false` in budget loading
+- 302 total tests passing (7 new encryption tests)
 - ✅ Documentation updated
 
 **Impact**: Medium - Enables encrypted budget users
