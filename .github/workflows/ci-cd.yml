@@ -11,12 +11,14 @@ on:
     branches:
       - main
       - develop
+      - development
     tags:
       - 'v*'
   pull_request:
     branches:
       - main
       - develop
+      - development
   workflow_dispatch:
     inputs:
       skip_tests:
@@ -321,7 +323,7 @@ jobs:
       needs.version.result == 'success' &&
       needs.docker-test.result == 'success' &&
       github.event.inputs.skip_docker_publish != 'true' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/'))
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/development' || startsWith(github.ref, 'refs/tags/'))
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -361,6 +363,8 @@ jobs:
             TAGS="${TAGS},${DOCKER_HUB_IMAGE}:latest,${GHCR_IMAGE}:latest"
           elif [[ "${{ github.ref }}" == "refs/heads/develop" ]]; then
             TAGS="${TAGS},${DOCKER_HUB_IMAGE}:develop,${GHCR_IMAGE}:develop"
+          elif [[ "${{ github.ref }}" == "refs/heads/development" ]]; then
+            TAGS="${TAGS},${DOCKER_HUB_IMAGE}:development,${GHCR_IMAGE}:development"
           fi
           
           # Add latest tag for version tag releases
