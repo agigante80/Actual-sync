@@ -58,6 +58,34 @@
         .status-unhealthy { background: #ef4444; color: white; }
         .status-pending { background: #6366f1; color: white; }
 
+        .encryption-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .encryption-badge.encrypted {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .encryption-badge.unencrypted {
+            background: rgba(148, 163, 184, 0.2);
+            color: #94a3b8;
+            border: 1px solid rgba(148, 163, 184, 0.3);
+        }
+
+        .encryption-icon {
+            width: 12px;
+            height: 12px;
+        }
+
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -441,15 +469,32 @@
                 return;
             }
 
-            serversList.innerHTML = Object.entries(servers).map(([name, status]) => `
-                <li class="server-item ${status.status === 'failure' ? 'error' : ''}">
-                    <div class="server-name">${name}</div>
-                    <div class="server-info">
-                        Last sync: ${status.lastSync ? formatTime(status.lastSync) : 'Never'}
-                        ${status.error ? `<br>Error: ${status.error}` : ''}
-                    </div>
-                </li>
-            `).join('');
+            serversList.innerHTML = Object.entries(servers).map(([name, status]) => {
+                const isEncrypted = serverEncryptionStatus[name] === true;
+                const encryptionBadge = isEncrypted 
+                    ? `<span class="encryption-badge encrypted">
+                        <svg class="encryption-icon" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
+                        </svg>
+                        Encrypted
+                    </span>`
+                    : `<span class="encryption-badge unencrypted">
+                        <svg class="encryption-icon" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M10 2a5 5 0 00-5 5v2a2 2 0 00-2 2v5a2 2 0 002 2h10a2 2 0 002-2v-5a2 2 0 00-2-2H7V7a3 3 0 015.905-.75 1 1 0 001.937-.5A5.002 5.002 0 0010 2z" />
+                        </svg>
+                        Unencrypted
+                    </span>`;
+                
+                return `
+                    <li class="server-item ${status.status === 'failure' ? 'error' : ''}">
+                        <div class="server-name">${name}${encryptionBadge}</div>
+                        <div class="server-info">
+                            Last sync: ${status.lastSync ? formatTime(status.lastSync) : 'Never'}
+                            ${status.error ? `<br>Error: ${status.error}` : ''}
+                        </div>
+                    </li>
+                `;
+            }).join('');
         }
 
         function updateServerButtons(servers) {
@@ -611,6 +656,7 @@
         let successRateChart = null;
         let durationChart = null;
         let timelineChart = null;
+        let serverEncryptionStatus = {};
 
         async function updateCharts() {
             try {
@@ -782,11 +828,29 @@
             return colors[Math.abs(hash) % colors.length];
         }
 
+        // Fetch server encryption status
+        async function fetchServerEncryption() {
+            try {
+                const response = await fetch('/api/dashboard/servers', getFetchOptions());
+                if (response.ok) {
+                    const data = await response.json();
+                    serverEncryptionStatus = {};
+                    data.servers.forEach(server => {
+                        serverEncryptionStatus[server.name] = server.encrypted;
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to fetch server encryption status:', error);
+            }
+        }
+
         // Initialize
-        updateDashboard();
-        loadHistory();
-        updateCharts();
-        connectWebSocket();
+        fetchServerEncryption().then(() => {
+            updateDashboard();
+            loadHistory();
+            updateCharts();
+            connectWebSocket();
+        });
 
         // Refresh dashboard every 30 seconds
         setInterval(updateDashboard, 30000);

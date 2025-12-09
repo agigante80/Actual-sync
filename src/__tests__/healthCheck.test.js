@@ -601,5 +601,115 @@ describe('HealthCheckService', () => {
       await hc.stop();
     });
   });
+
+  describe('Dashboard API - Server Encryption Status', () => {
+    test('should return server encryption status', async () => {
+      const mockServers = [
+        { name: 'Main Budget', encryptionPassword: 'secret123' },
+        { name: 'Family Budget', encryptionPassword: '' },
+        { name: 'Work Budget' } // No encryption password
+      ];
+
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        getServers: () => mockServers,
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+
+      await hc.start();
+      
+      const response = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/servers`);
+      expect(response.statusCode).toBe(200);
+      expect(response.body.servers).toEqual([
+        { name: 'Main Budget', encrypted: true },
+        { name: 'Family Budget', encrypted: false },
+        { name: 'Work Budget', encrypted: false }
+      ]);
+      
+      await hc.stop();
+    });
+
+    test('should return 503 when getServers not available', async () => {
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+
+      await hc.start();
+      
+      const response = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/servers`);
+      expect(response.statusCode).toBe(503);
+      expect(response.body.error).toBe('Server list not available');
+      
+      await hc.stop();
+    });
+
+    test('should require authentication when configured', async () => {
+      const mockServers = [
+        { name: 'Main Budget', encryptionPassword: 'secret123' }
+      ];
+
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        getServers: () => mockServers,
+        dashboardConfig: { 
+          enabled: true, 
+          auth: { type: 'token', token: 'test-token' } 
+        },
+        loggerConfig: { level: 'ERROR' }
+      });
+
+      await hc.start();
+      
+      // Without token
+      const response1 = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/servers`);
+      expect(response1.statusCode).toBe(401);
+      
+      // With correct token
+      const response2 = await new Promise((resolve) => {
+        http.get({
+          hostname: '127.0.0.1',
+          port: testPort,
+          path: '/api/dashboard/servers',
+          headers: { 'Authorization': 'Bearer test-token' }
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            resolve({ statusCode: res.statusCode, body: JSON.parse(data) });
+          });
+        });
+      });
+      expect(response2.statusCode).toBe(200);
+      expect(response2.body.servers).toEqual([
+        { name: 'Main Budget', encrypted: true }
+      ]);
+      
+      await hc.stop();
+    });
+
+    test('should handle getServers errors gracefully', async () => {
+      const hc = new HealthCheckService({
+        port: testPort,
+        host: '127.0.0.1',
+        getServers: () => { throw new Error('Database connection failed'); },
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+
+      await hc.start();
+      
+      const response = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/servers`);
+      expect(response.statusCode).toBe(500);
+      expect(response.body.error).toBe('Failed to get server information');
+      
+      await hc.stop();
+    });
+  });
 });
 

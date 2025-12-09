@@ -255,6 +255,28 @@ class HealthCheckService {
       });
     });
 
+    // Dashboard API: Get server encryption status
+    this.app.get('/api/dashboard/servers', this.dashboardAuth(), (req, res) => {
+      if (!this.getServers) {
+        return res.status(503).json({ 
+          error: 'Server list not available'
+        });
+      }
+
+      try {
+        const servers = this.getServers();
+        const serverInfo = servers.map(server => ({
+          name: server.name,
+          encrypted: !!(server.encryptionPassword && server.encryptionPassword.trim())
+        }));
+        
+        res.json({ servers: serverInfo });
+      } catch (error) {
+        this.logger.error('Failed to get server encryption status', { error: error.message });
+        res.status(500).json({ error: 'Failed to get server information' });
+      }
+    });
+
     // Dashboard API: Trigger sync (with authentication)
     this.app.post('/api/dashboard/sync', this.dashboardAuth(), async (req, res) => {
       if (!this.syncBank) {
