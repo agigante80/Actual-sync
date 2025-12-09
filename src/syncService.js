@@ -49,6 +49,9 @@ function formatNextSync(nextInvocation) {
     }
 }
 
+// Export formatNextSync so healthCheck service can use it
+module.exports.formatNextSync = formatNextSync;
+
 /**
  * Convert cron schedule to human-readable format
  * @param {string} cron - Cron expression (e.g., "0 5 * * 2")

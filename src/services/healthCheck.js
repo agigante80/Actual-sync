@@ -292,11 +292,23 @@ class HealthCheckService {
         const servers = this.getServers();
         const schedules = this.getSchedules ? this.getSchedules() : {};
         
-        const serverInfo = servers.map(server => ({
-          name: server.name,
-          encrypted: !!(server.encryptionPassword && server.encryptionPassword.trim()),
-          schedule: schedules[server.name] || null
-        }));
+        // Import formatNextSync helper once
+        const { formatNextSync } = require('../syncService');
+        
+        const serverInfo = servers.map(server => {
+          const nextSync = schedules[server.name];
+          let formattedSchedule = null;
+          
+          if (nextSync) {
+            formattedSchedule = formatNextSync(nextSync);
+          }
+          
+          return {
+            name: server.name,
+            encrypted: !!(server.encryptionPassword && server.encryptionPassword.trim()),
+            schedule: formattedSchedule
+          };
+        });
         
         res.json({ servers: serverInfo });
       } catch (error) {
@@ -305,7 +317,34 @@ class HealthCheckService {
       }
     });
 
-    // Dashboard API: Trigger sync (with authentication)
+    // Dashboard API: Dismiss server error (with authentication)
+    this.app.post('/api/dashboard/dismiss-error', this.dashboardAuth(), (req, res) => {
+      try {
+        const { server } = req.body;
+        
+        if (!server) {
+          return res.status(400).json({ error: 'Server name required' });
+        }
+
+        // Clear error from server status
+        if (this.serverStatuses[server]) {
+          delete this.serverStatuses[server].error;
+          this.logger.info('Server error dismissed via dashboard', {
+            server: server,
+            remoteAddress: req.ip
+          });
+        }
+        
+        res.json({ success: true, message: 'Error dismissed' });
+      } catch (error) {
+        this.logger.error('Failed to dismiss error', {
+          error: error.message
+        });
+        res.status(500).json({ error: 'Failed to dismiss error' });
+      }
+    });
+
+    // Dashboard API: Trigger manual sync (with authentication)
     this.app.post('/api/dashboard/sync', this.dashboardAuth(), async (req, res) => {
       if (!this.syncBank) {
         return res.status(503).json({ 

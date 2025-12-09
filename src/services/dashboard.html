@@ -829,15 +829,35 @@
         let timelineChart = null;
         let serverScheduleInfo = {};
         
-        function dismissError(serverName) {
-            const serverId = 'server-' + serverName.replace(/[^a-zA-Z0-9]/g, '_');
-            const serverElement = document.getElementById(serverId);
-            if (serverElement) {
-                serverElement.classList.remove('error');
-                const errorSpan = serverElement.querySelector('.server-info span[style*="color: #ef4444"]');
-                if (errorSpan && errorSpan.parentElement) {
-                    errorSpan.parentElement.remove();
+        async function dismissError(serverName) {
+            try {
+                // Call API to dismiss error on backend
+                const response = await fetch('/api/dashboard/dismiss-error', {
+                    ...getFetchOptions(),
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ server: serverName })
+                });
+
+                if (response.ok) {
+                    // Update UI to remove error display
+                    const serverId = 'server-' + serverName.replace(/[^a-zA-Z0-9]/g, '_');
+                    const serverElement = document.getElementById(serverId);
+                    if (serverElement) {
+                        serverElement.classList.remove('error');
+                        const errorSpan = serverElement.querySelector('.server-info span[style*="color: #ef4444"]');
+                        if (errorSpan && errorSpan.parentElement) {
+                            errorSpan.parentElement.remove();
+                        }
+                    }
+                    
+                    // Refresh dashboard to ensure consistency
+                    setTimeout(updateDashboard, 500);
+                } else {
+                    console.error('Failed to dismiss error:', await response.text());
                 }
+            } catch (error) {
+                console.error('Error dismissing notification:', error);
             }
         }
 
