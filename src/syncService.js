@@ -22,6 +22,34 @@ const VERSION = process.env.VERSION || (() => {
 })();
 
 /**
+ * Format next sync time in human-readable format
+ * @param {Date} nextInvocation - Next scheduled invocation time
+ * @returns {string} Human-readable format
+ */
+function formatNextSync(nextInvocation) {
+    const now = new Date();
+    const diff = nextInvocation - now;
+    
+    // Convert to hours and minutes
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    
+    if (days > 1) {
+        return `in ${days} days`;
+    } else if (days === 1) {
+        return `tomorrow at ${nextInvocation.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    } else if (hours >= 1) {
+        return `in ${hours}h ${minutes}m`;
+    } else if (minutes > 0) {
+        return `in ${minutes} minutes`;
+    } else {
+        return 'very soon';
+    }
+}
+
+/**
  * Convert cron schedule to human-readable format
  * @param {string} cron - Cron expression (e.g., "0 5 * * 2")
  * @returns {string} Human-readable description
@@ -110,6 +138,9 @@ try {
         logger.info('Prometheus metrics service enabled');
     }
     
+    // Variable to store scheduled jobs (will be populated after scheduling)
+    let scheduledJobsRef = [];
+    
     // Initialize health check service
     healthCheck = new HealthCheckService({
         port: config.healthCheck?.port || 3000,
@@ -119,6 +150,19 @@ try {
         syncHistory: syncHistory,
         syncBank: syncBank,
         getServers: () => config.servers,
+        getSchedules: () => {
+            // Return schedule info for each server
+            const scheduleMap = {};
+            scheduledJobsRef.forEach(sj => {
+                sj.servers.forEach(server => {
+                    const nextInvocation = sj.job.nextInvocation();
+                    if (nextInvocation) {
+                        scheduleMap[server.name] = formatNextSync(nextInvocation);
+                    }
+                });
+            });
+            return scheduleMap;
+        },
         loggerConfig: {
             level: config.logging.level,
             format: config.logging.format,
@@ -559,6 +603,7 @@ async function run() {
             scheduleGroups.get(scheduleStr).push(server);
         }
 
+        
         // Create one job per unique schedule
         const scheduledJobs = [];
         for (const [scheduleStr, serversWithSchedule] of scheduleGroups) {
@@ -580,8 +625,11 @@ async function run() {
             
             scheduledJobs.push({ schedule: scheduleStr, job, servers: serversWithSchedule });
         }
+        
+        // Update the reference for health check service
+        scheduledJobsRef = scheduledJobs;
 
-        const now = moment().tz('Europe/Madrid');
+        const now = moment().tz('Europe/Madrid');        const now = moment().tz('Europe/Madrid');
         logger.info('Sync service initialized', {
             timezone: 'Europe/Madrid',
             currentTime: now.format(),
