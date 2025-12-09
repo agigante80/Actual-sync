@@ -490,54 +490,7 @@ jobs:
           echo "📊 Full results available in the Security tab" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
-  # Job 9: Update GitHub Container Registry Description
-  # ============================================================================
-  ghcr-description:
-    name: Update GHCR Description
-    runs-on: ubuntu-latest
-    needs: [version, docker-publish]
-    if: |
-      github.ref == 'refs/heads/main' &&
-      needs.docker-publish.result == 'success'
-    permissions:
-      packages: write
-      contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Read descriptions
-        id: descriptions
-        run: |
-          SHORT_DESC=$(cat docker/description/short.md)
-          LONG_DESC=$(cat docker/description/long.md)
-          echo "short=${SHORT_DESC}" >> $GITHUB_OUTPUT
-          # Save long description to multiline output
-          echo "long<<EOF" >> $GITHUB_OUTPUT
-          echo "${LONG_DESC}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Update GHCR repository metadata
-        run: |
-          # Update package description using GitHub API
-          curl -X PATCH \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/orgs/${{ github.repository_owner }}/packages/container/${{ env.DOCKER_IMAGE_NAME }} \
-            -d '{"description":"${{ steps.descriptions.outputs.short }}"}'
-          
-          echo "✅ Updated GHCR package description"
-
-      - name: GHCR update summary
-        run: |
-          echo "### 📦 GHCR Description Updated" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Package**: ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Description**: ${{ steps.descriptions.outputs.short }}" >> $GITHUB_STEP_SUMMARY
-
-  # ============================================================================
-  # Job 10: Create GitHub Release
+  # Job 9: Create GitHub Release
   # ============================================================================
   release:
     name: Create Release
