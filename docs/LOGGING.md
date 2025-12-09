@@ -1,73 +1,129 @@
-# Logging Guide
+# Enhanced Logging System
 
-This document describes the structured logging system in Actual-sync.
+Comprehensive guide to Actual-sync's structured logging with rotation, centralized logging, performance tracking, and per-server configuration.
 
 ---
 
 ## 📊 Overview
 
-Actual-sync uses a custom structured logging system that provides:
-- **Log Levels**: DEBUG, INFO, WARN, ERROR
-- **Structured Output**: JSON or pretty format
+Actual-sync uses a custom structured logger with enterprise features:
+- **Log Levels**: DEBUG, INFO, WARN, ERROR with filtering
+- **Multiple Formats**: Pretty (console) or JSON (machine-readable)
 - **Correlation IDs**: Track related log entries across operations
-- **File Logging**: Optional log file output
-- **Context**: Attach metadata to log entries
+- **File Logging**: Daily files with optional rotation and compression
+- **Centralized Logging**: Syslog support (UDP/TCP)
+- **Performance Tracking**: Automatic operation timing
+- **Per-Server Config**: Override log levels per server
+- **Context Management**: Child loggers with inherited context
+- **Real-time Streaming**: WebSocket broadcasting for dashboard
 
 ---
 
 ## 🔧 Configuration
 
-Configure logging in `config/config.json`:
+### Basic Configuration
+
+Configure global logging in `config/config.json`:
 
 ```json
 {
   "logging": {
     "level": "INFO",
     "format": "pretty",
-    "logDir": null
+    "logDir": "./logs",
+    "rotation": {
+      "enabled": true,
+      "maxSize": "10M",
+      "maxFiles": 10,
+      "compress": "gzip"
+    },
+    "syslog": {
+      "enabled": false,
+      "host": "localhost",
+      "port": 514,
+      "protocol": "udp",
+      "facility": 16
+    },
+    "performance": {
+      "enabled": true,
+      "thresholds": {
+        "slow": 1000,
+        "verySlow": 5000
+      }
+    }
   }
 }
 ```
+
+### Per-Server Log Levels
+
+Override log levels for specific servers:
+
+```json
+{
+  "servers": [
+    {
+      "name": "Main Budget",
+      "url": "https://actual.example.com",
+      "logging": {
+        "level": "DEBUG",
+        "format": "json"
+      }
+    },
+    {
+      "name": "Test Budget",
+      "url": "http://localhost:5006",
+      "logging": {
+        "level": "WARN"
+      }
+    }
+  ]
+}
+```
+
+Use cases:
+- **DEBUG for problematic servers**: Get detailed logs for servers with issues
+- **WARN for stable servers**: Reduce noise from well-functioning servers
+- **JSON for automated analysis**: Use structured output for specific servers
 
 ### Configuration Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| **Basic** |
 | `level` | string | `INFO` | Log level: DEBUG, INFO, WARN, ERROR |
-| `format` | string | `pretty` | Output format: `pretty` (console) or `json` (parseable) |
+| `format` | string | `pretty` | Output format: `pretty` or `json` |
 | `logDir` | string/null | `null` | Directory for log files (null = console only) |
+| **Rotation** |
+| `rotation.enabled` | boolean | `false` | Enable log rotation |
+| `rotation.maxSize` | string | `10M` | Max file size before rotation (K, M, G) |
+| `rotation.maxFiles` | integer | `10` | Number of rotated files to keep |
+| `rotation.compress` | string | `gzip` | Compression: `gzip` or `none` |
+| **Syslog** |
+| `syslog.enabled` | boolean | `false` | Send logs to syslog server |
+| `syslog.host` | string | `localhost` | Syslog server hostname |
+| `syslog.port` | integer | `514` | Syslog server port |
+| `syslog.protocol` | string | `udp` | Protocol: `udp` or `tcp` |
+| `syslog.facility` | integer | `16` | Syslog facility code (0-23, 16=local0) |
+| **Performance** |
+| `performance.enabled` | boolean | `false` | Track operation performance |
+| `performance.thresholds.slow` | integer | `1000` | Slow operation threshold (ms) |
+| `performance.thresholds.verySlow` | integer | `5000` | Very slow operation threshold (ms) |
 
 ---
 
 ## 📈 Log Levels
 
-### ERROR (0)
-Critical errors that require attention:
-- Sync failures
-- Connection errors
-- Configuration errors
-
-### WARN (1)
-Warnings that don't stop execution:
-- Rate limit warnings
-- Network retry warnings
-- Security warnings (weak passwords, HTTP connections)
-
-### INFO (2)
-General operational information:
-- Sync start/complete
-- Server connections
-- Account processing
-
-### DEBUG (3)
-Detailed diagnostic information:
-- Directory operations
-- API call details
-- Internal state changes
-
 ### Level Hierarchy
 
-Setting a log level shows that level and all levels below it:
+| Level | Numeric | Description | Example Use Cases |
+|-------|---------|-------------|-------------------|
+| **ERROR** | 0 | Critical failures | Sync errors, connection failures, configuration errors |
+| **WARN** | 1 | Recoverable issues | Rate limits, retries, security warnings |
+| **INFO** | 2 | Normal operations | Sync start/complete, connections, account processing |
+| **DEBUG** | 3 | Detailed diagnostics | API calls, directory operations, internal state |
+
+**Filtering**: Setting a level shows that level and all levels below it.
 - `ERROR`: Only ERROR messages
 - `WARN`: WARN + ERROR
 - `INFO`: INFO + WARN + ERROR (default)
@@ -79,29 +135,100 @@ Setting a log level shows that level and all levels below it:
 
 ### Pretty Format (Default)
 
-Human-readable console output with timestamps and correlation IDs:
+Human-readable console output:
 
 ```
-2025-12-05T10:30:00.000Z [INFO] [a1b2c3d4] Starting sync for server: Main {"server":"Main","url":"https://example.com"}
-2025-12-05T10:30:01.000Z [INFO] [a1b2c3d4] Connected to Actual server {"server":"Main"}
-2025-12-05T10:30:02.000Z [WARN] [a1b2c3d4] Rate limit exceeded. Retrying in 3 seconds... {"retryDelayMs":3000}
+2025-12-09T13:00:00.000Z [INFO] [a1b2c3d4] Starting sync for server: Main {
+  "url": "https://example.com",
+  "maxRetries": 5
+}
 ```
-
-**Format**: `{timestamp} [{level}] [{correlationId}] {message} {metadata}`
 
 ### JSON Format
 
-Machine-parseable structured logs for log aggregation tools:
+Machine-parseable structured logs:
 
 ```json
 {
-  "timestamp": "2025-12-05T10:30:00.000Z",
+  "timestamp": "2025-12-09T13:00:00.000Z",
   "level": "INFO",
   "service": "actual-sync",
   "message": "Starting sync for server: Main",
-  "correlationId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "server": "Main",
-  "url": "https://example.com"
+  "correlationId": "a1b2c3d4",
+  "server": "Main"
+}
+```
+
+---
+
+## 🔄 Log Rotation
+
+Automatic file rotation based on size with compression:
+
+```json
+{
+  "logging": {
+    "rotation": {
+      "enabled": true,
+      "maxSize": "10M",
+      "maxFiles": 10,
+      "compress": "gzip"
+    }
+  }
+}
+```
+
+Files: `actual-sync.log`, `actual-sync-2025-12-08.log.gz`, etc.
+
+---
+
+## 📡 Centralized Logging (Syslog)
+
+Send logs to syslog server (RFC 5424):
+
+```json
+{
+  "logging": {
+    "syslog": {
+      "enabled": true,
+      "host": "syslog.example.com",
+      "port": 514,
+      "protocol": "udp",
+      "facility": 16
+    }
+  }
+}
+```
+
+**Facility 16** = local0 (recommended for Actual-sync)
+
+---
+
+## ⏱️ Performance Tracking
+
+Automatically log operation duration:
+
+```json
+{
+  "logging": {
+    "performance": {
+      "enabled": true,
+      "thresholds": {
+        "slow": 1000,
+        "verySlow": 5000
+      }
+    }
+  }
+}
+```
+
+Output:
+```
+2025-12-09T13:00:05.891Z [INFO] Performance: sync-Main {
+  "duration": 5368,
+  "operation": "sync-Main",
+  "slow": true,
+  "verySlow": true
 }
 ```
 
@@ -109,323 +236,205 @@ Machine-parseable structured logs for log aggregation tools:
 
 ## 🔍 Correlation IDs
 
-Correlation IDs link related log entries, making it easy to trace a single sync operation through all logs.
+Track related log entries with unique IDs:
 
-**Example**: Track a sync operation from start to finish:
 ```
 [a1b2c3d4] Starting sync for server: Main
 [a1b2c3d4] Connected to Actual server
-[a1b2c3d4] Budget file loaded successfully
-[a1b2c3d4] Starting bank sync for account
-[a1b2c3d4] Bank sync completed
+[a1b2c3d4] Sync completed
 ```
 
-Correlation IDs are:
-- Automatically generated for each sync operation
-- 36-character UUIDs
-- Included in all related log entries
-- Cleared after operation completes
+Search by correlation ID:
+```bash
+grep "a1b2c3d4" logs/actual-sync-2025-12-09.log
+```
 
 ---
 
-## 📝 Using the Logger
+## 👶 Child Loggers & Context
 
-### In Code
+Create loggers with inherited context:
+
+```javascript
+const logger = createLogger();
+const serverLogger = logger.child({ server: 'Main' });
+
+serverLogger.info('Starting sync'); 
+// Logs: {"server": "Main", "message": "Starting sync"}
+```
+
+Per-server loggers are automatically created with appropriate context.
+
+---
+
+## 📝 Usage Examples
+
+### Basic Logging
 
 ```javascript
 const { createLogger } = require('./lib/logger');
-
-// Create logger instance
 const logger = createLogger();
 
-// Log messages at different levels
-logger.error('Critical error occurred', { errorCode: 500 });
-logger.warn('Rate limit approaching', { remaining: 10 });
-logger.info('Sync started', { server: 'Main' });
-logger.debug('Processing account', { accountId: '123' });
+logger.error('Critical error', { errorCode: 500 });
+logger.warn('Warning', { remaining: 10 });
+logger.info('Info message', { server: 'Main' });
+logger.debug('Debug details', { detail: 'value' });
 ```
 
-### With Correlation IDs
-
-```javascript
-// Generate and set correlation ID
-const correlationId = logger.generateCorrelationId();
-logger.setCorrelationId(correlationId);
-
-logger.info('Operation started');
-// ... operation ...
-logger.info('Operation completed');
-
-// Clear when done
-logger.clearCorrelationId();
-```
-
-### With Metadata
-
-Attach structured data to log entries:
-
-```javascript
-logger.info('Sync completed', {
-  server: 'Main',
-  accountCount: 5,
-  duration: 30000,
-  success: true
-});
-```
-
-### Error Objects
-
-Logger automatically extracts error details:
+### With Error Objects
 
 ```javascript
 try {
-  // ... code that might throw ...
+  await riskyOperation();
 } catch (error) {
-  logger.error(error); // Automatically includes name, message, stack, code
+  logger.error(error); // Auto-extracts name, message, stack
 }
 ```
 
----
+### Performance Tracking
 
-## 📂 File Logging
-
-### Enable File Logging
-
-Set `logDir` in configuration:
-
-```json
-{
-  "logging": {
-    "level": "INFO",
-    "format": "pretty",
-    "logDir": "/var/log/actual-sync"
-  }
-}
-```
-
-### Log File Names
-
-Files are named: `{serviceName}-{YYYY-MM-DD}.log`
-
-Example: `actual-sync-2025-12-05.log`
-
-New files are created daily automatically.
-
-### Log Rotation
-
-Logs are **not automatically rotated** or cleaned up. Use system tools:
-
-**Using logrotate** (Linux):
-```
-/var/log/actual-sync/*.log {
-    daily
-    rotate 30
-    compress
-    missingok
-    notifempty
-}
-```
-
-**Manual cleanup**:
-```bash
-find /var/log/actual-sync -name "*.log" -mtime +30 -delete
+```javascript
+const endTimer = logger.startTimer('operation-name');
+await doWork();
+endTimer({ metadata: 'value' }); // Logs duration automatically
 ```
 
 ---
 
 ## 🔎 Searching Logs
 
-### Pretty Format Logs
-
-Use standard Unix tools:
+### Pretty Format
 
 ```bash
-# Find all errors
-grep "\[ERROR\]" actual-sync-2025-12-05.log
+# Find errors
+grep "\[ERROR\]" logs/actual-sync-2025-12-09.log
 
-# Find logs for specific server
-grep "\"server\":\"Main\"" actual-sync-2025-12-05.log
+# Find by server
+grep '"server":"Main"' logs/actual-sync-2025-12-09.log
 
-# Follow logs in real-time
-tail -f actual-sync-2025-12-05.log
-
-# Find by correlation ID
-grep "a1b2c3d4" actual-sync-2025-12-05.log
+# Follow real-time
+tail -f logs/actual-sync-2025-12-09.log
 ```
 
-### JSON Format Logs
-
-Use `jq` for JSON parsing:
+### JSON Format
 
 ```bash
-# Find all errors
-jq 'select(.level == "ERROR")' actual-sync-2025-12-05.log
+# Parse with jq
+cat logs/actual-sync.log | jq '.'
 
-# Find logs for specific server
-jq 'select(.server == "Main")' actual-sync-2025-12-05.log
+# Filter by level
+cat logs/actual-sync.log | jq 'select(.level=="ERROR")'
 
-# Extract messages only
-jq -r '.message' actual-sync-2025-12-05.log
-
-# Find by correlation ID
-jq 'select(.correlationId | startswith("a1b2c3d4"))' actual-sync-2025-12-05.log
+# Count errors per server
+cat logs/actual-sync.log | jq 'select(.level=="ERROR") | .server' | sort | uniq -c
 ```
 
 ---
 
-## 🚀 Production Recommendations
+## 🎯 Best Practices
 
-### Configuration
+### Development
 
-For production environments:
+```json
+{
+  "logging": {
+    "level": "DEBUG",
+    "format": "pretty",
+    "logDir": null,
+    "performance": { "enabled": true }
+  }
+}
+```
+
+### Production
 
 ```json
 {
   "logging": {
     "level": "INFO",
     "format": "json",
-    "logDir": "/var/log/actual-sync"
+    "logDir": "/var/log/actual-sync",
+    "rotation": {
+      "enabled": true,
+      "maxSize": "10M",
+      "maxFiles": 30,
+      "compress": "gzip"
+    },
+    "syslog": {
+      "enabled": true,
+      "host": "syslog.example.com"
+    },
+    "performance": { "enabled": true }
   }
 }
 ```
 
-**Why?**
-- `INFO`: Balance between detail and noise
-- `json`: Easy to parse with log aggregation tools
-- `logDir`: Persistent logs for troubleshooting
+---
 
-### Log Aggregation
+## 🐳 Docker Logging
 
-Consider integrating with:
-- **ELK Stack** (Elasticsearch, Logstash, Kibana)
-- **Splunk**
-- **Datadog**
-- **CloudWatch Logs** (AWS)
-- **Loki + Grafana**
-
-Example Filebeat configuration for ELK:
+Mount logs volume:
 
 ```yaml
-filebeat.inputs:
-- type: log
-  enabled: true
-  paths:
-    - /var/log/actual-sync/*.log
-  json.keys_under_root: true
-  json.add_error_key: true
+services:
+  actual-sync:
+    volumes:
+      - ./logs:/app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+```
 
-output.elasticsearch:
-  hosts: ["localhost:9200"]
+View logs:
+```bash
+docker compose logs -f actual-sync
 ```
 
 ---
 
-## 🐛 Debugging
+## 🔧 Troubleshooting
 
-### Enable Debug Logs
+### Logs Not Appearing
 
-Temporarily set to DEBUG level in `config/config.json`:
-
-```json
-{
-  "logging": {
-    "level": "DEBUG"
-  }
-}
+Check log level and directory permissions:
+```bash
+grep '"level"' config/config.json
+ls -ld logs/
 ```
 
-Debug logs include:
-- Directory operations
-- API connection details
-- Account fetch operations
-- Detailed retry information
+### Rotation Not Working
 
-### Common Issues
+Verify config and disk space:
+```bash
+grep "rotation" config/config.json
+df -h /var/log
+```
 
-**No logs appearing**:
-- Check log level configuration
-- Verify logger is initialized
-- Check file permissions if using `logDir`
+### Syslog Not Receiving
 
-**Too many logs**:
-- Increase log level from DEBUG to INFO
-- Reduce verbosity in production
+Test connectivity:
+```bash
+nc -u syslog.example.com 514 < /dev/null
+```
 
-**Can't find logs**:
-- Check `logDir` path
-- Verify directory exists and is writable
-- Look for logs in console if `logDir` is null
+### File Descriptor Warnings
 
----
-
-## 📚 API Reference
-
-### Logger Class
-
+Always close logger on shutdown:
 ```javascript
-const logger = new Logger({
-  level: 'INFO',        // Log level
-  format: 'pretty',     // Output format
-  logDir: null,         // Log directory
-  serviceName: 'app'    // Service name
-});
-```
-
-### Methods
-
-| Method | Description |
-|--------|-------------|
-| `error(message, meta)` | Log error message |
-| `warn(message, meta)` | Log warning message |
-| `info(message, meta)` | Log info message |
-| `debug(message, meta)` | Log debug message |
-| `setCorrelationId(id)` | Set correlation ID |
-| `clearCorrelationId()` | Clear correlation ID |
-| `generateCorrelationId()` | Generate new UUID |
-| `child(context)` | Create child logger with context |
-
-### Factory Function
-
-```javascript
-const { createLogger } = require('./lib/logger');
-
-// Reads config automatically
-const logger = createLogger();
-
-// Or with overrides
-const logger = createLogger({ level: 'DEBUG' });
+logger.close();
 ```
 
 ---
 
-## ✅ Best Practices
+## 📚 Related Documentation
 
-1. **Use appropriate levels**:
-   - ERROR: Only for actual errors
-   - WARN: Recoverable issues
-   - INFO: Important operations
-   - DEBUG: Detailed diagnostics
-
-2. **Include context**:
-   ```javascript
-   // Good
-   logger.info('Sync started', { server: 'Main', accounts: 5 });
-   
-   // Bad
-   logger.info('Sync started');
-   ```
-
-3. **Use correlation IDs** for multi-step operations
-
-4. **Don't log sensitive data**:
-   - Never log passwords
-   - Be careful with API keys
-   - Sanitize user data
-
-5. **Use JSON format in production** for better parsing
-
-6. **Monitor log volume** to avoid disk space issues
+- [Configuration Guide](./CONFIG.md)
+- [Dashboard](./DASHBOARD.md)
+- [Health Check](./HEALTH_CHECK.md)
+- [Prometheus Metrics](./PROMETHEUS.md)
 
 ---
 
-**Last Updated**: December 5, 2025
+For detailed examples and advanced usage, see the full sections above or check `config/config.example.json`.

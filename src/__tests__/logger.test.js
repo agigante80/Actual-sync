@@ -413,4 +413,303 @@ describe('Logger', () => {
             expect(callback).toHaveBeenNthCalledWith(4, 'DEBUG', 'Debug message', {});
         });
     });
+
+    describe('Log Rotation', () => {
+        test('should support rotation configuration', () => {
+            const logger = new Logger({
+                logDir: tempDir,
+                rotation: {
+                    enabled: true,
+                    maxSize: '5M',
+                    maxFiles: 5,
+                    compress: 'gzip'
+                }
+            });
+            
+            expect(logger.rotation.enabled).toBe(true);
+            expect(logger.rotation.maxSize).toBe('5M');
+            expect(logger.rotation.maxFiles).toBe(5);
+            expect(logger.rotation.compress).toBe('gzip');
+        });
+
+        test('should create rotating stream when enabled', () => {
+            const logger = new Logger({
+                logDir: tempDir,
+                rotation: {
+                    enabled: true,
+                    maxSize: '10M',
+                    maxFiles: 10,
+                    compress: 'gzip'
+                }
+            });
+            
+            expect(logger.rotatingStream).toBeDefined();
+            
+            // Cleanup
+            logger.close();
+        });
+
+        test('should not create rotating stream when disabled', () => {
+            const logger = new Logger({
+                logDir: tempDir,
+                rotation: {
+                    enabled: false
+                }
+            });
+            
+            expect(logger.rotatingStream).toBeNull();
+        });
+    });
+
+    describe('Syslog Support', () => {
+        test('should support syslog configuration', () => {
+            const logger = new Logger({
+                syslog: {
+                    enabled: true,
+                    host: 'syslog.example.com',
+                    port: 514,
+                    protocol: 'udp',
+                    facility: 16
+                }
+            });
+            
+            expect(logger.syslog.enabled).toBe(true);
+            expect(logger.syslog.host).toBe('syslog.example.com');
+            expect(logger.syslog.port).toBe(514);
+            expect(logger.syslog.protocol).toBe('udp');
+            expect(logger.syslog.facility).toBe(16);
+            
+            logger.close();
+        });
+
+        test('should convert log level to syslog severity', () => {
+            const logger = new Logger();
+            
+            expect(logger.levelToSyslogSeverity('ERROR')).toBe(3);
+            expect(logger.levelToSyslogSeverity('WARN')).toBe(4);
+            expect(logger.levelToSyslogSeverity('INFO')).toBe(6);
+            expect(logger.levelToSyslogSeverity('DEBUG')).toBe(7);
+        });
+
+        test('should format syslog message correctly', () => {
+            const logger = new Logger({
+                syslog: { facility: 16 }
+            });
+            
+            const correlationId = logger.setCorrelationId('test-id-123');
+            const message = logger.formatSyslog('INFO', 'Test message', { key: 'value' });
+            
+            expect(message).toContain('<134>'); // priority: facility*8 + severity
+            expect(message).toContain('actual-sync');
+            expect(message).toContain('Test message');
+            expect(message).toContain('correlationId="test-id-123"');
+            expect(message).toContain('key="value"');
+        });
+
+        test('should not create syslog client when disabled', () => {
+            const logger = new Logger({
+                syslog: {
+                    enabled: false
+                }
+            });
+            
+            expect(logger.syslogClient).toBeNull();
+        });
+    });
+
+    describe('Performance Tracking', () => {
+        test('should support performance configuration', () => {
+            const logger = new Logger({
+                performance: {
+                    enabled: true,
+                    thresholds: {
+                        slow: 500,
+                        verySlow: 2000
+                    }
+                }
+            });
+            
+            expect(logger.performanceEnabled).toBe(true);
+            expect(logger.performanceThresholds.slow).toBe(500);
+            expect(logger.performanceThresholds.verySlow).toBe(2000);
+        });
+
+        test('should track operation duration', (done) => {
+            const logger = new Logger({
+                level: 'DEBUG',
+                performance: {
+                    enabled: true,
+                    thresholds: {
+                        slow: 100,
+                        verySlow: 200
+                    }
+                }
+            });
+            
+            const suppress = suppressConsole();
+            const endTimer = logger.startTimer('test-operation');
+            
+            setTimeout(() => {
+                const duration = endTimer({ status: 'success' });
+                suppress.restore();
+                
+                expect(duration).toBeGreaterThan(50);
+                expect(duration).toBeLessThan(150);
+                done();
+            }, 75);
+        });
+
+        test('should log WARN for very slow operations', (done) => {
+            const logger = new Logger({
+                level: 'WARN',
+                performance: {
+                    enabled: true,
+                    thresholds: {
+                        slow: 10,
+                        verySlow: 20
+                    }
+                }
+            });
+            
+            const suppress = suppressConsole();
+            const endTimer = logger.startTimer('slow-operation');
+            
+            setTimeout(() => {
+                endTimer();
+                suppress.restore();
+                done();
+            }, 50);
+        });
+
+        test('should return no-op function when performance disabled', () => {
+            const logger = new Logger({
+                performance: {
+                    enabled: false
+                }
+            });
+            
+            const endTimer = logger.startTimer('test-operation');
+            const result = endTimer();
+            
+            expect(result).toBeUndefined();
+        });
+    });
+
+    describe('Child Logger', () => {
+        test('should create child logger with additional context', () => {
+            const logger = new Logger({
+                level: 'INFO',
+                format: 'json'
+            });
+            
+            const childLogger = logger.child({ server: 'test-server' });
+            
+            expect(childLogger).toBeInstanceOf(Logger);
+            expect(childLogger.context).toEqual({ server: 'test-server' });
+            expect(childLogger.level).toBe('INFO');
+            expect(childLogger.format).toBe('json');
+        });
+
+        test('should merge parent and child context', () => {
+            const logger = new Logger({
+                level: 'INFO',
+                context: { app: 'sync-service' }
+            });
+            
+            const childLogger = logger.child({ server: 'test-server' });
+            
+            expect(childLogger.context).toEqual({
+                app: 'sync-service',
+                server: 'test-server'
+            });
+        });
+
+        test('should include context in log output', () => {
+            const logger = new Logger({
+                level: 'INFO',
+                format: 'json'
+            });
+            
+            const childLogger = logger.child({ server: 'test-server', env: 'prod' });
+            
+            const suppress = suppressConsole();
+            const logSpy = jest.spyOn(console, 'log');
+            
+            childLogger.info('Test message');
+            
+            suppress.restore();
+            
+            const logOutput = logSpy.mock.calls[0][0];
+            const parsed = JSON.parse(logOutput);
+            
+            expect(parsed.server).toBe('test-server');
+            expect(parsed.env).toBe('prod');
+            expect(parsed.message).toBe('Test message');
+            
+            logSpy.mockRestore();
+        });
+
+        test('should inherit correlation ID from parent', () => {
+            const logger = new Logger({ level: 'INFO' });
+            logger.setCorrelationId('parent-id');
+            
+            const childLogger = logger.child({ component: 'test' });
+            
+            expect(childLogger.correlationId).toBe('parent-id');
+        });
+
+        test('should share streams with parent', () => {
+            const logger = new Logger({
+                logDir: tempDir,
+                rotation: {
+                    enabled: true,
+                    maxSize: '10M',
+                    maxFiles: 10,
+                    compress: 'gzip'
+                }
+            });
+            
+            const childLogger = logger.child({ component: 'test' });
+            
+            expect(childLogger.rotatingStream).toBe(logger.rotatingStream);
+            
+            logger.close();
+        });
+    });
+
+    describe('Logger Cleanup', () => {
+        test('should close rotating stream on cleanup', () => {
+            const logger = new Logger({
+                logDir: tempDir,
+                rotation: {
+                    enabled: true,
+                    maxSize: '10M',
+                    maxFiles: 10,
+                    compress: 'gzip'
+                }
+            });
+            
+            const endSpy = jest.spyOn(logger.rotatingStream, 'end');
+            
+            logger.close();
+            
+            expect(endSpy).toHaveBeenCalled();
+        });
+
+        test('should close syslog client on cleanup', () => {
+            const logger = new Logger({
+                syslog: {
+                    enabled: true,
+                    host: 'localhost',
+                    port: 514
+                }
+            });
+            
+            const closeSpy = jest.spyOn(logger.syslogClient, 'close');
+            
+            logger.close();
+            
+            expect(closeSpy).toHaveBeenCalled();
+        });
+    });
 });

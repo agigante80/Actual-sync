@@ -17,6 +17,9 @@
       "sync": {
         "schedule": "0 4 * * *",
         "maxRetries": 3
+      },
+      "logging": {
+        "level": "DEBUG"
       }
     }
   ],
@@ -27,7 +30,28 @@
   },
   "logging": {
     "level": "INFO",
-    "format": "pretty"
+    "format": "pretty",
+    "logDir": "./logs",
+    "rotation": {
+      "enabled": true,
+      "maxSize": "10M",
+      "maxFiles": 10,
+      "compress": "gzip"
+    },
+    "syslog": {
+      "enabled": false,
+      "host": "localhost",
+      "port": 514,
+      "protocol": "udp",
+      "facility": 16
+    },
+    "performance": {
+      "enabled": true,
+      "thresholds": {
+        "slow": 1000,
+        "verySlow": 5000
+      }
+    }
   },
   "healthCheck": {
     "port": 3000,
