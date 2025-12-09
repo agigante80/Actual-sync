@@ -20,6 +20,7 @@ class HealthCheckService {
    * @param {Function} options.syncBank - Sync function for manual triggers (optional)
    * @param {Function} options.getServers - Function to get server list (optional)
    * @param {Function} options.getSchedules - Function to get schedule info (optional)
+   * @param {Function} options.getCronSchedules - Function to get cron schedule details (optional)
    * @param {Object} options.loggerConfig - Logger configuration
    */
   constructor(options = {}) {
@@ -30,6 +31,7 @@ class HealthCheckService {
     this.syncBank = options.syncBank;
     this.getServers = options.getServers;
     this.getSchedules = options.getSchedules;
+    this.getCronSchedules = options.getCronSchedules;
     this.dashboardConfig = options.dashboardConfig || { enabled: true, auth: { type: 'none' } };
     this.logger = createLogger(options.loggerConfig || {});
     
@@ -307,6 +309,23 @@ class HealthCheckService {
       } catch (error) {
         this.logger.error('Failed to get server information', { error: error.message });
         res.status(500).json({ error: 'Failed to get server information' });
+      }
+    });
+
+    // Dashboard API: Get cron schedules (with authentication)
+    this.app.get('/api/dashboard/schedules', this.dashboardAuth(), (req, res) => {
+      if (!this.getCronSchedules) {
+        return res.status(503).json({ 
+          error: 'Schedule information not available'
+        });
+      }
+
+      try {
+        const schedules = this.getCronSchedules();
+        res.json({ schedules });
+      } catch (error) {
+        this.logger.error('Failed to get schedule information', { error: error.message });
+        res.status(500).json({ error: 'Failed to get schedule information' });
       }
     });
 

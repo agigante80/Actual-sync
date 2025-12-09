@@ -166,6 +166,15 @@ try {
             });
             return scheduleMap;
         },
+        getCronSchedules: () => {
+            // Return cron schedule information for dashboard
+            return scheduledJobsRef.map(sj => ({
+                cron: sj.schedule,
+                cronHuman: cronToHuman(sj.schedule),
+                servers: sj.servers.map(s => s.name),
+                nextInvocation: sj.job.nextInvocation()?.toString()
+            }));
+        },
         loggerConfig: {
             level: config.logging.level,
             format: config.logging.format,
