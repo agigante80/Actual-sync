@@ -1447,15 +1447,28 @@
                 const orphanedDiv = document.getElementById('orphaned-servers-list');
                 
                 if (result.orphaned && result.orphaned.length > 0) {
-                    orphanedDiv.innerHTML = result.orphaned.map(server => `
+                    orphanedDiv.innerHTML = result.orphaned.map((server, index) => {
+                        // Escape HTML entities to prevent XSS and handle special characters
+                        const escapedName = server.server_name
+                            .replace(/&/g, '&amp;')
+                            .replace(/</g, '&lt;')
+                            .replace(/>/g, '&gt;')
+                            .replace(/"/g, '&quot;')
+                            .replace(/'/g, '&#39;');
+                        
+                        return `
                         <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px; background: #1e293b; border-radius: 4px; margin-bottom: 8px;">
                             <div>
-                                <div style="color: #e2e8f0; font-weight: 500;">${server.server_name}</div>
+                                <div style="color: #e2e8f0; font-weight: 500;">${escapedName}</div>
                                 <div style="color: #94a3b8; font-size: 0.85rem;">${server.sync_count} sync records</div>
                             </div>
-                            <button onclick="deleteOrphanedServer('${server.server_name}')" class="danger" style="padding: 6px 12px; font-size: 0.85rem;">Delete History</button>
+                            <button onclick="deleteOrphanedServerByIndex(${index})" data-server-name="${escapedName}" class="danger" style="padding: 6px 12px; font-size: 0.85rem;">Delete History</button>
                         </div>
-                    `).join('');
+                    `;
+                    }).join('');
+                    
+                    // Store orphaned servers in a global variable for deletion
+                    window.__orphanedServers = result.orphaned;
                 } else {
                     orphanedDiv.innerHTML = '<div style="color: #94a3b8; padding: 10px; background: #1e293b; border-radius: 4px;">No orphaned servers found</div>';
                 }
@@ -1463,6 +1476,17 @@
                 console.error('Failed to load orphaned servers:', error);
                 document.getElementById('orphaned-servers-list').innerHTML = '<div style="color: #ef4444;">Failed to load orphaned servers</div>';
             }
+        }
+        
+        async function deleteOrphanedServerByIndex(index) {
+            // Get server name from global storage (avoids string escaping issues)
+            const server = window.__orphanedServers && window.__orphanedServers[index];
+            if (!server) {
+                alert('Failed to identify server for deletion');
+                return;
+            }
+            
+            await deleteOrphanedServer(server.server_name);
         }
         
         async function deleteOrphanedServer(serverName) {
