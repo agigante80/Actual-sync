@@ -464,20 +464,32 @@ async function syncBank(server) {
             durationMs = Date.now() - syncStartTime;
         }
         
-        // Update health check with successful sync
+        // Determine sync status based on account results
+        const syncStatus = accountsFailed > 0 && accountsSucceeded === 0 ? 'failure' : 
+                          accountsFailed > 0 ? 'partial' : 'success';
+        const errorMessage = accountsFailed > 0 ? 
+            `${accountsFailed} account(s) failed to sync: ${failedAccounts.map(a => a.error).join('; ')}` : 
+            null;
+        
+        // Update health check with sync status
         if (healthCheck) {
-            healthCheck.updateSyncStatus({ status: 'success', serverName: name });
+            healthCheck.updateSyncStatus({ 
+                status: syncStatus === 'partial' ? 'success' : syncStatus, 
+                serverName: name,
+                error: errorMessage 
+            });
         }
         
         // Record sync in history
         if (syncHistory) {
             syncHistory.recordSync({
                 serverName: name,
-                status: 'success',
+                status: syncStatus,
                 durationMs,
                 accountsProcessed,
                 accountsSucceeded,
                 accountsFailed,
+                errorMessage,
                 correlationId
             });
         }
@@ -486,29 +498,30 @@ async function syncBank(server) {
         if (prometheusService) {
             prometheusService.recordSync({
                 server: name,
-                status: 'success',
+                status: syncStatus === 'partial' ? 'success' : syncStatus,
                 duration: durationMs,
                 accountsProcessed: accountsSucceeded,
                 accountsFailed: accountsFailed
             });
         }
         
-        // Record successful sync result for notification tracking
+        // Record sync result for notification tracking
         if (notificationService) {
-            notificationService.recordSyncResult(name, true, correlationId);
+            notificationService.recordSyncResult(name, syncStatus !== 'failure', correlationId);
         }
         
-        // Send Telegram bot notification for successful sync
+        // Send Telegram bot notification
         if (telegramBot) {
             try {
                 await telegramBot.notifySync({
-                    status: 'success',
+                    status: syncStatus,
                     serverName: name,
                     duration: durationMs,
                     accountsProcessed: accountsSucceeded,
                     accountsFailed: accountsFailed,
                     succeededAccounts: succeededAccounts,
-                    failedAccounts: failedAccounts
+                    failedAccounts: failedAccounts,
+                    errorMessage: errorMessage
                 });
             } catch (botError) {
                 logger.error('Failed to send Telegram bot notification', { error: botError.message });
