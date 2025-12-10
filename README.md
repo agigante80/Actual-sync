@@ -918,6 +918,7 @@ Comprehensive documentation is available in the `docs/` directory:
 ### Features & Configuration
 - **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** - Notification setup (Email, Telegram, Slack, Discord, Teams)
 - **[docs/TESTING.md](docs/TESTING.md)** - Testing guide and coverage
+- **[docs/VERSIONING.md](docs/VERSIONING.md)** - Semantic versioning and release process
 
 ### Security & Compliance
 - **[docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md)** - Security best practices
