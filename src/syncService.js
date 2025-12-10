@@ -61,7 +61,7 @@ function cronToHuman(cron) {
     const parts = cron.split(' ');
     if (parts.length !== 5) return cron;
     
-    const [minute, hour, , , dayOfWeek] = parts;
+    const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
     
     // Day names
     const days = {
@@ -69,22 +69,51 @@ function cronToHuman(cron) {
         '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'
     };
     
+    // Handle minute intervals (e.g., */15, */30)
+    if (minute.startsWith('*/')) {
+        const interval = minute.substring(2);
+        if (hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+            return `Every ${interval} minutes`;
+        }
+    }
+    
+    // Handle hourly patterns (e.g., 0 * * * *)
+    if (minute.match(/^\d+$/) && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+        return `Every hour at minute ${minute}`;
+    }
+    
+    // Handle hour intervals (e.g., 0 */6 * * *)
+    if (hour.startsWith('*/')) {
+        const interval = hour.substring(2);
+        return `Every ${interval} hours at minute ${minute}`;
+    }
+    
     let timeStr = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
     
-    if (dayOfWeek === '*') {
+    if (dayOfWeek === '*' && dayOfMonth === '*') {
         return `Daily at ${timeStr}`;
     }
     
-    const daysList = dayOfWeek.split(',').map(d => days[d.trim()]);
-    if (daysList.length === 7) {
-        return `Daily at ${timeStr}`;
-    } else if (daysList.length === 5 && !daysList.includes('Saturday') && !daysList.includes('Sunday')) {
-        return `Weekdays at ${timeStr}`;
-    } else if (daysList.length === 1) {
-        return `Every ${daysList[0]} at ${timeStr}`;
-    } else {
-        return `${daysList.join(', ')} at ${timeStr}`;
+    // Handle specific days of week
+    if (dayOfWeek !== '*') {
+        const daysList = dayOfWeek.split(',').map(d => days[d.trim()]);
+        if (daysList.length === 7) {
+            return `Daily at ${timeStr}`;
+        } else if (daysList.length === 5 && !daysList.includes('Saturday') && !daysList.includes('Sunday')) {
+            return `Weekdays at ${timeStr}`;
+        } else if (daysList.length === 1) {
+            return `Every ${daysList[0]} at ${timeStr}`;
+        } else {
+            return `${daysList.join(', ')} at ${timeStr}`;
+        }
     }
+    
+    // Handle specific day of month
+    if (dayOfMonth !== '*') {
+        return `Monthly on day ${dayOfMonth} at ${timeStr}`;
+    }
+    
+    return `Daily at ${timeStr}`;
 }
 
 // Load environment variables
@@ -98,6 +127,7 @@ let syncHistory;
 let notificationService;
 let telegramBot;
 let prometheusService;
+let scheduledJobsRef = []; // Variable to store scheduled jobs (populated during run())
 try {
     const configLoader = new ConfigLoader();
     config = configLoader.load();
@@ -140,9 +170,6 @@ try {
         });
         logger.info('Prometheus metrics service enabled');
     }
-    
-    // Variable to store scheduled jobs (will be populated after scheduling)
-    let scheduledJobsRef = [];
     
     // Initialize health check service
     healthCheck = new HealthCheckService({
@@ -649,8 +676,10 @@ async function run() {
             scheduledJobs.push({ schedule: scheduleStr, job, servers: serversWithSchedule });
         }
         
-        // Update the reference for health check service
-        scheduledJobsRef = scheduledJobs;
+        // Update the reference for health check service by clearing and repopulating
+        // (this maintains the same array reference that getCronSchedules closure captured)
+        scheduledJobsRef.length = 0; // Clear the array
+        scheduledJobsRef.push(...scheduledJobs); // Add all scheduled jobs
 
         const now = moment().tz('Europe/Madrid');
         logger.info('Sync service initialized', {
@@ -666,6 +695,11 @@ async function run() {
 
         logger.info('Service started - periodic bank sync scheduled', { 
             forceRun: false
+        });
+        
+        // Start health check service (must be after scheduledJobsRef is populated)
+        healthCheck.start().catch((error) => {
+            logger.error('Failed to start health check service', { error: error.message });
         });
         
         // Start Telegram bot if enabled
@@ -708,11 +742,6 @@ async function run() {
         }
     }
 }
-
-// Start health check service
-healthCheck.start().catch((error) => {
-    logger.error('Failed to start health check service', { error: error.message });
-});
 
 // Graceful shutdown handler
 process.on('SIGTERM', async () => {
@@ -761,7 +790,10 @@ process.on('unhandledRejection', (reason, promise) => {
     });
 });
 
-run();
+run().catch((error) => {
+    logger.error('Fatal error during service initialization', { error: error.message, stack: error.stack });
+    process.exit(1);
+});
 
 
 
