@@ -56,6 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      docker_version: ${{ steps.version.outputs.docker_version }}
       is_release: ${{ steps.version.outputs.is_release }}
     steps:
       - name: Checkout code
@@ -68,8 +69,13 @@ jobs:
         run: |
           chmod +x ./get_version.sh
           VERSION=$(./get_version.sh)
+          # Sanitize version for Docker (replace + with - since Docker tags don't allow +)
+          DOCKER_VERSION="${VERSION//+/-}"
+          
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "📦 Generated version: $VERSION"
+          echo "docker_version=$DOCKER_VERSION" >> $GITHUB_OUTPUT
+          echo "📦 Semver version: $VERSION"
+          echo "🐳 Docker version: $DOCKER_VERSION"
           
           # Determine if this is a stable release (version tag like v1.0.0)
           # Stable releases: no -dev or other pre-release identifiers
@@ -85,7 +91,8 @@ jobs:
         run: |
           echo "### 📦 Version Information" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version**: \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Semver**: \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docker**: \`${{ steps.version.outputs.docker_version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Release**: ${{ steps.version.outputs.is_release }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch**: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
@@ -352,13 +359,11 @@ jobs:
       - name: Generate Docker tags
         id: meta
         run: |
-          VERSION="${{ needs.version.outputs.version }}"
-          # Sanitize version for Docker (replace + with - since Docker tags don't allow +)
-          DOCKER_VERSION="${VERSION//+/-}"
+          DOCKER_VERSION="${{ needs.version.outputs.docker_version }}"
           DOCKER_HUB_IMAGE="${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}"
           GHCR_IMAGE="ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}"
           
-          # Base tags (using sanitized version)
+          # Base tags (using Docker-safe version)
           TAGS="${DOCKER_HUB_IMAGE}:${DOCKER_VERSION},${GHCR_IMAGE}:${DOCKER_VERSION}"
           
           # Add branch-specific tags
@@ -383,10 +388,7 @@ jobs:
           fi
           
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
-          echo "docker_version=${DOCKER_VERSION}" >> $GITHUB_OUTPUT
           echo "📦 Docker tags: ${TAGS}"
-          echo "📌 Semver version: ${VERSION}"
-          echo "🐳 Docker-safe version: ${DOCKER_VERSION}"
 
       - name: Build and push Docker images
         uses: docker/build-push-action@v5
@@ -574,10 +576,10 @@ jobs:
             
             ```bash
             # Docker Hub
-            docker pull ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.version }}
+            docker pull ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.docker_version }}
             
             # GitHub Container Registry
-            docker pull ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.version }}
+            docker pull ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.docker_version }}
             ```
             
             ### 📝 Changelog
@@ -614,12 +616,12 @@ jobs:
       - name: Test Docker Hub image
         run: |
           echo "Pulling image from Docker Hub..."
-          docker pull ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.version }}
+          docker pull ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.docker_version }}
           
           echo "Testing image..."
           docker run --rm \
             -e VERSION=${{ needs.version.outputs.version }} \
-            ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.version }} \
+            ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.docker_version }} \
             node --version
           
           echo "✅ Docker Hub image is working"
@@ -627,12 +629,12 @@ jobs:
       - name: Test GHCR image
         run: |
           echo "Pulling image from GHCR..."
-          docker pull ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.version }}
+          docker pull ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.docker_version }}
           
           echo "Testing image..."
           docker run --rm \
             -e VERSION=${{ needs.version.outputs.version }} \
-            ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.version }} \
+            ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.docker_version }} \
             node --version
           
           echo "✅ GHCR image is working"
