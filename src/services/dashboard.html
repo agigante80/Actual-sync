@@ -654,18 +654,11 @@
                 const data = await response.json();
 
                 // Update system status
-                document.getElementById('version').textContent = data.version || 'unknown';
-                document.getElementById('uptime').textContent = formatUptime(data.uptime);
-                document.getElementById('last-sync').textContent = data.sync.lastSyncTime 
-                    ? formatTime(data.sync.lastSyncTime) 
-                    : 'Never';
-                document.getElementById('last-status').textContent = data.sync.lastSyncStatus || '-';
-
-                // Update statistics
-                document.getElementById('total-syncs').textContent = data.sync.totalSyncs;
-                document.getElementById('successful-syncs').textContent = data.sync.successfulSyncs;
-                document.getElementById('failed-syncs').textContent = data.sync.failedSyncs;
-                document.getElementById('success-rate').textContent = data.sync.successRate;
+                const versionEl = document.getElementById('version');
+                const uptimeEl = document.getElementById('uptime');
+                
+                if (versionEl) versionEl.textContent = data.version || 'unknown';
+                if (uptimeEl) uptimeEl.textContent = formatUptime(data.uptime);
 
                 // Update status badge and subtitle
                 const statusBadge = document.getElementById('status-badge');
