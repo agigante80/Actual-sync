@@ -237,6 +237,12 @@ class HealthCheckService {
       res.sendFile(path.join(__dirname, 'dashboard.html'));
     });
 
+    // Favicon (no authentication needed)
+    this.app.get('/favicon.svg', (req, res) => {
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.sendFile(path.join(__dirname, 'favicon.svg'));
+    });
+
     // Dashboard API: Get status (with authentication)
     this.app.get('/api/dashboard/status', this.dashboardAuth(), (req, res) => {
       const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
