@@ -435,6 +435,55 @@ class HealthCheckService {
       }
     });
 
+    // Dashboard API: Reset sync history (with authentication)
+    this.app.post('/api/dashboard/reset-history', this.dashboardAuth(), async (req, res) => {
+      if (!this.syncHistory) {
+        return res.status(503).json({ 
+          error: 'Sync history service not available'
+        });
+      }
+
+      try {
+        const { server } = req.body;
+        
+        if (server && server !== 'all') {
+          // Reset history for specific server
+          await this.syncHistory.resetServerHistory(server);
+          
+          this.logger.info('Sync history reset for server via dashboard', {
+            server: server,
+            remoteAddress: req.ip
+          });
+          
+          res.json({ 
+            success: true, 
+            message: `History reset for ${server}` 
+          });
+        } else if (server === 'all') {
+          // Reset all history
+          await this.syncHistory.resetAllHistory();
+          
+          this.logger.info('All sync history reset via dashboard', {
+            remoteAddress: req.ip
+          });
+          
+          res.json({ 
+            success: true, 
+            message: 'All history reset successfully' 
+          });
+        } else {
+          return res.status(400).json({ 
+            error: 'Server parameter required (use "all" for all servers)' 
+          });
+        }
+      } catch (error) {
+        this.logger.error('Failed to reset sync history', {
+          error: error.message
+        });
+        res.status(500).json({ error: 'Failed to reset history' });
+      }
+    });
+
     // Dashboard API: Get metrics in JSON format (with authentication)
     this.app.get('/api/dashboard/metrics', this.dashboardAuth(), async (req, res) => {
       if (!this.prometheusService) {
