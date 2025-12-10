@@ -565,6 +565,37 @@
             </div>
 
             <div class="card" style="margin-top: 20px;">
+                <h2>Orphaned Server Cleanup</h2>
+                <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
+                    Remove sync history for servers that are no longer configured. This is useful when you've removed a budget from your configuration.
+                </p>
+                <div id="orphaned-servers-list" style="margin-bottom: 15px;">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
+                <h2>Date Format Preferences</h2>
+                <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
+                    Choose how timestamps are displayed throughout the dashboard.
+                </p>
+                <div style="margin-bottom: 15px;">
+                    <label style="display: block; margin-bottom: 8px; color: #e2e8f0;">Date Format:</label>
+                    <select id="date-format-select" onchange="saveDateFormat()" style="padding: 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; min-width: 300px;">
+                        <option value="relative">Relative (e.g., "5m ago", "2h ago")</option>
+                        <option value="locale">Browser Locale (e.g., "12/10/2025, 12:30:45 PM")</option>
+                        <option value="iso">ISO 8601 (e.g., "2025-12-10T12:30:45")</option>
+                        <option value="us">US Format (e.g., "12/10/2025 12:30 PM")</option>
+                        <option value="eu">EU Format (e.g., "10/12/2025 12:30")</option>
+                        <option value="full">Full (e.g., "Tuesday, December 10, 2025 at 12:30 PM")</option>
+                    </select>
+                </div>
+                <div id="date-format-preview" style="padding: 10px; background: #1e293b; border-radius: 4px; color: #94a3b8; font-size: 0.9rem;">
+                    Preview: <span id="date-preview-text">Just now</span>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
                 <h2>Error Management</h2>
                 <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
                     Clear all error messages from servers on the Overview tab.
@@ -726,6 +757,20 @@
                 
                 const scheduleInfo = schedule ? `<br><span style="color: #60a5fa;">⏰</span> Next sync: ${schedule}` : '';
                 
+                // Format last sync with status badge
+                let lastSyncText = 'Never';
+                if (status.lastSync) {
+                    const statusBadge = status.lastSyncStatus ? 
+                        `<span style="display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 0.75rem; font-weight: 600; margin-left: 4px; background: ${
+                            status.lastSyncStatus === 'success' ? '#065f46' : 
+                            status.lastSyncStatus === 'partial' ? '#92400e' : '#7f1d1d'
+                        }; color: ${
+                            status.lastSyncStatus === 'success' ? '#10b981' : 
+                            status.lastSyncStatus === 'partial' ? '#fbbf24' : '#ef4444'
+                        };">${status.lastSyncStatus}</span>` : '';
+                    lastSyncText = `${formatTime(status.lastSync)}${statusBadge}`;
+                }
+                
                 const errorDisplay = status.error ? `
                     <br>
                     <span style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
@@ -738,7 +783,7 @@
                     <li class="server-item ${status.status === 'failure' ? 'error' : ''}" id="server-${name.replace(/[^a-zA-Z0-9]/g, '_')}">
                         <div class="server-name">${name}${encryptionBadge}</div>
                         <div class="server-info">
-                            Last sync: ${status.lastSync ? formatTime(status.lastSync) : 'Never'}
+                            Last sync: ${lastSyncText}
                             ${scheduleInfo}
                             ${errorDisplay}
                         </div>
@@ -977,11 +1022,42 @@
             const now = new Date();
             const diff = now - date;
             
-            if (diff < 60000) return 'Just now';
-            if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-            if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+            // Get user preference from localStorage (default: relative)
+            const format = localStorage.getItem('dateFormat') || 'relative';
             
-            return date.toLocaleString();
+            // For relative format, use time-based logic
+            if (format === 'relative') {
+                if (diff < 60000) return 'Just now';
+                if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+                if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+                if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
+                // Fall through to formatted date for older entries
+            }
+            
+            // Format based on user preference
+            switch (format) {
+                case 'locale':
+                    return date.toLocaleString();
+                case 'iso':
+                    return date.toISOString().replace('T', ' ').substring(0, 19);
+                case 'us':
+                    return date.toLocaleString('en-US', { 
+                        year: 'numeric', month: '2-digit', day: '2-digit',
+                        hour: '2-digit', minute: '2-digit', hour12: true 
+                    });
+                case 'eu':
+                    return date.toLocaleString('en-GB', { 
+                        year: 'numeric', month: '2-digit', day: '2-digit',
+                        hour: '2-digit', minute: '2-digit', hour12: false 
+                    });
+                case 'full':
+                    return date.toLocaleString('en-US', { 
+                        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+                        hour: '2-digit', minute: '2-digit', hour12: true 
+                    });
+                default:
+                    return date.toLocaleString();
+            }
         }
 
         // Chart.js configuration
@@ -1308,8 +1384,101 @@
                             `<option value="${name}" ${currentValue === name ? 'selected' : ''}>${name}</option>`
                         ).join('');
                 }
+                
+                // Load orphaned servers (servers in history but not in config)
+                await loadOrphanedServers(Object.keys(data.servers));
+                
+                // Load date format preference
+                loadDateFormatPreference();
             } catch (error) {
                 console.error('Failed to load settings:', error);
+            }
+        }
+        
+        async function loadOrphanedServers(configuredServers) {
+            try {
+                const response = await fetch('/api/dashboard/orphaned-servers', getFetchOptions());
+                const result = await response.json();
+                
+                const orphanedDiv = document.getElementById('orphaned-servers-list');
+                
+                if (result.orphaned && result.orphaned.length > 0) {
+                    orphanedDiv.innerHTML = result.orphaned.map(server => `
+                        <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px; background: #1e293b; border-radius: 4px; margin-bottom: 8px;">
+                            <div>
+                                <div style="color: #e2e8f0; font-weight: 500;">${server.server_name}</div>
+                                <div style="color: #94a3b8; font-size: 0.85rem;">${server.sync_count} sync records</div>
+                            </div>
+                            <button onclick="deleteOrphanedServer('${server.server_name}')" class="danger" style="padding: 6px 12px; font-size: 0.85rem;">Delete History</button>
+                        </div>
+                    `).join('');
+                } else {
+                    orphanedDiv.innerHTML = '<div style="color: #94a3b8; padding: 10px; background: #1e293b; border-radius: 4px;">No orphaned servers found</div>';
+                }
+            } catch (error) {
+                console.error('Failed to load orphaned servers:', error);
+                document.getElementById('orphaned-servers-list').innerHTML = '<div style="color: #ef4444;">Failed to load orphaned servers</div>';
+            }
+        }
+        
+        async function deleteOrphanedServer(serverName) {
+            if (!confirm(`Delete all sync history for "${serverName}"?\n\nThis server is no longer in your configuration.`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/dashboard/reset-history', {
+                    ...getFetchOptions(),
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ server: serverName })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    // Reload orphaned servers list
+                    const statusResponse = await fetch('/api/dashboard/status', getFetchOptions());
+                    const statusData = await statusResponse.json();
+                    await loadOrphanedServers(Object.keys(statusData.servers));
+                    
+                    // Refresh other tabs
+                    loadHistoryTab();
+                    loadAnalyticsTab();
+                }
+            } catch (error) {
+                console.error('Failed to delete orphaned server:', error);
+                alert('Failed to delete server history');
+            }
+        }
+        
+        function loadDateFormatPreference() {
+            const select = document.getElementById('date-format-select');
+            const savedFormat = localStorage.getItem('dateFormat') || 'relative';
+            if (select) {
+                select.value = savedFormat;
+            }
+            updateDateFormatPreview();
+        }
+        
+        function saveDateFormat() {
+            const select = document.getElementById('date-format-select');
+            const format = select.value;
+            localStorage.setItem('dateFormat', format);
+            updateDateFormatPreview();
+            
+            // Refresh all displays to show new format
+            updateDashboard();
+            loadRecentActivity();
+            loadHistoryTab();
+        }
+        
+        function updateDateFormatPreview() {
+            const previewText = document.getElementById('date-preview-text');
+            if (previewText) {
+                const now = new Date();
+                const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+                previewText.textContent = formatTime(fiveMinutesAgo.toISOString());
             }
         }
 
