@@ -254,11 +254,28 @@ class HealthCheckService {
           const configuredServers = this.getServers();
           // Initialize all servers with default status
           configuredServers.forEach(server => {
-            allServers[server.name] = this.status.serverStatuses[server.name] || {
+            const serverStatus = this.status.serverStatuses[server.name] || {
               status: 'pending',
               lastSync: null,
               error: null
             };
+            
+            // Get last sync status from sync history if available
+            if (this.syncHistory) {
+              try {
+                const lastSync = this.syncHistory.getLastSync(server.name);
+                if (lastSync) {
+                  serverStatus.lastSyncStatus = lastSync.status;
+                }
+              } catch (error) {
+                this.logger.debug('Failed to get last sync status for server', { 
+                  serverName: server.name, 
+                  error: error.message 
+                });
+              }
+            }
+            
+            allServers[server.name] = serverStatus;
           });
         } catch (error) {
           this.logger.error('Failed to get configured servers', { error: error.message });
@@ -315,6 +332,38 @@ class HealthCheckService {
       } catch (error) {
         this.logger.error('Failed to get server information', { error: error.message });
         res.status(500).json({ error: 'Failed to get server information' });
+      }
+    });
+
+    // Dashboard API: Get orphaned servers (in history but not in config)
+    this.app.get('/api/dashboard/orphaned-servers', this.dashboardAuth(), (req, res) => {
+      if (!this.syncHistory || !this.getServers) {
+        return res.status(503).json({ 
+          error: 'Service not available'
+        });
+      }
+
+      try {
+        // Get all configured server names
+        const configuredServers = this.getServers();
+        const configuredNames = configuredServers.map(s => s.name);
+        
+        // Get all servers from sync history
+        const historyServers = this.syncHistory.getAllServerNames();
+        
+        // Find servers in history but not in config
+        const orphaned = historyServers
+          .filter(historyServer => !configuredNames.includes(historyServer.server_name))
+          .map(server => ({
+            server_name: server.server_name,
+            sync_count: server.sync_count,
+            last_sync: server.last_sync
+          }));
+        
+        res.json({ orphaned });
+      } catch (error) {
+        this.logger.error('Failed to get orphaned servers', { error: error.message });
+        res.status(500).json({ error: 'Failed to get orphaned servers' });
       }
     });
 

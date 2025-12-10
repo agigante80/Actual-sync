@@ -403,6 +403,37 @@ class SyncHistoryService {
   }
 
   /**
+   * Get all unique server names from sync history with metadata
+   * @returns {Array} - Array of {server_name, sync_count, last_sync}
+   */
+  getAllServerNames() {
+    try {
+      const stmt = this.db.prepare(`
+        SELECT 
+          server_name,
+          COUNT(*) as sync_count,
+          MAX(timestamp) as last_sync
+        FROM sync_history
+        GROUP BY server_name
+        ORDER BY server_name
+      `);
+
+      const servers = stmt.all();
+
+      this.logger.debug('Retrieved all server names from history', {
+        count: servers.length
+      });
+
+      return servers;
+    } catch (error) {
+      this.logger.error('Failed to retrieve server names', {
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
    * Get recent syncs for dashboard display
    * @param {number} limit - Maximum number of records to return
    * @returns {Array} - Array of sync records formatted for dashboard
