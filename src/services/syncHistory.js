@@ -481,6 +481,51 @@ class SyncHistoryService {
   }
 
   /**
+   * Reset sync history for a specific server
+   * @param {string} serverName - Name of the server
+   */
+  async resetServerHistory(serverName) {
+    try {
+      const stmt = this.db.prepare('DELETE FROM sync_history WHERE server_name = ?');
+      const result = stmt.run(serverName);
+
+      this.logger.info('Sync history reset for server', {
+        serverName,
+        deletedRows: result.changes
+      });
+
+      return { success: true, deletedRows: result.changes };
+    } catch (error) {
+      this.logger.error('Failed to reset server history', {
+        serverName,
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Reset all sync history
+   */
+  async resetAllHistory() {
+    try {
+      const stmt = this.db.prepare('DELETE FROM sync_history');
+      const result = stmt.run();
+
+      this.logger.info('All sync history reset', {
+        deletedRows: result.changes
+      });
+
+      return { success: true, deletedRows: result.changes };
+    } catch (error) {
+      this.logger.error('Failed to reset all history', {
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
    * Close database connection
    */
   close() {

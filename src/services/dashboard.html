@@ -87,6 +87,47 @@
             height: 12px;
         }
 
+        /* Tab Navigation */
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #334155;
+            flex-wrap: wrap;
+        }
+
+        .tab {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            position: relative;
+            bottom: -2px;
+        }
+
+        .tab:hover {
+            color: #e2e8f0;
+            background: rgba(100, 116, 139, 0.1);
+        }
+
+        .tab.active {
+            color: #60a5fa;
+            border-bottom-color: #60a5fa;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -339,121 +380,189 @@
                 🏦 Actual-sync Dashboard
                 <span id="status-badge" class="status-badge status-pending">Loading...</span>
             </h1>
-            <div class="subtitle">Automated bank synchronization monitoring</div>
+            <div class="subtitle">
+                Automated bank synchronization monitoring
+                <span id="subtitle-info" style="margin-left: 15px; color: #64748b; font-size: 0.85rem;"></span>
+            </div>
         </header>
 
-        <div class="grid">
-            <!-- System Status -->
+        <!-- Tab Navigation -->
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('overview')">📊 Overview</button>
+            <button class="tab" onclick="switchTab('analytics')">📈 Analytics</button>
+            <button class="tab" onclick="switchTab('history')">🗂️ History</button>
+            <button class="tab" onclick="switchTab('settings')">⚙️ Settings</button>
+        </div>
+
+        <!-- Overview Tab -->
+        <div id="overview-tab" class="tab-content active">
+            <!-- Service Health -->
             <div class="card">
-                <h2>System Status</h2>
-                <div class="metric">
-                    <span class="metric-label">Version</span>
-                    <span class="metric-value" id="version">-</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Uptime</span>
-                    <span class="metric-value" id="uptime">-</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Last Sync</span>
-                    <span class="metric-value" id="last-sync">-</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Last Status</span>
-                    <span class="metric-value" id="last-status">-</span>
+                <h2>Service Health</h2>
+                <div class="grid">
+                    <div class="metric">
+                        <span class="metric-label">Version</span>
+                        <span class="metric-value" id="version">-</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Uptime</span>
+                        <span class="metric-value" id="uptime">-</span>
+                    </div>
                 </div>
             </div>
 
-            <!-- Sync Statistics -->
+            <!-- Configured Servers -->
             <div class="card">
-                <h2>Sync Statistics</h2>
-                <div class="metric">
-                    <span class="metric-label">Total Syncs</span>
-                    <span class="metric-value" id="total-syncs">0</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Successful</span>
-                    <span class="metric-value" id="successful-syncs">0</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Failed</span>
-                    <span class="metric-value" id="failed-syncs">0</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Success Rate</span>
-                    <span class="metric-value" id="success-rate">N/A</span>
+                <h2>Configured Servers</h2>
+                <ul id="servers" class="server-list">
+                    <li class="loading">Loading servers...</li>
+                </ul>
+                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #334155;">
+                    <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Quick Actions</h3>
+                    <div id="server-buttons" class="loading">Loading servers...</div>
+                    <div id="sync-message"></div>
                 </div>
             </div>
 
-            <!-- Manual Sync Control -->
+            <!-- Recent Activity -->
             <div class="card">
-                <h2>Manual Sync</h2>
-                <div id="server-buttons" class="loading">Loading servers...</div>
-                <div id="sync-message"></div>
-            </div>
-        </div>
-
-        <!-- Servers -->
-        <div class="card">
-            <h2>Configured Servers</h2>
-            <ul id="servers" class="server-list">
-                <li class="loading">Loading servers...</li>
-            </ul>
-        </div>
-
-        <!-- Sync Schedules -->
-        <div class="card">
-            <h2>Sync Schedules</h2>
-            <div id="schedules" style="font-size: 0.95rem; line-height: 1.8;">
-                <div class="loading">Loading schedules...</div>
-            </div>
-        </div>
-
-        <!-- Real-time Logs -->
-        <div class="card">
-            <h2>Real-time Logs</h2>
-            <div id="logs">
-                <div class="log-entry log-info">Connecting to log stream...</div>
-            </div>
-        </div>
-
-        <!-- Metrics Charts -->
-        <div class="card">
-            <h2>Metrics & Analytics</h2>
-            <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-top: 20px;">
-                <div>
-                    <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Success Rate by Server</h3>
-                    <canvas id="successRateChart" style="max-height: 300px;"></canvas>
-                </div>
-                <div>
-                    <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Sync Duration Trend</h3>
-                    <canvas id="durationChart" style="max-height: 300px;"></canvas>
+                <h2>Recent Activity (Last 5 Syncs)</h2>
+                <div id="recent-activity" style="font-size: 0.9rem;">
+                    <div class="loading">Loading activity...</div>
                 </div>
             </div>
-            <div style="margin-top: 20px;">
-                <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Sync Status Timeline (Last 20 Syncs)</h3>
-                <canvas id="timelineChart" style="max-height: 200px;"></canvas>
+
+            <!-- Real-time Logs -->
+            <div class="card">
+                <h2>Live Logs</h2>
+                <div id="logs">
+                    <div class="log-entry log-info">Connecting to log stream...</div>
+                </div>
             </div>
         </div>
 
-        <!-- Sync History -->
-        <div class="card">
-            <h2>Recent Sync History</h2>
-            <div style="overflow-x: auto;">
-                <table id="history-table">
-                    <thead>
-                        <tr>
-                            <th>Time</th>
-                            <th>Server</th>
-                            <th>Status</th>
-                            <th>Duration</th>
-                            <th>Accounts</th>
-                        </tr>
-                    </thead>
-                    <tbody id="history-body">
-                        <tr><td colspan="5" class="loading">Loading history...</td></tr>
-                    </tbody>
-                </table>
+        <!-- Analytics Tab -->
+        <div id="analytics-tab" class="tab-content">
+            <!-- All-Time Statistics -->
+            <div class="card">
+                <h2>All-Time Statistics</h2>
+                <div class="grid">
+                    <div class="metric">
+                        <span class="metric-label">Total Syncs</span>
+                        <span class="metric-value" id="analytics-total-syncs">0</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Success Rate</span>
+                        <span class="metric-value" id="analytics-success-rate">N/A</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Avg Duration</span>
+                        <span class="metric-value" id="analytics-avg-duration">-</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Fastest Sync</span>
+                        <span class="metric-value" id="analytics-fastest">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Metrics Charts -->
+            <div class="card">
+                <h2>Performance Metrics</h2>
+                <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-top: 20px;">
+                    <div>
+                        <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Success Rate by Server</h3>
+                        <canvas id="successRateChart" style="max-height: 300px;"></canvas>
+                    </div>
+                    <div>
+                        <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Sync Duration Trend</h3>
+                        <canvas id="durationChart" style="max-height: 300px;"></canvas>
+                    </div>
+                </div>
+                <div style="margin-top: 20px;">
+                    <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Sync Status Timeline (Last 20 Syncs)</h3>
+                    <canvas id="timelineChart" style="max-height: 200px;"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- History Tab -->
+        <div id="history-tab" class="tab-content">
+            <div class="card">
+                <h2>Sync History</h2>
+                <div style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
+                    <select id="history-server-filter" style="padding: 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
+                        <option value="">All Servers</option>
+                    </select>
+                    <select id="history-limit" style="padding: 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
+                        <option value="10">Last 10</option>
+                        <option value="25">Last 25</option>
+                        <option value="50" selected>Last 50</option>
+                        <option value="100">Last 100</option>
+                    </select>
+                    <button onclick="loadHistoryTab()" class="secondary">Refresh</button>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table id="history-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Server</th>
+                                <th>Status</th>
+                                <th>Duration</th>
+                                <th>Accounts</th>
+                                <th>Error</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-body">
+                            <tr><td colspan="6" class="loading">Loading history...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Tab -->
+        <div id="settings-tab" class="tab-content">
+            <div class="card">
+                <h2>Data Management</h2>
+                
+                <div style="margin-bottom: 30px; padding: 20px; background: rgba(239, 68, 68, 0.1); border-left: 4px solid #ef4444; border-radius: 4px;">
+                    <h3 style="color: #ef4444; margin-bottom: 10px;">⚠️ Danger Zone</h3>
+                    <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
+                        These actions are permanent and cannot be undone. Historical data will be deleted from the database.
+                    </p>
+                </div>
+
+                <div style="margin-bottom: 30px;">
+                    <h3 style="margin-bottom: 15px; font-size: 1.1rem;">Reset All History</h3>
+                    <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
+                        Delete all sync history for all servers. This will clear charts, statistics, and the history table.
+                    </p>
+                    <button onclick="resetHistory('all')" class="danger">Reset All History</button>
+                    <div id="reset-all-message" style="margin-top: 10px;"></div>
+                </div>
+
+                <div style="border-top: 2px solid #334155; padding-top: 30px;">
+                    <h3 style="margin-bottom: 15px; font-size: 1.1rem;">Reset Server History</h3>
+                    <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
+                        Delete sync history for a specific server only. Useful when removing a budget from your configuration.
+                    </p>
+                    <select id="reset-server-select" style="padding: 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; min-width: 200px; margin-right: 10px;">
+                        <option value="">Select a server...</option>
+                    </select>
+                    <button onclick="resetServerHistory()" class="danger">Reset Server History</button>
+                    <div id="reset-server-message" style="margin-top: 10px;"></div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
+                <h2>Error Management</h2>
+                <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
+                    Clear all error messages from servers on the Overview tab.
+                </p>
+                <button onclick="clearAllErrors()" class="secondary">Clear All Error Messages</button>
+                <div id="clear-errors-message" style="margin-top: 10px;"></div>
             </div>
         </div>
     </div>
@@ -489,6 +598,34 @@
         const MAX_LOGS = 500; // Increased from 100
         const logBuffer = [];
         let logBufferIndex = 0;
+        
+        // Tab switching
+        function switchTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Remove active from all tab buttons
+            document.querySelectorAll('.tab').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabName + '-tab').classList.add('active');
+            
+            // Activate button
+            event.target.classList.add('active');
+            
+            // Load tab-specific data
+            if (tabName === 'analytics') {
+                loadAnalyticsTab();
+            } else if (tabName === 'history') {
+                loadHistoryTab();
+            } else if (tabName === 'settings') {
+                loadSettingsTab();
+            }
+        }
 
         // Get auth headers from current page request
         // Page visibility handling - pause log streaming when tab is hidden
@@ -530,10 +667,24 @@
                 document.getElementById('failed-syncs').textContent = data.sync.failedSyncs;
                 document.getElementById('success-rate').textContent = data.sync.successRate;
 
-                // Update status badge
+                // Update status badge and subtitle
                 const statusBadge = document.getElementById('status-badge');
-                statusBadge.textContent = data.status;
-                statusBadge.className = `status-badge status-${data.status.toLowerCase()}`;
+                const subtitleInfo = document.getElementById('subtitle-info');
+                
+                // Map PENDING to READY if no syncs yet
+                let displayStatus = data.status;
+                if (data.status === 'PENDING' && data.sync.totalSyncs === 0) {
+                    displayStatus = 'READY';
+                    subtitleInfo.textContent = '(No syncs yet this session)';
+                } else if (data.status === 'PENDING') {
+                    displayStatus = 'READY';
+                    subtitleInfo.textContent = '';
+                } else {
+                    subtitleInfo.textContent = '';
+                }
+                
+                statusBadge.textContent = displayStatus;
+                statusBadge.className = `status-badge status-${displayStatus === 'READY' ? 'healthy' : data.status.toLowerCase()}`;
 
                 // Update servers list (now with fresh schedule info)
                 updateServersList(data.servers);
@@ -1063,54 +1214,260 @@
             }
         }
 
-        // Fetch and display sync schedules
-        async function loadSchedules() {
+
+
+        // Load Analytics Tab
+        async function loadAnalyticsTab() {
             try {
-                const response = await fetch('/api/dashboard/schedules', getFetchOptions());
-                if (response.ok) {
-                    const data = await response.json();
-                    const schedulesDiv = document.getElementById('schedules');
+                const response = await fetch('/api/dashboard/history?limit=1000', getFetchOptions());
+                const history = await response.json();
+                
+                if (history.length > 0) {
+                    const totalSyncs = history.length;
+                    const successfulSyncs = history.filter(s => s.status === 'success').length;
+                    const successRate = ((successfulSyncs / totalSyncs) * 100).toFixed(1);
+                    const durations = history.filter(s => s.duration_ms).map(s => s.duration_ms);
+                    const avgDuration = durations.length ? (durations.reduce((a, b) => a + b, 0) / durations.length / 1000).toFixed(1) : 0;
+                    const fastestSync = durations.length ? (Math.min(...durations) / 1000).toFixed(1) : 0;
                     
-                    if (data.schedules && data.schedules.length > 0) {
-                        schedulesDiv.innerHTML = data.schedules.map(schedule => {
-                            const serverNames = schedule.servers.join(', ');
-                            const color = getServerColor(schedule.servers[0]);
-                            return `
-                                <div style="margin-bottom: 12px; padding: 10px; background: rgba(100, 116, 139, 0.1); border-radius: 6px; border-left: 3px solid ${color};">
-                                    <div style="color: ${color}; font-weight: 600; margin-bottom: 4px;">
-                                        • ${serverNames}
-                                    </div>
-                                    <div style="color: #94a3b8; font-size: 0.9rem; margin-left: 12px;">
-                                        ${schedule.cronHuman} <span style="color: #64748b;">(${schedule.cron})</span>
-                                    </div>
-                                </div>
-                            `;
-                        }).join('');
-                    } else {
-                        schedulesDiv.innerHTML = '<div style="color: #94a3b8;">No schedules configured</div>';
-                    }
-                } else {
-                    document.getElementById('schedules').innerHTML = '<div style="color: #ef4444;">Failed to load schedules</div>';
+                    document.getElementById('analytics-total-syncs').textContent = totalSyncs;
+                    document.getElementById('analytics-success-rate').textContent = `${successRate}%`;
+                    document.getElementById('analytics-avg-duration').textContent = `${avgDuration}s`;
+                    document.getElementById('analytics-fastest').textContent = `${fastestSync}s`;
+                }
+                
+                // Reload charts
+                updateCharts();
+            } catch (error) {
+                console.error('Failed to load analytics:', error);
+            }
+        }
+
+        // Load History Tab
+        async function loadHistoryTab() {
+            try {
+                const serverFilter = document.getElementById('history-server-filter')?.value || '';
+                const limit = document.getElementById('history-limit')?.value || 50;
+                
+                let url = `/api/dashboard/history?limit=${limit}`;
+                if (serverFilter) {
+                    url += `&serverName=${encodeURIComponent(serverFilter)}`;
+                }
+                
+                const response = await fetch(url, getFetchOptions());
+                const history = await response.json();
+
+                const tbody = document.getElementById('history-body');
+                if (history.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No sync history available</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = history.map(record => `
+                    <tr>
+                        <td>${formatTime(record.timestamp)}</td>
+                        <td>${record.server_name}</td>
+                        <td>
+                            <span class="status-icon ${record.status}"></span>
+                            ${record.status}
+                        </td>
+                        <td>${record.duration_ms ? record.duration_ms + 'ms' : '-'}</td>
+                        <td>${record.accounts_processed || '-'}</td>
+                        <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${record.error_message || '-'}">
+                            ${record.error_message ? `<span style="color: #ef4444;">${record.error_message}</span>` : '-'}
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (error) {
+                console.error('Failed to load history:', error);
+            }
+        }
+
+        // Load Settings Tab
+        async function loadSettingsTab() {
+            try {
+                const response = await fetch('/api/dashboard/status', getFetchOptions());
+                const data = await response.json();
+                
+                // Populate server select dropdown
+                const select = document.getElementById('reset-server-select');
+                if (select && data.servers) {
+                    select.innerHTML = '<option value="">Select a server...</option>' +
+                        Object.keys(data.servers).map(name => 
+                            `<option value="${name}">${name}</option>`
+                        ).join('');
+                }
+                
+                // Also populate history filter
+                const historyFilter = document.getElementById('history-server-filter');
+                if (historyFilter && data.servers) {
+                    const currentValue = historyFilter.value;
+                    historyFilter.innerHTML = '<option value="">All Servers</option>' +
+                        Object.keys(data.servers).map(name => 
+                            `<option value="${name}" ${currentValue === name ? 'selected' : ''}>${name}</option>`
+                        ).join('');
                 }
             } catch (error) {
-                console.error('Failed to fetch schedules:', error);
-                document.getElementById('schedules').innerHTML = '<div style="color: #ef4444;">Error loading schedules</div>';
+                console.error('Failed to load settings:', error);
+            }
+        }
+
+        // Reset history functions
+        async function resetHistory(server) {
+            if (!confirm(`⚠️ Are you ABSOLUTELY SURE you want to delete ${server === 'all' ? 'ALL sync history' : 'history for ' + server}?\n\nThis action CANNOT be undone!`)) {
+                return;
+            }
+            
+            const messageDiv = document.getElementById('reset-all-message');
+            messageDiv.innerHTML = '<div class="loading">Resetting history...</div>';
+            
+            try {
+                const response = await fetch('/api/dashboard/reset-history', {
+                    ...getFetchOptions(),
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ server })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    messageDiv.innerHTML = `<div class="success-message">✓ ${result.message}</div>`;
+                    setTimeout(() => {
+                        messageDiv.innerHTML = '';
+                        updateDashboard();
+                        loadAnalyticsTab();
+                        loadHistoryTab();
+                    }, 2000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error-message">✗ ${result.error || 'Failed to reset history'}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error-message">✗ Error: ${error.message}</div>`;
+            }
+        }
+
+        async function resetServerHistory() {
+            const select = document.getElementById('reset-server-select');
+            const server = select?.value;
+            
+            if (!server) {
+                alert('Please select a server first');
+                return;
+            }
+            
+            if (!confirm(`⚠️ Are you sure you want to delete all sync history for "${server}"?\n\nThis action CANNOT be undone!`)) {
+                return;
+            }
+            
+            const messageDiv = document.getElementById('reset-server-message');
+            messageDiv.innerHTML = '<div class="loading">Resetting history...</div>';
+            
+            try {
+                const response = await fetch('/api/dashboard/reset-history', {
+                    ...getFetchOptions(),
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ server })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    messageDiv.innerHTML = `<div class="success-message">✓ ${result.message}</div>`;
+                    setTimeout(() => {
+                        messageDiv.innerHTML = '';
+                        updateDashboard();
+                        loadAnalyticsTab();
+                        loadHistoryTab();
+                    }, 2000);
+                } else {
+                    messageDiv.innerHTML = `<div class="error-message">✗ ${result.error || 'Failed to reset history'}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error-message">✗ Error: ${error.message}</div>`;
+            }
+        }
+
+        async function clearAllErrors() {
+            const messageDiv = document.getElementById('clear-errors-message');
+            messageDiv.innerHTML = '<div class="loading">Clearing errors...</div>';
+            
+            try {
+                const statusResponse = await fetch('/api/dashboard/status', getFetchOptions());
+                const data = await statusResponse.json();
+                
+                const servers = Object.keys(data.servers || {});
+                let cleared = 0;
+                
+                for (const server of servers) {
+                    try {
+                        await fetch('/api/dashboard/dismiss-error', {
+                            ...getFetchOptions(),
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ server })
+                        });
+                        cleared++;
+                    } catch (e) {
+                        console.error(`Failed to clear error for ${server}:`, e);
+                    }
+                }
+                
+                messageDiv.innerHTML = `<div class="success-message">✓ Cleared errors for ${cleared} server(s)</div>`;
+                setTimeout(() => {
+                    messageDiv.innerHTML = '';
+                    updateDashboard();
+                }, 2000);
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error-message">✗ Error: ${error.message}</div>`;
+            }
+        }
+
+        // Load recent activity for Overview tab
+        async function loadRecentActivity() {
+            try {
+                const response = await fetch('/api/dashboard/history?limit=5', getFetchOptions());
+                const history = await response.json();
+                
+                const activityDiv = document.getElementById('recent-activity');
+                if (history.length === 0) {
+                    activityDiv.innerHTML = '<div style="color: #94a3b8; padding: 10px;">No recent activity</div>';
+                    return;
+                }
+                
+                activityDiv.innerHTML = history.map(record => {
+                    const icon = record.status === 'success' ? '✓' : '✗';
+                    const color = record.status === 'success' ? '#10b981' : '#ef4444';
+                    const duration = record.duration_ms ? `(${(record.duration_ms / 1000).toFixed(1)}s)` : '';
+                    
+                    return `
+                        <div style="padding: 8px 0; border-bottom: 1px solid #334155;">
+                            <span style="color: ${color};">${icon}</span>
+                            <span style="color: #e2e8f0;">${formatTime(record.timestamp)}</span>
+                            <span style="color: #94a3b8;"> - ${record.server_name}</span>
+                            <span style="color: #64748b;"> ${duration}</span>
+                        </div>
+                    `;
+                }).join('');
+            } catch (error) {
+                console.error('Failed to load recent activity:', error);
             }
         }
 
         // Initialize
         fetchServerInfo().then(() => {
             updateDashboard();
-            loadHistory();
-            loadSchedules();
+            loadRecentActivity();
             updateCharts();
             connectWebSocket();
+            loadSettingsTab();
         });
 
         // Refresh dashboard every 30 seconds
         setInterval(updateDashboard, 30000);
-        setInterval(loadHistory, 60000);
-        setInterval(updateCharts, 30000);
+        setInterval(loadRecentActivity, 30000);
+        setInterval(updateCharts, 60000);
     </script>
 </body>
 </html>
