@@ -26,10 +26,17 @@ Run the automated screenshot generator:
 npm run screenshots
 ```
 
-This will create:
-- `dashboard-overview.png` - Healthy system with 3 servers
-- `dashboard-degraded.png` - Degraded system with errors
-- `dashboard-multi-server.png` - Multi-server setup (6 instances)
+This will create 10 screenshots:
+- `dashboard-overview-healthy.png` - Healthy system with 2-column layout
+- `dashboard-overview-degraded.png` - Degraded system with error states
+- `dashboard-overview-multi-server.png` - 6 servers with encryption badges
+- `dashboard-analytics.png` - All-time statistics and charts
+- `dashboard-analytics-degraded.png` - Performance issues visualization
+- `dashboard-history.png` - Sync history with filters
+- `dashboard-history-errors.png` - Error details and filtering
+- `dashboard-settings.png` - Date format preferences and data management
+- `dashboard-settings-danger-zone.png` - Reset history and orphaned servers
+- `dashboard-hero.png` - Full dashboard hero shot
 
 ### How It Works
 
@@ -38,29 +45,31 @@ The script:
 2. Launches a headless Chrome browser via Puppeteer
 3. Injects fake data for each scenario
 4. Navigates to the dashboard
-5. Waits for charts to render
-6. Takes full-page screenshots
+5. Switches between tabs (Overview, Analytics, History, Settings)
+6. Waits for charts and data to render
+7. Takes full-page screenshots
 
 ### Screenshot Scenarios
 
-#### Healthy System (`dashboard-overview.png`)
-- 3 budget servers (Main, Personal, Family)
-- 96.67% success rate
-- Recent successful syncs
-- Interactive charts showing good health
+#### Overview Tab
+- **Healthy** (`dashboard-overview-healthy.png`) - 2-column layout, all servers operational, status badges showing success
+- **Degraded** (`dashboard-overview-degraded.png`) - Multiple server errors, partial sync failures, error logs visible
+- **Multi-Server** (`dashboard-overview-multi-server.png`) - 6 budget servers with encryption badges, high-scale deployment
 
-#### Degraded System (`dashboard-degraded.png`)
-- 4 budget servers with mixed status
-- 85% success rate
-- Multiple failed syncs
-- Error logs visible
-- Charts showing declining performance
+#### Analytics Tab
+- **All-Time Statistics** (`dashboard-analytics.png`) - Success rate charts, sync duration trends, server performance breakdown
+- **Performance Issues** (`dashboard-analytics-degraded.png`) - Degraded system with declining metrics visualization
 
-#### Multi-Server Setup (`dashboard-multi-server.png`)
-- 6 budget servers
-- 97% success rate
-- High-scale deployment example
-- All servers synchronized
+#### History Tab
+- **Sync History** (`dashboard-history.png`) - Searchable table with date range filters, status badges, CSV export
+- **Error Details** (`dashboard-history-errors.png`) - Failed sync filtering, error message display
+
+#### Settings Tab
+- **Preferences** (`dashboard-settings.png`) - Date format options (11 formats including 3-letter months), orphaned server management
+- **Danger Zone** (`dashboard-settings-danger-zone.png`) - Reset all history, delete orphaned server data
+
+#### Hero Shot
+- **Full Dashboard** (`dashboard-hero.png`) - Complete overview showing all features, used for README and documentation
 
 ### When to Regenerate
 
