@@ -84,9 +84,9 @@ async function injectFakeData(page, scenario) {
                     successRate: '96.67%'
                 },
                 servers: {
-                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 300000).toISOString() },
-                    'Personal Budget': { status: 'success', lastSync: new Date(Date.now() - 600000).toISOString() },
-                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 900000).toISOString() }
+                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 300000).toISOString(), lastSyncStatus: 'success' },
+                    'Personal Budget': { status: 'success', lastSync: new Date(Date.now() - 600000).toISOString(), lastSyncStatus: 'success' },
+                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 900000).toISOString(), lastSyncStatus: 'success' }
                 }
             },
             metrics: {
@@ -150,10 +150,10 @@ async function injectFakeData(page, scenario) {
                     successRate: '85.00%'
                 },
                 servers: {
-                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 1800000).toISOString() },
-                    'Personal Budget': { status: 'error', lastSync: new Date(Date.now() - 3600000).toISOString() },
-                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 2400000).toISOString() },
-                    'Business Budget': { status: 'error', lastSync: new Date(Date.now() - 5400000).toISOString() }
+                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 1800000).toISOString(), lastSyncStatus: 'success' },
+                    'Personal Budget': { status: 'error', lastSync: new Date(Date.now() - 3600000).toISOString(), lastSyncStatus: 'failure', error: 'Connection timeout after 3 retries' },
+                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 2400000).toISOString(), lastSyncStatus: 'partial' },
+                    'Business Budget': { status: 'error', lastSync: new Date(Date.now() - 5400000).toISOString(), lastSyncStatus: 'failure', error: 'Rate limit exceeded' }
                 }
             },
             metrics: {
@@ -224,12 +224,12 @@ async function injectFakeData(page, scenario) {
                     successRate: '97.00%'
                 },
                 servers: {
-                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 180000).toISOString() },
-                    'Personal Budget': { status: 'success', lastSync: new Date(Date.now() - 240000).toISOString() },
-                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 360000).toISOString() },
-                    'Business Budget': { status: 'success', lastSync: new Date(Date.now() - 480000).toISOString() },
-                    'Investments': { status: 'success', lastSync: new Date(Date.now() - 600000).toISOString() },
-                    'Emergency Fund': { status: 'success', lastSync: new Date(Date.now() - 720000).toISOString() }
+                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 180000).toISOString(), lastSyncStatus: 'success' },
+                    'Personal Budget': { status: 'success', lastSync: new Date(Date.now() - 240000).toISOString(), lastSyncStatus: 'success' },
+                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 360000).toISOString(), lastSyncStatus: 'success' },
+                    'Business Budget': { status: 'success', lastSync: new Date(Date.now() - 480000).toISOString(), lastSyncStatus: 'success' },
+                    'Investments': { status: 'success', lastSync: new Date(Date.now() - 600000).toISOString(), lastSyncStatus: 'success' },
+                    'Emergency Fund': { status: 'success', lastSync: new Date(Date.now() - 720000).toISOString(), lastSyncStatus: 'success' }
                 }
             },
             serverEncryption: {
@@ -331,6 +331,11 @@ async function injectFakeData(page, scenario) {
                     ok: true,
                     json: () => Promise.resolve(window.__mockData.serverEncryption || { servers: [] })
                 });
+            } else if (url.includes('/api/dashboard/orphaned-servers')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ orphaned: [] })
+                });
             } else if (url.includes('/api/dashboard/metrics')) {
                 return Promise.resolve({
                     ok: true,
@@ -385,7 +390,7 @@ async function injectFakeData(page, scenario) {
 /**
  * Take screenshot of specific scenario
  */
-async function takeScreenshot(browser, scenario, filename, description) {
+async function takeScreenshot(browser, scenario, filename, description, options = {}) {
     console.log(`\n📸 Capturing: ${description}`);
     
     const page = await browser.newPage();
@@ -397,8 +402,26 @@ async function takeScreenshot(browser, scenario, filename, description) {
     // Navigate to dashboard
     await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle0' });
     
-    // Wait for charts to render
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Wait for initial render
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    // Switch to specific tab if requested
+    if (options.tab) {
+        await page.evaluate((tabName) => {
+            const tabButton = Array.from(document.querySelectorAll('.tab'))
+                .find(btn => btn.textContent.toLowerCase().includes(tabName.toLowerCase()));
+            if (tabButton) tabButton.click();
+        }, options.tab);
+        
+        // Wait for tab content to load
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    
+    // Apply custom interactions if provided
+    if (options.customActions) {
+        await options.customActions(page);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
     
     // Scroll to show all content
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -407,7 +430,7 @@ async function takeScreenshot(browser, scenario, filename, description) {
     const filepath = path.join(SCREENSHOTS_DIR, filename);
     await page.screenshot({
         path: filepath,
-        fullPage: true,
+        fullPage: options.fullPage !== false,
         type: 'png'
     });
     
@@ -447,37 +470,136 @@ async function main() {
     });
 
     try {
-        // Take screenshots for different scenarios
+        // 1. Overview Tab - Healthy System
         await takeScreenshot(
             browser,
             'healthy',
-            'dashboard-overview.png',
-            'Healthy System - Main Dashboard View'
+            'dashboard-overview-healthy.png',
+            'Overview Tab - Healthy System with 2-Column Layout',
+            { tab: 'overview' }
         );
 
+        // 2. Overview Tab - Degraded System
         await takeScreenshot(
             browser,
             'degraded',
-            'dashboard-degraded.png',
-            'Degraded System - Multiple Servers with Errors'
+            'dashboard-overview-degraded.png',
+            'Overview Tab - Degraded System with Error States',
+            { tab: 'overview' }
         );
 
+        // 3. Overview Tab - Multi-Server with Status Badges
         await takeScreenshot(
             browser,
             'multiServer',
-            'dashboard-multi-server.png',
-            'Multi-Server Setup - 6 Budget Instances'
+            'dashboard-overview-multi-server.png',
+            'Overview Tab - 6 Servers with Encryption Badges',
+            { tab: 'overview' }
+        );
+
+        // 4. Analytics Tab - Charts and Statistics
+        await takeScreenshot(
+            browser,
+            'healthy',
+            'dashboard-analytics.png',
+            'Analytics Tab - All-Time Statistics and Charts',
+            { tab: 'analytics' }
+        );
+
+        // 5. Analytics Tab - Degraded Performance
+        await takeScreenshot(
+            browser,
+            'degraded',
+            'dashboard-analytics-degraded.png',
+            'Analytics Tab - Performance Issues Visualization',
+            { tab: 'analytics' }
+        );
+
+        // 6. History Tab - Recent Syncs
+        await takeScreenshot(
+            browser,
+            'healthy',
+            'dashboard-history.png',
+            'History Tab - Sync History with Filters',
+            { tab: 'history' }
+        );
+
+        // 7. History Tab - With Errors
+        await takeScreenshot(
+            browser,
+            'degraded',
+            'dashboard-history-errors.png',
+            'History Tab - Error Details and Filtering',
+            { tab: 'history' }
+        );
+
+        // 8. Settings Tab - Date Format Preferences
+        await takeScreenshot(
+            browser,
+            'healthy',
+            'dashboard-settings.png',
+            'Settings Tab - Preferences and Data Management',
+            { 
+                tab: 'settings',
+                customActions: async (page) => {
+                    // Scroll to date format section
+                    await page.evaluate(() => {
+                        const dateFormatCard = Array.from(document.querySelectorAll('.card'))
+                            .find(card => card.textContent.includes('Date Format Preferences'));
+                        if (dateFormatCard) {
+                            dateFormatCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
+                    });
+                }
+            }
+        );
+
+        // 9. Settings Tab - Orphaned Servers & Danger Zone
+        await takeScreenshot(
+            browser,
+            'healthy',
+            'dashboard-settings-danger-zone.png',
+            'Settings Tab - Reset History and Orphaned Servers',
+            { 
+                tab: 'settings',
+                customActions: async (page) => {
+                    // Scroll to top to show danger zone
+                    await page.evaluate(() => window.scrollTo(0, 0));
+                }
+            }
+        );
+
+        // 10. Full Dashboard - Overview (Hero Shot)
+        await takeScreenshot(
+            browser,
+            'multiServer',
+            'dashboard-hero.png',
+            'Full Dashboard - Hero Shot with All Features',
+            { tab: 'overview', fullPage: false }
         );
 
         console.log('\n✅ All screenshots generated successfully!');
         console.log(`📁 Screenshots saved to: ${SCREENSHOTS_DIR}\n`);
-        console.log('Next steps:');
+        console.log('Screenshots generated:');
+        console.log('  • dashboard-overview-healthy.png - Clean 2-column layout');
+        console.log('  • dashboard-overview-degraded.png - Error states');
+        console.log('  • dashboard-overview-multi-server.png - 6 servers with badges');
+        console.log('  • dashboard-analytics.png - Charts and statistics');
+        console.log('  • dashboard-analytics-degraded.png - Performance issues');
+        console.log('  • dashboard-history.png - Sync history table');
+        console.log('  • dashboard-history-errors.png - Error details');
+        console.log('  • dashboard-settings.png - Date formats and preferences');
+        console.log('  • dashboard-settings-danger-zone.png - Data management');
+        console.log('  • dashboard-hero.png - Hero shot for README');
+        console.log('\n🎯 Next steps:');
         console.log('1. Review screenshots in docs/screenshots/');
-        console.log('2. Run: npm run update-readme-screenshots');
-        console.log('   (or manually update README.md with new screenshot links)');
+        console.log('2. Update README.md with new screenshots');
+        console.log('3. Update docs/ markdown files');
+        console.log('4. Update Docker descriptions (docker/description/)');
 
     } catch (error) {
         console.error('\n✗ Error generating screenshots:', error.message);
+        console.error(error.stack);
         process.exit(1);
     } finally {
         await browser.close();

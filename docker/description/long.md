@@ -4,16 +4,32 @@
 
 ## Key Features
 
+### 🎯 Core Capabilities
 - ✅ **Multi-Server Support** - Manage unlimited Actual Budget instances with independent configurations
 - ✅ **Encrypted Budget Support** - Full support for end-to-end encrypted (E2EE) budget files
 - ✅ **Flexible Scheduling** - Global and per-server cron schedules with timezone support
-- ✅ **Web Dashboard** - Interactive monitoring UI with real-time logs, charts, and manual sync controls
+- ✅ **Intelligent Retry Logic** - Exponential backoff with rate limit detection and handling
+
+### 📊 Modern Web Dashboard
+- ✅ **Tabbed Interface** - Overview, Analytics, History, and Settings tabs for organized monitoring
+- ✅ **2-Column Overview** - Service health, server list with encryption badges, recent activity, live logs
+- ✅ **Sync Status Badges** - Visual indicators showing success/partial/failure for each sync
+- ✅ **Interactive Charts** - Success rates by server, duration trends, and sync timeline
+- ✅ **Date Format Preferences** - 11 customizable formats including 3-letter months (e.g., Dec 10, 2025)
+- ✅ **Orphaned Server Cleanup** - Remove historical data for decommissioned budgets
+- ✅ **Manual Sync Controls** - Trigger syncs for all servers or specific instances via UI
+
+### 🔔 Notifications & Monitoring
 - ✅ **Health Monitoring** - HTTP endpoints (`/health`, `/metrics`, `/ready`) and Prometheus metrics
 - ✅ **Multi-Channel Notifications** - Telegram bot, email, Slack, Discord, Microsoft Teams alerts
 - ✅ **Sync History** - SQLite database with CLI query tools for troubleshooting
 - ✅ **Comprehensive Logging** - File rotation, multiple formats (JSON/pretty), syslog support
-- ✅ **Production Ready** - 84.77% test coverage (309 tests), comprehensive error handling
+- ✅ **WebSocket Streaming** - Real-time log broadcast with ring buffer (500 logs, 200 displayed)
+
+### 🛡️ Production Ready
+- ✅ **98.73% Test Coverage** - 255 passing tests ensuring reliability
 - ✅ **Secure by Default** - Non-root user, credential warnings, HTTPS enforcement
+- ✅ **Docker Optimized** - 229MB Alpine-based image, multi-architecture support (amd64/arm64)
 
 ## Quick Start
 
@@ -78,8 +94,20 @@ Create `config/config.json`:
 - Set `logDir` to `null` to disable file logging (console only)
 ```
 
-## Monitoring
+## Web Dashboard
 
+Access the modern web dashboard at `http://localhost:3000/dashboard`:
+
+- **Overview Tab**: 2-column layout showing service health, configured servers with status badges, recent sync activity, and live logs
+- **Analytics Tab**: Interactive charts displaying success rates by server, duration trends, and sync timeline
+- **History Tab**: Searchable sync history with server and limit filters, showing detailed error messages
+- **Settings Tab**: Customize date formats (11 options), manage orphaned servers, reset history, and clear errors
+
+![Dashboard Screenshot](https://raw.githubusercontent.com/agigante80/Actual-sync/development/docs/screenshots/dashboard-hero.png)
+
+## Monitoring & Health Checks
+
+- **Web Dashboard**: `http://localhost:3000/dashboard` (interactive UI)
 - **Health Check**: `curl http://localhost:3000/health`
 - **Metrics**: `curl http://localhost:3000/metrics`
 - **Prometheus**: `curl http://localhost:3000/prometheus`
