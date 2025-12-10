@@ -1,13 +1,18 @@
 #!/bin/bash
-# Dynamic Version Generator for CI/CD
-# Generates context-aware version strings based on Git state
+# Semantic Version Generator for CI/CD
+# Generates semantic versions with build metadata based on Git state
 #
-# Format: <base_version>-<context>-<commit>
-# Examples:
-#   - Main with tag:    1.0.0
-#   - Main without tag: 0.1.0-main-71f02b6
-#   - Develop branch:   0.1.0-dev-71f02b6
-#   - Feature branch:   0.1.0-feature-auth-71f02b6
+# Format (Semantic Versioning 2.0.0):
+#   - Stable release:  1.4.0
+#   - Dev build:       1.4.1-dev+abcdef7
+#   - Pre-release:     1.5.0-rc.1
+#
+# Examples by context:
+#   - Main with tag:       1.0.0
+#   - Main without tag:    1.0.1-dev+71f02b6
+#   - Development branch:  1.0.1-dev+71f02b6
+#   - Feature branch:      1.0.1-dev+71f02b6
+#   - PR build:            1.0.1-dev+71f02b6
 
 set -e
 
@@ -28,8 +33,19 @@ log_error() {
     echo "[ERROR] $1" >&2
 }
 
-# Get base version from package.json
+# Get base version from VERSION file (preferred) or package.json (fallback)
 get_base_version() {
+    # First, try VERSION file
+    if [ -f "VERSION" ]; then
+        BASE_VERSION=$(cat VERSION | tr -d '[:space:]')
+        if [ -n "$BASE_VERSION" ]; then
+            log_info "Base version from VERSION file: $BASE_VERSION"
+            echo "$BASE_VERSION"
+            return 0
+        fi
+    fi
+    
+    # Fallback to package.json
     if [ -f "package.json" ]; then
         BASE_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "")
         if [ -n "$BASE_VERSION" ]; then
@@ -39,7 +55,7 @@ get_base_version() {
         fi
     fi
     
-    log_warn "Could not read version from package.json, using default: 0.1.0"
+    log_warn "Could not read version from VERSION or package.json, using default: 0.1.0"
     echo "0.1.0"
 }
 
@@ -104,41 +120,29 @@ sanitize_branch() {
     echo "$sanitized"
 }
 
-# Generate version string
+# Generate semantic version string with build metadata
 generate_version() {
     local base_version="$1"
     local branch="$2"
     local commit="$3"
     local tag="$4"
     
-    # If on main branch with exact tag, use the tag as version
-    if [ "$branch" = "main" ] && [ -n "$tag" ]; then
-        log_info "Using tag version: $tag"
-        echo "$tag"
+    # If on exact tag (version tag like v1.0.0), use clean version
+    if [ -n "$tag" ] && [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        # Strip 'v' prefix if present
+        local clean_version="${tag#v}"
+        log_info "Using stable release version: $clean_version"
+        echo "$clean_version"
         return 0
     fi
     
-    # If on main branch without tag
-    if [ "$branch" = "main" ]; then
-        local version="${base_version}-main-${commit}"
-        log_info "Main branch version: $version"
-        echo "$version"
-        return 0
-    fi
-    
-    # If on develop branch
-    if [ "$branch" = "develop" ]; then
-        local version="${base_version}-dev-${commit}"
-        log_info "Develop branch version: $version"
-        echo "$version"
-        return 0
-    fi
-    
-    # For feature/other branches
-    local sanitized_branch=$(sanitize_branch "$branch")
-    local version="${base_version}-${sanitized_branch}-${commit}"
-    log_info "Feature branch version: $version"
+    # All other builds (main, develop, feature branches) get dev pre-release + build metadata
+    # Format: <version>-dev+<commit>
+    # This is semver compliant: pre-release (-dev) + build metadata (+commit)
+    local version="${base_version}-dev+${commit}"
+    log_info "Dev build version: $version (branch: $branch)"
     echo "$version"
+    return 0
 }
 
 # Main execution

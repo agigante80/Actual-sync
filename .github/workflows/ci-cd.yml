@@ -63,7 +63,7 @@ jobs:
         with:
           fetch-depth: 0  # Full history for accurate version generation
 
-      - name: Generate dynamic version
+      - name: Generate semantic version
         id: version
         run: |
           chmod +x ./get_version.sh
@@ -71,10 +71,11 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "📦 Generated version: $VERSION"
           
-          # Determine if this is a release (triggered by version tag)
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          # Determine if this is a stable release (version tag like v1.0.0)
+          # Stable releases: no -dev or other pre-release identifiers
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "is_release=true" >> $GITHUB_OUTPUT
-            echo "🚀 This is a release build"
+            echo "🚀 This is a stable release"
           else
             echo "is_release=false" >> $GITHUB_OUTPUT
             echo "🔨 This is a development build"
@@ -88,6 +89,7 @@ jobs:
           echo "- **Release**: ${{ steps.version.outputs.is_release }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch**: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ref**: \`${{ github.ref }}\`" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
   # Job 2: Code Linting

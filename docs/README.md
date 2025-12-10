@@ -140,6 +140,7 @@ npm run list-accounts
 | [CI_CD.md](./CI_CD.md) | GitHub Actions pipeline and workflows |
 | [SECURITY_AND_PRIVACY.md](./SECURITY_AND_PRIVACY.md) | Security policies and best practices |
 | [MIGRATION.md](./MIGRATION.md) | Upgrade guide from environment variables |
+| [VERSIONING.md](./VERSIONING.md) | Semantic versioning and release process |
 | [AI_INTERACTION_GUIDE.md](./AI_INTERACTION_GUIDE.md) | AI agent rules and automation boundaries |
 | [ROADMAP.md](./ROADMAP.md) | Future development priorities |
 
