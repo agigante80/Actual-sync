@@ -53,6 +53,41 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 
 **Built for production** with 84.77% test coverage (309 tests), comprehensive error handling, structured logging, and enterprise-grade monitoring capabilities.
 
+### 📸 Dashboard Preview
+
+**Modern Tabbed Interface** with comprehensive monitoring and management:
+
+![Dashboard Overview](docs/screenshots/dashboard-hero.png)
+
+<details>
+<summary>📊 View More Screenshots</summary>
+
+**Overview Tab** - 2-column layout with service health, server list, recent activity, and live logs:
+
+![Overview Tab](docs/screenshots/dashboard-overview-healthy.png)
+
+**Analytics Tab** - All-time statistics with interactive charts:
+
+![Analytics Tab](docs/screenshots/dashboard-analytics.png)
+
+**History Tab** - Searchable sync history with filters:
+
+![History Tab](docs/screenshots/dashboard-history.png)
+
+**Settings Tab** - Date format preferences and data management:
+
+![Settings Tab](docs/screenshots/dashboard-settings.png)
+
+**Multi-Server Support** - Manage 6+ budget instances with encryption badges:
+
+![Multi-Server](docs/screenshots/dashboard-overview-multi-server.png)
+
+**Error Handling** - Clear visibility into partial failures and sync issues:
+
+![Error States](docs/screenshots/dashboard-overview-degraded.png)
+
+</details>
+
 ---
 
 ## ✨ Features
@@ -69,15 +104,19 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 
 ### 📊 Monitoring & Observability
 
-- ✅ **Web Dashboard** - Real-time monitoring UI with live logs, charts, and manual sync controls
-- ✅ **Interactive Charts** - Success rates, duration trends, and sync timeline visualizations
+- ✅ **Modern Web Dashboard** - Tabbed interface with Overview, Analytics, History, and Settings
+- ✅ **2-Column Overview Layout** - Service health, server list, recent activity, and live logs
+- ✅ **Sync Status Badges** - Color-coded badges showing success/partial/failure for each server
+- ✅ **Interactive Charts** - Success rates by server, duration trends, and sync timeline visualizations
+- ✅ **Date Format Preferences** - 11 customizable date formats including 3-letter months (persisted in browser)
+- ✅ **Orphaned Server Cleanup** - Identify and remove historical data for decommissioned budgets
 - ✅ **Health Check Endpoints** - HTTP endpoints for monitoring (`/health`, `/metrics`, `/ready`)
 - ✅ **Prometheus Metrics** - Comprehensive metrics export for Prometheus/Grafana dashboards
 - ✅ **Structured Logging** - JSON and pretty formats with correlation IDs and file output
 - ✅ **Enhanced Logging System** - Log rotation with compression, syslog support, performance tracking, per-server log levels
 - ✅ **Sync History Database** - SQLite persistence with query interface and CLI tool (`npm run history`)
-- ✅ **Status Tracking** - Real-time health status (HEALTHY/DEGRADED/UNHEALTHY/PENDING)
-- ✅ **WebSocket Streaming** - Live log broadcast to connected dashboard clients
+- ✅ **Status Tracking** - Real-time health status (HEALTHY/DEGRADED/UNHEALTHY/READY)
+- ✅ **WebSocket Streaming** - Live log broadcast to connected dashboard clients with ring buffer
 
 ### 🔔 Notifications & Alerts
 
