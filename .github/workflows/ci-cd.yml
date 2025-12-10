@@ -353,11 +353,13 @@ jobs:
         id: meta
         run: |
           VERSION="${{ needs.version.outputs.version }}"
+          # Sanitize version for Docker (replace + with - since Docker tags don't allow +)
+          DOCKER_VERSION="${VERSION//+/-}"
           DOCKER_HUB_IMAGE="${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}"
           GHCR_IMAGE="ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}"
           
-          # Base tags
-          TAGS="${DOCKER_HUB_IMAGE}:${VERSION},${GHCR_IMAGE}:${VERSION}"
+          # Base tags (using sanitized version)
+          TAGS="${DOCKER_HUB_IMAGE}:${DOCKER_VERSION},${GHCR_IMAGE}:${DOCKER_VERSION}"
           
           # Add branch-specific tags
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
@@ -377,11 +379,14 @@ jobs:
           # Add custom suffix if provided
           if [[ -n "${{ github.event.inputs.docker_tag_suffix }}" ]]; then
             SUFFIX="${{ github.event.inputs.docker_tag_suffix }}"
-            TAGS="${TAGS},${DOCKER_HUB_IMAGE}:${VERSION}-${SUFFIX},${GHCR_IMAGE}:${VERSION}-${SUFFIX}"
+            TAGS="${TAGS},${DOCKER_HUB_IMAGE}:${DOCKER_VERSION}-${SUFFIX},${GHCR_IMAGE}:${DOCKER_VERSION}-${SUFFIX}"
           fi
           
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "docker_version=${DOCKER_VERSION}" >> $GITHUB_OUTPUT
           echo "📦 Docker tags: ${TAGS}"
+          echo "📌 Semver version: ${VERSION}"
+          echo "🐳 Docker-safe version: ${DOCKER_VERSION}"
 
       - name: Build and push Docker images
         uses: docker/build-push-action@v5
