@@ -577,21 +577,45 @@
             <div class="card" style="margin-top: 20px;">
                 <h2>Date Format Preferences</h2>
                 <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
-                    Choose how timestamps are displayed throughout the dashboard.
+                    Choose how timestamps are displayed throughout the dashboard. Changes are saved automatically.
                 </p>
                 <div style="margin-bottom: 15px;">
-                    <label style="display: block; margin-bottom: 8px; color: #e2e8f0;">Date Format:</label>
-                    <select id="date-format-select" onchange="saveDateFormat()" style="padding: 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; min-width: 300px;">
-                        <option value="relative">Relative (e.g., "5m ago", "2h ago")</option>
-                        <option value="locale">Browser Locale (e.g., "12/10/2025, 12:30:45 PM")</option>
-                        <option value="iso">ISO 8601 (e.g., "2025-12-10T12:30:45")</option>
-                        <option value="us">US Format (e.g., "12/10/2025 12:30 PM")</option>
-                        <option value="eu">EU Format (e.g., "10/12/2025 12:30")</option>
-                        <option value="full">Full (e.g., "Tuesday, December 10, 2025 at 12:30 PM")</option>
+                    <label style="display: block; margin-bottom: 8px; color: #e2e8f0; font-weight: 500;">
+                        Date Format:
+                        <span id="date-format-unsaved" style="display: none; margin-left: 8px; font-size: 0.85rem; color: #fbbf24; font-weight: normal;">● Unsaved changes</span>
+                    </label>
+                    <select id="date-format-select" onchange="onDateFormatChange()" style="padding: 10px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; width: 100%; max-width: 500px; font-size: 0.95rem;">
+                        <optgroup label="Relative Time">
+                            <option value="relative">Relative (5m ago, 2h ago, 3d ago)</option>
+                        </optgroup>
+                        <optgroup label="Numeric Formats">
+                            <option value="us">US - 12/10/2025 12:30 PM</option>
+                            <option value="eu">EU - 10/12/2025 12:30</option>
+                            <option value="iso">ISO 8601 - 2025-12-10 12:30:45</option>
+                        </optgroup>
+                        <optgroup label="Month Names (Short)">
+                            <option value="us-short">US Short - Dec 10, 2025 12:30 PM</option>
+                            <option value="eu-short">EU Short - 10 Dec 2025 12:30</option>
+                        </optgroup>
+                        <optgroup label="Month Names (Full)">
+                            <option value="us-long">US Long - December 10, 2025 12:30 PM</option>
+                            <option value="eu-long">EU Long - 10 December 2025 12:30</option>
+                            <option value="full">Full - Tuesday, December 10, 2025 at 12:30 PM</option>
+                        </optgroup>
+                        <optgroup label="Other">
+                            <option value="locale">Browser Locale (system default)</option>
+                        </optgroup>
                     </select>
                 </div>
-                <div id="date-format-preview" style="padding: 10px; background: #1e293b; border-radius: 4px; color: #94a3b8; font-size: 0.9rem;">
-                    Preview: <span id="date-preview-text">Just now</span>
+                <div id="date-format-preview" style="padding: 12px; background: #1e293b; border-radius: 4px; margin-bottom: 15px;">
+                    <div style="color: #94a3b8; font-size: 0.85rem; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">Preview</div>
+                    <div id="date-preview-text" style="color: #e2e8f0; font-size: 1rem; font-family: monospace;">Just now</div>
+                    <div style="color: #64748b; font-size: 0.8rem; margin-top: 6px;">Example timestamp from 5 minutes ago</div>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button id="save-date-format-btn" onclick="saveDateFormat()" class="secondary" style="opacity: 0.5; cursor: not-allowed;" disabled>Save Preferences</button>
+                    <button id="reset-date-format-btn" onclick="resetDateFormat()" class="secondary" style="display: none;">Reset to Saved</button>
+                    <div id="date-format-message" style="flex: 1;"></div>
                 </div>
             </div>
 
@@ -1045,9 +1069,29 @@
                         year: 'numeric', month: '2-digit', day: '2-digit',
                         hour: '2-digit', minute: '2-digit', hour12: true 
                     });
+                case 'us-short':
+                    return date.toLocaleString('en-US', { 
+                        year: 'numeric', month: 'short', day: 'numeric',
+                        hour: '2-digit', minute: '2-digit', hour12: true 
+                    });
+                case 'us-long':
+                    return date.toLocaleString('en-US', { 
+                        year: 'numeric', month: 'long', day: 'numeric',
+                        hour: '2-digit', minute: '2-digit', hour12: true 
+                    });
                 case 'eu':
                     return date.toLocaleString('en-GB', { 
                         year: 'numeric', month: '2-digit', day: '2-digit',
+                        hour: '2-digit', minute: '2-digit', hour12: false 
+                    });
+                case 'eu-short':
+                    return date.toLocaleString('en-GB', { 
+                        year: 'numeric', month: 'short', day: 'numeric',
+                        hour: '2-digit', minute: '2-digit', hour12: false 
+                    });
+                case 'eu-long':
+                    return date.toLocaleString('en-GB', { 
+                        year: 'numeric', month: 'long', day: 'numeric',
                         hour: '2-digit', minute: '2-digit', hour12: false 
                     });
                 case 'full':
@@ -1452,33 +1496,107 @@
             }
         }
         
+        let savedDateFormat = null; // Track saved state for unsaved changes detection
+        
         function loadDateFormatPreference() {
             const select = document.getElementById('date-format-select');
-            const savedFormat = localStorage.getItem('dateFormat') || 'relative';
+            savedDateFormat = localStorage.getItem('dateFormat') || 'relative';
             if (select) {
-                select.value = savedFormat;
+                select.value = savedDateFormat;
             }
             updateDateFormatPreview();
+            updateDateFormatButtons();
+        }
+        
+        function onDateFormatChange() {
+            updateDateFormatPreview();
+            updateDateFormatButtons();
+        }
+        
+        function updateDateFormatButtons() {
+            const select = document.getElementById('date-format-select');
+            const saveBtn = document.getElementById('save-date-format-btn');
+            const resetBtn = document.getElementById('reset-date-format-btn');
+            const unsavedIndicator = document.getElementById('date-format-unsaved');
+            
+            if (!select || !saveBtn || !resetBtn || !unsavedIndicator) return;
+            
+            const currentValue = select.value;
+            const hasChanges = currentValue !== savedDateFormat;
+            
+            // Show/hide unsaved changes indicator
+            unsavedIndicator.style.display = hasChanges ? 'inline' : 'none';
+            
+            // Enable/disable save button
+            if (hasChanges) {
+                saveBtn.disabled = false;
+                saveBtn.style.opacity = '1';
+                saveBtn.style.cursor = 'pointer';
+                saveBtn.style.background = '#3b82f6';
+                resetBtn.style.display = 'inline-block';
+            } else {
+                saveBtn.disabled = true;
+                saveBtn.style.opacity = '0.5';
+                saveBtn.style.cursor = 'not-allowed';
+                saveBtn.style.background = '';
+                resetBtn.style.display = 'none';
+            }
         }
         
         function saveDateFormat() {
             const select = document.getElementById('date-format-select');
+            const messageDiv = document.getElementById('date-format-message');
+            
+            if (!select) return;
+            
             const format = select.value;
             localStorage.setItem('dateFormat', format);
-            updateDateFormatPreview();
+            savedDateFormat = format;
+            
+            // Show success message
+            messageDiv.innerHTML = '<div class="success-message">✓ Preferences saved</div>';
+            setTimeout(() => { messageDiv.innerHTML = ''; }, 2000);
+            
+            // Update UI
+            updateDateFormatButtons();
             
             // Refresh all displays to show new format
             updateDashboard();
             loadRecentActivity();
-            loadHistoryTab();
+            const currentTab = document.querySelector('.tab.active');
+            if (currentTab && currentTab.textContent.includes('History')) {
+                loadHistoryTab();
+            }
+        }
+        
+        function resetDateFormat() {
+            const select = document.getElementById('date-format-select');
+            if (select && savedDateFormat) {
+                select.value = savedDateFormat;
+                updateDateFormatPreview();
+                updateDateFormatButtons();
+            }
         }
         
         function updateDateFormatPreview() {
             const previewText = document.getElementById('date-preview-text');
-            if (previewText) {
-                const now = new Date();
-                const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
-                previewText.textContent = formatTime(fiveMinutesAgo.toISOString());
+            const select = document.getElementById('date-format-select');
+            
+            if (!previewText || !select) return;
+            
+            // Temporarily set format to preview
+            const originalFormat = localStorage.getItem('dateFormat');
+            localStorage.setItem('dateFormat', select.value);
+            
+            const now = new Date();
+            const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+            previewText.textContent = formatTime(fiveMinutesAgo.toISOString());
+            
+            // Restore original format
+            if (originalFormat) {
+                localStorage.setItem('dateFormat', originalFormat);
+            } else {
+                localStorage.removeItem('dateFormat');
             }
         }
 
