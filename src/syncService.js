@@ -27,25 +27,36 @@ const VERSION = process.env.VERSION || (() => {
  * @returns {string} Human-readable format
  */
 function formatNextSync(nextInvocation) {
-    const now = new Date();
-    const diff = nextInvocation - now;
+    // Ensure nextInvocation is a Date object
+    if (!nextInvocation) return 'not scheduled';
+    const nextDate = nextInvocation instanceof Date ? nextInvocation : new Date(nextInvocation);
     
-    // Convert to hours and minutes
-    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const now = new Date();
+    const diff = nextDate - now;
+    
+    // Convert to different time units
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-    const days = Math.floor(hours / 24);
-    const remainingHours = hours % 24;
+    const seconds = Math.floor((diff % (1000 * 60)) / 1000);
     
     if (days > 1) {
         return `in ${days} days`;
     } else if (days === 1) {
-        return `tomorrow at ${nextInvocation.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        return `tomorrow at ${nextDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
     } else if (hours >= 1) {
         return `in ${hours}h ${minutes}m`;
-    } else if (minutes > 0) {
+    } else if (minutes > 1) {
         return `in ${minutes} minutes`;
+    } else if (minutes === 1) {
+        return `in 1 minute`;
+    } else if (seconds > 10) {
+        return `in ${seconds} seconds`;
+    } else if (seconds > 0) {
+        return `in ${seconds} seconds (${nextDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })})`;
     } else {
-        return 'very soon';
+        // Show exact time if it's in the past or immediate
+        return `at ${nextDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
     }
 }
 
