@@ -396,47 +396,55 @@
 
         <!-- Overview Tab -->
         <div id="overview-tab" class="tab-content active">
-            <!-- Service Health -->
-            <div class="card">
-                <h2>Service Health</h2>
-                <div class="grid">
-                    <div class="metric">
-                        <span class="metric-label">Version</span>
-                        <span class="metric-value" id="version">-</span>
+            <div class="grid" style="grid-template-columns: repeat(2, 1fr); gap: 20px;">
+                <!-- Left Column -->
+                <div style="display: flex; flex-direction: column; gap: 20px;">
+                    <!-- Service Health -->
+                    <div class="card">
+                        <h2>Service Health</h2>
+                        <div class="grid">
+                            <div class="metric">
+                                <span class="metric-label">Version</span>
+                                <span class="metric-value" id="version">-</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">Uptime</span>
+                                <span class="metric-value" id="uptime">-</span>
+                            </div>
+                        </div>
                     </div>
-                    <div class="metric">
-                        <span class="metric-label">Uptime</span>
-                        <span class="metric-value" id="uptime">-</span>
+
+                    <!-- Configured Servers -->
+                    <div class="card">
+                        <h2>Configured Servers</h2>
+                        <ul id="servers" class="server-list">
+                            <li class="loading">Loading servers...</li>
+                        </ul>
+                        <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #334155;">
+                            <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Quick Actions</h3>
+                            <div id="server-buttons" class="loading">Loading servers...</div>
+                            <div id="sync-message"></div>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Configured Servers -->
-            <div class="card">
-                <h2>Configured Servers</h2>
-                <ul id="servers" class="server-list">
-                    <li class="loading">Loading servers...</li>
-                </ul>
-                <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #334155;">
-                    <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Quick Actions</h3>
-                    <div id="server-buttons" class="loading">Loading servers...</div>
-                    <div id="sync-message"></div>
-                </div>
-            </div>
+                <!-- Right Column -->
+                <div style="display: flex; flex-direction: column; gap: 20px;">
+                    <!-- Recent Activity -->
+                    <div class="card">
+                        <h2>Recent Activity (Last 5 Syncs)</h2>
+                        <div id="recent-activity" style="font-size: 0.9rem;">
+                            <div class="loading">Loading activity...</div>
+                        </div>
+                    </div>
 
-            <!-- Recent Activity -->
-            <div class="card">
-                <h2>Recent Activity (Last 5 Syncs)</h2>
-                <div id="recent-activity" style="font-size: 0.9rem;">
-                    <div class="loading">Loading activity...</div>
-                </div>
-            </div>
-
-            <!-- Real-time Logs -->
-            <div class="card">
-                <h2>Live Logs</h2>
-                <div id="logs">
-                    <div class="log-entry log-info">Connecting to log stream...</div>
+                    <!-- Real-time Logs -->
+                    <div class="card" style="flex: 1;">
+                        <h2>Live Logs</h2>
+                        <div id="logs">
+                            <div class="log-entry log-info">Connecting to log stream...</div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
