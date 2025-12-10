@@ -742,13 +742,14 @@
             stopKeepAlive(); // Clear any existing interval
             pingInterval = setInterval(() => {
                 if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'ping' }));
-                    
-                    // Check if last pong was too long ago (60s timeout)
-                    if (Date.now() - lastPingTime > 60000) {
+                    // Check if last pong was too long ago (90s timeout)
+                    if (Date.now() - lastPingTime > 90000) {
                         console.warn('Keep-alive timeout, reconnecting...');
                         ws.close();
+                        return;
                     }
+                    // Send ping to keep connection alive
+                    ws.send(JSON.stringify({ type: 'ping' }));
                 }
             }, 30000); // Ping every 30 seconds
         }

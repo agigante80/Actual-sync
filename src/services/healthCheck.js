@@ -652,7 +652,9 @@ class HealthCheckService {
         // Create WebSocket server
         this.wss = new WebSocket.Server({ 
           server: this.server,
-          path: '/ws/logs'
+          path: '/ws/logs',
+          clientTracking: true,
+          perMessageDeflate: false
         });
 
         this.wss.on('connection', (ws, req) => {
@@ -661,6 +663,7 @@ class HealthCheckService {
           });
 
           this.wsClients.add(ws);
+          ws.isAlive = true;
           
           // Handle incoming messages (ping/pong keep-alive)
           ws.on('message', (data) => {
@@ -668,11 +671,17 @@ class HealthCheckService {
               const message = JSON.parse(data);
               if (message.type === 'ping') {
                 // Respond to ping with pong
+                ws.isAlive = true;
                 ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
               }
             } catch (error) {
               // Ignore invalid messages
             }
+          });
+
+          // Handle native WebSocket pong
+          ws.on('pong', () => {
+            ws.isAlive = true;
           });
 
           ws.on('close', () => {
@@ -693,6 +702,22 @@ class HealthCheckService {
             message: 'Connected to Actual-sync log stream',
             timestamp: new Date().toISOString()
           }));
+        });
+
+        // Server-side heartbeat to detect dead connections
+        const heartbeatInterval = setInterval(() => {
+          this.wss.clients.forEach((ws) => {
+            if (ws.isAlive === false) {
+              this.logger.debug('Terminating inactive WebSocket connection');
+              return ws.terminate();
+            }
+            ws.isAlive = false;
+            ws.ping(); // Send native WebSocket ping frame
+          });
+        }, 45000); // Check every 45 seconds
+
+        this.wss.on('close', () => {
+          clearInterval(heartbeatInterval);
         });
 
         this.server.listen(this.port, this.host, () => {
