@@ -55,6 +55,8 @@ git push origin v1.5.0
 
 ## 🐳 Docker Image Tags
 
+**Note**: Docker tags use `-` instead of `+` (e.g., `1.5.1-dev-abcdef7` not `1.5.1-dev+abcdef7`)
+
 **Stable Release (v1.5.0):**
 ```
 agigante80/actual-sync:1.5.0
@@ -65,6 +67,7 @@ agigante80/actual-sync:latest
 
 **Dev Build (main/develop/feature):**
 ```
+# Semver: 1.5.1-dev+abcdef7 → Docker: 1.5.1-dev-abcdef7
 agigante80/actual-sync:1.5.1-dev-abcdef7
 agigante80/actual-sync:dev
 ```

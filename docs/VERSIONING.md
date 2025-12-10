@@ -102,18 +102,25 @@ The workflow detects the tag and generates clean version: `1.4.0`
 
 Docker images are tagged based on the version type:
 
+**Important**: Docker tags don't support the `+` character, so build metadata is converted from `+` to `-` for Docker tags only. The full semver version (with `+`) is preserved in image labels and build args.
+
 #### Development Builds
 ```bash
-# Image tags for 1.4.1-dev+abcdef7
+# Semver version: 1.4.1-dev+abcdef7
+# Docker tags (+ replaced with -)
 agigante80/actual-sync:1.4.1-dev-abcdef7
 agigante80/actual-sync:dev
 ghcr.io/agigante80/actual-sync:1.4.1-dev-abcdef7
 ghcr.io/agigante80/actual-sync:dev
+
+# Image label still contains full semver
+org.opencontainers.image.version=1.4.1-dev+abcdef7
 ```
 
 #### Stable Releases
 ```bash
-# Image tags for 1.4.0 (from tag v1.4.0)
+# Semver version: 1.4.0 (no build metadata)
+# Docker tags (unchanged)
 agigante80/actual-sync:1.4.0
 agigante80/actual-sync:1.4
 agigante80/actual-sync:1
@@ -375,12 +382,25 @@ git rev-parse --short HEAD         # Shows commit hash
 
 **Verify**:
 ```bash
-# Check image labels
-docker inspect agigante80/actual-sync:latest | jq '.[0].Config.Labels'
+# Check image labels (should show full semver with +)
+docker inspect agigante80/actual-sync:latest | jq '.[0].Config.Labels."org.opencontainers.image.version"'
 
 # Check package.json in image
 docker run --rm agigante80/actual-sync:latest cat package.json | jq .version
 ```
+
+### Docker Build Fails with "invalid tag" Error
+
+**Symptom**: `ERROR: invalid tag "agigante80/actual-sync:1.1.0-dev+abc123": invalid reference format`
+
+**Cause**: Docker tags cannot contain the `+` character (used in semver build metadata)
+
+**Solution**: The CI/CD workflow automatically converts `+` to `-` for Docker tags:
+- Semver version: `1.1.0-dev+abc123`
+- Docker tag: `1.1.0-dev-abc123`
+- Image label: `org.opencontainers.image.version=1.1.0-dev+abc123` (preserves full semver)
+
+This is handled automatically in `.github/workflows/ci-cd.yml`
 
 ## Best Practices
 
