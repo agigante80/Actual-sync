@@ -795,11 +795,19 @@
                     lastSyncText = `${formatTime(status.lastSync)}${statusBadge}`;
                 }
                 
+                // Escape server name for safe HTML rendering
+                const escapedName = name
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+                    
                 const errorDisplay = status.error ? `
                     <br>
                     <span style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
                         <span style="color: #ef4444;">Error: ${status.error}</span>
-                        <button onclick="dismissError('${name}')" style="padding: 2px 8px; font-size: 0.75rem; background: #7f1d1d; border-radius: 4px;">Dismiss</button>
+                        <button onclick="dismissErrorByName(this)" data-server-name="${escapedName}" style="padding: 2px 8px; font-size: 0.75rem; background: #7f1d1d; border-radius: 4px;">Dismiss</button>
                     </span>
                 ` : '';
                 
@@ -822,17 +830,35 @@
                 container.innerHTML = '<div class="loading">No servers available</div>';
                 return;
             }
+            
+            // Store server names globally to avoid string escaping issues
+            window.__serverNames = Object.keys(servers);
 
             container.innerHTML = `
                 <div class="button-group">
                     <button onclick="triggerSync('all')" class="secondary">Sync All Servers</button>
                 </div>
                 <div class="button-group" style="margin-top: 10px;">
-                    ${Object.keys(servers).map(name => 
-                        `<button onclick="triggerSync('${name}')">${name}</button>`
-                    ).join('')}
+                    ${Object.keys(servers).map((name, index) => {
+                        const escapedName = name
+                            .replace(/&/g, '&amp;')
+                            .replace(/</g, '&lt;')
+                            .replace(/>/g, '&gt;')
+                            .replace(/"/g, '&quot;')
+                            .replace(/'/g, '&#39;');
+                        return `<button onclick="triggerSyncByIndex(${index})">${escapedName}</button>`;
+                    }).join('')}
                 </div>
             `;
+        }
+        
+        async function triggerSyncByIndex(index) {
+            const serverName = window.__serverNames && window.__serverNames[index];
+            if (!serverName) {
+                alert('Failed to identify server for sync');
+                return;
+            }
+            await triggerSync(serverName);
         }
 
         async function triggerSync(serverName) {
@@ -1113,6 +1139,25 @@
         let durationChart = null;
         let timelineChart = null;
         let serverScheduleInfo = {};
+        
+        async function dismissErrorByName(button) {
+            // Get server name from data attribute (safe from escaping issues)
+            const serverName = button.getAttribute('data-server-name');
+            if (!serverName) {
+                console.error('Failed to get server name from button');
+                return;
+            }
+            
+            // Unescape HTML entities back to original name
+            const actualName = serverName
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'");
+            
+            await dismissError(actualName);
+        }
         
         async function dismissError(serverName) {
             try {
