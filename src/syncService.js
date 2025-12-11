@@ -301,6 +301,10 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
             console.error('Error.type:', error?.type);
             console.error('Error.reason:', error?.reason);
             console.error('Error toString:', error?.toString());
+            if (error?.stack) {
+                console.error('Full stack trace:');
+                console.error(error.stack);
+            }
             console.error('=== END DEBUG ===');
             
             // Normalize error to ensure we have a message
@@ -451,37 +455,50 @@ async function syncBank(server) {
         
         // Download budget with encryption password if provided
         const downloadOptions = encryptionPassword ? { password: encryptionPassword } : undefined;
-        try {
-            await runWithRetries(
-                async () => await actual.downloadBudget(syncId, downloadOptions),
-                syncConfig.maxRetries,
-                syncConfig.baseRetryDelayMs
-            );
-            serverLogger.info('Budget file loaded successfully', {
-                encrypted: !!encryptionPassword
-            });
-        } catch (downloadError) {
+        
+        // Download with manual retry logic to preserve PostError details
+        let downloadError;
+        for (let attempt = 0; attempt <= syncConfig.maxRetries; attempt++) {
+            try {
+                await actual.downloadBudget(syncId, downloadOptions);
+                serverLogger.info('Budget file loaded successfully', {
+                    encrypted: !!encryptionPassword
+                });
+                downloadError = null;
+                break; // Success!
+            } catch (error) {
+                downloadError = error;
+                
+                // Log attempt failure with details
+                console.error(`=== Download attempt ${attempt + 1} failed ===`);
+                console.error('Error type:', error?.constructor?.name);
+                console.error('Error.type:', error?.type);
+                console.error('Error.reason:', error?.reason);
+                console.error('Error message:', error?.message);
+                
+                // Only retry on last attempt check
+                if (attempt < syncConfig.maxRetries) {
+                    const delay = syncConfig.baseRetryDelayMs * Math.pow(2, attempt);
+                    serverLogger.warn(`Download attempt ${attempt + 1} failed, retrying in ${delay}ms`, {
+                        error: error?.reason || error?.message || String(error),
+                        attempt: attempt + 1
+                    });
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+        
+        // If download failed after all retries, enhance and throw error
+        if (downloadError) {
             // Enhance error message with more context
             // Extract error details from PostError or standard Error objects
             
-            // Log the full error structure - use console.error to ensure it's visible
-            console.error('=== DOWNLOAD ERROR DEBUG ===');
-            console.error('Error type:', downloadError?.constructor?.name);
-            console.error('Error message:', downloadError?.message);
-            console.error('Error toString:', downloadError?.toString());
-            console.error('Error reason:', downloadError?.reason);
-            console.error('Error type field:', downloadError?.type);
-            console.error('Has stack:', !!downloadError?.stack);
-            if (downloadError?.stack) {
-                console.error('Stack first 3 lines:', downloadError.stack.split('\n').slice(0, 3).join('\n'));
-            }
-            console.error('=== END DEBUG ===');
-            
             let originalError = downloadError?.message || downloadError?.toString() || 'Unknown error';
             
-            // Check if this is a PostError with a reason field
+            // Check if this is a PostError with a reason field (caught directly!)
             if (downloadError?.type === 'PostError' && downloadError?.reason) {
                 originalError = downloadError.reason;
+                serverLogger.debug('PostError detected with reason', { reason: downloadError.reason });
             }
             
             // Also check the string representation for PostError pattern
