@@ -297,6 +297,11 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
             // Normalize error to ensure we have a message
             let errorMessage = error?.message;
             
+            // Check for PostError with reason field
+            if ((!errorMessage || errorMessage === 'Error') && error?.type === 'PostError' && error?.reason) {
+                errorMessage = error.reason;
+            }
+            
             // If message is empty or generic, try to extract more info
             if (!errorMessage || errorMessage.trim() === '' || errorMessage === 'Error') {
                 // Try stack trace first line
@@ -305,6 +310,10 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
                     const firstLine = stackLines[0];
                     if (firstLine && firstLine !== 'Error' && firstLine !== 'Error: Error') {
                         errorMessage = firstLine.replace(/^Error: /, '');
+                        // Extract PostError: PostError: network-failure pattern
+                        if (errorMessage.includes('PostError: PostError: ')) {
+                            errorMessage = errorMessage.replace('PostError: PostError: ', '');
+                        }
                     }
                 }
                 
@@ -313,6 +322,9 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
                     const errorString = error?.toString();
                     if (errorString && errorString !== 'Error' && errorString !== '[object Object]') {
                         errorMessage = errorString.replace(/^Error: /, '');
+                        if (errorMessage.includes('PostError: PostError: ')) {
+                            errorMessage = errorMessage.replace('PostError: PostError: ', '');
+                        }
                     } else {
                         errorMessage = 'Unknown error';
                     }
@@ -350,11 +362,19 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
                     errorCode: errorCode,
                     errorMessage: errorMessage 
                 });
-                throw error; // Re-throw other errors
+                // Create new error with preserved message to avoid losing details
+                const preservedError = new Error(errorMessage);
+                preservedError.code = errorCode;
+                preservedError.originalError = error;
+                throw preservedError;
             }
             if (i === retries) {
                 logger.error('Max retries reached. Bank sync failed.', { maxRetries: retries });
-                throw error; // Re-throw after max retries
+                // Create new error with preserved message
+                const preservedError = new Error(errorMessage);
+                preservedError.code = errorCode;
+                preservedError.originalError = error;
+                throw preservedError;
             }
             await new Promise(resolve => setTimeout(resolve, retryDelay));
         }
