@@ -294,6 +294,15 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
         try {
             return await fn();
         } catch (error) {
+            // Debug: log what we receive
+            console.error('=== RUNWITHRETRIES ERROR DEBUG ===');
+            console.error('Error type:', error?.constructor?.name);
+            console.error('Error message:', error?.message);
+            console.error('Error.type:', error?.type);
+            console.error('Error.reason:', error?.reason);
+            console.error('Error toString:', error?.toString());
+            console.error('=== END DEBUG ===');
+            
             // Normalize error to ensure we have a message
             let errorMessage = error?.message;
             
