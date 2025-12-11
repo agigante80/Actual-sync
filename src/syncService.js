@@ -564,9 +564,9 @@ async function syncBank(server) {
         let errorMessage = error?.message;
         
         // Log error structure for debugging
-        serverLogger.debug('Error structure', {
+        serverLogger.debug('Error structure for debugging', {
             hasMessage: !!errorMessage,
-            message: errorMessage,
+            errorMessage: errorMessage,
             toString: error?.toString(),
             hasStack: !!error?.stack,
             stackFirstLine: error?.stack?.split('\n')[0],
@@ -879,9 +879,16 @@ process.on('uncaughtException', (error) => {
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
+    // Extract meaningful information from reason
+    const reasonInfo = reason instanceof Error 
+        ? { message: reason.message, code: reason.code, stack: reason.stack }
+        : typeof reason === 'object' && reason !== null
+        ? { ...reason, toString: String(reason) }
+        : { value: reason, type: typeof reason };
+    
     logger.error('Unhandled promise rejection - service will continue', {
-        reason: reason,
-        promise: promise
+        reason: reasonInfo,
+        promiseString: promise ? promise.toString() : 'no promise info'
     });
 });
 
