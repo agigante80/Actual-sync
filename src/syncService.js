@@ -454,12 +454,28 @@ async function syncBank(server) {
         }
 
         serverLogger.info('Starting final file sync');
-        await runWithRetries(
-            async () => await actual.sync(),
-            syncConfig.maxRetries,
-            syncConfig.baseRetryDelayMs
-        );
-        serverLogger.info('Final file sync completed');
+        try {
+            await runWithRetries(
+                async () => await actual.sync(),
+                syncConfig.maxRetries,
+                syncConfig.baseRetryDelayMs
+            );
+            serverLogger.info('Final file sync completed');
+        } catch (finalSyncError) {
+            const errorMessage = finalSyncError?.message || finalSyncError?.toString() || String(finalSyncError) || '';
+            
+            // Known issue: Encrypted budgets sometimes throw empty errors on final sync even when successful
+            // If bank sync succeeded and error is empty/unknown, treat as success
+            if (isEncrypted && (!errorMessage || errorMessage === 'Unknown error' || errorMessage.trim() === '')) {
+                serverLogger.warn('Final file sync threw empty error (known issue with encrypted budgets), treating as success', {
+                    encrypted: isEncrypted,
+                    accountsSucceeded: accountsSucceeded
+                });
+            } else {
+                // Real error - re-throw to be handled by outer catch
+                throw finalSyncError;
+            }
+        }
         
         // Calculate sync duration and log performance
         let durationMs = endTimer({ 
