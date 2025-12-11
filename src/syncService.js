@@ -435,15 +435,18 @@ async function syncBank(server) {
             // Enhance error message with more context
             // Extract error details from PostError or standard Error objects
             
-            // Debug: log the full error structure
-            serverLogger.debug('Download error caught', {
-                errorType: downloadError?.constructor?.name,
-                errorMessage: downloadError?.message,
-                errorToString: downloadError?.toString(),
-                errorReason: downloadError?.reason,
-                errorType: downloadError?.type,
-                hasStack: !!downloadError?.stack
-            });
+            // Log the full error structure - use console.error to ensure it's visible
+            console.error('=== DOWNLOAD ERROR DEBUG ===');
+            console.error('Error type:', downloadError?.constructor?.name);
+            console.error('Error message:', downloadError?.message);
+            console.error('Error toString:', downloadError?.toString());
+            console.error('Error reason:', downloadError?.reason);
+            console.error('Error type field:', downloadError?.type);
+            console.error('Has stack:', !!downloadError?.stack);
+            if (downloadError?.stack) {
+                console.error('Stack first 3 lines:', downloadError.stack.split('\n').slice(0, 3).join('\n'));
+            }
+            console.error('=== END DEBUG ===');
             
             let originalError = downloadError?.message || downloadError?.toString() || 'Unknown error';
             
