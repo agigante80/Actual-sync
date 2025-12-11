@@ -402,7 +402,24 @@ async function syncBank(server) {
             });
         } catch (downloadError) {
             // Enhance error message with more context
-            const originalError = downloadError?.message || downloadError?.toString() || 'Unknown error';
+            // Extract error details from PostError or standard Error objects
+            let originalError = downloadError?.message || downloadError?.toString() || 'Unknown error';
+            
+            // Check if this is a PostError with a reason field
+            if (downloadError?.type === 'PostError' && downloadError?.reason) {
+                originalError = downloadError.reason;
+            }
+            
+            // Also check the string representation for PostError pattern
+            const errorString = downloadError?.toString() || '';
+            if (errorString.includes('PostError: PostError: ')) {
+                // Extract the actual error type after "PostError: PostError: "
+                const match = errorString.match(/PostError: PostError: (.+)/);
+                if (match && match[1]) {
+                    originalError = match[1].trim();
+                }
+            }
+            
             const errorDetails = [];
             
             if (originalError.includes('Could not get remote files')) {
@@ -413,8 +430,10 @@ async function syncBank(server) {
                     errorDetails.push('If this budget uses encryption, provide the encryptionPassword in config.');
                 }
             } else if (originalError.includes('network-failure')) {
-                errorDetails.push('Network connection to Actual Budget server failed.');
+                errorDetails.push('Network connection to Actual Budget server failed during encryption key test.');
                 errorDetails.push(`Check that server is accessible at: ${url}`);
+                errorDetails.push('Verify the encryptionPassword is correct for this encrypted budget.');
+                errorDetails.push('Ensure the Actual Budget server supports encrypted budgets.');
             } else if (originalError.includes('decrypt-failure') || originalError.includes('Invalid password')) {
                 errorDetails.push('Failed to decrypt budget file.');
                 errorDetails.push('Verify the encryptionPassword is correct for this budget.');
