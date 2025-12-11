@@ -76,6 +76,6 @@
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "jest": "^30.2.0",
-    "puppeteer": "^23.11.1"
+    "puppeteer": "^24.32.1"
   }
 }
