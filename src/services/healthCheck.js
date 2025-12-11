@@ -584,7 +584,13 @@ class HealthCheckService {
               timestamp: testMessage.timestamp,
               correlationId: testMessage.correlationId,
               context: testMessage.context,
-              consecutiveFailures: 1
+              consecutiveFailures: 1,
+              thresholds: {
+                consecutiveExceeded: false,
+                rateExceeded: false,
+                failureRate: 0,
+                consecutiveFailures: 1
+              }
             });
             if (emailResult && emailResult.success) {
               result = { success: true, message: 'Test email sent successfully' };
@@ -605,7 +611,13 @@ class HealthCheckService {
               timestamp: testMessage.timestamp,
               correlationId: testMessage.correlationId,
               context: testMessage.context,
-              consecutiveFailures: 1
+              consecutiveFailures: 1,
+              thresholds: {
+                consecutiveExceeded: false,
+                rateExceeded: false,
+                failureRate: 0,
+                consecutiveFailures: 1
+              }
             });
             if (discordResults && discordResults.length > 0 && discordResults[0].success) {
               result = { success: true, message: 'Test Discord message sent successfully' };
@@ -626,7 +638,13 @@ class HealthCheckService {
               timestamp: testMessage.timestamp,
               correlationId: testMessage.correlationId,
               context: testMessage.context,
-              consecutiveFailures: 1
+              consecutiveFailures: 1,
+              thresholds: {
+                consecutiveExceeded: false,
+                rateExceeded: false,
+                failureRate: 0,
+                consecutiveFailures: 1
+              }
             });
             if (slackResults && slackResults.length > 0 && slackResults[0].success) {
               result = { success: true, message: 'Test Slack message sent successfully' };
@@ -647,7 +665,13 @@ class HealthCheckService {
               timestamp: testMessage.timestamp,
               correlationId: testMessage.correlationId,
               context: testMessage.context,
-              consecutiveFailures: 1
+              consecutiveFailures: 1,
+              thresholds: {
+                consecutiveExceeded: false,
+                rateExceeded: false,
+                failureRate: 0,
+                consecutiveFailures: 1
+              }
             });
             if (teamsResults && teamsResults.length > 0 && teamsResults[0].success) {
               result = { success: true, message: 'Test Teams message sent successfully' };
