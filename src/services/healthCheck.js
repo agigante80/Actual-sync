@@ -564,7 +564,7 @@ class HealthCheckService {
 
         switch (channel) {
           case 'email':
-            this.logger.debug('Testing email notification', {
+            this.logger.info('Testing email notification', {
               hasNotificationService: !!this.notificationService,
               hasConfig: !!this.notificationService?.config,
               hasEmailConfig: !!this.notificationService?.config?.email,
