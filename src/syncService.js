@@ -197,7 +197,8 @@ try {
         telegramBot = new TelegramBotService(
             {
                 botToken: config.notifications.telegram.botToken,
-                chatId: config.notifications.telegram.chatId,
+                chatId: config.notifications.telegram.chatId || config.notifications.telegram.chatIds?.[0],
+                chatIds: config.notifications.telegram.chatIds,
                 notifyOnSuccess: config.notifications.telegram.notifyOnSuccess || 'errors_only'
             },
             {
