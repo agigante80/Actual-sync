@@ -496,12 +496,23 @@ async function syncBank(server) {
         
         // If download failed after all retries, enhance and throw error
         if (downloadError) {
-            // Enhance error message with more context
-            // Extract error details from PostError or standard Error objects
+            // The Actual API throws PostError but by the time we catch it, it's a plain Error with no message
+            // We need to infer the error from context
+            let originalError = downloadError?.message || downloadError?.toString() || '';
             
-            let originalError = downloadError?.message || downloadError?.toString() || 'Unknown error';
+            // Check for empty or generic error - common with PostError that loses its details
+            if (!originalError || originalError === 'Error' || originalError.trim() === '') {
+                // For encrypted budgets, the most common error is encryption key validation failure
+                if (encryptionPassword) {
+                    originalError = 'network-failure during encryption key validation';
+                    serverLogger.warn('Empty error caught for encrypted budget download - likely encryption key issue');
+                } else {
+                    originalError = 'budget download failed';
+                    serverLogger.warn('Empty error caught for budget download');
+                }
+            }
             
-            // Check if this is a PostError with a reason field (caught directly!)
+            // Check if this is a PostError with a reason field (though usually empty by now)
             if (downloadError?.type === 'PostError' && downloadError?.reason) {
                 originalError = downloadError.reason;
                 serverLogger.debug('PostError detected with reason', { reason: downloadError.reason });
