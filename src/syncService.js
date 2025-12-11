@@ -294,19 +294,6 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
         try {
             return await fn();
         } catch (error) {
-            // Debug: log what we receive
-            console.error('=== RUNWITHRETRIES ERROR DEBUG ===');
-            console.error('Error type:', error?.constructor?.name);
-            console.error('Error message:', error?.message);
-            console.error('Error.type:', error?.type);
-            console.error('Error.reason:', error?.reason);
-            console.error('Error toString:', error?.toString());
-            if (error?.stack) {
-                console.error('Full stack trace:');
-                console.error(error.stack);
-            }
-            console.error('=== END DEBUG ===');
-            
             // Normalize error to ensure we have a message
             let errorMessage = error?.message;
             
@@ -468,19 +455,6 @@ async function syncBank(server) {
                 break; // Success!
             } catch (error) {
                 downloadError = error;
-                
-                // Log attempt failure with details
-                console.error(`=== Download attempt ${attempt + 1} failed ===`);
-                console.error('Error type:', error?.constructor?.name);
-                console.error('Error.type:', error?.type);
-                console.error('Error.reason:', error?.reason);
-                console.error('Error message:', error?.message);
-                console.error('Error keys:', Object.keys(error));
-                console.error('Error toString:', error?.toString());
-                console.error('Error stack first line:', error?.stack?.split('\n')[0]);
-                console.error('Is Error:', error instanceof Error);
-                console.error('Proto:', Object.getPrototypeOf(error)?.constructor?.name);
-                console.error('=== END ===');
                 
                 // Only retry on last attempt check
                 if (attempt < syncConfig.maxRetries) {
