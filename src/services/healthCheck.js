@@ -17,6 +17,8 @@ class HealthCheckService {
    * @param {string} options.host - Host to bind to
    * @param {Object} options.prometheusService - PrometheusService instance (optional)
    * @param {Object} options.syncHistory - SyncHistoryService instance (optional)
+   * @param {Object} options.notificationService - NotificationService instance (optional)
+   * @param {Object} options.telegramBot - TelegramBotService instance (optional)
    * @param {Function} options.syncBank - Sync function for manual triggers (optional)
    * @param {Function} options.getServers - Function to get server list (optional)
    * @param {Function} options.getSchedules - Function to get schedule info (optional)
@@ -28,6 +30,8 @@ class HealthCheckService {
     this.host = options.host || '0.0.0.0';
     this.prometheusService = options.prometheusService;
     this.syncHistory = options.syncHistory;
+    this.notificationService = options.notificationService;
+    this.telegramBot = options.telegramBot;
     this.syncBank = options.syncBank;
     this.getServers = options.getServers;
     this.getSchedules = options.getSchedules;
@@ -530,6 +534,101 @@ class HealthCheckService {
           error: error.message
         });
         res.status(500).json({ error: 'Failed to reset history' });
+      }
+    });
+
+    // Dashboard API: Test notification channels (with authentication)
+    this.app.post('/api/dashboard/test-notification', this.dashboardAuth(), async (req, res) => {
+      const { channel } = req.body;
+
+      if (!channel) {
+        return res.status(400).json({ error: 'Channel parameter required' });
+      }
+
+      try {
+        const testMessage = {
+          serverName: 'Test Server',
+          errorMessage: 'This is a test notification from Actual-sync',
+          errorCode: 'TEST',
+          timestamp: new Date().toISOString(),
+          correlationId: `test-${Date.now()}`,
+          context: {
+            accountsProcessed: 5,
+            accountsSucceeded: 4,
+            accountsFailed: 1,
+            durationMs: 1234
+          }
+        };
+
+        let result = { success: false, message: '' };
+
+        switch (channel) {
+          case 'email':
+            if (!this.notificationService?.emailTransporter) {
+              return res.status(400).json({ error: 'Email not configured' });
+            }
+            await this.notificationService.notifyError(testMessage);
+            result = { success: true, message: 'Test email sent successfully' };
+            break;
+
+          case 'discord':
+            if (!this.notificationService?.webhooks?.discord?.length) {
+              return res.status(400).json({ error: 'Discord not configured' });
+            }
+            await this.notificationService.notifyError(testMessage);
+            result = { success: true, message: 'Test Discord message sent successfully' };
+            break;
+
+          case 'slack':
+            if (!this.notificationService?.webhooks?.slack?.length) {
+              return res.status(400).json({ error: 'Slack not configured' });
+            }
+            await this.notificationService.notifyError(testMessage);
+            result = { success: true, message: 'Test Slack message sent successfully' };
+            break;
+
+          case 'teams':
+            if (!this.notificationService?.webhooks?.teams?.length) {
+              return res.status(400).json({ error: 'Microsoft Teams not configured' });
+            }
+            await this.notificationService.notifyError(testMessage);
+            result = { success: true, message: 'Test Teams message sent successfully' };
+            break;
+
+          case 'telegram':
+            if (!this.telegramBot) {
+              return res.status(400).json({ error: 'Telegram bot not configured' });
+            }
+            await this.telegramBot.notifySync({
+              status: 'failure',
+              serverName: 'Test Server',
+              duration: 1234,
+              accountsProcessed: 4,
+              accountsFailed: 1,
+              error: 'This is a test notification'
+            });
+            result = { success: true, message: 'Test Telegram message sent successfully' };
+            break;
+
+          default:
+            return res.status(400).json({ error: 'Invalid channel. Use: email, discord, slack, teams, or telegram' });
+        }
+
+        this.logger.info('Test notification sent via dashboard', {
+          channel,
+          remoteAddress: req.ip
+        });
+
+        res.json(result);
+      } catch (error) {
+        this.logger.error('Failed to send test notification', {
+          channel,
+          error: error.message
+        });
+        res.status(500).json({ 
+          error: 'Failed to send test notification',
+          details: error.message 
+        });
       }
     });
 

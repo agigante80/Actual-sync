@@ -189,6 +189,8 @@ try {
         dashboardConfig: config.healthCheck?.dashboard || { enabled: true, auth: { type: 'none' } },
         prometheusService: prometheusService,
         syncHistory: syncHistory,
+        notificationService: notificationService,
+        telegramBot: telegramBot,
         syncBank: syncBank,
         getServers: () => config.servers,
         getSchedules: () => {
