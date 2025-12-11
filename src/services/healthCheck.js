@@ -564,7 +564,7 @@ class HealthCheckService {
 
         switch (channel) {
           case 'email':
-            if (!this.notificationService?.config?.email?.smtp?.host || 
+            if (!this.notificationService?.config?.email?.host || 
                 !this.notificationService?.config?.email?.to?.length) {
               return res.status(400).json({ error: 'Email not configured' });
             }
