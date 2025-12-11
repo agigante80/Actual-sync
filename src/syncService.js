@@ -4,6 +4,7 @@ const path = require('path');
 const { BlockingScheduler } = require('node-schedule'); // Import the scheduler
 const schedule = require('node-schedule'); // Import the scheduler
 const moment = require('moment-timezone');
+const cronstrue = require('cronstrue');
 const ConfigLoader = require('./lib/configLoader');
 const { createLogger } = require('./lib/logger');
 const { HealthCheckService } = require('./services/healthCheck');
@@ -68,63 +69,16 @@ module.exports.formatNextSync = formatNextSync;
  * @param {string} cron - Cron expression (e.g., "0 5 * * 2")
  * @returns {string} Human-readable description
  */
-function cronToHuman(cron) {
-    const parts = cron.split(' ');
-    if (parts.length !== 5) return cron;
-    
-    const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
-    
-    // Day names
-    const days = {
-        '0': 'Sunday', '1': 'Monday', '2': 'Tuesday', '3': 'Wednesday',
-        '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'
+/**
+ * Get effective sync configuration for a server
+ */
+function getSyncConfig(server) {
+    // Server-specific config overrides global config
+    return {
+        schedule: server.sync?.schedule || config.sync.schedule,
+        maxRetries: server.sync?.maxRetries ?? config.sync.maxRetries,
+        retryDelayMs: server.sync?.retryDelayMs ?? config.sync.retryDelayMs
     };
-    
-    // Handle minute intervals (e.g., */15, */30)
-    if (minute.startsWith('*/')) {
-        const interval = minute.substring(2);
-        if (hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-            return `Every ${interval} minutes`;
-        }
-    }
-    
-    // Handle hourly patterns (e.g., 0 * * * *)
-    if (minute.match(/^\d+$/) && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-        return `Every hour at minute ${minute}`;
-    }
-    
-    // Handle hour intervals (e.g., 0 */6 * * *)
-    if (hour.startsWith('*/')) {
-        const interval = hour.substring(2);
-        return `Every ${interval} hours at minute ${minute}`;
-    }
-    
-    let timeStr = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
-    
-    if (dayOfWeek === '*' && dayOfMonth === '*') {
-        return `Daily at ${timeStr}`;
-    }
-    
-    // Handle specific days of week
-    if (dayOfWeek !== '*') {
-        const daysList = dayOfWeek.split(',').map(d => days[d.trim()]);
-        if (daysList.length === 7) {
-            return `Daily at ${timeStr}`;
-        } else if (daysList.length === 5 && !daysList.includes('Saturday') && !daysList.includes('Sunday')) {
-            return `Weekdays at ${timeStr}`;
-        } else if (daysList.length === 1) {
-            return `Every ${daysList[0]} at ${timeStr}`;
-        } else {
-            return `${daysList.join(', ')} at ${timeStr}`;
-        }
-    }
-    
-    // Handle specific day of month
-    if (dayOfMonth !== '*') {
-        return `Monthly on day ${dayOfMonth} at ${timeStr}`;
-    }
-    
-    return `Daily at ${timeStr}`;
 }
 
 // Load environment variables
@@ -244,7 +198,7 @@ try {
             // Return cron schedule information for dashboard
             return scheduledJobsRef.map(sj => ({
                 cron: sj.schedule,
-                cronHuman: cronToHuman(sj.schedule),
+                cronHuman: cronstrue.toString(sj.schedule),
                 servers: sj.servers.map(s => s.name),
                 nextInvocation: sj.job.nextInvocation()?.toString()
             }));
@@ -258,7 +212,7 @@ try {
     
     // Update Telegram bot with healthCheck reference
     if (telegramBot) {
-        telegramBot.healthCheck = healthCheck;
+        telegramBot.services.healthCheck = healthCheck;
     }
     
     // Connect logger to WebSocket broadcasting
@@ -287,98 +241,6 @@ function getSyncConfig(server) {
         baseRetryDelayMs: server.sync?.baseRetryDelayMs ?? globalSyncConfig.baseRetryDelayMs,
         schedule: server.sync?.schedule ?? globalSyncConfig.schedule
     };
-}
-
-async function runWithRetries(fn, retries, baseRetryDelayMs) {
-    for (let i = 0; i <= retries; i++) {
-        try {
-            return await fn();
-        } catch (error) {
-            // Normalize error to ensure we have a message
-            let errorMessage = error?.message;
-            
-            // Check for PostError with reason field
-            if ((!errorMessage || errorMessage === 'Error') && error?.type === 'PostError' && error?.reason) {
-                errorMessage = error.reason;
-            }
-            
-            // If message is empty or generic, try to extract more info
-            if (!errorMessage || errorMessage.trim() === '' || errorMessage === 'Error') {
-                // Try stack trace first line
-                if (error?.stack) {
-                    const stackLines = error.stack.split('\n');
-                    const firstLine = stackLines[0];
-                    if (firstLine && firstLine !== 'Error' && firstLine !== 'Error: Error') {
-                        errorMessage = firstLine.replace(/^Error: /, '');
-                        // Extract PostError: PostError: network-failure pattern
-                        if (errorMessage.includes('PostError: PostError: ')) {
-                            errorMessage = errorMessage.replace('PostError: PostError: ', '');
-                        }
-                    }
-                }
-                
-                // Try toString as last resort
-                if (!errorMessage || errorMessage === 'Error') {
-                    const errorString = error?.toString();
-                    if (errorString && errorString !== 'Error' && errorString !== '[object Object]') {
-                        errorMessage = errorString.replace(/^Error: /, '');
-                        if (errorMessage.includes('PostError: PostError: ')) {
-                            errorMessage = errorMessage.replace('PostError: PostError: ', '');
-                        }
-                    } else {
-                        errorMessage = 'Unknown error';
-                    }
-                }
-            }
-            
-            const errorCode = error?.code || error?.errorCode || 'UNKNOWN';
-            const errorCategory = error?.category;
-            
-            logger.error(`Attempt ${i + 1} failed`, { 
-                attempt: i + 1, 
-                error: errorMessage,
-                errorCode: errorCode,
-                errorCategory: errorCategory
-            });
-
-            let retryDelay = 0;
-
-            if (errorCode === 'NORDIGEN_ERROR' && errorCategory === 'RATE_LIMIT_EXCEEDED') {
-                retryDelay = baseRetryDelayMs * (2 ** i); // Exponential backoff for rate limits
-                logger.warn(`Rate limit exceeded. Retrying in ${retryDelay / 1000} seconds...`, {
-                    retryDelayMs: retryDelay,
-                    attempt: i + 1
-                });
-            } else if (errorMessage === 'network-failure' || errorCode === 'ECONNRESET' || errorCode === 'ENOTFOUND') {
-                // Retry for network failures, ECONNRESET, or DNS issues
-                retryDelay = baseRetryDelayMs * (2 ** i); // Exponential backoff for network issues
-                logger.warn(`Network failure. Retrying in ${retryDelay / 1000} seconds...`, {
-                    retryDelayMs: retryDelay,
-                    attempt: i + 1,
-                    errorCode: errorCode
-                });
-            } else {
-                logger.error('Not a retryable error, not retrying', { 
-                    errorCode: errorCode,
-                    errorMessage: errorMessage 
-                });
-                // Create new error with preserved message to avoid losing details
-                const preservedError = new Error(errorMessage);
-                preservedError.code = errorCode;
-                preservedError.originalError = error;
-                throw preservedError;
-            }
-            if (i === retries) {
-                logger.error('Max retries reached. Bank sync failed.', { maxRetries: retries });
-                // Create new error with preserved message
-                const preservedError = new Error(errorMessage);
-                preservedError.code = errorCode;
-                preservedError.originalError = error;
-                throw preservedError;
-            }
-            await new Promise(resolve => setTimeout(resolve, retryDelay));
-        }
-    }
 }
 
 async function syncBank(server) {
@@ -413,6 +275,8 @@ async function syncBank(server) {
     let accountsProcessed = 0;
     let accountsSucceeded = 0;
     let accountsFailed = 0;
+    const succeededAccounts = [];
+    const failedAccounts = [];
     
     try {
         serverLogger.info(`Starting sync for server: ${name}`, { 
@@ -443,32 +307,21 @@ async function syncBank(server) {
         // Download budget with encryption password if provided
         const downloadOptions = encryptionPassword ? { password: encryptionPassword } : undefined;
         
-        // Download with manual retry logic to preserve PostError details
+        // Download budget (single attempt - no retries)
         let downloadError;
-        for (let attempt = 0; attempt <= syncConfig.maxRetries; attempt++) {
-            try {
-                await actual.downloadBudget(syncId, downloadOptions);
-                serverLogger.info('Budget file loaded successfully', {
-                    encrypted: !!encryptionPassword
-                });
-                downloadError = null;
-                break; // Success!
-            } catch (error) {
-                downloadError = error;
-                
-                // Only retry on last attempt check
-                if (attempt < syncConfig.maxRetries) {
-                    const delay = syncConfig.baseRetryDelayMs * Math.pow(2, attempt);
-                    serverLogger.warn(`Download attempt ${attempt + 1} failed, retrying in ${delay}ms`, {
-                        error: error?.reason || error?.message || String(error),
-                        attempt: attempt + 1
-                    });
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                }
-            }
+        try {
+            await actual.downloadBudget(syncId, downloadOptions);
+            serverLogger.info('Budget file loaded successfully', {
+                encrypted: !!encryptionPassword
+            });
+        } catch (error) {
+            downloadError = error;
+            serverLogger.debug('Download failed', {
+                error: error?.reason || error?.message || String(error)
+            });
         }
         
-        // If download failed after all retries, enhance and throw error
+        // If download failed, enhance and throw error
         if (downloadError) {
             // The Actual API throws PostError but by the time we catch it, it's a plain Error with no message
             // We need to infer the error from context
@@ -548,16 +401,9 @@ async function syncBank(server) {
         serverLogger.info('Accounts fetched successfully', { accountCount: accounts?.length || 0 });
 
         serverLogger.info('Starting file sync');
-        await runWithRetries(
-            async () => await actual.sync(),
-            syncConfig.maxRetries,
-            syncConfig.baseRetryDelayMs
-        ); // Add this before runBankSync
+        await actual.sync();
         serverLogger.info('File sync completed');
             
-        const succeededAccounts = [];
-        const failedAccounts = [];
-        
         if (accounts && accounts.length > 0) {
             for (const account of accounts) {
                 accountsProcessed++;
@@ -567,11 +413,7 @@ async function syncBank(server) {
                     accountName: account.name 
                 });
                 try { //  Wrap runBankSync in try...catch
-                    await runWithRetries(
-                        async () => await actual.runBankSync({ accountId: account.id }),
-                        syncConfig.maxRetries,
-                        syncConfig.baseRetryDelayMs
-                    );
+                    await actual.runBankSync({ accountId: account.id });
                     accountsSucceeded++;
                     succeededAccounts.push(account.name);
                     const accountDuration = accountTimer();
@@ -601,11 +443,7 @@ async function syncBank(server) {
         }
 
         serverLogger.info('Starting final file sync');
-        await runWithRetries(
-            async () => await actual.sync(),
-            syncConfig.maxRetries,
-            syncConfig.baseRetryDelayMs
-        );
+        await actual.sync();
         serverLogger.info('Final file sync completed');
         
         // Calculate sync duration and log performance
@@ -687,12 +525,10 @@ async function syncBank(server) {
                     failedAccounts: failedAccounts.map(a => `${a.name}: ${a.error}`)
                 });
             }
-        }
-        
-        // Send Telegram bot notification
-        if (telegramBot) {
+            
+            // Send unified sync notification to all channels
             try {
-                await telegramBot.notifySync({
+                await notificationService.notifySync({
                     status: syncStatus,
                     serverName: name,
                     duration: durationMs,
@@ -700,10 +536,17 @@ async function syncBank(server) {
                     accountsFailed: accountsFailed,
                     succeededAccounts: succeededAccounts,
                     failedAccounts: failedAccounts,
-                    errorMessage: errorMessage
+                    error: errorMessage,
+                    errorCode: errorCode,
+                    correlationId,
+                    context: {},
+                    bypassThresholds: false
                 });
-            } catch (botError) {
-                logger.error('Failed to send Telegram bot notification', { error: botError.message });
+            } catch (notifyError) {
+                logger.error('Failed to send sync notification', { 
+                    error: notifyError.message,
+                    correlationId
+                });
             }
         }
         
@@ -807,48 +650,37 @@ async function syncBank(server) {
             });
         }
         
-        // Record failed sync result and send notification if thresholds exceeded
+        // Record failed sync result and send unified notification to all channels
         if (notificationService) {
             notificationService.recordSyncResult(name, false, correlationId);
             
             try {
-                await notificationService.notifyError({
+                await notificationService.notifySync({
+                    status: 'failure',
                     serverName: name,
-                    errorMessage: errorMessage,
+                    duration: durationMs,
+                    accountsProcessed: accountsSucceeded,
+                    accountsFailed: accountsFailed,
+                    succeededAccounts: succeededAccounts,
+                    failedAccounts: failedAccounts,
+                    error: errorMessage,
                     errorCode: errorCode,
-                    timestamp: new Date().toISOString(),
                     correlationId,
                     context: {
                         accountsProcessed,
                         accountsSucceeded,
                         accountsFailed,
                         durationMs
-                    }
+                    },
+                    bypassThresholds: false
                 });
             } catch (notifyError) {
                 const notifyErrorMessage = notifyError?.message || String(notifyError) || 'Unknown notification error';
-                logger.error('Failed to send error notification', {
+                logger.error('Failed to send sync notification', {
                     error: notifyErrorMessage,
-                    originalError: errorMessage
+                    originalError: errorMessage,
+                    correlationId
                 });
-            }
-        }
-        
-        // Send Telegram bot notification for failed sync
-        if (telegramBot) {
-            try {
-                await telegramBot.notifySync({
-                    status: 'failure',
-                    serverName: name,
-                    duration: durationMs,
-                    accountsProcessed: 0,
-                    accountsFailed: 0,
-                    error: errorMessage,
-                    errorCode: errorCode
-                });
-            } catch (botError) {
-                const botErrorMessage = botError?.message || String(botError) || 'Unknown bot error';
-                logger.error('Failed to send Telegram bot notification', { error: botErrorMessage });
             }
         }
     } finally {
@@ -979,7 +811,7 @@ async function run() {
             try {
                 const serverNames = servers.map(s => s.name).join(', ');
                 const scheduleInfo = scheduledJobs.map(sj => 
-                    `  • ${sj.servers.map(s => s.name).join(', ')}\n    ${cronToHuman(sj.schedule)} (${sj.schedule})`
+                    `  • ${sj.servers.map(s => s.name).join(', ')}\n    ${cronstrue.toString(sj.schedule)} (${sj.schedule})`
                 ).join('\n');
                 const nextSync = scheduledJobs[0]?.job.nextInvocation();
                 const nextSyncStr = nextSync ? nextSync.toLocaleString('en-US', { 
@@ -988,144 +820,15 @@ async function run() {
                     timeStyle: 'short'
                 }) : 'N/A';
                 
-                const startupMessage = {
-                    telegram: `🚀 Actual-sync Service Started\n\n` +
-                        `✅ Service is now running\n` +
-                        `📦 Version: ${VERSION}\n\n` +
-                        `Servers: ${serverNames}\n\n` +
-                        `Schedules:\n${scheduleInfo}\n\n` +
-                        `Next sync: ${nextSyncStr}\n\n` +
-                        `Type /help to see available commands`,
-                    
-                    email: {
-                        subject: '🚀 Actual-sync Service Started',
-                        text: `Actual-sync Service Started\n\n` +
-                            `Service is now running\n` +
-                            `Version: ${VERSION}\n\n` +
-                            `Servers: ${serverNames}\n\n` +
-                            `Schedules:\n${scheduleInfo}\n\n` +
-                            `Next sync: ${nextSyncStr}`,
-                        html: `
-                            <h2>🚀 Actual-sync Service Started</h2>
-                            <p>✅ <strong>Service is now running</strong></p>
-                            <p>📦 <strong>Version:</strong> ${VERSION}</p>
-                            <p><strong>Servers:</strong> ${serverNames}</p>
-                            <h3>Schedules:</h3>
-                            <pre>${scheduleInfo}</pre>
-                            <p><strong>Next sync:</strong> ${nextSyncStr}</p>
-                        `
-                    },
-                    
-                    webhook: {
-                        title: '🚀 Actual-sync Service Started',
-                        serverNames,
-                        version: VERSION,
-                        schedules: scheduleInfo,
-                        nextSync: nextSyncStr
-                    }
-                };
+                // Send unified startup notification to all channels
+                await notificationService.sendStartupNotification({
+                    version: VERSION,
+                    serverNames,
+                    schedules: scheduleInfo,
+                    nextSync: nextSyncStr
+                });
                 
-                // Send to Telegram
-                if (config.notifications?.telegram?.enabled) {
-                    await notificationService.sendTelegramMessage(startupMessage.telegram);
-                    logger.info('Startup notification sent via Telegram');
-                }
-                
-                // Send to Email
-                if (config.notifications?.email?.enabled && 
-                    config.notifications?.email?.host && 
-                    config.notifications?.email?.to?.length > 0) {
-                    await notificationService.emailTransporter?.sendMail({
-                        from: config.notifications.email.from,
-                        to: config.notifications.email.to.join(', '),
-                        subject: startupMessage.email.subject,
-                        text: startupMessage.email.text,
-                        html: startupMessage.email.html
-                    });
-                    logger.info('Startup notification sent via Email');
-                }
-                
-                // Send to Discord
-                if (config.notifications?.webhooks?.discord?.length > 0) {
-                    const discordPayload = {
-                        embeds: [{
-                            title: startupMessage.webhook.title,
-                            color: 5025616, // Green
-                            fields: [
-                                { name: 'Status', value: '✅ Service is now running', inline: true },
-                                { name: 'Version', value: startupMessage.webhook.version, inline: true },
-                                { name: 'Servers', value: startupMessage.webhook.serverNames },
-                                { name: 'Schedules', value: `\`\`\`\n${startupMessage.webhook.schedules}\n\`\`\`` },
-                                { name: 'Next Sync', value: startupMessage.webhook.nextSync }
-                            ],
-                            timestamp: new Date().toISOString()
-                        }]
-                    };
-                    for (const webhook of config.notifications.webhooks.discord) {
-                        await notificationService.sendWebhook(webhook.url, discordPayload);
-                    }
-                    logger.info('Startup notification sent via Discord');
-                }
-                
-                // Send to Slack
-                if (config.notifications?.webhooks?.slack?.length > 0) {
-                    const slackPayload = {
-                        text: `*${startupMessage.webhook.title}*`,
-                        blocks: [
-                            {
-                                type: 'header',
-                                text: {
-                                    type: 'plain_text',
-                                    text: startupMessage.webhook.title
-                                }
-                            },
-                            {
-                                type: 'section',
-                                fields: [
-                                    { type: 'mrkdwn', text: `*Status:*\n✅ Service is now running` },
-                                    { type: 'mrkdwn', text: `*Version:*\n${startupMessage.webhook.version}` },
-                                    { type: 'mrkdwn', text: `*Servers:*\n${startupMessage.webhook.serverNames}` },
-                                    { type: 'mrkdwn', text: `*Next Sync:*\n${startupMessage.webhook.nextSync}` }
-                                ]
-                            },
-                            {
-                                type: 'section',
-                                text: {
-                                    type: 'mrkdwn',
-                                    text: `*Schedules:*\n\`\`\`\n${startupMessage.webhook.schedules}\n\`\`\``
-                                }
-                            }
-                        ]
-                    };
-                    for (const webhook of config.notifications.webhooks.slack) {
-                        await notificationService.sendWebhook(webhook.url, slackPayload);
-                    }
-                    logger.info('Startup notification sent via Slack');
-                }
-                
-                // Send to Teams
-                if (config.notifications?.webhooks?.teams?.length > 0) {
-                    const teamsPayload = {
-                        '@type': 'MessageCard',
-                        '@context': 'https://schema.org/extensions',
-                        summary: 'Actual-sync Service Started',
-                        themeColor: '28A745',
-                        title: startupMessage.webhook.title,
-                        sections: [{
-                            facts: [
-                                { name: 'Status', value: '✅ Service is now running' },
-                                { name: 'Version', value: startupMessage.webhook.version },
-                                { name: 'Servers', value: startupMessage.webhook.serverNames },
-                                { name: 'Next Sync', value: startupMessage.webhook.nextSync }
-                            ],
-                            text: `**Schedules:**\n\n${startupMessage.webhook.schedules}`
-                        }]
-                    };
-                    for (const webhook of config.notifications.webhooks.teams) {
-                        await notificationService.sendWebhook(webhook.url, teamsPayload);
-                    }
-                    logger.info('Startup notification sent via Teams');
-                }
+                logger.info('Startup notifications sent to all channels');
                 
             } catch (error) {
                 logger.error('Failed to send startup notification', { error: error.message });

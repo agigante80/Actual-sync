@@ -44,7 +44,7 @@
 - **Manages** multiple Actual Budget servers from a single service
 - **Handles** network failures, rate limits, and API errors gracefully
 - **Monitors** sync health with HTTP endpoints and Prometheus metrics
-- **Notifies** you of failures via Telegram, email, Slack, Discord, or Microsoft Teams
+- **Notifies** you of failures via Telegram, email, Slack, Discord
 - **Tracks** complete sync history in SQLite with CLI query tools
 
 ### Why Actual-sync?
@@ -121,7 +121,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 ### 🔔 Notifications & Alerts
 
 - ✅ **Interactive Telegram Bot** - Real-time commands (`/status`, `/history`, `/errors`, `/sync`) with notifications
-- ✅ **Multi-Channel Alerts** - Email (SMTP), webhooks (Slack, Discord, Microsoft Teams)
+- ✅ **Multi-Channel Alerts** - Email (SMTP), webhooks (Slack, Discord)
 - ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate)
 - ✅ **Rate Limiting** - Notification spam prevention with configurable intervals
 
@@ -341,7 +341,7 @@ node -e "require('./src/lib/configLoader'); new (require('./src/lib/configLoader
 See **[docs/CONFIG.md](docs/CONFIG.md)** for complete configuration reference including:
 - Advanced multi-server configurations
 - Per-server schedule overrides
-- Notification setup (Email, Telegram, Slack, Discord, Teams)
+- Notification setup (Email, Telegram, Slack, Discord)
 - Retry logic customization
 - Timezone configuration
 - Environment variable alternatives
@@ -711,7 +711,6 @@ Actual-sync can send notifications on sync failures via multiple channels:
 - **Telegram** - Interactive bot with commands
 - **Slack** - Webhook integration
 - **Discord** - Webhook integration
-- **Microsoft Teams** - Webhook integration
 
 ### Smart Thresholds
 
@@ -916,7 +915,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[docs/SYNC_HISTORY.md](docs/SYNC_HISTORY.md)** - Sync history database and CLI tool
 
 ### Features & Configuration
-- **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** - Notification setup (Email, Telegram, Slack, Discord, Teams)
+- **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** - Notification setup (Email, Telegram, Slack, Discord)
 - **[docs/TESTING.md](docs/TESTING.md)** - Testing guide and coverage
 - **[docs/VERSIONING.md](docs/VERSIONING.md)** - Semantic versioning and release process
 
@@ -942,7 +941,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - ✅ Health check HTTP endpoints (`/health`, `/metrics`, `/ready`)
 - ✅ Structured logging with correlation IDs
 - ✅ Sync history database with CLI tool
-- ✅ Multi-channel notifications (Email, Telegram, Slack, Discord, Teams)
+- ✅ Multi-channel notifications (Email, Telegram, Slack, Discord)
 - ✅ Prometheus metrics export
 - ✅ Docker production deployment
 - ✅ Security audit (86/100 score, 0 critical vulnerabilities)

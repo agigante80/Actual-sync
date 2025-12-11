@@ -623,9 +623,9 @@ describe('HealthCheckService', () => {
       const response = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/servers`);
       expect(response.statusCode).toBe(200);
       expect(response.body.servers).toEqual([
-        { name: 'Main Budget', encrypted: true, schedule: null },
-        { name: 'Family Budget', encrypted: false, schedule: null },
-        { name: 'Work Budget', encrypted: false, schedule: null }
+        { name: 'Main Budget', encrypted: true, schedule: null, cron: null, cronHuman: null, nextInvocation: null },
+        { name: 'Family Budget', encrypted: false, schedule: null, cron: null, cronHuman: null, nextInvocation: null },
+        { name: 'Work Budget', encrypted: false, schedule: null, cron: null, cronHuman: null, nextInvocation: null }
       ]);
       
       await hc.stop();
@@ -687,7 +687,7 @@ describe('HealthCheckService', () => {
       });
       expect(response2.statusCode).toBe(200);
       expect(response2.body.servers).toEqual([
-        { name: 'Main Budget', encrypted: true, schedule: null }
+        { name: 'Main Budget', encrypted: true, schedule: null, cron: null, cronHuman: null, nextInvocation: null }
       ]);
       
       await hc.stop();

@@ -1,7 +1,7 @@
 /**
  * Notification Service
  * 
- * Handles error notifications via email and webhooks (Slack, Discord, Teams)
+ * Handles error notifications via email and webhooks (Slack, Discord, Telegram)
  * with rate limiting and configurable thresholds.
  */
 
@@ -10,6 +10,7 @@ const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 const { createLogger } = require('../lib/logger');
+const { MessageFormatter } = require('../lib/messageFormatter');
 
 class NotificationService {
   /**
@@ -26,7 +27,7 @@ class NotificationService {
    * @param {Object} config.webhooks - Webhook configuration
    * @param {Object[]} config.webhooks.slack - Slack webhooks
    * @param {Object[]} config.webhooks.discord - Discord webhooks
-   * @param {Object[]} config.webhooks.teams - Teams webhooks
+
    * @param {Object} config.thresholds - Notification thresholds
    * @param {number} config.thresholds.consecutiveFailures - Failures before notification
    * @param {number} config.thresholds.failureRate - Failure rate (0-1) over period
@@ -60,7 +61,6 @@ class NotificationService {
       webhooks: {
         slack: [],
         discord: [],
-        teams: [],
         telegram: [],
         ...config.webhooks
       },
@@ -82,9 +82,9 @@ class NotificationService {
       ...loggerConfig
     });
 
-    // Track notification state
-    this.lastNotificationTime = null;
-    this.notificationHistory = [];
+    // Track notification state (per-server)
+    this.lastNotificationTime = {}; // Per-server timestamps
+    this.notificationHistory = {}; // Per-server notification arrays
     this.consecutiveFailures = {};
     this.recentSyncs = {};
 
@@ -196,29 +196,38 @@ class NotificationService {
 
   /**
    * Check if rate limit allows sending notification
+   * @param {string} serverName - Server name for per-server rate limiting
    * @returns {boolean} True if notification allowed
    */
-  checkRateLimit() {
+  checkRateLimit(serverName) {
     const now = Date.now();
     const minInterval = this.config.rateLimit.minIntervalMinutes * 60 * 1000;
     const oneHour = 60 * 60 * 1000;
 
-    // Check minimum interval
-    if (this.lastNotificationTime && (now - this.lastNotificationTime) < minInterval) {
+    // Initialize server tracking if needed
+    if (!this.notificationHistory[serverName]) {
+      this.notificationHistory[serverName] = [];
+    }
+
+    // Check minimum interval (per-server)
+    const lastTime = this.lastNotificationTime[serverName];
+    if (lastTime && (now - lastTime) < minInterval) {
       this.logger.debug('Rate limit: minimum interval not met', {
-        timeSinceLastMs: now - this.lastNotificationTime,
+        serverName,
+        timeSinceLastMs: now - lastTime,
         minIntervalMs: minInterval
       });
       return false;
     }
 
-    // Check max per hour
-    const recentNotifications = this.notificationHistory.filter(
+    // Check max per hour (per-server)
+    const recentNotifications = this.notificationHistory[serverName].filter(
       time => (now - time) < oneHour
     );
 
     if (recentNotifications.length >= this.config.rateLimit.maxPerHour) {
       this.logger.debug('Rate limit: max per hour exceeded', {
+        serverName,
         count: recentNotifications.length,
         max: this.config.rateLimit.maxPerHour
       });
@@ -230,21 +239,166 @@ class NotificationService {
 
   /**
    * Update rate limit tracking after sending notification
+   * @param {string} serverName - Server name for per-server tracking
    */
-  updateRateLimitTracking() {
+  updateRateLimitTracking(serverName) {
     const now = Date.now();
-    this.lastNotificationTime = now;
-    this.notificationHistory.push(now);
+    
+    // Initialize if needed
+    if (!this.notificationHistory[serverName]) {
+      this.notificationHistory[serverName] = [];
+    }
+    
+    this.lastNotificationTime[serverName] = now;
+    this.notificationHistory[serverName].push(now);
 
     // Clean old history (keep last 2 hours)
     const twoHours = 2 * 60 * 60 * 1000;
-    this.notificationHistory = this.notificationHistory.filter(
+    this.notificationHistory[serverName] = this.notificationHistory[serverName].filter(
       time => (now - time) < twoHours
     );
   }
 
   /**
-   * Send error notification
+   * Send sync notification (success, partial, or failure)
+   * @param {Object} result - Sync result
+   * @param {string} result.status - 'success', 'failure', or 'partial'
+   * @param {string} result.serverName - Server name
+   * @param {number} result.duration - Duration in ms
+   * @param {number} result.accountsProcessed - Successful account count
+   * @param {number} result.accountsFailed - Failed account count
+   * @param {Array} result.succeededAccounts - Successful account names
+   * @param {Array} result.failedAccounts - Failed accounts with errors
+   * @param {string} result.error - Error message (for failures)
+   * @param {string} result.errorCode - Error code (for failures)
+   * @param {string} result.correlationId - Correlation ID
+   * @param {Object} result.context - Additional context
+   * @param {boolean} result.bypassThresholds - Skip threshold checks (for tests)
+   * @returns {Promise<Object>} Notification result
+   */
+  async notifySync(result) {
+    const { 
+      status, 
+      serverName, 
+      duration, 
+      accountsProcessed = 0,
+      accountsFailed = 0, 
+      succeededAccounts = [],
+      failedAccounts = [],
+      error, 
+      errorCode, 
+      correlationId,
+      context = {},
+      bypassThresholds = false
+    } = result;
+
+    // For failures, check thresholds unless bypassed (test notifications)
+    if (status === 'failure' && !bypassThresholds) {
+      const thresholds = this.checkThresholds(serverName);
+      if (!thresholds.shouldNotify) {
+        this.logger.debug('Thresholds not exceeded, skipping notification', {
+          serverName,
+          thresholds,
+          correlationId
+        });
+        return {
+          sent: false,
+          reason: 'thresholds_not_exceeded',
+          thresholds
+        };
+      }
+    }
+
+    // Check rate limit for failures (success/partial always notify)
+    if (status === 'failure' && !bypassThresholds && !this.checkRateLimit(serverName)) {
+      this.logger.warn('Rate limit exceeded, skipping notification', {
+        serverName,
+        correlationId
+      });
+      return {
+        sent: false,
+        reason: 'rate_limit_exceeded'
+      };
+    }
+
+    // Format unified message content
+    const formatted = MessageFormatter.formatSyncNotification({
+      status,
+      serverName,
+      duration,
+      accountsProcessed,
+      accountsFailed,
+      succeededAccounts,
+      failedAccounts,
+      error,
+      errorCode
+    });
+
+    // Send via all configured channels
+    const results = {
+      email: null,
+      slack: [],
+      discord: [],
+      telegram: null
+    };
+
+    try {
+      // Send email
+      if (this.config.email.enabled && this.emailTransporter) {
+        const subject = status === 'success' && accountsFailed === 0
+          ? `[Actual Budget Sync] ✅ Sync Successful: ${serverName}`
+          : status === 'partial' || accountsFailed > 0
+          ? `[Actual Budget Sync] ⚠️ Sync Issues: ${serverName}`
+          : `[Actual Budget Sync] ❌ Sync Failed: ${serverName}`;
+        
+        results.email = await this.sendFormattedEmail(subject, formatted.text, formatted.html);
+      }
+
+      // Send webhooks using unified payloads
+      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
+      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
+      
+      // Send Telegram
+      if (this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) {
+        const success = await this.sendTelegramMessage(formatted.text);
+        results.telegram = success;
+      }
+
+      // Update rate limiting for failures
+      if (status === 'failure') {
+        this.updateRateLimitTracking(serverName);
+      }
+
+      this.logger.info('Sync notification sent', {
+        status,
+        serverName,
+        correlationId,
+        email: !!results.email,
+        webhooks: {
+          slack: results.slack.length,
+          discord: results.discord.length
+        },
+        telegram: !!results.telegram
+      });
+
+      return {
+        sent: true,
+        results,
+        status
+      };
+    } catch (err) {
+      this.logger.error('Failed to send notification', {
+        error: err.message,
+        stack: err.stack,
+        serverName,
+        correlationId
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Send error notification (backward compatibility wrapper)
    * @param {Object} error - Error details
    * @param {string} error.serverName - Server name
    * @param {string} error.errorMessage - Error message
@@ -273,7 +427,7 @@ class NotificationService {
     }
 
     // Check rate limit
-    if (!this.checkRateLimit()) {
+    if (!this.checkRateLimit(serverName)) {
       this.logger.warn('Rate limit exceeded, skipping notification', {
         serverName,
         correlationId
@@ -284,7 +438,7 @@ class NotificationService {
       };
     }
 
-    // Prepare notification content
+    // Prepare notification content with thresholds
     const notification = {
       serverName,
       errorMessage,
@@ -296,29 +450,35 @@ class NotificationService {
       consecutiveFailures: this.consecutiveFailures[serverName]
     };
 
+    // Format unified message content
+    const formatted = MessageFormatter.formatErrorNotification(notification);
+
     // Send via all configured channels
     const results = {
       email: null,
       slack: [],
       discord: [],
-      teams: [],
       telegram: []
     };
 
     try {
       // Send email
       if (this.config.email.enabled && this.emailTransporter) {
-        results.email = await this.sendEmail(notification);
+        const isTest = serverName?.includes('🧪') || errorCode === 'TEST_NOTIFICATION';
+        const subject = isTest 
+          ? `[Actual Budget Sync] 🧪 Test Notification`
+          : `[Actual Budget Sync] Error: ${serverName}`;
+        
+        results.email = await this.sendFormattedEmail(subject, formatted.text, formatted.html);
       }
 
-      // Send webhooks
-      results.slack = await this.sendSlackWebhooks(notification);
-      results.discord = await this.sendDiscordWebhooks(notification);
-      results.teams = await this.sendTeamsWebhooks(notification);
+      // Send webhooks using unified payloads
+      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
+      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
       results.telegram = await this.sendTelegramWebhooks(notification);
 
       // Update rate limiting
-      this.updateRateLimitTracking();
+      this.updateRateLimitTracking(serverName);
 
       this.logger.info('Error notification sent', {
         serverName,
@@ -327,7 +487,6 @@ class NotificationService {
         webhooks: {
           slack: results.slack.length,
           discord: results.discord.length,
-          teams: results.teams.length,
           telegram: results.telegram.length
         }
       });
@@ -349,7 +508,119 @@ class NotificationService {
   }
 
   /**
-   * Send email notification
+   * Send formatted email
+   * @param {string} subject - Email subject
+   * @param {string} text - Plain text content
+   * @param {string} html - HTML content
+   * @returns {Promise<Object>} Send result
+   */
+  async sendFormattedEmail(subject, text, html) {
+    if (!this.emailTransporter || this.config.email.to.length === 0) {
+      return null;
+    }
+
+    try {
+      const info = await this.emailTransporter.sendMail({
+        from: this.config.email.from,
+        to: this.config.email.to.join(', '),
+        subject,
+        text,
+        html
+      });
+
+      this.logger.debug('Email sent', {
+        messageId: info.messageId,
+        recipients: this.config.email.to.length
+      });
+
+      return {
+        success: true,
+        messageId: info.messageId
+      };
+    } catch (error) {
+      this.logger.error('Failed to send email', {
+        error: error.message,
+        stack: error.stack
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Send Slack webhooks with formatted payload
+   * @param {Object} payload - Formatted Slack payload
+   * @returns {Promise<Array>} Send results
+   */
+  async sendSlackFormattedWebhooks(payload) {
+    const results = [];
+    const webhooks = this.config.webhooks.slack || [];
+
+    for (const webhook of webhooks) {
+      if (webhook.enabled === false) continue;
+
+      try {
+        await this.sendWebhook(webhook.url, payload);
+        results.push({
+          name: webhook.name,
+          success: true
+        });
+      } catch (error) {
+        this.logger.error('Failed to send Slack webhook', {
+          name: webhook.name,
+          error: error.message
+        });
+        results.push({
+          name: webhook.name,
+          success: false,
+          error: error.message
+        });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Send Discord webhooks with formatted payload
+   * @param {Object} payload - Formatted Discord payload
+   * @returns {Promise<Array>} Send results
+   */
+  async sendDiscordFormattedWebhooks(payload) {
+    const results = [];
+    const webhooks = this.config.webhooks.discord || [];
+
+    for (const webhook of webhooks) {
+      if (webhook.enabled === false) continue;
+
+      try {
+        await this.sendWebhook(webhook.url, payload);
+        results.push({
+          name: webhook.name,
+          success: true
+        });
+      } catch (error) {
+        this.logger.error('Failed to send Discord webhook', {
+          name: webhook.name,
+          error: error.message
+        });
+        results.push({
+          name: webhook.name,
+          success: false,
+          error: error.message
+        });
+      }
+    }
+
+    return results;
+  }
+
+
+
+  /**
+   * Send email notification (backward compatibility)
    * @param {Object} notification - Notification details
    * @returns {Promise<Object>} Send result
    */
@@ -627,67 +898,7 @@ Please investigate and resolve the issue.
     return results;
   }
 
-  /**
-   * Send Microsoft Teams webhook notifications
-   * @param {Object} notification - Notification details
-   * @returns {Promise<Array>} Send results
-   */
-  async sendTeamsWebhooks(notification) {
-    if (!this.config.webhooks.teams || this.config.webhooks.teams.length === 0) {
-      return [];
-    }
 
-    const isTest = notification.serverName?.includes('🧪') || notification.errorCode === 'TEST_NOTIFICATION';
-    const titleText = isTest ? '🧪 Test Notification' : '🚨 Actual Budget Sync Error';
-    const payload = {
-      '@type': 'MessageCard',
-      '@context': 'https://schema.org/extensions',
-      summary: isTest ? 'Test Notification' : 'Actual Budget Sync Error',
-      themeColor: isTest ? '0078D4' : 'DC3545',
-      title: titleText,
-      sections: [{
-        facts: [
-          { name: 'Server', value: notification.serverName },
-          { name: 'Time', value: notification.timestamp },
-          { name: 'Error', value: notification.errorMessage },
-          { name: 'Consecutive Failures', value: notification.consecutiveFailures.toString() },
-          { name: 'Failure Rate', value: `${(notification.thresholds.failureRate * 100).toFixed(1)}%` }
-        ]
-      }]
-    };
-
-    if (notification.correlationId) {
-      payload.sections[0].facts.push({
-        name: 'Correlation ID',
-        value: notification.correlationId
-      });
-    }
-
-    if (notification.thresholds.consecutiveExceeded || notification.thresholds.rateExceeded) {
-      payload.sections.push({
-        text: [
-          notification.thresholds.consecutiveExceeded ? '⚠️ Exceeded consecutive failure threshold' : '',
-          notification.thresholds.rateExceeded ? '⚠️ Exceeded failure rate threshold' : ''
-        ].filter(Boolean).join('\n\n')
-      });
-    }
-
-    const results = [];
-    for (const webhook of this.config.webhooks.teams) {
-      try {
-        const result = await this.sendWebhook(webhook.url, payload);
-        results.push({ webhook: webhook.name || webhook.url, success: true, result });
-      } catch (error) {
-        this.logger.error('Failed to send Teams webhook', {
-          webhook: webhook.name || webhook.url,
-          error: error.message
-        });
-        results.push({ webhook: webhook.name || webhook.url, success: false, error: error.message });
-      }
-    }
-
-    return results;
-  }
 
   /**
    * Send Telegram bot notifications
@@ -793,12 +1004,29 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
   getStats() {
     const now = Date.now();
     const oneHour = 60 * 60 * 1000;
-    const recentCount = this.notificationHistory.filter(t => (now - t) < oneHour).length;
+    
+    // Aggregate all server notification counts
+    let totalRecentCount = 0;
+    const perServerStats = {};
+    
+    for (const [serverName, history] of Object.entries(this.notificationHistory)) {
+      if (!Array.isArray(history)) continue; // Skip non-array entries
+      const recentCount = history.filter(t => (now - t) < oneHour).length;
+      totalRecentCount += recentCount;
+      perServerStats[serverName] = {
+        lastNotificationTime: this.lastNotificationTime[serverName] 
+          ? new Date(this.lastNotificationTime[serverName]).toISOString() 
+          : null,
+        notificationsSentLastHour: recentCount,
+        rateLimitRemaining: Math.max(0, this.config.rateLimit.maxPerHour - recentCount)
+      };
+    }
 
     return {
-      lastNotificationTime: this.lastNotificationTime ? new Date(this.lastNotificationTime).toISOString() : null,
-      notificationsSentLastHour: recentCount,
-      rateLimitRemaining: Math.max(0, this.config.rateLimit.maxPerHour - recentCount),
+      lastNotificationTime: null, // Deprecated - use perServerStats
+      notificationsSentLastHour: totalRecentCount,
+      rateLimitRemaining: Math.max(0, this.config.rateLimit.maxPerHour - totalRecentCount),
+      perServerStats,
       consecutiveFailuresByServer: { ...this.consecutiveFailures },
       recentSyncsByServer: Object.fromEntries(
         Object.entries(this.recentSyncs).map(([server, syncs]) => [
@@ -811,6 +1039,66 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
         ])
       )
     };
+  }
+
+  /**
+   * Send startup notification to all configured channels
+   * @param {Object} info - Startup information
+   * @param {string} info.version - Service version
+   * @param {string} info.serverNames - Comma-separated server names
+   * @param {string} info.schedules - Schedule information
+   * @param {string} info.nextSync - Next sync time
+   * @returns {Promise<Object>} Notification results
+   */
+  async sendStartupNotification(info) {
+    // Format unified message content
+    const formatted = MessageFormatter.formatStartupNotification(info);
+    
+    const results = {
+      email: null,
+      slack: [],
+      discord: [],
+      teams: [],
+      telegram: null
+    };
+
+    try {
+      // Send email
+      if (this.config.email.enabled && this.emailTransporter) {
+        const subject = '[Actual Budget Sync] 🚀 Service Started';
+        results.email = await this.sendFormattedEmail(subject, formatted.text, formatted.html);
+      }
+
+      // Send webhooks using unified payloads
+      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
+      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
+      
+      // Send Telegram
+      if (this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) {
+        const success = await this.sendTelegramMessage(formatted.text);
+        results.telegram = success;
+      }
+
+      this.logger.info('Startup notification sent', {
+        email: !!results.email,
+        webhooks: {
+          slack: results.slack.length,
+          discord: results.discord.length
+        },
+        telegram: !!results.telegram
+      });
+
+      return {
+        sent: true,
+        results
+      };
+    } catch (err) {
+      this.logger.error('Failed to send startup notification', {
+        error: err.message,
+        stack: err.stack
+      });
+      throw err;
+    }
   }
 
   /**
@@ -858,8 +1146,8 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
    * Reset tracking state (mainly for testing)
    */
   reset() {
-    this.lastNotificationTime = null;
-    this.notificationHistory = [];
+    this.lastNotificationTime = {};
+    this.notificationHistory = {};
     this.consecutiveFailures = {};
     this.recentSyncs = {};
   }
