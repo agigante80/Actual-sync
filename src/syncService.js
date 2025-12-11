@@ -287,7 +287,11 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
             return await fn();
         } catch (error) {
             // Normalize error to ensure we have a message
-            const errorMessage = error?.message || error?.toString() || String(error) || 'Unknown error';
+            // Check if message exists and is not empty, otherwise use toString
+            let errorMessage = error?.message;
+            if (!errorMessage || errorMessage.trim() === '' || errorMessage === 'Error') {
+                errorMessage = error?.toString() || String(error) || 'Unknown error';
+            }
             const errorCode = error?.code || 'UNKNOWN';
             const errorCategory = error?.category;
             
@@ -403,6 +407,17 @@ async function syncBank(server) {
         } catch (downloadError) {
             // Enhance error message with more context
             // Extract error details from PostError or standard Error objects
+            
+            // Debug: log the full error structure
+            serverLogger.debug('Download error caught', {
+                errorType: downloadError?.constructor?.name,
+                errorMessage: downloadError?.message,
+                errorToString: downloadError?.toString(),
+                errorReason: downloadError?.reason,
+                errorType: downloadError?.type,
+                hasStack: !!downloadError?.stack
+            });
+            
             let originalError = downloadError?.message || downloadError?.toString() || 'Unknown error';
             
             // Check if this is a PostError with a reason field
@@ -417,6 +432,14 @@ async function syncBank(server) {
                 const match = errorString.match(/PostError: PostError: (.+)/);
                 if (match && match[1]) {
                     originalError = match[1].trim();
+                }
+            }
+            
+            // Check stack trace for PostError pattern as well
+            if (downloadError?.stack && downloadError.stack.includes('PostError: PostError: ')) {
+                const stackMatch = downloadError.stack.match(/PostError: PostError: (.+)/);
+                if (stackMatch && stackMatch[1]) {
+                    originalError = stackMatch[1].split('\n')[0].trim();
                 }
             }
             
@@ -626,7 +649,11 @@ async function syncBank(server) {
         }
         
         // Normalize error information
-        const errorMessage = error?.message || error?.toString() || String(error) || 'Unknown sync error';
+        // Check if message exists and is not empty, otherwise use toString
+        let errorMessage = error?.message;
+        if (!errorMessage || errorMessage.trim() === '' || errorMessage === 'Error') {
+            errorMessage = error?.toString() || String(error) || 'Unknown sync error';
+        }
         const errorCode = error?.code || 'UNKNOWN';
         const errorStack = error?.stack || 'No stack trace available';
         
