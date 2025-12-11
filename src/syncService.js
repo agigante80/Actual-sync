@@ -286,31 +286,39 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
         try {
             return await fn();
         } catch (error) {
+            // Normalize error to ensure we have a message
+            const errorMessage = error?.message || error?.toString() || String(error) || 'Unknown error';
+            const errorCode = error?.code || 'UNKNOWN';
+            const errorCategory = error?.category;
+            
             logger.error(`Attempt ${i + 1} failed`, { 
                 attempt: i + 1, 
-                error: error.message,
-                errorCode: error.code,
-                errorCategory: error.category
+                error: errorMessage,
+                errorCode: errorCode,
+                errorCategory: errorCategory
             });
 
             let retryDelay = 0;
 
-            if (error.code === 'NORDIGEN_ERROR' && error.category === 'RATE_LIMIT_EXCEEDED') {
+            if (errorCode === 'NORDIGEN_ERROR' && errorCategory === 'RATE_LIMIT_EXCEEDED') {
                 retryDelay = baseRetryDelayMs * (2 ** i); // Exponential backoff for rate limits
                 logger.warn(`Rate limit exceeded. Retrying in ${retryDelay / 1000} seconds...`, {
                     retryDelayMs: retryDelay,
                     attempt: i + 1
                 });
-            } else if (error.message === 'network-failure' || error.code === 'ECONNRESET' || error.code === 'ENOTFOUND') {
+            } else if (errorMessage === 'network-failure' || errorCode === 'ECONNRESET' || errorCode === 'ENOTFOUND') {
                 // Retry for network failures, ECONNRESET, or DNS issues
                 retryDelay = baseRetryDelayMs * (2 ** i); // Exponential backoff for network issues
                 logger.warn(`Network failure. Retrying in ${retryDelay / 1000} seconds...`, {
                     retryDelayMs: retryDelay,
                     attempt: i + 1,
-                    errorCode: error.code
+                    errorCode: errorCode
                 });
             } else {
-                logger.error('Not a retryable error, not retrying', { errorCode: error.code });
+                logger.error('Not a retryable error, not retrying', { 
+                    errorCode: errorCode,
+                    errorMessage: errorMessage 
+                });
                 throw error; // Re-throw other errors
             }
             if (i === retries) {
@@ -529,22 +537,31 @@ async function syncBank(server) {
         }
         
     } catch (error) {
-        let durationMs = endTimer({ error: error.message });
+        let durationMs = endTimer({ error: error.message || String(error) });
         
         // Fallback to manual calculation if performance tracking is disabled
         if (durationMs === undefined || isNaN(durationMs)) {
             durationMs = Date.now() - syncStartTime;
         }
         
+        // Normalize error information
+        const errorMessage = error?.message || error?.toString() || String(error) || 'Unknown sync error';
+        const errorCode = error?.code || 'UNKNOWN';
+        const errorStack = error?.stack || 'No stack trace available';
+        
         serverLogger.error(`Error syncing bank for server`, {
-            error: error.message,
-            errorCode: error.code,
-            errorStack: error.stack
+            error: errorMessage,
+            errorCode: errorCode,
+            errorStack: errorStack
         });
         
         // Update health check with failed sync
         if (healthCheck) {
-            healthCheck.updateSyncStatus({ status: 'failure', serverName: name, error });
+            healthCheck.updateSyncStatus({ 
+                status: 'failure', 
+                serverName: name, 
+                error: errorMessage 
+            });
         }
         
         // Record failed sync in history
@@ -556,8 +573,8 @@ async function syncBank(server) {
                 accountsProcessed,
                 accountsSucceeded,
                 accountsFailed,
-                errorMessage: error.message,
-                errorCode: error.code,
+                errorMessage: errorMessage,
+                errorCode: errorCode,
                 correlationId
             });
         }
@@ -570,7 +587,7 @@ async function syncBank(server) {
                 duration: durationMs,
                 accountsProcessed: accountsSucceeded,
                 accountsFailed: accountsFailed,
-                errorCode: error.code || 'UNKNOWN_ERROR'
+                errorCode: errorCode
             });
         }
         
@@ -581,8 +598,8 @@ async function syncBank(server) {
             try {
                 await notificationService.notifyError({
                     serverName: name,
-                    errorMessage: error.message,
-                    errorCode: error.code,
+                    errorMessage: errorMessage,
+                    errorCode: errorCode,
                     timestamp: new Date().toISOString(),
                     correlationId,
                     context: {
@@ -593,9 +610,10 @@ async function syncBank(server) {
                     }
                 });
             } catch (notifyError) {
+                const notifyErrorMessage = notifyError?.message || String(notifyError) || 'Unknown notification error';
                 logger.error('Failed to send error notification', {
-                    error: notifyError.message,
-                    originalError: error.message
+                    error: notifyErrorMessage,
+                    originalError: errorMessage
                 });
             }
         }
@@ -607,11 +625,12 @@ async function syncBank(server) {
                     status: 'error',
                     serverName: name,
                     duration: durationMs,
-                    error: error.message,
-                    errorCode: error.code
+                    error: errorMessage,
+                    errorCode: errorCode
                 });
             } catch (botError) {
-                logger.error('Failed to send Telegram bot notification', { error: botError.message });
+                const botErrorMessage = botError?.message || String(botError) || 'Unknown bot error';
+                logger.error('Failed to send Telegram bot notification', { error: botErrorMessage });
             }
         }
     } finally {
@@ -620,8 +639,9 @@ async function syncBank(server) {
             await actual.shutdown();
             serverLogger.debug('Shutdown complete');
         } catch (shutdownError) {
+            const shutdownErrorMessage = shutdownError?.message || String(shutdownError) || 'Unknown shutdown error';
             serverLogger.error('Error during shutdown', {
-                error: shutdownError.message
+                error: shutdownErrorMessage
             });
         }
         serverLogger.clearCorrelationId();
