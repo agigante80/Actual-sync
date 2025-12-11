@@ -319,16 +319,30 @@ class HealthCheckService {
 
       try {
         const servers = this.getServers();
-        const schedules = this.getSchedules ? this.getSchedules() : {};
+        const cronSchedules = this.getCronSchedules ? this.getCronSchedules() : [];
+        
+        // Create a map of server name to cron info
+        const cronMap = {};
+        cronSchedules.forEach(schedule => {
+          schedule.servers.forEach(serverName => {
+            cronMap[serverName] = {
+              cron: schedule.cron,
+              cronHuman: schedule.cronHuman,
+              nextInvocation: schedule.nextInvocation
+            };
+          });
+        });
         
         const serverInfo = servers.map(server => {
-          // getSchedules() already returns human-readable formatted strings
-          const formattedSchedule = schedules[server.name] || null;
+          const cronInfo = cronMap[server.name];
           
           return {
             name: server.name,
             encrypted: !!(server.encryptionPassword && server.encryptionPassword.trim()),
-            schedule: formattedSchedule
+            schedule: cronInfo ? cronInfo.nextInvocation : null,
+            cron: cronInfo ? cronInfo.cron : null,
+            cronHuman: cronInfo ? cronInfo.cronHuman : null,
+            nextInvocation: cronInfo ? cronInfo.nextInvocation : null
           };
         });
         
@@ -664,33 +678,6 @@ This test verifies that notifications are configured correctly and can reach the
             }
             break;
 
-          case 'teams':
-            if (!this.notificationService?.config?.webhooks?.teams?.length) {
-              return res.status(400).json({ error: 'Microsoft Teams not configured' });
-            }
-            // Call sendTeamsWebhooks directly
-            const teamsResults = await this.notificationService.sendTeamsWebhooks({
-              serverName: testMessage.serverName,
-              errorMessage: testMessage.errorMessage,
-              errorCode: testMessage.errorCode,
-              timestamp: testMessage.timestamp,
-              correlationId: testMessage.correlationId,
-              context: testMessage.context,
-              consecutiveFailures: 1,
-              thresholds: {
-                consecutiveExceeded: false,
-                rateExceeded: false,
-                failureRate: 0,
-                consecutiveFailures: 1
-              }
-            });
-            if (teamsResults && teamsResults.length > 0 && teamsResults[0].success) {
-              result = { success: true, message: 'Test Teams message sent successfully' };
-            } else {
-              return res.status(500).json({ error: 'Failed to send Teams message' });
-            }
-            break;
-
           case 'telegram':
             if (!this.telegramBot || 
                 !this.telegramBot.config?.botToken ||
@@ -720,7 +707,7 @@ This test verifies that Telegram notifications are working correctly.`
             break;
 
           default:
-            return res.status(400).json({ error: 'Invalid channel. Use: email, discord, slack, teams, or telegram' });
+            return res.status(400).json({ error: 'Invalid channel. Use: email, discord, slack, or telegram' });
         }
 
         this.logger.info('Test notification sent via dashboard', {
@@ -884,9 +871,6 @@ This test verifies that Telegram notifications are working correctly.`
     }
     if (this.notificationService?.config?.webhooks?.slack?.length > 0) {
       channels.push('Slack');
-    }
-    if (this.notificationService?.config?.webhooks?.teams?.length > 0) {
-      channels.push('Microsoft Teams');
     }
     if (this.telegramBot?.config?.botToken && 
         (this.telegramBot.config?.chatId || this.telegramBot.config?.chatIds?.length > 0)) {

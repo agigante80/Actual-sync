@@ -584,7 +584,6 @@
                     <button onclick="testNotification('discord')" class="secondary">💬 Test Discord</button>
                     <button onclick="testNotification('slack')" class="secondary">💼 Test Slack</button>
                     <button onclick="testNotification('telegram')" class="secondary">📱 Test Telegram</button>
-                    <button onclick="testNotification('teams')" class="secondary">👥 Test Teams</button>
                 </div>
                 <div id="test-notification-message" style="margin-top: 15px;"></div>
             </div>
@@ -794,8 +793,35 @@
                         Unencrypted
                     </span>`;
                 
-                const scheduleInfo = schedule ? `<br><span style="color: #60a5fa;">⏰</span> Next sync: ${schedule}` : '';
-                
+                // Show both cron format and human-readable schedule
+                let scheduleInfo = "";
+                if (serverData.cronHuman && serverData.cron) {
+                    scheduleInfo = `<br><span style="color: #60a5fa;">⏰</span> ${serverData.cronHuman} <span style="color: #94a3b8; font-size: 0.85em;">(${serverData.cron})</span>`;
+                    if (serverData.nextInvocation) {
+                        const nextSync = new Date(serverData.nextInvocation);
+                        const now = new Date();
+                        const diffMs = nextSync - now;
+                        const diffMins = Math.floor(diffMs / 60000);
+                        const diffHours = Math.floor(diffMins / 60);
+                        const diffDays = Math.floor(diffHours / 24);
+                        
+                        let timeUntil = '';
+                        if (diffDays > 0) {
+                            timeUntil = `${diffDays}d ${diffHours % 24}h`;
+                        } else if (diffHours > 0) {
+                            timeUntil = `${diffHours}h ${diffMins % 60}m`;
+                        } else if (diffMins > 0) {
+                            timeUntil = `${diffMins}m`;
+                        } else {
+                            timeUntil = 'soon';
+                        }
+                        
+                        scheduleInfo += `<br><span style="color: #60a5fa;">📅</span> Next: ${nextSync.toLocaleString()} <span style="color: #94a3b8; font-size: 0.85em;">(in ${timeUntil})</span>`;
+                    }
+                } else if (schedule) {
+                    scheduleInfo = `<br><span style="color: #60a5fa;">⏰</span> Next sync: ${schedule}`;
+                }
+
                 // Format last sync with status badge
                 let lastSyncText = 'Never';
                 if (status.lastSync) {
@@ -1386,7 +1412,10 @@
                     data.servers.forEach(server => {
                         serverScheduleInfo[server.name] = {
                             encrypted: server.encrypted,
-                            schedule: server.schedule
+                            schedule: server.schedule,
+                            cron: server.cron,
+                            cronHuman: server.cronHuman,
+                            nextInvocation: server.nextInvocation
                         };
                     });
                 }

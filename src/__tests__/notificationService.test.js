@@ -235,7 +235,7 @@ describe('NotificationService', () => {
   describe('checkRateLimit', () => {
     test('should allow notification when no previous notifications', () => {
       const service = new NotificationService();
-      expect(service.checkRateLimit()).toBe(true);
+      expect(service.checkRateLimit('server1')).toBe(true);
     });
 
     test('should block notification within minimum interval', () => {
@@ -243,8 +243,8 @@ describe('NotificationService', () => {
         rateLimit: { minIntervalMinutes: 15 }
       });
 
-      service.lastNotificationTime = Date.now();
-      expect(service.checkRateLimit()).toBe(false);
+      service.lastNotificationTime['server1'] = Date.now();
+      expect(service.checkRateLimit('server1')).toBe(false);
     });
 
     test('should allow notification after minimum interval', () => {
@@ -252,8 +252,8 @@ describe('NotificationService', () => {
         rateLimit: { minIntervalMinutes: 15 }
       });
 
-      service.lastNotificationTime = Date.now() - (20 * 60 * 1000); // 20 minutes ago
-      expect(service.checkRateLimit()).toBe(true);
+      service.lastNotificationTime['server1'] = Date.now() - (20 * 60 * 1000); // 20 minutes ago
+      expect(service.checkRateLimit('server1')).toBe(true);
     });
 
     test('should block notification when max per hour exceeded', () => {
@@ -265,12 +265,12 @@ describe('NotificationService', () => {
       });
 
       const now = Date.now();
-      service.notificationHistory = [
+      service.notificationHistory['server1'] = [
         now - (10 * 60 * 1000), // 10 min ago
         now - (20 * 60 * 1000)  // 20 min ago
       ];
 
-      expect(service.checkRateLimit()).toBe(false);
+      expect(service.checkRateLimit('server1')).toBe(false);
     });
 
     test('should clean old notification history', () => {
@@ -322,7 +322,7 @@ describe('NotificationService', () => {
 
       service.recordSyncResult('server1', false);
       service.recordSyncResult('server1', false);
-      service.lastNotificationTime = Date.now();
+      service.lastNotificationTime['server1'] = Date.now();
 
       const result = await service.notifyError({
         serverName: 'server1',
@@ -377,8 +377,8 @@ describe('NotificationService', () => {
         errorMessage: 'Test error'
       });
 
-      expect(service.lastNotificationTime).toBeTruthy();
-      expect(service.notificationHistory).toHaveLength(1);
+      expect(service.lastNotificationTime['server1']).toBeTruthy();
+      expect(service.notificationHistory['server1']).toHaveLength(1);
     });
 
     test('should include context in notification', async () => {
@@ -521,31 +521,6 @@ describe('NotificationService', () => {
       expect(webhookCall[1].embeds[0].color).toBe(15158332); // Red
     });
 
-    test('should send Teams webhook', async () => {
-      const service = new NotificationService({
-        webhooks: {
-          teams: [{ name: 'test-teams', url: 'https://outlook.webhook.office.com/test' }]
-        },
-        thresholds: { consecutiveFailures: 2 }
-      });
-
-      service.sendWebhook = jest.fn().mockResolvedValue({ statusCode: 200 });
-
-      service.recordSyncResult('server1', false);
-      service.recordSyncResult('server1', false);
-
-      await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Test error'
-      });
-
-      expect(service.sendWebhook).toHaveBeenCalled();
-      
-      const webhookCall = service.sendWebhook.mock.calls[0];
-      expect(webhookCall[1]).toHaveProperty('@type', 'MessageCard');
-      expect(webhookCall[1].themeColor).toBe('DC3545');
-    });
-
     test('should handle webhook failures gracefully', async () => {
       const service = new NotificationService({
         webhooks: {
@@ -644,15 +619,15 @@ describe('NotificationService', () => {
       service.recordSyncResult('server1', false);
       service.recordSyncResult('server2', true);
 
-      service.lastNotificationTime = Date.now() - (10 * 60 * 1000);
-      service.notificationHistory = [
+      service.lastNotificationTime['server1'] = Date.now() - (10 * 60 * 1000);
+      service.notificationHistory['server1'] = [
         Date.now() - (10 * 60 * 1000),
         Date.now() - (40 * 60 * 1000)
       ];
 
       const stats = service.getStats();
 
-      expect(stats.lastNotificationTime).toBeTruthy();
+      expect(stats.perServerStats['server1'].lastNotificationTime).toBeTruthy();
       expect(stats.notificationsSentLastHour).toBe(2);
       expect(stats.rateLimitRemaining).toBe(2); // maxPerHour(4) - sent(2)
       expect(stats.consecutiveFailuresByServer.server1).toBe(2);
@@ -681,8 +656,8 @@ describe('NotificationService', () => {
 
       service.reset();
 
-      expect(service.lastNotificationTime).toBeNull();
-      expect(service.notificationHistory).toEqual([]);
+      expect(service.lastNotificationTime).toEqual({});
+      expect(service.notificationHistory).toEqual({});
       expect(service.consecutiveFailures).toEqual({});
       expect(service.recentSyncs).toEqual({});
     });
