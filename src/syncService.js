@@ -437,15 +437,18 @@ async function syncBank(server) {
                     });
                 } catch (bankSyncError) { // catch bankSyncError
                     accountsFailed++;
+                    const errorMsg = bankSyncError?.message || bankSyncError?.toString() || String(bankSyncError) || 'Unknown error';
                     failedAccounts.push({
                         name: account.name,
-                        error: bankSyncError.message
+                        error: errorMsg
                     });
                     accountTimer();
                     serverLogger.error('Error syncing bank for account', {
                         accountId: account.id,
-                        error: bankSyncError.message,
-                        errorCode: bankSyncError.code
+                        accountName: account.name,
+                        error: errorMsg,
+                        errorCode: bankSyncError?.code || 'UNKNOWN',
+                        errorStack: bankSyncError?.stack || 'No stack trace available'
                     });
                 }
             }
@@ -454,28 +457,12 @@ async function syncBank(server) {
         }
 
         serverLogger.info('Starting final file sync');
-        try {
-            await runWithRetries(
-                async () => await actual.sync(),
-                syncConfig.maxRetries,
-                syncConfig.baseRetryDelayMs
-            );
-            serverLogger.info('Final file sync completed');
-        } catch (finalSyncError) {
-            const errorMessage = finalSyncError?.message || finalSyncError?.toString() || String(finalSyncError) || '';
-            
-            // Known issue: Encrypted budgets sometimes throw empty errors on final sync even when successful
-            // If bank sync succeeded and error is empty/unknown, treat as success
-            if (isEncrypted && (!errorMessage || errorMessage === 'Unknown error' || errorMessage.trim() === '')) {
-                serverLogger.warn('Final file sync threw empty error (known issue with encrypted budgets), treating as success', {
-                    encrypted: isEncrypted,
-                    accountsSucceeded: accountsSucceeded
-                });
-            } else {
-                // Real error - re-throw to be handled by outer catch
-                throw finalSyncError;
-            }
-        }
+        await runWithRetries(
+            async () => await actual.sync(),
+            syncConfig.maxRetries,
+            syncConfig.baseRetryDelayMs
+        );
+        serverLogger.info('Final file sync completed');
         
         // Calculate sync duration and log performance
         let durationMs = endTimer({ 
@@ -495,12 +482,25 @@ async function syncBank(server) {
             `${accountsFailed} account(s) failed to sync: ${failedAccounts.map(a => a.error).join('; ')}` : 
             null;
         
+        // Log detailed sync results
+        serverLogger.info('Sync completed', {
+            status: syncStatus,
+            accountsProcessed,
+            accountsSucceeded,
+            accountsFailed,
+            succeededAccounts: succeededAccounts.length > 0 ? succeededAccounts : undefined,
+            failedAccounts: failedAccounts.length > 0 ? failedAccounts : undefined,
+            encrypted: isEncrypted,
+            durationMs
+        });
+        
         // Update health check with sync status
+        // Note: Partial failures are treated as success for overall health, but error details are preserved
         if (healthCheck) {
             healthCheck.updateSyncStatus({ 
                 status: syncStatus === 'partial' ? 'success' : syncStatus, 
                 serverName: name,
-                error: errorMessage 
+                error: syncStatus === 'partial' ? `Partial sync: ${errorMessage}` : errorMessage
             });
         }
         
@@ -519,6 +519,7 @@ async function syncBank(server) {
         }
         
         // Record metrics in Prometheus
+        // Note: Partial status recorded as success but with accountsFailed count for monitoring
         if (prometheusService) {
             prometheusService.recordSync({
                 server: name,
@@ -530,8 +531,18 @@ async function syncBank(server) {
         }
         
         // Record sync result for notification tracking
+        // Note: Partial failures treated as success to avoid alert fatigue, but tracked separately
         if (notificationService) {
-            notificationService.recordSyncResult(name, syncStatus !== 'failure', correlationId);
+            const isSuccess = syncStatus !== 'failure';
+            notificationService.recordSyncResult(name, isSuccess, correlationId);
+            if (syncStatus === 'partial') {
+                serverLogger.warn('Partial sync completed with some account failures', {
+                    serverName: name,
+                    succeededCount: accountsSucceeded,
+                    failedCount: accountsFailed,
+                    failedAccounts: failedAccounts.map(a => `${a.name}: ${a.error}`)
+                });
+            }
         }
         
         // Send Telegram bot notification
@@ -568,7 +579,12 @@ async function syncBank(server) {
         serverLogger.error(`Error syncing bank for server`, {
             error: errorMessage,
             errorCode: errorCode,
-            errorStack: errorStack
+            errorStack: errorStack,
+            accountsProcessed,
+            accountsSucceeded,
+            accountsFailed,
+            encrypted: isEncrypted,
+            phase: accountsProcessed === 0 ? 'initialization' : accountsSucceeded > 0 ? 'final-sync' : 'bank-sync'
         });
         
         // Update health check with failed sync
