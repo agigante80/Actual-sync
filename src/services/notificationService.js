@@ -827,10 +827,17 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
       return false;
     }
 
+    // Get chatId - handle both chatId (string) and chatIds (array)
+    const chatId = telegram.chatId || telegram.chatIds?.[0];
+    if (!chatId) {
+      this.logger.error('Telegram chat ID not configured');
+      return false;
+    }
+
     try {
       const url = `https://api.telegram.org/bot${telegram.botToken}/sendMessage`;
       const payload = {
-        chat_id: telegram.chatId,
+        chat_id: chatId,
         text: message,
         disable_web_page_preview: true,
         ...options

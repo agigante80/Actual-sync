@@ -660,9 +660,19 @@ async function syncBank(server) {
         // Check if message exists and is not empty, otherwise use toString
         let errorMessage = error?.message;
         if (!errorMessage || errorMessage.trim() === '' || errorMessage === 'Error') {
-            errorMessage = error?.toString() || String(error) || 'Unknown sync error';
+            // Try to extract from stack trace or toString
+            const errorString = error?.toString() || String(error);
+            if (errorString && errorString !== '[object Object]' && errorString !== 'Error') {
+                errorMessage = errorString;
+            } else if (error?.stack) {
+                // Extract first line from stack trace
+                const stackLines = error.stack.split('\n');
+                errorMessage = stackLines[0] || 'Unknown sync error';
+            } else {
+                errorMessage = 'Unknown sync error';
+            }
         }
-        const errorCode = error?.code || 'UNKNOWN';
+        const errorCode = error?.code || error?.errorCode || 'UNKNOWN';
         const errorStack = error?.stack || 'No stack trace available';
         
         serverLogger.error(`Error syncing bank for server`, {
@@ -743,9 +753,11 @@ async function syncBank(server) {
         if (telegramBot) {
             try {
                 await telegramBot.notifySync({
-                    status: 'error',
+                    status: 'failure',
                     serverName: name,
                     duration: durationMs,
+                    accountsProcessed: 0,
+                    accountsFailed: 0,
                     error: errorMessage,
                     errorCode: errorCode
                 });
