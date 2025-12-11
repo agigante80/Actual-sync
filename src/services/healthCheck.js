@@ -564,7 +564,8 @@ class HealthCheckService {
 
         switch (channel) {
           case 'email':
-            if (!this.notificationService?.emailTransporter) {
+            if (!this.notificationService?.config?.email?.smtp?.host || 
+                !this.notificationService?.config?.email?.to?.length) {
               return res.status(400).json({ error: 'Email not configured' });
             }
             await this.notificationService.notifyError(testMessage);
@@ -572,7 +573,7 @@ class HealthCheckService {
             break;
 
           case 'discord':
-            if (!this.notificationService?.webhooks?.discord?.length) {
+            if (!this.notificationService?.config?.webhooks?.discord?.length) {
               return res.status(400).json({ error: 'Discord not configured' });
             }
             await this.notificationService.notifyError(testMessage);
@@ -580,7 +581,7 @@ class HealthCheckService {
             break;
 
           case 'slack':
-            if (!this.notificationService?.webhooks?.slack?.length) {
+            if (!this.notificationService?.config?.webhooks?.slack?.length) {
               return res.status(400).json({ error: 'Slack not configured' });
             }
             await this.notificationService.notifyError(testMessage);
@@ -588,7 +589,7 @@ class HealthCheckService {
             break;
 
           case 'teams':
-            if (!this.notificationService?.webhooks?.teams?.length) {
+            if (!this.notificationService?.config?.webhooks?.teams?.length) {
               return res.status(400).json({ error: 'Microsoft Teams not configured' });
             }
             await this.notificationService.notifyError(testMessage);
@@ -596,7 +597,8 @@ class HealthCheckService {
             break;
 
           case 'telegram':
-            if (!this.telegramBot) {
+            if (!this.telegramBot?.config?.enabled || 
+                !this.telegramBot?.config?.chatIds?.length) {
               return res.status(400).json({ error: 'Telegram bot not configured' });
             }
             await this.telegramBot.notifySync({
