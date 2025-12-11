@@ -463,6 +463,7 @@ async function syncBank(server) {
         const errorMessage = accountsFailed > 0 ? 
             `${accountsFailed} account(s) failed to sync: ${failedAccounts.map(a => a.error).join('; ')}` : 
             null;
+        const errorCode = null; // No error code in success/partial case
         
         // Log detailed sync results
         serverLogger.info('Sync completed', {
