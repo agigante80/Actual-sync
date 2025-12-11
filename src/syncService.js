@@ -295,12 +295,31 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
             return await fn();
         } catch (error) {
             // Normalize error to ensure we have a message
-            // Check if message exists and is not empty, otherwise use toString
             let errorMessage = error?.message;
+            
+            // If message is empty or generic, try to extract more info
             if (!errorMessage || errorMessage.trim() === '' || errorMessage === 'Error') {
-                errorMessage = error?.toString() || String(error) || 'Unknown error';
+                // Try stack trace first line
+                if (error?.stack) {
+                    const stackLines = error.stack.split('\n');
+                    const firstLine = stackLines[0];
+                    if (firstLine && firstLine !== 'Error' && firstLine !== 'Error: Error') {
+                        errorMessage = firstLine.replace(/^Error: /, '');
+                    }
+                }
+                
+                // Try toString as last resort
+                if (!errorMessage || errorMessage === 'Error') {
+                    const errorString = error?.toString();
+                    if (errorString && errorString !== 'Error' && errorString !== '[object Object]') {
+                        errorMessage = errorString.replace(/^Error: /, '');
+                    } else {
+                        errorMessage = 'Unknown error';
+                    }
+                }
             }
-            const errorCode = error?.code || 'UNKNOWN';
+            
+            const errorCode = error?.code || error?.errorCode || 'UNKNOWN';
             const errorCategory = error?.category;
             
             logger.error(`Attempt ${i + 1} failed`, { 
@@ -659,17 +678,43 @@ async function syncBank(server) {
         // Normalize error information
         // Check if message exists and is not empty, otherwise use toString
         let errorMessage = error?.message;
+        
+        // Log error structure for debugging
+        serverLogger.debug('Error structure', {
+            hasMessage: !!errorMessage,
+            message: errorMessage,
+            toString: error?.toString(),
+            hasStack: !!error?.stack,
+            stackFirstLine: error?.stack?.split('\n')[0],
+            errorType: error?.constructor?.name
+        });
+        
         if (!errorMessage || errorMessage.trim() === '' || errorMessage === 'Error') {
-            // Try to extract from stack trace or toString
-            const errorString = error?.toString() || String(error);
-            if (errorString && errorString !== '[object Object]' && errorString !== 'Error') {
-                errorMessage = errorString;
-            } else if (error?.stack) {
-                // Extract first line from stack trace
+            // Try to extract from stack trace first
+            if (error?.stack) {
                 const stackLines = error.stack.split('\n');
-                errorMessage = stackLines[0] || 'Unknown sync error';
-            } else {
-                errorMessage = 'Unknown sync error';
+                const firstLine = stackLines[0];
+                // Remove "Error: " prefix if present
+                if (firstLine && firstLine.startsWith('Error: ')) {
+                    errorMessage = firstLine.substring(7); // Remove "Error: "
+                } else {
+                    errorMessage = firstLine;
+                }
+                
+                // If still just "Error", look for originalError
+                if (errorMessage === 'Error' && error?.originalError) {
+                    errorMessage = error.originalError.message || error.originalError.toString() || 'Unknown sync error';
+                }
+            }
+            
+            // Try toString as fallback
+            if (!errorMessage || errorMessage === 'Error') {
+                const errorString = error?.toString() || String(error);
+                if (errorString && errorString !== '[object Object]' && errorString !== 'Error') {
+                    errorMessage = errorString.replace(/^Error: /, '');
+                } else {
+                    errorMessage = 'Unknown sync error';
+                }
             }
         }
         const errorCode = error?.code || error?.errorCode || 'UNKNOWN';
