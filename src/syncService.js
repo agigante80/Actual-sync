@@ -333,6 +333,7 @@ async function runWithRetries(fn, retries, baseRetryDelayMs) {
 async function syncBank(server) {
     const { name, url, password, syncId, dataDir, encryptionPassword } = server;
     const syncIdLog = syncId ? syncId : "your_budget_name";
+    const isEncrypted = !!encryptionPassword;
     
     // Get sync configuration for this server (server-specific or global)
     const syncConfig = getSyncConfig(server);
