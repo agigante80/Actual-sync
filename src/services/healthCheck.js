@@ -546,17 +546,28 @@ class HealthCheckService {
       }
 
       try {
+        const os = require('os');
+        const packageJson = require('../../package.json');
+        
         const testMessage = {
-          serverName: 'Test Server',
-          errorMessage: 'This is a test notification from Actual-sync',
-          errorCode: 'TEST',
+          serverName: '🧪 Test Notification',
+          errorMessage: `This is a test notification from Actual-sync service.
+
+**Server Information:**
+• Service Version: ${packageJson.version}
+• Hostname: ${os.hostname()}
+• Platform: ${os.platform()} ${os.arch()}
+• Node.js: ${process.version}
+• Uptime: ${Math.floor(process.uptime() / 60)} minutes
+• Memory Usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)} MB
+
+This test verifies that notifications are configured correctly and can reach their destination.`,
+          errorCode: 'TEST_NOTIFICATION',
           timestamp: new Date().toISOString(),
           correlationId: `test-${Date.now()}`,
           context: {
-            accountsProcessed: 5,
-            accountsSucceeded: 4,
-            accountsFailed: 1,
-            durationMs: 1234
+            testMode: true,
+            configuredChannels: this.getConfiguredChannels()
           }
         };
 
@@ -686,13 +697,24 @@ class HealthCheckService {
                 (!this.telegramBot.config?.chatId && !this.telegramBot.config?.chatIds?.length)) {
               return res.status(400).json({ error: 'Telegram bot not configured' });
             }
+            const os = require('os');
+            const packageJson = require('../../package.json');
             await this.telegramBot.notifySync({
               status: 'failure',
-              serverName: 'Test Server',
+              serverName: '🧪 Test Notification',
               duration: 1234,
-              accountsProcessed: 4,
-              accountsFailed: 1,
-              error: 'This is a test notification'
+              accountsProcessed: 0,
+              accountsFailed: 0,
+              error: `This is a test notification from Actual-sync service.
+
+Server Info:
+• Version: ${packageJson.version}
+• Hostname: ${os.hostname()}
+• Platform: ${os.platform()} ${os.arch()}
+• Node.js: ${process.version}
+• Uptime: ${Math.floor(process.uptime() / 60)} minutes
+
+This test verifies that Telegram notifications are working correctly.`
             });
             result = { success: true, message: 'Test Telegram message sent successfully' };
             break;
@@ -845,6 +867,33 @@ class HealthCheckService {
     if (this.status.failureCount / this.status.syncCount > 0.5) return 'DEGRADED';
     if (this.status.lastSyncStatus === 'success') return 'HEALTHY';
     return 'HEALTHY';
+  }
+
+  /**
+   * Get list of configured notification channels
+   * @returns {Array<string>} Array of configured channel names
+   */
+  getConfiguredChannels() {
+    const channels = [];
+    
+    if (this.notificationService?.config?.email?.host) {
+      channels.push('Email');
+    }
+    if (this.notificationService?.config?.webhooks?.discord?.length > 0) {
+      channels.push('Discord');
+    }
+    if (this.notificationService?.config?.webhooks?.slack?.length > 0) {
+      channels.push('Slack');
+    }
+    if (this.notificationService?.config?.webhooks?.teams?.length > 0) {
+      channels.push('Microsoft Teams');
+    }
+    if (this.telegramBot?.config?.botToken && 
+        (this.telegramBot.config?.chatId || this.telegramBot.config?.chatIds?.length > 0)) {
+      channels.push('Telegram');
+    }
+    
+    return channels;
   }
 
   /**
