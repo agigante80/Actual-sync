@@ -889,8 +889,8 @@ async function run() {
             }
         }
         
-        // Send startup notification via Telegram
-        if (notificationService && config.notifications?.telegram?.enabled) {
+        // Send startup notification to all configured channels
+        if (notificationService) {
             try {
                 const serverNames = servers.map(s => s.name).join(', ');
                 const scheduleInfo = scheduledJobs.map(sj => 
@@ -903,16 +903,145 @@ async function run() {
                     timeStyle: 'short'
                 }) : 'N/A';
                 
-                await notificationService.sendTelegramMessage(
-                    `🚀 Actual-sync Service Started\n\n` +
-                    `✅ Service is now running\n` +
-                    `📦 Version: ${VERSION}\n\n` +
-                    `Servers: ${serverNames}\n\n` +
-                    `Schedules:\n${scheduleInfo}\n\n` +
-                    `Next sync: ${nextSyncStr}\n\n` +
-                    `Type /help to see available commands`
-                );
-                logger.info('Startup notification sent via Telegram');
+                const startupMessage = {
+                    telegram: `🚀 Actual-sync Service Started\n\n` +
+                        `✅ Service is now running\n` +
+                        `📦 Version: ${VERSION}\n\n` +
+                        `Servers: ${serverNames}\n\n` +
+                        `Schedules:\n${scheduleInfo}\n\n` +
+                        `Next sync: ${nextSyncStr}\n\n` +
+                        `Type /help to see available commands`,
+                    
+                    email: {
+                        subject: '🚀 Actual-sync Service Started',
+                        text: `Actual-sync Service Started\n\n` +
+                            `Service is now running\n` +
+                            `Version: ${VERSION}\n\n` +
+                            `Servers: ${serverNames}\n\n` +
+                            `Schedules:\n${scheduleInfo}\n\n` +
+                            `Next sync: ${nextSyncStr}`,
+                        html: `
+                            <h2>🚀 Actual-sync Service Started</h2>
+                            <p>✅ <strong>Service is now running</strong></p>
+                            <p>📦 <strong>Version:</strong> ${VERSION}</p>
+                            <p><strong>Servers:</strong> ${serverNames}</p>
+                            <h3>Schedules:</h3>
+                            <pre>${scheduleInfo}</pre>
+                            <p><strong>Next sync:</strong> ${nextSyncStr}</p>
+                        `
+                    },
+                    
+                    webhook: {
+                        title: '🚀 Actual-sync Service Started',
+                        serverNames,
+                        version: VERSION,
+                        schedules: scheduleInfo,
+                        nextSync: nextSyncStr
+                    }
+                };
+                
+                // Send to Telegram
+                if (config.notifications?.telegram?.enabled) {
+                    await notificationService.sendTelegramMessage(startupMessage.telegram);
+                    logger.info('Startup notification sent via Telegram');
+                }
+                
+                // Send to Email
+                if (config.notifications?.email?.enabled && 
+                    config.notifications?.email?.host && 
+                    config.notifications?.email?.to?.length > 0) {
+                    await notificationService.emailTransporter?.sendMail({
+                        from: config.notifications.email.from,
+                        to: config.notifications.email.to.join(', '),
+                        subject: startupMessage.email.subject,
+                        text: startupMessage.email.text,
+                        html: startupMessage.email.html
+                    });
+                    logger.info('Startup notification sent via Email');
+                }
+                
+                // Send to Discord
+                if (config.notifications?.webhooks?.discord?.length > 0) {
+                    const discordPayload = {
+                        embeds: [{
+                            title: startupMessage.webhook.title,
+                            color: 5025616, // Green
+                            fields: [
+                                { name: 'Status', value: '✅ Service is now running', inline: true },
+                                { name: 'Version', value: startupMessage.webhook.version, inline: true },
+                                { name: 'Servers', value: startupMessage.webhook.serverNames },
+                                { name: 'Schedules', value: `\`\`\`\n${startupMessage.webhook.schedules}\n\`\`\`` },
+                                { name: 'Next Sync', value: startupMessage.webhook.nextSync }
+                            ],
+                            timestamp: new Date().toISOString()
+                        }]
+                    };
+                    for (const webhook of config.notifications.webhooks.discord) {
+                        await notificationService.sendWebhook(webhook.url, discordPayload);
+                    }
+                    logger.info('Startup notification sent via Discord');
+                }
+                
+                // Send to Slack
+                if (config.notifications?.webhooks?.slack?.length > 0) {
+                    const slackPayload = {
+                        text: `*${startupMessage.webhook.title}*`,
+                        blocks: [
+                            {
+                                type: 'header',
+                                text: {
+                                    type: 'plain_text',
+                                    text: startupMessage.webhook.title
+                                }
+                            },
+                            {
+                                type: 'section',
+                                fields: [
+                                    { type: 'mrkdwn', text: `*Status:*\n✅ Service is now running` },
+                                    { type: 'mrkdwn', text: `*Version:*\n${startupMessage.webhook.version}` },
+                                    { type: 'mrkdwn', text: `*Servers:*\n${startupMessage.webhook.serverNames}` },
+                                    { type: 'mrkdwn', text: `*Next Sync:*\n${startupMessage.webhook.nextSync}` }
+                                ]
+                            },
+                            {
+                                type: 'section',
+                                text: {
+                                    type: 'mrkdwn',
+                                    text: `*Schedules:*\n\`\`\`\n${startupMessage.webhook.schedules}\n\`\`\``
+                                }
+                            }
+                        ]
+                    };
+                    for (const webhook of config.notifications.webhooks.slack) {
+                        await notificationService.sendWebhook(webhook.url, slackPayload);
+                    }
+                    logger.info('Startup notification sent via Slack');
+                }
+                
+                // Send to Teams
+                if (config.notifications?.webhooks?.teams?.length > 0) {
+                    const teamsPayload = {
+                        '@type': 'MessageCard',
+                        '@context': 'https://schema.org/extensions',
+                        summary: 'Actual-sync Service Started',
+                        themeColor: '28A745',
+                        title: startupMessage.webhook.title,
+                        sections: [{
+                            facts: [
+                                { name: 'Status', value: '✅ Service is now running' },
+                                { name: 'Version', value: startupMessage.webhook.version },
+                                { name: 'Servers', value: startupMessage.webhook.serverNames },
+                                { name: 'Next Sync', value: startupMessage.webhook.nextSync }
+                            ],
+                            text: `**Schedules:**\n\n${startupMessage.webhook.schedules}`
+                        }]
+                    };
+                    for (const webhook of config.notifications.webhooks.teams) {
+                        await notificationService.sendWebhook(webhook.url, teamsPayload);
+                    }
+                    logger.info('Startup notification sent via Teams');
+                }
+                
             } catch (error) {
                 logger.error('Failed to send startup notification', { error: error.message });
             }
