@@ -446,25 +446,6 @@
                 },
                 "required": ["url"]
               }
-            },
-            "teams": {
-              "type": "array",
-              "description": "Microsoft Teams webhook configurations",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "description": "Webhook name for identification"
-                  },
-                  "url": {
-                    "type": "string",
-                    "description": "Teams webhook URL",
-                    "pattern": "^https://.*\\.webhook\\.office\\.com/.*"
-                  }
-                },
-                "required": ["url"]
-              }
             }
           }
         },
