@@ -182,7 +182,40 @@ try {
         logger.info('Prometheus metrics service enabled');
     }
     
-    // Initialize health check service
+    // Initialize notification service
+    notificationService = new NotificationService(
+        config.notifications || {},
+        {
+            level: config.logging.level,
+            format: config.logging.format,
+            logDir: config.logging.logDir
+        }
+    );
+    
+    // Initialize Telegram bot service if enabled
+    if (config.notifications?.telegram?.enabled) {
+        telegramBot = new TelegramBotService(
+            {
+                botToken: config.notifications.telegram.botToken,
+                chatId: config.notifications.telegram.chatId,
+                notifyOnSuccess: config.notifications.telegram.notifyOnSuccess || 'errors_only'
+            },
+            {
+                syncHistory: syncHistory,
+                healthCheck: null, // Will be set after healthCheck is created
+                getServerConfig: () => config.servers,
+                syncBank: syncBank
+            },
+            {
+                level: config.logging.level,
+                format: config.logging.format,
+                logDir: config.logging.logDir
+            }
+        );
+        logger.info('Telegram bot service initialized');
+    }
+    
+    // Initialize health check service (after notification services)
     healthCheck = new HealthCheckService({
         port: config.healthCheck?.port || 3000,
         host: config.healthCheck?.host || '0.0.0.0',
@@ -222,45 +255,17 @@ try {
         }
     });
     
+    // Update Telegram bot with healthCheck reference
+    if (telegramBot) {
+        telegramBot.healthCheck = healthCheck;
+    }
+    
     // Connect logger to WebSocket broadcasting
     logger.setBroadcastCallback((level, message, metadata) => {
         if (healthCheck && healthCheck.broadcastLog) {
             healthCheck.broadcastLog(level, message, metadata);
         }
     });
-    
-    // Initialize notification service
-    notificationService = new NotificationService(
-        config.notifications || {},
-        {
-            level: config.logging.level,
-            format: config.logging.format,
-            logDir: config.logging.logDir
-        }
-    );
-    
-    // Initialize Telegram bot service if enabled
-    if (config.notifications?.telegram?.enabled) {
-        telegramBot = new TelegramBotService(
-            {
-                botToken: config.notifications.telegram.botToken,
-                chatId: config.notifications.telegram.chatId,
-                notifyOnSuccess: config.notifications.telegram.notifyOnSuccess || 'errors_only'
-            },
-            {
-                syncHistory: syncHistory,
-                healthCheck: healthCheck,
-                getServerConfig: () => config.servers,
-                syncBank: syncBank
-            },
-            {
-                level: config.logging.level,
-                format: config.logging.format,
-                logDir: config.logging.logDir
-            }
-        );
-        logger.info('Telegram bot service initialized');
-    }
 } catch (error) {
     // Fallback to console if logger not initialized
     console.error('❌ Failed to load configuration:');
