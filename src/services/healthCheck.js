@@ -681,8 +681,9 @@ class HealthCheckService {
             break;
 
           case 'telegram':
-            if (!this.telegramBot?.config?.enabled || 
-                !this.telegramBot?.config?.chatIds?.length) {
+            if (!this.telegramBot || 
+                !this.telegramBot.config?.botToken ||
+                (!this.telegramBot.config?.chatId && !this.telegramBot.config?.chatIds?.length)) {
               return res.status(400).json({ error: 'Telegram bot not configured' });
             }
             await this.telegramBot.notifySync({
