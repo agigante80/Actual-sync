@@ -564,6 +564,14 @@ class HealthCheckService {
 
         switch (channel) {
           case 'email':
+            this.logger.debug('Testing email notification', {
+              hasNotificationService: !!this.notificationService,
+              hasConfig: !!this.notificationService?.config,
+              hasEmailConfig: !!this.notificationService?.config?.email,
+              emailHost: this.notificationService?.config?.email?.host,
+              emailTo: this.notificationService?.config?.email?.to,
+              hasEmailTransporter: !!this.notificationService?.emailTransporter
+            });
             if (!this.notificationService?.config?.email?.host || 
                 !this.notificationService?.config?.email?.to?.length) {
               return res.status(400).json({ error: 'Email not configured' });
