@@ -475,6 +475,12 @@ async function syncBank(server) {
                 console.error('Error.type:', error?.type);
                 console.error('Error.reason:', error?.reason);
                 console.error('Error message:', error?.message);
+                console.error('Error keys:', Object.keys(error));
+                console.error('Error toString:', error?.toString());
+                console.error('Error stack first line:', error?.stack?.split('\n')[0]);
+                console.error('Is Error:', error instanceof Error);
+                console.error('Proto:', Object.getPrototypeOf(error)?.constructor?.name);
+                console.error('=== END ===');
                 
                 // Only retry on last attempt check
                 if (attempt < syncConfig.maxRetries) {
