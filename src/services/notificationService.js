@@ -358,7 +358,10 @@ class NotificationService {
       return null;
     }
 
-    const subject = `[Actual Budget Sync] Error: ${notification.serverName}`;
+    const isTest = notification.serverName?.includes('🧪') || notification.errorCode === 'TEST_NOTIFICATION';
+    const subject = isTest 
+      ? `[Actual Budget Sync] 🧪 Test Notification`
+      : `[Actual Budget Sync] Error: ${notification.serverName}`;
     const text = this.formatEmailText(notification);
     const html = this.formatEmailHtml(notification);
 
@@ -511,14 +514,16 @@ Please investigate and resolve the issue.
       return [];
     }
 
+    const isTest = notification.serverName?.includes('🧪') || notification.errorCode === 'TEST_NOTIFICATION';
+    const headerText = isTest ? '🧪 Test Notification' : '🚨 Actual Budget Sync Error';
     const payload = {
-      text: `🚨 *Actual Budget Sync Error*`,
+      text: `*${headerText}*`,
       blocks: [
         {
           type: 'header',
           text: {
             type: 'plain_text',
-            text: '🚨 Actual Budget Sync Error'
+            text: headerText
           }
         },
         {
@@ -574,10 +579,11 @@ Please investigate and resolve the issue.
       return [];
     }
 
+    const isTest = notification.serverName?.includes('🧪') || notification.errorCode === 'TEST_NOTIFICATION';
     const payload = {
       embeds: [{
-        title: '🚨 Actual Budget Sync Error',
-        color: 15158332, // Red
+        title: isTest ? '🧪 Test Notification' : '🚨 Actual Budget Sync Error',
+        color: isTest ? 3447003 : 15158332, // Blue for test, Red for error
         fields: [
           { name: 'Server', value: notification.serverName, inline: true },
           { name: 'Time', value: notification.timestamp, inline: true },
@@ -631,12 +637,14 @@ Please investigate and resolve the issue.
       return [];
     }
 
+    const isTest = notification.serverName?.includes('🧪') || notification.errorCode === 'TEST_NOTIFICATION';
+    const titleText = isTest ? '🧪 Test Notification' : '🚨 Actual Budget Sync Error';
     const payload = {
       '@type': 'MessageCard',
       '@context': 'https://schema.org/extensions',
-      summary: 'Actual Budget Sync Error',
-      themeColor: 'DC3545',
-      title: '🚨 Actual Budget Sync Error',
+      summary: isTest ? 'Test Notification' : 'Actual Budget Sync Error',
+      themeColor: isTest ? '0078D4' : 'DC3545',
+      title: titleText,
       sections: [{
         facts: [
           { name: 'Server', value: notification.serverName },
