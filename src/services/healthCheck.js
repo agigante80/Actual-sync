@@ -576,32 +576,84 @@ class HealthCheckService {
                 !this.notificationService?.config?.email?.to?.length) {
               return res.status(400).json({ error: 'Email not configured' });
             }
-            await this.notificationService.notifyError(testMessage);
-            result = { success: true, message: 'Test email sent successfully' };
+            // Call sendEmail directly to bypass threshold checks
+            const emailResult = await this.notificationService.sendEmail({
+              serverName: testMessage.serverName,
+              errorMessage: testMessage.errorMessage,
+              errorCode: testMessage.errorCode,
+              timestamp: testMessage.timestamp,
+              correlationId: testMessage.correlationId,
+              context: testMessage.context,
+              consecutiveFailures: 1
+            });
+            if (emailResult && emailResult.success) {
+              result = { success: true, message: 'Test email sent successfully' };
+            } else {
+              return res.status(500).json({ error: 'Failed to send email', details: emailResult?.error });
+            }
             break;
 
           case 'discord':
             if (!this.notificationService?.config?.webhooks?.discord?.length) {
               return res.status(400).json({ error: 'Discord not configured' });
             }
-            await this.notificationService.notifyError(testMessage);
-            result = { success: true, message: 'Test Discord message sent successfully' };
+            // Call sendDiscordWebhooks directly
+            const discordResults = await this.notificationService.sendDiscordWebhooks({
+              serverName: testMessage.serverName,
+              errorMessage: testMessage.errorMessage,
+              errorCode: testMessage.errorCode,
+              timestamp: testMessage.timestamp,
+              correlationId: testMessage.correlationId,
+              context: testMessage.context,
+              consecutiveFailures: 1
+            });
+            if (discordResults && discordResults.length > 0 && discordResults[0].success) {
+              result = { success: true, message: 'Test Discord message sent successfully' };
+            } else {
+              return res.status(500).json({ error: 'Failed to send Discord message' });
+            }
             break;
 
           case 'slack':
             if (!this.notificationService?.config?.webhooks?.slack?.length) {
               return res.status(400).json({ error: 'Slack not configured' });
             }
-            await this.notificationService.notifyError(testMessage);
-            result = { success: true, message: 'Test Slack message sent successfully' };
+            // Call sendSlackWebhooks directly
+            const slackResults = await this.notificationService.sendSlackWebhooks({
+              serverName: testMessage.serverName,
+              errorMessage: testMessage.errorMessage,
+              errorCode: testMessage.errorCode,
+              timestamp: testMessage.timestamp,
+              correlationId: testMessage.correlationId,
+              context: testMessage.context,
+              consecutiveFailures: 1
+            });
+            if (slackResults && slackResults.length > 0 && slackResults[0].success) {
+              result = { success: true, message: 'Test Slack message sent successfully' };
+            } else {
+              return res.status(500).json({ error: 'Failed to send Slack message' });
+            }
             break;
 
           case 'teams':
             if (!this.notificationService?.config?.webhooks?.teams?.length) {
               return res.status(400).json({ error: 'Microsoft Teams not configured' });
             }
-            await this.notificationService.notifyError(testMessage);
-            result = { success: true, message: 'Test Teams message sent successfully' };
+            // Call sendTeamsWebhooks directly
+            const teamsResults = await this.notificationService.sendTeamsWebhooks({
+              serverName: testMessage.serverName,
+              errorMessage: testMessage.errorMessage,
+              errorCode: testMessage.errorCode,
+              timestamp: testMessage.timestamp,
+              correlationId: testMessage.correlationId,
+              context: testMessage.context,
+              consecutiveFailures: 1
+            });
+            if (teamsResults && teamsResults.length > 0 && teamsResults[0].success) {
+              result = { success: true, message: 'Test Teams message sent successfully' };
+            } else {
+              return res.status(500).json({ error: 'Failed to send Teams message' });
+            }
             break;
 
           case 'telegram':
