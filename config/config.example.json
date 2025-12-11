@@ -94,7 +94,7 @@
     "webhooks": {
       "slack": [],
       "discord": [],
-      "teams": []
+      "telegram": []
     },
     "thresholds": {
       "consecutiveFailures": 3,

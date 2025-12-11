@@ -4,6 +4,7 @@ const path = require('path');
 const { BlockingScheduler } = require('node-schedule'); // Import the scheduler
 const schedule = require('node-schedule'); // Import the scheduler
 const moment = require('moment-timezone');
+const cronstrue = require('cronstrue');
 const ConfigLoader = require('./lib/configLoader');
 const { createLogger } = require('./lib/logger');
 const { HealthCheckService } = require('./services/healthCheck');
@@ -68,63 +69,16 @@ module.exports.formatNextSync = formatNextSync;
  * @param {string} cron - Cron expression (e.g., "0 5 * * 2")
  * @returns {string} Human-readable description
  */
-function cronToHuman(cron) {
-    const parts = cron.split(' ');
-    if (parts.length !== 5) return cron;
-    
-    const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
-    
-    // Day names
-    const days = {
-        '0': 'Sunday', '1': 'Monday', '2': 'Tuesday', '3': 'Wednesday',
-        '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'
+/**
+ * Get effective sync configuration for a server
+ */
+function getSyncConfig(server) {
+    // Server-specific config overrides global config
+    return {
+        schedule: server.sync?.schedule || config.sync.schedule,
+        maxRetries: server.sync?.maxRetries ?? config.sync.maxRetries,
+        retryDelayMs: server.sync?.retryDelayMs ?? config.sync.retryDelayMs
     };
-    
-    // Handle minute intervals (e.g., */15, */30)
-    if (minute.startsWith('*/')) {
-        const interval = minute.substring(2);
-        if (hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-            return `Every ${interval} minutes`;
-        }
-    }
-    
-    // Handle hourly patterns (e.g., 0 * * * *)
-    if (minute.match(/^\d+$/) && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-        return `Every hour at minute ${minute}`;
-    }
-    
-    // Handle hour intervals (e.g., 0 */6 * * *)
-    if (hour.startsWith('*/')) {
-        const interval = hour.substring(2);
-        return `Every ${interval} hours at minute ${minute}`;
-    }
-    
-    let timeStr = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
-    
-    if (dayOfWeek === '*' && dayOfMonth === '*') {
-        return `Daily at ${timeStr}`;
-    }
-    
-    // Handle specific days of week
-    if (dayOfWeek !== '*') {
-        const daysList = dayOfWeek.split(',').map(d => days[d.trim()]);
-        if (daysList.length === 7) {
-            return `Daily at ${timeStr}`;
-        } else if (daysList.length === 5 && !daysList.includes('Saturday') && !daysList.includes('Sunday')) {
-            return `Weekdays at ${timeStr}`;
-        } else if (daysList.length === 1) {
-            return `Every ${daysList[0]} at ${timeStr}`;
-        } else {
-            return `${daysList.join(', ')} at ${timeStr}`;
-        }
-    }
-    
-    // Handle specific day of month
-    if (dayOfMonth !== '*') {
-        return `Monthly on day ${dayOfMonth} at ${timeStr}`;
-    }
-    
-    return `Daily at ${timeStr}`;
 }
 
 // Load environment variables
@@ -182,13 +136,49 @@ try {
         logger.info('Prometheus metrics service enabled');
     }
     
-    // Initialize health check service
+    // Initialize notification service
+    notificationService = new NotificationService(
+        config.notifications || {},
+        {
+            level: config.logging.level,
+            format: config.logging.format,
+            logDir: config.logging.logDir
+        }
+    );
+    
+    // Initialize Telegram bot service if enabled
+    if (config.notifications?.telegram?.enabled) {
+        telegramBot = new TelegramBotService(
+            {
+                botToken: config.notifications.telegram.botToken,
+                chatId: config.notifications.telegram.chatId || config.notifications.telegram.chatIds?.[0],
+                chatIds: config.notifications.telegram.chatIds,
+                notifyOnSuccess: config.notifications.telegram.notifyOnSuccess || 'errors_only'
+            },
+            {
+                syncHistory: syncHistory,
+                healthCheck: null, // Will be set after healthCheck is created
+                getServerConfig: () => config.servers,
+                syncBank: syncBank
+            },
+            {
+                level: config.logging.level,
+                format: config.logging.format,
+                logDir: config.logging.logDir
+            }
+        );
+        logger.info('Telegram bot service initialized');
+    }
+    
+    // Initialize health check service (after notification services)
     healthCheck = new HealthCheckService({
         port: config.healthCheck?.port || 3000,
         host: config.healthCheck?.host || '0.0.0.0',
         dashboardConfig: config.healthCheck?.dashboard || { enabled: true, auth: { type: 'none' } },
         prometheusService: prometheusService,
         syncHistory: syncHistory,
+        notificationService: notificationService,
+        telegramBot: telegramBot,
         syncBank: syncBank,
         getServers: () => config.servers,
         getSchedules: () => {
@@ -208,7 +198,7 @@ try {
             // Return cron schedule information for dashboard
             return scheduledJobsRef.map(sj => ({
                 cron: sj.schedule,
-                cronHuman: cronToHuman(sj.schedule),
+                cronHuman: cronstrue.toString(sj.schedule),
                 servers: sj.servers.map(s => s.name),
                 nextInvocation: sj.job.nextInvocation()?.toString()
             }));
@@ -220,45 +210,17 @@ try {
         }
     });
     
+    // Update Telegram bot with healthCheck reference
+    if (telegramBot) {
+        telegramBot.services.healthCheck = healthCheck;
+    }
+    
     // Connect logger to WebSocket broadcasting
     logger.setBroadcastCallback((level, message, metadata) => {
         if (healthCheck && healthCheck.broadcastLog) {
             healthCheck.broadcastLog(level, message, metadata);
         }
     });
-    
-    // Initialize notification service
-    notificationService = new NotificationService(
-        config.notifications || {},
-        {
-            level: config.logging.level,
-            format: config.logging.format,
-            logDir: config.logging.logDir
-        }
-    );
-    
-    // Initialize Telegram bot service if enabled
-    if (config.notifications?.telegram?.enabled) {
-        telegramBot = new TelegramBotService(
-            {
-                botToken: config.notifications.telegram.botToken,
-                chatId: config.notifications.telegram.chatId,
-                notifyOnSuccess: config.notifications.telegram.notifyOnSuccess || 'errors_only'
-            },
-            {
-                syncHistory: syncHistory,
-                healthCheck: healthCheck,
-                getServerConfig: () => config.servers,
-                syncBank: syncBank
-            },
-            {
-                level: config.logging.level,
-                format: config.logging.format,
-                logDir: config.logging.logDir
-            }
-        );
-        logger.info('Telegram bot service initialized');
-    }
 } catch (error) {
     // Fallback to console if logger not initialized
     console.error('❌ Failed to load configuration:');
@@ -281,50 +243,10 @@ function getSyncConfig(server) {
     };
 }
 
-async function runWithRetries(fn, retries, baseRetryDelayMs) {
-    for (let i = 0; i <= retries; i++) {
-        try {
-            return await fn();
-        } catch (error) {
-            logger.error(`Attempt ${i + 1} failed`, { 
-                attempt: i + 1, 
-                error: error.message,
-                errorCode: error.code,
-                errorCategory: error.category
-            });
-
-            let retryDelay = 0;
-
-            if (error.code === 'NORDIGEN_ERROR' && error.category === 'RATE_LIMIT_EXCEEDED') {
-                retryDelay = baseRetryDelayMs * (2 ** i); // Exponential backoff for rate limits
-                logger.warn(`Rate limit exceeded. Retrying in ${retryDelay / 1000} seconds...`, {
-                    retryDelayMs: retryDelay,
-                    attempt: i + 1
-                });
-            } else if (error.message === 'network-failure' || error.code === 'ECONNRESET' || error.code === 'ENOTFOUND') {
-                // Retry for network failures, ECONNRESET, or DNS issues
-                retryDelay = baseRetryDelayMs * (2 ** i); // Exponential backoff for network issues
-                logger.warn(`Network failure. Retrying in ${retryDelay / 1000} seconds...`, {
-                    retryDelayMs: retryDelay,
-                    attempt: i + 1,
-                    errorCode: error.code
-                });
-            } else {
-                logger.error('Not a retryable error, not retrying', { errorCode: error.code });
-                throw error; // Re-throw other errors
-            }
-            if (i === retries) {
-                logger.error('Max retries reached. Bank sync failed.', { maxRetries: retries });
-                throw error; // Re-throw after max retries
-            }
-            await new Promise(resolve => setTimeout(resolve, retryDelay));
-        }
-    }
-}
-
 async function syncBank(server) {
     const { name, url, password, syncId, dataDir, encryptionPassword } = server;
     const syncIdLog = syncId ? syncId : "your_budget_name";
+    const isEncrypted = !!encryptionPassword;
     
     // Get sync configuration for this server (server-specific or global)
     const syncConfig = getSyncConfig(server);
@@ -353,6 +275,8 @@ async function syncBank(server) {
     let accountsProcessed = 0;
     let accountsSucceeded = 0;
     let accountsFailed = 0;
+    const succeededAccounts = [];
+    const failedAccounts = [];
     
     try {
         serverLogger.info(`Starting sync for server: ${name}`, { 
@@ -382,30 +306,104 @@ async function syncBank(server) {
         
         // Download budget with encryption password if provided
         const downloadOptions = encryptionPassword ? { password: encryptionPassword } : undefined;
-        await runWithRetries(
-            async () => await actual.downloadBudget(syncId, downloadOptions),
-            syncConfig.maxRetries,
-            syncConfig.baseRetryDelayMs
-        );
-        serverLogger.info('Budget file loaded successfully', {
-            encrypted: !!encryptionPassword
-        });
+        
+        // Download budget (single attempt - no retries)
+        let downloadError;
+        try {
+            await actual.downloadBudget(syncId, downloadOptions);
+            serverLogger.info('Budget file loaded successfully', {
+                encrypted: !!encryptionPassword
+            });
+        } catch (error) {
+            downloadError = error;
+            serverLogger.debug('Download failed', {
+                error: error?.reason || error?.message || String(error)
+            });
+        }
+        
+        // If download failed, enhance and throw error
+        if (downloadError) {
+            // The Actual API throws PostError but by the time we catch it, it's a plain Error with no message
+            // We need to infer the error from context
+            let originalError = downloadError?.message || downloadError?.toString() || '';
+            
+            // Check for empty or generic error - common with PostError that loses its details
+            if (!originalError || originalError === 'Error' || originalError.trim() === '') {
+                // For encrypted budgets, the most common error is encryption key validation failure
+                if (encryptionPassword) {
+                    originalError = 'network-failure during encryption key validation';
+                    serverLogger.warn('Empty error caught for encrypted budget download - likely encryption key issue');
+                } else {
+                    originalError = 'budget download failed';
+                    serverLogger.warn('Empty error caught for budget download');
+                }
+            }
+            
+            // Check if this is a PostError with a reason field (though usually empty by now)
+            if (downloadError?.type === 'PostError' && downloadError?.reason) {
+                originalError = downloadError.reason;
+                serverLogger.debug('PostError detected with reason', { reason: downloadError.reason });
+            }
+            
+            // Also check the string representation for PostError pattern
+            const errorString = downloadError?.toString() || '';
+            if (errorString.includes('PostError: PostError: ')) {
+                // Extract the actual error type after "PostError: PostError: "
+                const match = errorString.match(/PostError: PostError: (.+)/);
+                if (match && match[1]) {
+                    originalError = match[1].trim();
+                }
+            }
+            
+            // Check stack trace for PostError pattern as well
+            if (downloadError?.stack && downloadError.stack.includes('PostError: PostError: ')) {
+                const stackMatch = downloadError.stack.match(/PostError: PostError: (.+)/);
+                if (stackMatch && stackMatch[1]) {
+                    originalError = stackMatch[1].split('\n')[0].trim();
+                }
+            }
+            
+            const errorDetails = [];
+            
+            if (originalError.includes('Could not get remote files')) {
+                errorDetails.push('Failed to retrieve budget files from server.');
+                errorDetails.push(`Verify that Sync ID "${syncId}" exists on server "${url}".`);
+                errorDetails.push('Check that file sync is enabled in your Actual Budget server settings.');
+                if (!encryptionPassword) {
+                    errorDetails.push('If this budget uses encryption, provide the encryptionPassword in config.');
+                }
+            } else if (originalError.includes('network-failure')) {
+                errorDetails.push('Network connection to Actual Budget server failed during encryption key test.');
+                errorDetails.push(`Check that server is accessible at: ${url}`);
+                errorDetails.push('Verify the encryptionPassword is correct for this encrypted budget.');
+                errorDetails.push('Ensure the Actual Budget server supports encrypted budgets.');
+            } else if (originalError.includes('decrypt-failure') || originalError.includes('Invalid password')) {
+                errorDetails.push('Failed to decrypt budget file.');
+                errorDetails.push('Verify the encryptionPassword is correct for this budget.');
+            } else if (originalError.includes('unauthorized')) {
+                errorDetails.push('Authentication failed.');
+                errorDetails.push('Verify the server password is correct.');
+            }
+            
+            const enhancedMessage = errorDetails.length > 0 
+                ? `${originalError}\n\nTroubleshooting:\n- ${errorDetails.join('\n- ')}`
+                : originalError;
+            
+            const enhancedError = new Error(enhancedMessage);
+            enhancedError.originalError = downloadError;
+            enhancedError.syncId = syncId;
+            enhancedError.serverUrl = url;
+            throw enhancedError;
+        }
 
         serverLogger.debug('Fetching accounts...');
         const accounts = await actual.getAccounts();
         serverLogger.info('Accounts fetched successfully', { accountCount: accounts?.length || 0 });
 
         serverLogger.info('Starting file sync');
-        await runWithRetries(
-            async () => await actual.sync(),
-            syncConfig.maxRetries,
-            syncConfig.baseRetryDelayMs
-        ); // Add this before runBankSync
+        await actual.sync();
         serverLogger.info('File sync completed');
             
-        const succeededAccounts = [];
-        const failedAccounts = [];
-        
         if (accounts && accounts.length > 0) {
             for (const account of accounts) {
                 accountsProcessed++;
@@ -415,11 +413,7 @@ async function syncBank(server) {
                     accountName: account.name 
                 });
                 try { //  Wrap runBankSync in try...catch
-                    await runWithRetries(
-                        async () => await actual.runBankSync({ accountId: account.id }),
-                        syncConfig.maxRetries,
-                        syncConfig.baseRetryDelayMs
-                    );
+                    await actual.runBankSync({ accountId: account.id });
                     accountsSucceeded++;
                     succeededAccounts.push(account.name);
                     const accountDuration = accountTimer();
@@ -429,15 +423,18 @@ async function syncBank(server) {
                     });
                 } catch (bankSyncError) { // catch bankSyncError
                     accountsFailed++;
+                    const errorMsg = bankSyncError?.message || bankSyncError?.toString() || String(bankSyncError) || 'Unknown error';
                     failedAccounts.push({
                         name: account.name,
-                        error: bankSyncError.message
+                        error: errorMsg
                     });
                     accountTimer();
                     serverLogger.error('Error syncing bank for account', {
                         accountId: account.id,
-                        error: bankSyncError.message,
-                        errorCode: bankSyncError.code
+                        accountName: account.name,
+                        error: errorMsg,
+                        errorCode: bankSyncError?.code || 'UNKNOWN',
+                        errorStack: bankSyncError?.stack || 'No stack trace available'
                     });
                 }
             }
@@ -446,11 +443,7 @@ async function syncBank(server) {
         }
 
         serverLogger.info('Starting final file sync');
-        await runWithRetries(
-            async () => await actual.sync(),
-            syncConfig.maxRetries,
-            syncConfig.baseRetryDelayMs
-        );
+        await actual.sync();
         serverLogger.info('Final file sync completed');
         
         // Calculate sync duration and log performance
@@ -470,13 +463,27 @@ async function syncBank(server) {
         const errorMessage = accountsFailed > 0 ? 
             `${accountsFailed} account(s) failed to sync: ${failedAccounts.map(a => a.error).join('; ')}` : 
             null;
+        const errorCode = null; // No error code in success/partial case
+        
+        // Log detailed sync results
+        serverLogger.info('Sync completed', {
+            status: syncStatus,
+            accountsProcessed,
+            accountsSucceeded,
+            accountsFailed,
+            succeededAccounts: succeededAccounts.length > 0 ? succeededAccounts : undefined,
+            failedAccounts: failedAccounts.length > 0 ? failedAccounts : undefined,
+            encrypted: isEncrypted,
+            durationMs
+        });
         
         // Update health check with sync status
+        // Note: Partial failures are treated as success for overall health, but error details are preserved
         if (healthCheck) {
             healthCheck.updateSyncStatus({ 
                 status: syncStatus === 'partial' ? 'success' : syncStatus, 
                 serverName: name,
-                error: errorMessage 
+                error: syncStatus === 'partial' ? `Partial sync: ${errorMessage}` : errorMessage
             });
         }
         
@@ -495,6 +502,7 @@ async function syncBank(server) {
         }
         
         // Record metrics in Prometheus
+        // Note: Partial status recorded as success but with accountsFailed count for monitoring
         if (prometheusService) {
             prometheusService.recordSync({
                 server: name,
@@ -506,14 +514,22 @@ async function syncBank(server) {
         }
         
         // Record sync result for notification tracking
+        // Note: Partial failures treated as success to avoid alert fatigue, but tracked separately
         if (notificationService) {
-            notificationService.recordSyncResult(name, syncStatus !== 'failure', correlationId);
-        }
-        
-        // Send Telegram bot notification
-        if (telegramBot) {
+            const isSuccess = syncStatus !== 'failure';
+            notificationService.recordSyncResult(name, isSuccess, correlationId);
+            if (syncStatus === 'partial') {
+                serverLogger.warn('Partial sync completed with some account failures', {
+                    serverName: name,
+                    succeededCount: accountsSucceeded,
+                    failedCount: accountsFailed,
+                    failedAccounts: failedAccounts.map(a => `${a.name}: ${a.error}`)
+                });
+            }
+            
+            // Send unified sync notification to all channels
             try {
-                await telegramBot.notifySync({
+                await notificationService.notifySync({
                     status: syncStatus,
                     serverName: name,
                     duration: durationMs,
@@ -521,30 +537,91 @@ async function syncBank(server) {
                     accountsFailed: accountsFailed,
                     succeededAccounts: succeededAccounts,
                     failedAccounts: failedAccounts,
-                    errorMessage: errorMessage
+                    error: errorMessage,
+                    errorCode: errorCode,
+                    correlationId,
+                    context: {},
+                    bypassThresholds: false
                 });
-            } catch (botError) {
-                logger.error('Failed to send Telegram bot notification', { error: botError.message });
+            } catch (notifyError) {
+                logger.error('Failed to send sync notification', { 
+                    error: notifyError.message,
+                    correlationId
+                });
             }
         }
         
     } catch (error) {
-        let durationMs = endTimer({ error: error.message });
+        let durationMs = endTimer({ error: error.message || String(error) });
         
         // Fallback to manual calculation if performance tracking is disabled
         if (durationMs === undefined || isNaN(durationMs)) {
             durationMs = Date.now() - syncStartTime;
         }
         
+        // Normalize error information
+        // Check if message exists and is not empty, otherwise use toString
+        let errorMessage = error?.message;
+        
+        // Log error structure for debugging
+        serverLogger.debug('Error structure for debugging', {
+            hasMessage: !!errorMessage,
+            errorMessage: errorMessage,
+            toString: error?.toString(),
+            hasStack: !!error?.stack,
+            stackFirstLine: error?.stack?.split('\n')[0],
+            errorType: error?.constructor?.name
+        });
+        
+        if (!errorMessage || errorMessage.trim() === '' || errorMessage === 'Error') {
+            // Try to extract from stack trace first
+            if (error?.stack) {
+                const stackLines = error.stack.split('\n');
+                const firstLine = stackLines[0];
+                // Remove "Error: " prefix if present
+                if (firstLine && firstLine.startsWith('Error: ')) {
+                    errorMessage = firstLine.substring(7); // Remove "Error: "
+                } else {
+                    errorMessage = firstLine;
+                }
+                
+                // If still just "Error", look for originalError
+                if (errorMessage === 'Error' && error?.originalError) {
+                    errorMessage = error.originalError.message || error.originalError.toString() || 'Unknown sync error';
+                }
+            }
+            
+            // Try toString as fallback
+            if (!errorMessage || errorMessage === 'Error') {
+                const errorString = error?.toString() || String(error);
+                if (errorString && errorString !== '[object Object]' && errorString !== 'Error') {
+                    errorMessage = errorString.replace(/^Error: /, '');
+                } else {
+                    errorMessage = 'Unknown sync error';
+                }
+            }
+        }
+        const errorCode = error?.code || error?.errorCode || 'UNKNOWN';
+        const errorStack = error?.stack || 'No stack trace available';
+        
         serverLogger.error(`Error syncing bank for server`, {
-            error: error.message,
-            errorCode: error.code,
-            errorStack: error.stack
+            error: errorMessage,
+            errorCode: errorCode,
+            errorStack: errorStack,
+            accountsProcessed,
+            accountsSucceeded,
+            accountsFailed,
+            encrypted: isEncrypted,
+            phase: accountsProcessed === 0 ? 'initialization' : accountsSucceeded > 0 ? 'final-sync' : 'bank-sync'
         });
         
         // Update health check with failed sync
         if (healthCheck) {
-            healthCheck.updateSyncStatus({ status: 'failure', serverName: name, error });
+            healthCheck.updateSyncStatus({ 
+                status: 'failure', 
+                serverName: name, 
+                error: errorMessage 
+            });
         }
         
         // Record failed sync in history
@@ -556,8 +633,8 @@ async function syncBank(server) {
                 accountsProcessed,
                 accountsSucceeded,
                 accountsFailed,
-                errorMessage: error.message,
-                errorCode: error.code,
+                errorMessage: errorMessage,
+                errorCode: errorCode,
                 correlationId
             });
         }
@@ -570,48 +647,41 @@ async function syncBank(server) {
                 duration: durationMs,
                 accountsProcessed: accountsSucceeded,
                 accountsFailed: accountsFailed,
-                errorCode: error.code || 'UNKNOWN_ERROR'
+                errorCode: errorCode
             });
         }
         
-        // Record failed sync result and send notification if thresholds exceeded
+        // Record failed sync result and send unified notification to all channels
         if (notificationService) {
             notificationService.recordSyncResult(name, false, correlationId);
             
             try {
-                await notificationService.notifyError({
+                await notificationService.notifySync({
+                    status: 'failure',
                     serverName: name,
-                    errorMessage: error.message,
-                    errorCode: error.code,
-                    timestamp: new Date().toISOString(),
+                    duration: durationMs,
+                    accountsProcessed: accountsSucceeded,
+                    accountsFailed: accountsFailed,
+                    succeededAccounts: succeededAccounts,
+                    failedAccounts: failedAccounts,
+                    error: errorMessage,
+                    errorCode: errorCode,
                     correlationId,
                     context: {
                         accountsProcessed,
                         accountsSucceeded,
                         accountsFailed,
                         durationMs
-                    }
+                    },
+                    bypassThresholds: false
                 });
             } catch (notifyError) {
-                logger.error('Failed to send error notification', {
-                    error: notifyError.message,
-                    originalError: error.message
+                const notifyErrorMessage = notifyError?.message || String(notifyError) || 'Unknown notification error';
+                logger.error('Failed to send sync notification', {
+                    error: notifyErrorMessage,
+                    originalError: errorMessage,
+                    correlationId
                 });
-            }
-        }
-        
-        // Send Telegram bot notification for failed sync
-        if (telegramBot) {
-            try {
-                await telegramBot.notifySync({
-                    status: 'error',
-                    serverName: name,
-                    duration: durationMs,
-                    error: error.message,
-                    errorCode: error.code
-                });
-            } catch (botError) {
-                logger.error('Failed to send Telegram bot notification', { error: botError.message });
             }
         }
     } finally {
@@ -620,8 +690,9 @@ async function syncBank(server) {
             await actual.shutdown();
             serverLogger.debug('Shutdown complete');
         } catch (shutdownError) {
+            const shutdownErrorMessage = shutdownError?.message || String(shutdownError) || 'Unknown shutdown error';
             serverLogger.error('Error during shutdown', {
-                error: shutdownError.message
+                error: shutdownErrorMessage
             });
         }
         serverLogger.clearCorrelationId();
@@ -736,12 +807,12 @@ async function run() {
             }
         }
         
-        // Send startup notification via Telegram
-        if (notificationService && config.notifications?.telegram?.enabled) {
+        // Send startup notification to all configured channels
+        if (notificationService) {
             try {
                 const serverNames = servers.map(s => s.name).join(', ');
                 const scheduleInfo = scheduledJobs.map(sj => 
-                    `  • ${sj.servers.map(s => s.name).join(', ')}\n    ${cronToHuman(sj.schedule)} (${sj.schedule})`
+                    `  • ${sj.servers.map(s => s.name).join(', ')}\n    ${cronstrue.toString(sj.schedule)} (${sj.schedule})`
                 ).join('\n');
                 const nextSync = scheduledJobs[0]?.job.nextInvocation();
                 const nextSyncStr = nextSync ? nextSync.toLocaleString('en-US', { 
@@ -750,16 +821,16 @@ async function run() {
                     timeStyle: 'short'
                 }) : 'N/A';
                 
-                await notificationService.sendTelegramMessage(
-                    `🚀 Actual-sync Service Started\n\n` +
-                    `✅ Service is now running\n` +
-                    `📦 Version: ${VERSION}\n\n` +
-                    `Servers: ${serverNames}\n\n` +
-                    `Schedules:\n${scheduleInfo}\n\n` +
-                    `Next sync: ${nextSyncStr}\n\n` +
-                    `Type /help to see available commands`
-                );
-                logger.info('Startup notification sent via Telegram');
+                // Send unified startup notification to all channels
+                await notificationService.sendStartupNotification({
+                    version: VERSION,
+                    serverNames,
+                    schedules: scheduleInfo,
+                    nextSync: nextSyncStr
+                });
+                
+                logger.info('Startup notifications sent to all channels');
+                
             } catch (error) {
                 logger.error('Failed to send startup notification', { error: error.message });
             }
@@ -808,9 +879,16 @@ process.on('uncaughtException', (error) => {
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
+    // Extract meaningful information from reason
+    const reasonInfo = reason instanceof Error 
+        ? { message: reason.message, code: reason.code, stack: reason.stack }
+        : typeof reason === 'object' && reason !== null
+        ? { ...reason, toString: String(reason) }
+        : { value: reason, type: typeof reason };
+    
     logger.error('Unhandled promise rejection - service will continue', {
-        reason: reason,
-        promise: promise
+        reason: reasonInfo,
+        promiseString: promise ? promise.toString() : 'no promise info'
     });
 });
 

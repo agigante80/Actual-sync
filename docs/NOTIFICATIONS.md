@@ -18,7 +18,7 @@ The Notification System provides automated alerts and interactive commands to mo
 ## Features
 
 - **Interactive Telegram Bot**: Real-time commands for status, history, and configuration
-- **Multiple Notification Channels**: Email, Slack, Discord, Microsoft Teams, Telegram webhooks
+- **Multiple Notification Channels**: Email, Slack, Discord, Telegram webhooks
 - **Smart Thresholds**: Trigger notifications based on consecutive failures or failure rates
 - **Rate Limiting**: Prevent notification spam with configurable intervals and limits
 - **Rich Context**: Includes error details, correlation IDs, and sync statistics
@@ -104,9 +104,9 @@ Add the `notifications` section to your `config/config.json`:
 
 #### Webhook Settings
 
-Each webhook type (Slack, Discord, Teams, Telegram) accepts an array of webhook configurations:
+Each webhook type (Slack, Discord, Telegram) accepts an array of webhook configurations:
 
-**Slack, Discord, Teams:**
+**Slack, Discord:**
 
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
@@ -1160,7 +1160,7 @@ Potential future improvements:
 
 The Error Notification System provides:
 
-✅ **Multiple delivery channels** (Email, Slack, Discord, Teams, Telegram)
+✅ **Multiple delivery channels** (Email, Slack, Discord, Telegram)
 ✅ **Smart thresholds** (consecutive failures and failure rates)  
 ✅ **Rate limiting** (prevent notification spam)
 ✅ **Rich context** (errors, stats, correlation IDs)

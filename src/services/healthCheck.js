@@ -17,6 +17,8 @@ class HealthCheckService {
    * @param {string} options.host - Host to bind to
    * @param {Object} options.prometheusService - PrometheusService instance (optional)
    * @param {Object} options.syncHistory - SyncHistoryService instance (optional)
+   * @param {Object} options.notificationService - NotificationService instance (optional)
+   * @param {Object} options.telegramBot - TelegramBotService instance (optional)
    * @param {Function} options.syncBank - Sync function for manual triggers (optional)
    * @param {Function} options.getServers - Function to get server list (optional)
    * @param {Function} options.getSchedules - Function to get schedule info (optional)
@@ -28,6 +30,8 @@ class HealthCheckService {
     this.host = options.host || '0.0.0.0';
     this.prometheusService = options.prometheusService;
     this.syncHistory = options.syncHistory;
+    this.notificationService = options.notificationService;
+    this.telegramBot = options.telegramBot;
     this.syncBank = options.syncBank;
     this.getServers = options.getServers;
     this.getSchedules = options.getSchedules;
@@ -315,16 +319,30 @@ class HealthCheckService {
 
       try {
         const servers = this.getServers();
-        const schedules = this.getSchedules ? this.getSchedules() : {};
+        const cronSchedules = this.getCronSchedules ? this.getCronSchedules() : [];
+        
+        // Create a map of server name to cron info
+        const cronMap = {};
+        cronSchedules.forEach(schedule => {
+          schedule.servers.forEach(serverName => {
+            cronMap[serverName] = {
+              cron: schedule.cron,
+              cronHuman: schedule.cronHuman,
+              nextInvocation: schedule.nextInvocation
+            };
+          });
+        });
         
         const serverInfo = servers.map(server => {
-          // getSchedules() already returns human-readable formatted strings
-          const formattedSchedule = schedules[server.name] || null;
+          const cronInfo = cronMap[server.name];
           
           return {
             name: server.name,
             encrypted: !!(server.encryptionPassword && server.encryptionPassword.trim()),
-            schedule: formattedSchedule
+            schedule: cronInfo ? cronInfo.nextInvocation : null,
+            cron: cronInfo ? cronInfo.cron : null,
+            cronHuman: cronInfo ? cronInfo.cronHuman : null,
+            nextInvocation: cronInfo ? cronInfo.nextInvocation : null
           };
         });
         
@@ -533,6 +551,183 @@ class HealthCheckService {
       }
     });
 
+    // Dashboard API: Test notification channels (with authentication)
+    this.app.post('/api/dashboard/test-notification', this.dashboardAuth(), async (req, res) => {
+      const { channel } = req.body;
+
+      if (!channel) {
+        return res.status(400).json({ error: 'Channel parameter required' });
+      }
+
+      try {
+        const os = require('os');
+        const packageJson = require('../../package.json');
+        
+        const testMessage = {
+          serverName: '🧪 Test Notification',
+          errorMessage: `This is a test notification from Actual-sync service.
+
+**Server Information:**
+• Service Version: ${packageJson.version}
+• Hostname: ${os.hostname()}
+• Platform: ${os.platform()} ${os.arch()}
+• Node.js: ${process.version}
+• Uptime: ${Math.floor(process.uptime() / 60)} minutes
+• Memory Usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)} MB
+
+This test verifies that notifications are configured correctly and can reach their destination.`,
+          errorCode: 'TEST_NOTIFICATION',
+          timestamp: new Date().toISOString(),
+          correlationId: `test-${Date.now()}`,
+          context: {
+            testMode: true,
+            configuredChannels: this.getConfiguredChannels()
+          }
+        };
+
+        let result = { success: false, message: '' };
+
+        switch (channel) {
+          case 'email':
+            this.logger.info('Testing email notification', {
+              hasNotificationService: !!this.notificationService,
+              hasConfig: !!this.notificationService?.config,
+              hasEmailConfig: !!this.notificationService?.config?.email,
+              emailHost: this.notificationService?.config?.email?.host,
+              emailTo: this.notificationService?.config?.email?.to,
+              hasEmailTransporter: !!this.notificationService?.emailTransporter
+            });
+            if (!this.notificationService?.config?.email?.host || 
+                !this.notificationService?.config?.email?.to?.length) {
+              return res.status(400).json({ error: 'Email not configured' });
+            }
+            // Call sendEmail directly to bypass threshold checks
+            const emailResult = await this.notificationService.sendEmail({
+              serverName: testMessage.serverName,
+              errorMessage: testMessage.errorMessage,
+              errorCode: testMessage.errorCode,
+              timestamp: testMessage.timestamp,
+              correlationId: testMessage.correlationId,
+              context: testMessage.context,
+              consecutiveFailures: 1,
+              thresholds: {
+                consecutiveExceeded: false,
+                rateExceeded: false,
+                failureRate: 0,
+                consecutiveFailures: 1
+              }
+            });
+            if (emailResult && emailResult.success) {
+              result = { success: true, message: 'Test email sent successfully' };
+            } else {
+              return res.status(500).json({ error: 'Failed to send email', details: emailResult?.error });
+            }
+            break;
+
+          case 'discord':
+            if (!this.notificationService?.config?.webhooks?.discord?.length) {
+              return res.status(400).json({ error: 'Discord not configured' });
+            }
+            // Call sendDiscordWebhooks directly
+            const discordResults = await this.notificationService.sendDiscordWebhooks({
+              serverName: testMessage.serverName,
+              errorMessage: testMessage.errorMessage,
+              errorCode: testMessage.errorCode,
+              timestamp: testMessage.timestamp,
+              correlationId: testMessage.correlationId,
+              context: testMessage.context,
+              consecutiveFailures: 1,
+              thresholds: {
+                consecutiveExceeded: false,
+                rateExceeded: false,
+                failureRate: 0,
+                consecutiveFailures: 1
+              }
+            });
+            if (discordResults && discordResults.length > 0 && discordResults[0].success) {
+              result = { success: true, message: 'Test Discord message sent successfully' };
+            } else {
+              return res.status(500).json({ error: 'Failed to send Discord message' });
+            }
+            break;
+
+          case 'slack':
+            if (!this.notificationService?.config?.webhooks?.slack?.length) {
+              return res.status(400).json({ error: 'Slack not configured' });
+            }
+            // Call sendSlackWebhooks directly
+            const slackResults = await this.notificationService.sendSlackWebhooks({
+              serverName: testMessage.serverName,
+              errorMessage: testMessage.errorMessage,
+              errorCode: testMessage.errorCode,
+              timestamp: testMessage.timestamp,
+              correlationId: testMessage.correlationId,
+              context: testMessage.context,
+              consecutiveFailures: 1,
+              thresholds: {
+                consecutiveExceeded: false,
+                rateExceeded: false,
+                failureRate: 0,
+                consecutiveFailures: 1
+              }
+            });
+            if (slackResults && slackResults.length > 0 && slackResults[0].success) {
+              result = { success: true, message: 'Test Slack message sent successfully' };
+            } else {
+              return res.status(500).json({ error: 'Failed to send Slack message' });
+            }
+            break;
+
+          case 'telegram':
+            if (!this.telegramBot || 
+                !this.telegramBot.config?.botToken ||
+                (!this.telegramBot.config?.chatId && !this.telegramBot.config?.chatIds?.length)) {
+              return res.status(400).json({ error: 'Telegram bot not configured' });
+            }
+            const os = require('os');
+            const packageJson = require('../../package.json');
+            await this.telegramBot.notifySync({
+              status: 'failure',
+              serverName: '🧪 Test Notification',
+              duration: 1234,
+              accountsProcessed: 0,
+              accountsFailed: 0,
+              error: `This is a test notification from Actual-sync service.
+
+Server Info:
+• Version: ${packageJson.version}
+• Hostname: ${os.hostname()}
+• Platform: ${os.platform()} ${os.arch()}
+• Node.js: ${process.version}
+• Uptime: ${Math.floor(process.uptime() / 60)} minutes
+
+This test verifies that Telegram notifications are working correctly.`
+            });
+            result = { success: true, message: 'Test Telegram message sent successfully' };
+            break;
+
+          default:
+            return res.status(400).json({ error: 'Invalid channel. Use: email, discord, slack, or telegram' });
+        }
+
+        this.logger.info('Test notification sent via dashboard', {
+          channel,
+          remoteAddress: req.ip
+        });
+
+        res.json(result);
+      } catch (error) {
+        this.logger.error('Failed to send test notification', {
+          channel,
+          error: error.message
+        });
+        res.status(500).json({ 
+          error: 'Failed to send test notification',
+          details: error.message 
+        });
+      }
+    });
+
     // Dashboard API: Get metrics in JSON format (with authentication)
     this.app.get('/api/dashboard/metrics', this.dashboardAuth(), async (req, res) => {
       if (!this.prometheusService) {
@@ -659,6 +854,30 @@ class HealthCheckService {
     if (this.status.failureCount / this.status.syncCount > 0.5) return 'DEGRADED';
     if (this.status.lastSyncStatus === 'success') return 'HEALTHY';
     return 'HEALTHY';
+  }
+
+  /**
+   * Get list of configured notification channels
+   * @returns {Array<string>} Array of configured channel names
+   */
+  getConfiguredChannels() {
+    const channels = [];
+    
+    if (this.notificationService?.config?.email?.host) {
+      channels.push('Email');
+    }
+    if (this.notificationService?.config?.webhooks?.discord?.length > 0) {
+      channels.push('Discord');
+    }
+    if (this.notificationService?.config?.webhooks?.slack?.length > 0) {
+      channels.push('Slack');
+    }
+    if (this.telegramBot?.config?.botToken && 
+        (this.telegramBot.config?.chatId || this.telegramBot.config?.chatIds?.length > 0)) {
+      channels.push('Telegram');
+    }
+    
+    return channels;
   }
 
   /**

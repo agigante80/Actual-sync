@@ -575,6 +575,20 @@
             </div>
 
             <div class="card" style="margin-top: 20px;">
+                <h2>Test Notifications</h2>
+                <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
+                    Send a test notification to verify your configured notification channels are working correctly.
+                </p>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">
+                    <button onclick="testNotification('email')" class="secondary">📧 Test Email</button>
+                    <button onclick="testNotification('discord')" class="secondary">💬 Test Discord</button>
+                    <button onclick="testNotification('slack')" class="secondary">💼 Test Slack</button>
+                    <button onclick="testNotification('telegram')" class="secondary">📱 Test Telegram</button>
+                </div>
+                <div id="test-notification-message" style="margin-top: 15px;"></div>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
                 <h2>Date Format Preferences</h2>
                 <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
                     Choose how timestamps are displayed throughout the dashboard. Changes are saved automatically.
@@ -779,8 +793,35 @@
                         Unencrypted
                     </span>`;
                 
-                const scheduleInfo = schedule ? `<br><span style="color: #60a5fa;">⏰</span> Next sync: ${schedule}` : '';
-                
+                // Show both cron format and human-readable schedule
+                let scheduleInfo = "";
+                if (serverData.cronHuman && serverData.cron) {
+                    scheduleInfo = `<br><span style="color: #60a5fa;">⏰</span> ${serverData.cronHuman} <span style="color: #94a3b8; font-size: 0.85em;">(${serverData.cron})</span>`;
+                    if (serverData.nextInvocation) {
+                        const nextSync = new Date(serverData.nextInvocation);
+                        const now = new Date();
+                        const diffMs = nextSync - now;
+                        const diffMins = Math.floor(diffMs / 60000);
+                        const diffHours = Math.floor(diffMins / 60);
+                        const diffDays = Math.floor(diffHours / 24);
+                        
+                        let timeUntil = '';
+                        if (diffDays > 0) {
+                            timeUntil = `${diffDays}d ${diffHours % 24}h`;
+                        } else if (diffHours > 0) {
+                            timeUntil = `${diffHours}h ${diffMins % 60}m`;
+                        } else if (diffMins > 0) {
+                            timeUntil = `${diffMins}m`;
+                        } else {
+                            timeUntil = 'soon';
+                        }
+                        
+                        scheduleInfo += `<br><span style="color: #60a5fa;">📅</span> Next: ${nextSync.toLocaleString()} <span style="color: #94a3b8; font-size: 0.85em;">(in ${timeUntil})</span>`;
+                    }
+                } else if (schedule) {
+                    scheduleInfo = `<br><span style="color: #60a5fa;">⏰</span> Next sync: ${schedule}`;
+                }
+
                 // Format last sync with status badge
                 let lastSyncText = 'Never';
                 if (status.lastSync) {
@@ -1371,7 +1412,10 @@
                     data.servers.forEach(server => {
                         serverScheduleInfo[server.name] = {
                             encrypted: server.encrypted,
-                            schedule: server.schedule
+                            schedule: server.schedule,
+                            cron: server.cron,
+                            cronHuman: server.cronHuman,
+                            nextInvocation: server.nextInvocation
                         };
                     });
                 }
@@ -1809,6 +1853,40 @@
                 }).join('');
             } catch (error) {
                 console.error('Failed to load recent activity:', error);
+            }
+        }
+
+        // Test Notification Function
+        async function testNotification(channel) {
+            const messageDiv = document.getElementById('test-notification-message');
+            messageDiv.innerHTML = `<div class="loading">Sending test ${channel} notification...</div>`;
+
+            try {
+                const response = await fetch('/api/dashboard/test-notification', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ channel })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    messageDiv.innerHTML = `<div class="success">✓ ${data.message}</div>`;
+                } else {
+                    messageDiv.innerHTML = `<div class="error">✗ ${data.error}${data.details ? ': ' + data.details : ''}</div>`;
+                }
+
+                // Clear message after 5 seconds
+                setTimeout(() => {
+                    messageDiv.innerHTML = '';
+                }, 5000);
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="error">✗ Failed to send test notification: ${error.message}</div>`;
+                setTimeout(() => {
+                    messageDiv.innerHTML = '';
+                }, 5000);
             }
         }
 
