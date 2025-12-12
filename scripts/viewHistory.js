@@ -16,7 +16,6 @@
 
 const { SyncHistoryService } = require('../src/services/syncHistory');
 const ConfigLoader = require('../src/lib/configLoader');
-const { createLogger } = require('../src/lib/logger');
 
 // Parse command line arguments
 const args = process.argv.slice(2);

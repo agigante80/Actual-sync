@@ -416,8 +416,8 @@ class HealthCheckService {
           return res.status(404).json({ error: 'Server not found' });
         }
 
-        // Clear error from server status
-        if (this.serverStatuses[server]) {
+        // Clear error from server status (using safer approach)
+        if (this.serverStatuses[server] && Object.prototype.hasOwnProperty.call(this.serverStatuses[server], 'error')) {
           delete this.serverStatuses[server].error;
           this.logger.info('Server error dismissed via dashboard', {
             server: server,
