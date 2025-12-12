@@ -273,8 +273,6 @@ class MessageFormatter {
   }
   
   static _formatSlack(content) {
-    const color = content.isSuccess ? (content.hasIssues ? 'warning' : 'good') : 'danger';
-    
     const payload = {
       text: `*${content.emoji} Sync ${content.statusText}*`,
       blocks: [

@@ -407,8 +407,13 @@ class HealthCheckService {
       try {
         const { server } = req.body;
         
-        if (!server) {
+        if (!server || typeof server !== 'string') {
           return res.status(400).json({ error: 'Server name required' });
+        }
+
+        // Validate server name exists in serverStatuses (prevents prototype pollution)
+        if (!Object.prototype.hasOwnProperty.call(this.serverStatuses, server)) {
+          return res.status(404).json({ error: 'Server not found' });
         }
 
         // Clear error from server status
@@ -585,7 +590,7 @@ This test verifies that notifications are configured correctly and can reach the
           }
         };
 
-        let result = { success: false, message: '' };
+        let result;
 
         switch (channel) {
           case 'email':

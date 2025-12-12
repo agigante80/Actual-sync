@@ -246,13 +246,6 @@ async function main() {
     const configLoader = new ConfigLoader();
     const config = configLoader.load();
 
-    // Initialize logger (quiet mode for CLI)
-    const logger = createLogger({
-      level: 'ERROR',
-      format: config.logging.format,
-      logDir: config.logging.logDir
-    });
-
     // Initialize sync history service
     const syncHistory = new SyncHistoryService({
       dbPath: config.syncHistory?.dbPath,
