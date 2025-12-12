@@ -653,7 +653,7 @@ jobs:
   summary:
     name: Pipeline Summary
     runs-on: ubuntu-latest
-    needs: [version, lint, test, build, validate-short-description, docker-test, docker-publish, security-scan, deployment-test, release]
+    needs: [version, lint, test, build, validate-short-description, docker-test, docker-publish, docker-hub-description, security-scan, deployment-test, release]
     if: always()
     steps:
       - name: Generate pipeline summary
@@ -669,6 +669,7 @@ jobs:
           echo "| Validate Description | ${{ needs.validate-short-description.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Docker Test | ${{ needs.docker-test.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Docker Publish | ${{ needs.docker-publish.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Hub Description | ${{ needs.docker-hub-description.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Security Scan | ${{ needs.security-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Deployment Test | ${{ needs.deployment-test.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Release | ${{ needs.release.result }} |" >> $GITHUB_STEP_SUMMARY
