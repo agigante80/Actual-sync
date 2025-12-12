@@ -1,7 +1,5 @@
 const actual = require('@actual-app/api');
 const fs = require('fs').promises;
-const path = require('path');
-const { BlockingScheduler } = require('node-schedule'); // Import the scheduler
 const schedule = require('node-schedule'); // Import the scheduler
 const moment = require('moment-timezone');
 const cronstrue = require('cronstrue');
@@ -69,17 +67,6 @@ module.exports.formatNextSync = formatNextSync;
  * @param {string} cron - Cron expression (e.g., "0 5 * * 2")
  * @returns {string} Human-readable description
  */
-/**
- * Get effective sync configuration for a server
- */
-function getSyncConfig(server) {
-    // Server-specific config overrides global config
-    return {
-        schedule: server.sync?.schedule || config.sync.schedule,
-        maxRetries: server.sync?.maxRetries ?? config.sync.maxRetries,
-        retryDelayMs: server.sync?.retryDelayMs ?? config.sync.retryDelayMs
-    };
-}
 
 // Load environment variables
 require('dotenv').config();
