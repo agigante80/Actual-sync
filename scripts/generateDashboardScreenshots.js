@@ -19,7 +19,6 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { spawn } = require('child_process');
 
 const SCREENSHOTS_DIR = path.join(__dirname, '../docs/screenshots');
 const DASHBOARD_URL = 'http://localhost:3000/dashboard';
@@ -125,8 +124,8 @@ async function injectFakeData(page, scenario) {
                 timestamp: new Date(Date.now() - i * 3600000).toISOString(),
                 serverName: ['Main Budget', 'Personal Budget', 'Family Budget'][i % 3],
                 status: (i === 2 || i === 7) ? 'error' : 'success',
-                duration: 3000 + Math.random() * 4000,
-                accountsProcessed: Math.floor(Math.random() * 5) + 1,
+                duration: 3000 + (i * 400), // Deterministic duration
+                accountsProcessed: (i % 5) + 1, // Deterministic account count
                 accountsFailed: (i === 2 || i === 7) ? 1 : 0
             })),
             logs: [
@@ -199,9 +198,9 @@ async function injectFakeData(page, scenario) {
                 timestamp: new Date(Date.now() - i * 3600000).toISOString(),
                 serverName: ['Main Budget', 'Personal Budget', 'Family Budget', 'Business Budget'][i % 4],
                 status: (i === 1 || i === 4 || i === 7) ? 'error' : 'success',
-                duration: 3000 + Math.random() * 5000,
-                accountsProcessed: (i === 1 || i === 4 || i === 7) ? 0 : Math.floor(Math.random() * 5) + 1,
-                accountsFailed: (i === 1 || i === 4 || i === 7) ? Math.floor(Math.random() * 3) + 1 : 0
+                duration: 3000 + (i * 500), // Deterministic duration
+                accountsProcessed: (i === 1 || i === 4 || i === 7) ? 0 : (i % 5) + 1, // Deterministic account count
+                accountsFailed: (i === 1 || i === 4 || i === 7) ? ((i % 3) + 1) : 0 // Deterministic failures
             })),
             logs: [
                 { level: 'ERROR', message: 'Sync failed for server: Personal Budget', metadata: { server: 'Personal Budget', error: 'Connection timeout' } },
@@ -299,9 +298,9 @@ async function injectFakeData(page, scenario) {
                 timestamp: new Date(Date.now() - i * 1800000).toISOString(),
                 serverName: ['Main Budget', 'Personal Budget', 'Family Budget', 'Business Budget', 'Investments', 'Emergency Fund'][i % 6],
                 status: (i === 3 || i === 8) ? 'error' : 'success',
-                duration: 3000 + Math.random() * 5000,
-                accountsProcessed: (i === 3 || i === 8) ? 0 : Math.floor(Math.random() * 6) + 2,
-                accountsFailed: (i === 3 || i === 8) ? Math.floor(Math.random() * 2) + 1 : 0
+                duration: 3000 + (i * 450), // Deterministic duration
+                accountsProcessed: (i === 3 || i === 8) ? 0 : ((i % 6) + 2), // Deterministic account count
+                accountsFailed: (i === 3 || i === 8) ? ((i % 2) + 1) : 0 // Deterministic failures
             })),
             logs: [
                 { level: 'INFO', message: 'Starting sync for server: Main Budget', metadata: { server: 'Main Budget' } },
@@ -351,7 +350,6 @@ async function injectFakeData(page, scenario) {
         };
 
         // Mock WebSocket for logs
-        const originalWebSocket = window.WebSocket;
         window.WebSocket = function(url) {
             const ws = {
                 onopen: null,

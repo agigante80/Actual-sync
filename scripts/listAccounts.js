@@ -7,7 +7,6 @@
 
 const actual = require('@actual-app/api');
 const fs = require('fs').promises;
-const path = require('path');
 const ConfigLoader = require('../src/lib/configLoader');
 const { createLogger } = require('../src/lib/logger');
 

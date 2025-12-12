@@ -288,7 +288,6 @@ class NotificationService {
       error, 
       errorCode, 
       correlationId,
-      context = {},
       bypassThresholds = false
     } = result;
 
