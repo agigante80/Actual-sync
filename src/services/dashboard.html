@@ -1182,22 +1182,15 @@
         let serverScheduleInfo = {};
         
         async function dismissErrorByName(button) {
-            // Get server name from data attribute (safe from escaping issues)
+            // Get server name from data attribute (already in correct format)
             const serverName = button.getAttribute('data-server-name');
             if (!serverName) {
                 console.error('Failed to get server name from button');
                 return;
             }
             
-            // Unescape HTML entities back to original name
-            const actualName = serverName
-                .replace(/&amp;/g, '&')
-                .replace(/&lt;/g, '<')
-                .replace(/&gt;/g, '>')
-                .replace(/&quot;/g, '"')
-                .replace(/&#39;/g, "'");
-            
-            await dismissError(actualName);
+            // Server name is already properly formatted, use directly
+            await dismissError(serverName);
         }
         
         async function dismissError(serverName) {
@@ -1590,8 +1583,6 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ server: serverName })
                 });
-                
-                const result = await response.json();
                 
                 if (response.ok) {
                     // Reload orphaned servers list
