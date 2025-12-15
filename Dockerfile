@@ -3,7 +3,7 @@
 
 # Stage 1: Builder
 # Use native platform for building to avoid QEMU emulation issues
-FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -27,7 +27,7 @@ COPY . .
 RUN npm test
 
 # Stage 2: Production image
-FROM node:20-alpine
+FROM node:22-alpine
 
 # Build arguments for dynamic versioning
 ARG VERSION=unknown
