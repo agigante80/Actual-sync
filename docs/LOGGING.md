@@ -32,10 +32,10 @@ Configure global logging in `config/config.json`:
     "format": "pretty",
     "logDir": "./logs",
     "rotation": {
-      "enabled": true,
-      "maxSize": "10M",
-      "maxFiles": 10,
-      "compress": "gzip"
+      "enabled": true,      // Default: true (recommended)
+      "maxSize": "10M",     // Default: 10M (rotate at 10MB)
+      "maxFiles": 30,       // Default: 30 (30 days retention)
+      "compress": "gzip"    // Default: gzip (~70% space savings)
     },
     "syslog": {
       "enabled": false,
@@ -95,9 +95,9 @@ Use cases:
 | `format` | string | `pretty` | Output format: `pretty` or `json` |
 | `logDir` | string/null | `null` | Directory for log files (null = console only) |
 | **Rotation** |
-| `rotation.enabled` | boolean | `false` | Enable log rotation |
+| `rotation.enabled` | boolean | `true` | Enable log rotation (recommended) |
 | `rotation.maxSize` | string | `10M` | Max file size before rotation (K, M, G) |
-| `rotation.maxFiles` | integer | `10` | Number of rotated files to keep |
+| `rotation.maxFiles` | integer | `30` | Number of rotated files to keep (days) |
 | `rotation.compress` | string | `gzip` | Compression: `gzip` or `none` |
 | **Syslog** |
 | `syslog.enabled` | boolean | `false` | Send logs to syslog server |
@@ -340,13 +340,16 @@ cat logs/actual-sync.log | jq 'select(.level=="ERROR") | .server' | sort | uniq 
   "logging": {
     "level": "DEBUG",
     "format": "pretty",
-    "logDir": null,
+    "logDir": null,  // Disable file logging in dev
+    "rotation": {
+      "enabled": false  // Not needed without file logging
+    },
     "performance": { "enabled": true }
   }
 }
 ```
 
-### Production
+### Production (Default Settings)
 
 ```json
 {
@@ -355,16 +358,63 @@ cat logs/actual-sync.log | jq 'select(.level=="ERROR") | .server' | sort | uniq 
     "format": "json",
     "logDir": "/var/log/actual-sync",
     "rotation": {
-      "enabled": true,
-      "maxSize": "10M",
-      "maxFiles": 30,
-      "compress": "gzip"
+      "enabled": true,    // Default: enabled
+      "maxSize": "10M",   // Default: 10M
+      "maxFiles": 30,     // Default: 30 days
+      "compress": "gzip"  // Default: gzip
     },
     "syslog": {
       "enabled": true,
       "host": "syslog.example.com"
     },
     "performance": { "enabled": true }
+  }
+}
+```
+
+### Customizing Retention
+
+**Minimal retention (7 days)**:
+```json
+{
+  "logging": {
+    "rotation": {
+      "maxFiles": 7
+    }
+  }
+}
+```
+
+**Extended retention (90 days for compliance)**:
+```json
+{
+  "logging": {
+    "rotation": {
+      "maxFiles": 90
+    }
+  }
+}
+```
+
+**High-traffic servers (larger files)**:
+```json
+{
+  "logging": {
+    "rotation": {
+      "maxSize": "50M",  // Allow larger files before rotation
+      "maxFiles": 30
+    }
+  }
+}
+```
+
+**Disable rotation (not recommended)**:
+```json
+{
+  "logging": {
+    "rotation": {
+      "enabled": false  // Logs will grow indefinitely
+    }
   }
 }
 ```
