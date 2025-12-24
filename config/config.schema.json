@@ -137,27 +137,27 @@
         },
         "rotation": {
           "type": "object",
-          "description": "Log rotation settings",
+          "description": "Log rotation settings (enabled by default with 30-day retention)",
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Enable log rotation",
-              "default": false
+              "description": "Enable log rotation (recommended for production)",
+              "default": true
             },
             "maxSize": {
               "type": "string",
-              "description": "Maximum size per log file (e.g., '10M', '100K')",
+              "description": "Maximum size per log file before rotation (e.g., '10M', '50M', '100M')",
               "default": "10M"
             },
             "maxFiles": {
               "type": "integer",
-              "description": "Maximum number of log files to keep",
+              "description": "Maximum number of log files to keep (days of retention)",
               "minimum": 1,
-              "default": 10
+              "default": 30
             },
             "compress": {
               "type": "string",
-              "description": "Compression format for archived logs",
+              "description": "Compression format for archived logs (gzip saves ~70% disk space)",
               "enum": ["gzip", "none"],
               "default": "gzip"
             }

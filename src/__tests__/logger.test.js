@@ -276,7 +276,10 @@ describe('Logger', () => {
         });
 
         test('should write logs to file when logDir is set', () => {
-            const logger = new Logger({ logDir: tempDir });
+            const logger = new Logger({ 
+                logDir: tempDir,
+                rotation: { enabled: false } // Disable rotation for simpler test
+            });
             logger.info('Test log message');
             
             const files = fs.readdirSync(tempDir);
@@ -300,7 +303,10 @@ describe('Logger', () => {
         });
 
         test('should create log file with date in name', () => {
-            const logger = new Logger({ logDir: tempDir });
+            const logger = new Logger({ 
+                logDir: tempDir,
+                rotation: { enabled: false } // Disable rotation for simpler test
+            });
             logger.info('Test log message');
             
             const files = fs.readdirSync(tempDir);
