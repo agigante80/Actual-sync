@@ -36,7 +36,7 @@
     "rotation": {
       "enabled": true,
       "maxSize": "10M",
-      "maxFiles": 10,
+      "maxFiles": 30,
       "compress": "gzip"
     },
     "syslog": {

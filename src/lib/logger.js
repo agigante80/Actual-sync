@@ -34,11 +34,11 @@ class Logger {
         this.broadcastCallback = options.broadcastCallback || null;
         this.context = options.context || {};
         
-        // Rotation settings
+        // Rotation settings (defaults align with schema)
         this.rotation = options.rotation || {
-            enabled: false,
+            enabled: true,
             maxSize: '10M',
-            maxFiles: 10,
+            maxFiles: 30,
             compress: 'gzip'
         };
         
