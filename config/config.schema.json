@@ -111,6 +111,31 @@
           "pattern": "^[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+$",
           "default": "03 03 */2 * *",
           "examples": ["0 2 * * *", "*/30 * * * *"]
+        },
+        "autoRetry": {
+          "type": "object",
+          "description": "Automatic retry configuration for failed automated syncs (does NOT apply to manual syncs)",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable automatic retry for failed automated syncs",
+              "default": true
+            },
+            "maxAttempts": {
+              "type": "integer",
+              "description": "Maximum number of retry attempts after initial failure",
+              "minimum": 0,
+              "maximum": 5,
+              "default": 1
+            },
+            "delayMinutes": {
+              "type": "integer",
+              "description": "Delay in minutes between retry attempts",
+              "minimum": 1,
+              "maximum": 1440,
+              "default": 31
+            }
+          }
         }
       }
     },

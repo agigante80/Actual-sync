@@ -328,16 +328,97 @@ try {
 const servers = config.servers;
 const globalSyncConfig = config.sync;
 
+// Track active retry timers per server (to cancel on shutdown or manual sync)
+const activeRetryTimers = new Map();
+
 // Helper function to get sync config for a server (server-specific overrides global)
 function getSyncConfig(server) {
     return {
         maxRetries: server.sync?.maxRetries ?? globalSyncConfig.maxRetries,
         baseRetryDelayMs: server.sync?.baseRetryDelayMs ?? globalSyncConfig.baseRetryDelayMs,
-        schedule: server.sync?.schedule ?? globalSyncConfig.schedule
+        schedule: server.sync?.schedule ?? globalSyncConfig.schedule,
+        autoRetry: {
+            enabled: server.sync?.autoRetry?.enabled ?? globalSyncConfig.autoRetry?.enabled ?? true,
+            maxAttempts: server.sync?.autoRetry?.maxAttempts ?? globalSyncConfig.autoRetry?.maxAttempts ?? 1,
+            delayMinutes: server.sync?.autoRetry?.delayMinutes ?? globalSyncConfig.autoRetry?.delayMinutes ?? 31
+        }
     };
 }
 
-async function syncBank(server) {
+/**
+ * Cancel any pending retry for a server
+ * @param {string} serverName - Server name
+ */
+function cancelPendingRetry(serverName) {
+    const timer = activeRetryTimers.get(serverName);
+    if (timer) {
+        clearTimeout(timer);
+        activeRetryTimers.delete(serverName);
+        logger.info('Cancelled pending retry', { server: serverName });
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Schedule automatic retry for failed sync
+ * @param {Object} server - Server configuration
+ * @param {number} attemptNumber - Current retry attempt number (1-based)
+ * @param {number} maxAttempts - Maximum retry attempts
+ * @param {number} delayMinutes - Delay in minutes before retry
+ */
+function scheduleAutoRetry(server, attemptNumber, maxAttempts, delayMinutes) {
+    if (attemptNumber > maxAttempts) {
+        logger.info('Maximum auto-retry attempts reached', { 
+            server: server.name,
+            attempts: attemptNumber - 1
+        });
+        return;
+    }
+
+    // Cancel any existing retry timer for this server
+    cancelPendingRetry(server.name);
+
+    const delayMs = delayMinutes * 60 * 1000;
+    const retryTime = new Date(Date.now() + delayMs);
+
+    logger.info('Scheduling automatic retry', {
+        server: server.name,
+        attemptNumber,
+        maxAttempts,
+        delayMinutes,
+        retryTime: retryTime.toISOString()
+    });
+
+    const timer = setTimeout(async () => {
+        activeRetryTimers.delete(server.name);
+        logger.info('Executing automatic retry', {
+            server: server.name,
+            attemptNumber
+        });
+
+        try {
+            await syncBank(server, { isAutomated: true, retryAttempt: attemptNumber });
+        } catch (error) {
+            logger.error('Auto-retry failed', {
+                server: server.name,
+                attemptNumber,
+                error: error.message
+            });
+
+            // Schedule next retry if attempts remain
+            const syncConfig = getSyncConfig(server);
+            if (syncConfig.autoRetry.enabled && attemptNumber < syncConfig.autoRetry.maxAttempts) {
+                scheduleAutoRetry(server, attemptNumber + 1, syncConfig.autoRetry.maxAttempts, syncConfig.autoRetry.delayMinutes);
+            }
+        }
+    }, delayMs);
+
+    activeRetryTimers.set(server.name, timer);
+}
+
+async function syncBank(server, options = {}) {
+    const { isAutomated = false, retryAttempt = 0 } = options;
     const { name, url, password, syncId, dataDir, encryptionPassword } = server;
     const syncIdLog = syncId ? syncId : "your_budget_name";
     const isEncrypted = !!encryptionPassword;
@@ -361,6 +442,22 @@ async function syncBank(server) {
     const correlationId = serverLogger.generateCorrelationId();
     serverLogger.setCorrelationId(correlationId);
     
+    // Cancel any pending auto-retry if this is a manual sync
+    if (!isAutomated) {
+        const cancelled = cancelPendingRetry(name);
+        if (cancelled) {
+            serverLogger.info('Cancelled pending auto-retry due to manual sync');
+        }
+    }
+    
+    // Log retry information if applicable
+    if (retryAttempt > 0) {
+        serverLogger.info('Executing automatic retry', {
+            attemptNumber: retryAttempt,
+            maxAttempts: syncConfig.autoRetry.maxAttempts
+        });
+    }
+    
     // Start performance timer
     const endTimer = serverLogger.startTimer(`sync-${name}`);
     
@@ -373,9 +470,12 @@ async function syncBank(server) {
     const failedAccounts = [];
     
     try {
-        serverLogger.info(`Starting sync for server: ${name}`, { 
+        const syncType = isAutomated ? (retryAttempt > 0 ? `automated (retry ${retryAttempt})` : 'automated') : 'manual';
+        serverLogger.info(`Starting ${syncType} sync for server: ${name}`, { 
             url, 
             dataDir,
+            isAutomated,
+            retryAttempt,
             maxRetries: syncConfig.maxRetries,
             baseRetryDelayMs: syncConfig.baseRetryDelayMs,
             schedule: syncConfig.schedule
@@ -535,6 +635,11 @@ async function syncBank(server) {
                 serverName: name,
                 error: syncStatus === 'partial' ? `Partial sync: ${errorMessage}` : errorMessage
             });
+        }
+        
+        // Cancel any pending auto-retry on successful sync (success or partial)
+        if (syncStatus !== 'failure') {
+            cancelPendingRetry(name);
         }
         
         // Record sync in history
@@ -813,7 +918,23 @@ async function run() {
                     servers: serversWithSchedule.map(s => s.name)
                 });
                 for (const server of serversWithSchedule) {
-                    await syncBank(server);
+                    try {
+                        // Cancel any pending manual retry for this server
+                        cancelPendingRetry(server.name);
+                        
+                        await syncBank(server, { isAutomated: true, retryAttempt: 0 });
+                    } catch (error) {
+                        logger.error('Scheduled sync failed', {
+                            server: server.name,
+                            error: error.message
+                        });
+
+                        // Schedule automatic retry if enabled
+                        const syncConfig = getSyncConfig(server);
+                        if (syncConfig.autoRetry.enabled && syncConfig.autoRetry.maxAttempts > 0) {
+                            scheduleAutoRetry(server, 1, syncConfig.autoRetry.maxAttempts, syncConfig.autoRetry.delayMinutes);
+                        }
+                    }
                 }
                 logger.info('Scheduled sync completed', { schedule: scheduleStr });
             });
@@ -892,6 +1013,11 @@ async function run() {
 process.on('SIGTERM', async () => {
     logger.info('SIGTERM received, shutting down gracefully...');
     try {
+        logger.info('Cancelling all pending auto-retries');
+        for (const serverName of activeRetryTimers.keys()) {
+            cancelPendingRetry(serverName);
+        }
+        
         if (telegramBot) {
             telegramBot.stop();
         }
@@ -907,6 +1033,11 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
     logger.info('SIGINT received, shutting down gracefully...');
     try {
+        logger.info('Cancelling all pending auto-retries');
+        for (const serverName of activeRetryTimers.keys()) {
+            cancelPendingRetry(serverName);
+        }
+        
         if (telegramBot) {
             telegramBot.stop();
         }
