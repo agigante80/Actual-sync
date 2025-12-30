@@ -29,7 +29,7 @@ describe('Logger', () => {
             
             expect(logger.level).toBe('INFO');
             expect(logger.format).toBe('pretty');
-            expect(logger.logDir).toBe('./logs'); // Default to ./logs for local/test environments
+            expect(logger.logDir).toBeNull(); // In test environment, defaults to null
             expect(logger.serviceName).toBe('actual-sync');
         });
 
