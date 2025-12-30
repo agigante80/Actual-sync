@@ -28,12 +28,13 @@ class Logger {
     constructor(options = {}) {
         this.level = options.level || 'INFO';
         this.format = options.format || 'pretty'; // 'pretty' or 'json'
-        this.logDir = options.logDir || null;
+        // Default logDir to /app/logs if not set
+        this.logDir = (typeof options.logDir !== 'undefined' && options.logDir !== null) ? options.logDir : '/app/logs';
         this.serviceName = options.serviceName || 'actual-sync';
         this.correlationId = null;
         this.broadcastCallback = options.broadcastCallback || null;
         this.context = options.context || {};
-        
+
         // Rotation settings (defaults align with schema)
         this.rotation = options.rotation || {
             enabled: true,
