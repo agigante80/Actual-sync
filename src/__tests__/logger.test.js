@@ -29,7 +29,7 @@ describe('Logger', () => {
             
             expect(logger.level).toBe('INFO');
             expect(logger.format).toBe('pretty');
-            expect(logger.logDir).toBeNull();
+            expect(logger.logDir).toBe('./logs'); // Default to ./logs for local/test environments
             expect(logger.serviceName).toBe('actual-sync');
         });
 
@@ -224,7 +224,8 @@ describe('Logger', () => {
         });
 
         test('should log info messages', () => {
-            const logger = new Logger();
+            const logger = new Logger({ logDir: null }); // Disable file logging for test
+            console.log.mockClear(); // Clear any constructor logs
             logger.info('Info message');
             
             expect(console.log).toHaveBeenCalled();
@@ -234,7 +235,8 @@ describe('Logger', () => {
         });
 
         test('should log debug messages', () => {
-            const logger = new Logger({ level: 'DEBUG' });
+            const logger = new Logger({ level: 'DEBUG', logDir: null }); // Disable file logging for test
+            console.log.mockClear(); // Clear any constructor logs
             logger.debug('Debug message');
             
             expect(console.log).toHaveBeenCalled();
@@ -244,7 +246,8 @@ describe('Logger', () => {
         });
 
         test('should not log debug when level is INFO', () => {
-            const logger = new Logger({ level: 'INFO' });
+            const logger = new Logger({ level: 'INFO', logDir: null }); // Disable file logging for test
+            console.log.mockClear(); // Clear any constructor logs
             logger.debug('Debug message');
             
             expect(console.log).not.toHaveBeenCalled();

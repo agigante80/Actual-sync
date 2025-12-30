@@ -28,8 +28,9 @@ class Logger {
     constructor(options = {}) {
         this.level = options.level || 'INFO';
         this.format = options.format || 'pretty'; // 'pretty' or 'json'
-        // Default logDir to /app/logs if not set
-        this.logDir = (typeof options.logDir !== 'undefined' && options.logDir !== null) ? options.logDir : '/app/logs';
+        // Default logDir to /app/logs for Docker, or ./logs for local/test environments
+        const defaultLogDir = fs.existsSync('/app') ? '/app/logs' : './logs';
+        this.logDir = (typeof options.logDir !== 'undefined' && options.logDir !== null) ? options.logDir : defaultLogDir;
         this.serviceName = options.serviceName || 'actual-sync';
         this.correlationId = null;
         this.broadcastCallback = options.broadcastCallback || null;
