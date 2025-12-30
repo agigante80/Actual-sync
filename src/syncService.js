@@ -554,7 +554,16 @@ async function syncBank(server, options = {}) {
                     accountName: account.name 
                 });
                 try { //  Wrap runBankSync in try...catch
-                    await actual.runBankSync({ accountId: account.id });
+                    serverLogger.debug('Calling runBankSync for account', {
+                        accountId: account.id,
+                        accountName: account.name
+                    });
+                    const result = await actual.runBankSync({ accountId: account.id });
+                    serverLogger.debug('runBankSync result', {
+                        accountId: account.id,
+                        accountName: account.name,
+                        result: result
+                    });
                     accountsSucceeded++;
                     succeededAccounts.push(account.name);
                     const accountDuration = accountTimer();
@@ -563,8 +572,24 @@ async function syncBank(server, options = {}) {
                         durationMs: accountDuration
                     });
                 } catch (bankSyncError) { // catch bankSyncError
-                    accountsFailed++;
                     const errorMsg = bankSyncError?.message || bankSyncError?.toString() || String(bankSyncError) || 'Unknown error';
+                    // Extra logging to clarify error type
+                    serverLogger.warn('runBankSync threw error', {
+                        accountId: account.id,
+                        accountName: account.name,
+                        error: errorMsg,
+                        errorCode: bankSyncError?.code || 'UNKNOWN',
+                        errorStack: bankSyncError?.stack || 'No stack trace available'
+                    });
+                    // Special case: log if error message suggests no new transactions
+                    if (errorMsg && /no new transactions|no transactions found|nothing to sync/i.test(errorMsg)) {
+                        serverLogger.info('No new transactions for account', {
+                            accountId: account.id,
+                            accountName: account.name,
+                            error: errorMsg
+                        });
+                    }
+                    accountsFailed++;
                     failedAccounts.push({
                         name: account.name,
                         error: errorMsg
