@@ -157,8 +157,8 @@
         },
         "logDir": {
           "type": ["string", "null"],
-          "description": "Directory for log files (set to null to disable file logging). For Docker deployments, use /app/logs.",
-          "default": null
+          "description": "Directory for log files (set to null to disable file logging). For Docker deployments, use /app/logs. Defaults to './logs' if not specified.",
+          "default": "./logs"
         },
         "rotation": {
           "type": "object",
