@@ -558,7 +558,15 @@ async function syncBank(server, options = {}) {
                         accountId: account.id,
                         accountName: account.name
                     });
-                    const result = await actual.runBankSync({ accountId: account.id });
+                    
+                    // Wrap runBankSync with timeout (60 seconds) to catch hung promises
+                    const syncPromise = actual.runBankSync({ accountId: account.id });
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Bank sync timeout after 60 seconds')), 60000)
+                    );
+                    
+                    const result = await Promise.race([syncPromise, timeoutPromise]);
+                    
                     serverLogger.debug('runBankSync result', {
                         accountId: account.id,
                         accountName: account.name,
