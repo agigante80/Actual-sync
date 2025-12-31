@@ -29,14 +29,15 @@ class Logger {
         this.level = options.level || 'INFO';
         this.format = options.format || 'pretty'; // 'pretty' or 'json'
         // Default logDir logic:
-        // - If logDir is explicitly provided, use it (including null to disable)
+        // - If logDir is explicitly provided and not undefined, use it (including null to disable)
         // - If in test environment (NODE_ENV=test or Jest), use null (no file logging)
         // - Otherwise, use ./logs (works in both local and Docker)
         let defaultLogDir = './logs';
         if (process.env.NODE_ENV === 'test' || typeof jest !== 'undefined') {
             defaultLogDir = null;
         }
-        this.logDir = (typeof options.logDir !== 'undefined') ? options.logDir : defaultLogDir;
+        // Only use provided logDir if it's not undefined (null is valid for disabling)
+        this.logDir = (options.logDir !== undefined) ? options.logDir : defaultLogDir;
         this.serviceName = options.serviceName || 'actual-sync';
         this.correlationId = null;
         this.broadcastCallback = options.broadcastCallback || null;

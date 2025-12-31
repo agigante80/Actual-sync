@@ -192,14 +192,16 @@ try {
     config = configLoader.load();
     
     // Initialize logger with config
-    logger = createLogger({
-        level: config.logging.level,
-        format: config.logging.format,
-        logDir: config.logging.logDir,
-        rotation: config.logging.rotation,
-        syslog: config.logging.syslog,
-        performance: config.logging.performance
-    });
+    // Initialize logger with config (filter out undefined values to use defaults)
+    const loggerConfig = {};
+    if (config.logging?.level !== undefined) loggerConfig.level = config.logging.level;
+    if (config.logging?.format !== undefined) loggerConfig.format = config.logging.format;
+    if (config.logging?.logDir !== undefined) loggerConfig.logDir = config.logging.logDir;
+    if (config.logging?.rotation !== undefined) loggerConfig.rotation = config.logging.rotation;
+    if (config.logging?.syslog !== undefined) loggerConfig.syslog = config.logging.syslog;
+    if (config.logging?.performance !== undefined) loggerConfig.performance = config.logging.performance;
+    
+    logger = createLogger(loggerConfig);
     
     logger.info('Configuration loaded successfully', { 
         serverCount: config.servers.length 
