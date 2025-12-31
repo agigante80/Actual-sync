@@ -567,6 +567,11 @@ async function syncBank(server, options = {}) {
                     
                     const result = await Promise.race([syncPromise, timeoutPromise]);
                     
+                    // Add a small delay to allow any background operations to complete
+                    // This works around a race condition in Actual API where runBankSync
+                    // can resolve before background sync operations fully complete
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
                     serverLogger.debug('runBankSync result', {
                         accountId: account.id,
                         accountName: account.name,
