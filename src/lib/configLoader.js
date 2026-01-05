@@ -113,7 +113,8 @@ class ConfigLoader {
         }
         config.logging.level = (config.logging.level ?? 'INFO').toUpperCase();
         config.logging.format = config.logging.format ?? 'pretty';
-        config.logging.logDir = config.logging.logDir ?? null;
+        // logDir defaults to './logs' in logger constructor if not specified
+        // Don't set a default here to allow logger to use its own logic
     }
 
     /**

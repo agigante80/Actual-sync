@@ -2,13 +2,14 @@
 
 ## Project Overview
 
-Actual-sync is a production-ready Node.js service that automates bank transaction synchronization for [Actual Budget](https://actualbudget.org) servers. It manages multiple budget instances with scheduled syncs, comprehensive error handling, and enterprise monitoring capabilities (Prometheus, Telegram bot, health checks).
+Actual-sync is a production-ready Node.js service that automates bank transaction synchronization for [Actual Budget](https://actualbudget.org) servers. It manages multiple budget instances with scheduled syncs, comprehensive error handling, and enterprise monitoring capabilities (Prometheus, Telegram bot, health checks, web dashboard).
 
 **Key Characteristics:**
-- 98.73% test coverage with 255 passing Jest tests
+- 84.77% test coverage with 309 passing Jest tests
 - Zero external logging dependencies (custom structured logger with correlation IDs)
 - Multi-server support with per-server or global configuration overrides
 - Docker-first deployment (229MB Alpine image, runs as non-root user)
+- Production web dashboard with real-time WebSocket log streaming
 
 ## Architecture Pattern
 
@@ -20,9 +21,9 @@ All services follow a consistent initialization pattern in `src/syncService.js`:
 2. **Logger** (`src/lib/logger.js`) - Custom structured logger (NO external logging libs)
 3. **SyncHistoryService** - SQLite-backed sync tracking
 4. **PrometheusService** - Metrics export (optional)
-5. **HealthCheckService** - Express server with `/health`, `/metrics`, `/ready` endpoints
+5. **HealthCheckService** - Express server with `/health`, `/metrics`, `/ready`, `/dashboard` endpoints
 6. **NotificationService** - Multi-channel alerts (Telegram, email, webhooks)
-7. **TelegramBotService** - Interactive bot for manual control
+7. **TelegramBotService** - Interactive bot for manual control (8 commands)
 
 Services are initialized with:
 ```javascript
@@ -124,7 +125,7 @@ describe('ComponentName', () => {
 });
 ```
 
-**Coverage Requirements**: 70% branches, functions, lines, statements (see `package.json` jest config)
+**Coverage Requirements**: 61% branches, 70% functions, lines, statements (see `package.json` jest config)
 
 ### Running Tests
 
@@ -163,7 +164,13 @@ const { createLogger } = require('./lib/logger');
 const logger = createLogger({
     level: 'info',      // ERROR, WARN, INFO, DEBUG
     format: 'pretty',   // 'pretty' or 'json'
-    logDir: './logs'
+    logDir: './logs',   // Rotation enabled by default (30 days, gzip)
+    rotation: {         // Optional: customize rotation (defaults shown)
+        enabled: true,  // Default: true
+        maxSize: '10M', // Default: 10M
+        maxFiles: 30,   // Default: 30 days retention
+        compress: 'gzip' // Default: gzip
+    }
 });
 
 // Always use correlation IDs for sync operations
@@ -175,6 +182,12 @@ logger.error('Sync failed', { error: err.message, code: err.code });
 
 logger.clearCorrelationId(); // In finally blocks
 ```
+
+**Log Rotation Defaults (Industry Standard)**:
+- Enabled by default with 30-day retention
+- Automatic gzip compression (~70% space savings)
+- 10MB file size limit before rotation
+- Users can disable or customize in config
 
 ### Logging Convention (Strictly Followed)
 
@@ -283,6 +296,8 @@ npm start
 npm run list-accounts  # List all accounts across servers
 npm run history        # View sync history from SQLite
 npm run validate-config # Validate config.json against schema
+npm run sync           # Force sync all servers (bypass scheduler)
+npm run sync -- --server "Main Budget"  # Sync specific server by name
 ```
 
 ### Docker Development
@@ -379,7 +394,7 @@ This project was "vibe-generated" with AI assistance and has organically grown i
 
 - **Consistent patterns emerged naturally** - Service initialization, logger config, test helpers
 - **Documentation is comprehensive** - 17 docs files that are kept in sync with code
-- **Test coverage is rigorous** - 98.73% coverage enforces quality
+- **Test coverage is rigorous** - 84.77% coverage enforces quality (309 tests across 16 test files)
 - **Single maintainer workflow** - Optimized for solo development with AI assistance
 
 ### Code Quality Guidelines
@@ -415,47 +430,88 @@ From `@actual-app/api` package (see https://actualbudget.org/docs/api/reference)
 - **`getAccounts()`** - Retrieve all accounts in budget
 - **`shutdown()`** - Clean up and close connection (ALWAYS call in finally block)
 
-### Encrypted Budget Support
+### Encrypted Budget Support (Implemented December 2025)
 
-For budgets with end-to-end encryption (BudgetFile.hasKey === true):
+Actual-sync fully supports end-to-end encrypted (E2EE) budget files:
 
 ```javascript
-// Download encrypted budget
-await actual.downloadBudget(syncId, { password: encryptionPassword });
-
-// Config schema supports encryption key per server
+// Config supports encryption password per server
 {
   "name": "Main Budget",
   "syncId": "abc123",
-  "encryptionPassword": "budget-encryption-key"  // Future feature
+  "encryptionPassword": "budget-encryption-key"  // Optional, only needed for E2EE budgets
 }
+
+// Download encrypted budget
+await actual.downloadBudget(syncId, { password: encryptionPassword });
 ```
 
-**Note**: Encryption password is separate from server password. Check `BudgetFile.hasKey` field to detect encrypted budgets.
+**Implementation Notes:**
+- Encryption password is separate from server password
+- Each server can have its own encryption password in config
+- Validated in ConfigLoader schema at `config/config.schema.json`
+- Dashboard shows 🔒 badge for encrypted budgets
+- If budget is encrypted but no password provided, sync will fail with clear error message
+
+## Web Dashboard (Implemented December 2025)
+
+The web dashboard is a production feature accessible at `/dashboard` endpoint:
+
+### Key Features
+- **Tabbed Interface**: Overview, Analytics, History, Settings tabs
+- **Real-Time Logs**: WebSocket streaming with 500-entry ring buffer (200 displayed)
+- **Manual Sync**: Per-server sync triggers via dashboard UI
+- **Analytics**: Interactive charts showing success rates, duration trends, timeline
+- **Authentication**: Optional basic auth or token-based (configured in `config.healthCheck.dashboard.auth`)
+- **Dark Theme**: Optimized for long monitoring sessions
+
+### Dashboard Architecture
+- Served from `src/services/healthCheck.js` via Express
+- Static HTML file at `src/services/dashboard.html`
+- WebSocket endpoint `/ws` for real-time log streaming
+- API endpoints under `/api/dashboard/*` for data queries
+- Dashboard config in `config.healthCheck.dashboard`:
+  ```json
+  {
+    "enabled": true,
+    "auth": {
+      "type": "none",  // or "basic" with username/password
+      "username": "admin",
+      "password": "secret"
+    }
+  }
+  ```
+
+### Testing Dashboard Features
+- Use test helpers to create mock health check service
+- Test authentication middleware with different auth types
+- Verify WebSocket connections and message streaming
+- Test API endpoints return correct data structures
+- See `src/__tests__/healthCheck.test.js` lines 328+ for examples
 
 ## Planned Enhancements (Roadmap Context)
 
-When working on new features, consider these planned improvements:
+When working on new features, consider these planned improvements (see `docs/ROADMAP.md`):
 
-1. **Logging Improvements**
-   - Current: Custom logger with correlation IDs
-   - Planned: Enhanced log streaming, better structured output for web dashboard
+1. **Enhanced Security**
+   - TLS/SSL support for health check endpoints
+   - JWT-based authentication for dashboard
+   - Secrets management integration (Vault, AWS Secrets Manager)
 
-2. **Force Individual Sync**
-   - Current: `npm run sync` syncs all servers
-   - Planned: CLI command to sync specific server by name
-   - Implementation pattern: Add `--server` flag to index.js, filter `config.servers`
+2. **Multi-User Support**
+   - Role-based access control (RBAC) for dashboard
+   - User activity audit logging
+   - Per-user notification preferences
 
-3. **Web Dashboard**
-   - Planned: Express-based UI for status viewing and sync triggering
-   - Build on existing HealthCheckService (already has Express server)
-   - Display real-time logs (stream from logger), sync history (query SyncHistoryService)
-   - Manual sync buttons (call syncBank() for specific server)
+3. **Advanced Scheduling**
+   - Conditional sync triggers (e.g., only sync if balance changed)
+   - Time-window restrictions (avoid business hours)
+   - Dynamic schedule adjustments based on sync success/failure patterns
 
-4. **Encrypted Budget Support**
-   - Add `encryptionPassword` field to server config schema
-   - Pass to `downloadBudget(syncId, { password })` if present
-   - Update ConfigLoader validation to handle optional encryption passwords
+4. **Integration Enhancements**
+   - Slack app integration (beyond webhooks)
+   - PagerDuty integration for critical alerts
+   - Export sync data to external analytics platforms
 
 ## Quick Reference
 

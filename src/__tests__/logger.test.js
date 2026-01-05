@@ -29,7 +29,7 @@ describe('Logger', () => {
             
             expect(logger.level).toBe('INFO');
             expect(logger.format).toBe('pretty');
-            expect(logger.logDir).toBeNull();
+            expect(logger.logDir).toBeNull(); // In test environment, defaults to null
             expect(logger.serviceName).toBe('actual-sync');
         });
 
@@ -224,7 +224,8 @@ describe('Logger', () => {
         });
 
         test('should log info messages', () => {
-            const logger = new Logger();
+            const logger = new Logger({ logDir: null }); // Disable file logging for test
+            console.log.mockClear(); // Clear any constructor logs
             logger.info('Info message');
             
             expect(console.log).toHaveBeenCalled();
@@ -234,7 +235,8 @@ describe('Logger', () => {
         });
 
         test('should log debug messages', () => {
-            const logger = new Logger({ level: 'DEBUG' });
+            const logger = new Logger({ level: 'DEBUG', logDir: null }); // Disable file logging for test
+            console.log.mockClear(); // Clear any constructor logs
             logger.debug('Debug message');
             
             expect(console.log).toHaveBeenCalled();
@@ -244,7 +246,8 @@ describe('Logger', () => {
         });
 
         test('should not log debug when level is INFO', () => {
-            const logger = new Logger({ level: 'INFO' });
+            const logger = new Logger({ level: 'INFO', logDir: null }); // Disable file logging for test
+            console.log.mockClear(); // Clear any constructor logs
             logger.debug('Debug message');
             
             expect(console.log).not.toHaveBeenCalled();
@@ -276,7 +279,10 @@ describe('Logger', () => {
         });
 
         test('should write logs to file when logDir is set', () => {
-            const logger = new Logger({ logDir: tempDir });
+            const logger = new Logger({ 
+                logDir: tempDir,
+                rotation: { enabled: false } // Disable rotation for simpler test
+            });
             logger.info('Test log message');
             
             const files = fs.readdirSync(tempDir);
@@ -300,7 +306,10 @@ describe('Logger', () => {
         });
 
         test('should create log file with date in name', () => {
-            const logger = new Logger({ logDir: tempDir });
+            const logger = new Logger({ 
+                logDir: tempDir,
+                rotation: { enabled: false } // Disable rotation for simpler test
+            });
             logger.info('Test log message');
             
             const files = fs.readdirSync(tempDir);

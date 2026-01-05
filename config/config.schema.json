@@ -111,6 +111,31 @@
           "pattern": "^[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+\\s+[0-9*,/-]+$",
           "default": "03 03 */2 * *",
           "examples": ["0 2 * * *", "*/30 * * * *"]
+        },
+        "autoRetry": {
+          "type": "object",
+          "description": "Automatic retry configuration for failed automated syncs (does NOT apply to manual syncs)",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable automatic retry for failed automated syncs",
+              "default": true
+            },
+            "maxAttempts": {
+              "type": "integer",
+              "description": "Maximum number of retry attempts after initial failure",
+              "minimum": 0,
+              "maximum": 5,
+              "default": 1
+            },
+            "delayMinutes": {
+              "type": "integer",
+              "description": "Delay in minutes between retry attempts",
+              "minimum": 1,
+              "maximum": 1440,
+              "default": 31
+            }
+          }
         }
       }
     },
@@ -132,32 +157,32 @@
         },
         "logDir": {
           "type": ["string", "null"],
-          "description": "Directory for log files (set to null to disable file logging). For Docker deployments, use /app/logs.",
-          "default": null
+          "description": "Directory for log files (set to null to disable file logging). For Docker deployments, use /app/logs. Defaults to './logs' if not specified.",
+          "default": "./logs"
         },
         "rotation": {
           "type": "object",
-          "description": "Log rotation settings",
+          "description": "Log rotation settings (enabled by default with 30-day retention)",
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Enable log rotation",
-              "default": false
+              "description": "Enable log rotation (recommended for production)",
+              "default": true
             },
             "maxSize": {
               "type": "string",
-              "description": "Maximum size per log file (e.g., '10M', '100K')",
+              "description": "Maximum size per log file before rotation (e.g., '10M', '50M', '100M')",
               "default": "10M"
             },
             "maxFiles": {
               "type": "integer",
-              "description": "Maximum number of log files to keep",
+              "description": "Maximum number of log files to keep (days of retention)",
               "minimum": 1,
-              "default": 10
+              "default": 30
             },
             "compress": {
               "type": "string",
-              "description": "Compression format for archived logs",
+              "description": "Compression format for archived logs (gzip saves ~70% disk space)",
               "enum": ["gzip", "none"],
               "default": "gzip"
             }

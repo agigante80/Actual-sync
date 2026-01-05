@@ -21,6 +21,113 @@ const VERSION = process.env.VERSION || (() => {
 })();
 
 /**
+ * Enhance Actual API errors with contextual troubleshooting information
+ * @param {Error} error - Original error from @actual-app/api
+ * @param {Object} context - Context information about the sync operation
+ * @param {string} context.phase - Sync phase: 'download' or 'sync'
+ * @param {string} context.serverUrl - Actual Budget server URL
+ * @param {string} context.syncId - Budget sync ID
+ * @param {boolean} context.isEncrypted - Whether budget uses encryption
+ * @param {Object} logger - Logger instance for debug messages
+ * @returns {Error} Enhanced error with troubleshooting guidance
+ */
+function enhanceActualApiError(error, context, logger) {
+    const { phase, serverUrl, syncId, isEncrypted } = context;
+    
+    // The Actual API throws PostError but by the time we catch it, it's often a plain Error with no message
+    let originalError = error?.message || error?.toString() || '';
+    
+    // Check for empty or generic error - common with PostError that loses its details
+    if (!originalError || originalError === 'Error' || originalError.trim() === '') {
+        if (phase === 'download' && isEncrypted) {
+            originalError = 'network-failure during encryption key validation';
+            logger.warn('Empty error caught for encrypted budget download - likely encryption key issue');
+        } else if (phase === 'download') {
+            originalError = 'budget download failed';
+            logger.warn('Empty error caught for budget download');
+        } else {
+            originalError = 'sync operation failed';
+            logger.warn('Empty error caught during sync phase');
+        }
+    }
+    
+    // Check if this is a PostError with a reason field
+    if (error?.type === 'PostError' && error?.reason) {
+        originalError = error.reason;
+        logger.debug('PostError detected with reason', { reason: error.reason });
+    }
+    
+    // Check the string representation for PostError pattern
+    const errorString = error?.toString() || '';
+    if (errorString.includes('PostError: PostError: ')) {
+        const match = errorString.match(/PostError: PostError: (.+)/);
+        if (match && match[1]) {
+            originalError = match[1].trim();
+        }
+    }
+    
+    // Check stack trace for PostError pattern
+    if (error?.stack && error.stack.includes('PostError: PostError: ')) {
+        const stackMatch = error.stack.match(/PostError: PostError: (.+)/);
+        if (stackMatch && stackMatch[1]) {
+            originalError = stackMatch[1].split('\n')[0].trim();
+        }
+    }
+    
+    // Build contextual troubleshooting guidance
+    const errorDetails = [];
+    
+    if (phase === 'download') {
+        if (originalError.includes('Could not get remote files')) {
+            errorDetails.push('Failed to retrieve budget files from server.');
+            errorDetails.push(`Verify that Sync ID "${syncId}" exists on server "${serverUrl}".`);
+            errorDetails.push('Check that file sync is enabled in your Actual Budget server settings.');
+            if (!isEncrypted) {
+                errorDetails.push('If this budget uses encryption, provide the encryptionPassword in config.');
+            }
+        } else if (originalError.includes('network-failure')) {
+            if (isEncrypted) {
+                errorDetails.push('Network connection to Actual Budget server failed during encryption key validation.');
+                errorDetails.push(`Check that server is accessible at: ${serverUrl}`);
+                errorDetails.push('Verify the encryptionPassword is correct for this encrypted budget.');
+                errorDetails.push('Ensure the Actual Budget server supports encrypted budgets.');
+            } else {
+                errorDetails.push('Network connection to Actual Budget server failed.');
+                errorDetails.push(`Check that server is accessible at: ${serverUrl}`);
+                errorDetails.push('Verify the server password is correct.');
+            }
+        } else if (originalError.includes('decrypt-failure') || originalError.includes('Invalid password')) {
+            errorDetails.push('Failed to decrypt budget file.');
+            errorDetails.push('Verify the encryptionPassword is correct for this budget.');
+        } else if (originalError.includes('unauthorized')) {
+            errorDetails.push('Authentication failed.');
+            errorDetails.push('Verify the server password is correct.');
+        }
+    } else if (phase === 'sync') {
+        if (originalError.includes('network-failure')) {
+            errorDetails.push('Network connection lost during file synchronization.');
+            errorDetails.push(`Check server connectivity at: ${serverUrl}`);
+            errorDetails.push('This may be a transient network issue - sync will retry on next schedule.');
+        } else if (originalError.includes('sync-error')) {
+            errorDetails.push('File synchronization conflict detected.');
+            errorDetails.push('This may occur if budget was modified on server during sync.');
+            errorDetails.push('Retry will automatically resolve most conflicts.');
+        }
+    }
+    
+    // Create enhanced error message
+    const enhancedMessage = errorDetails.length > 0 
+        ? `${originalError}\n\nTroubleshooting:\n- ${errorDetails.join('\n- ')}`
+        : originalError;
+    
+    const enhancedError = new Error(enhancedMessage);
+    enhancedError.originalError = error;
+    enhancedError.phase = phase;
+    
+    return enhancedError;
+}
+
+/**
  * Format next sync time in human-readable format
  * @param {Date} nextInvocation - Next scheduled invocation time
  * @returns {string} Human-readable format
@@ -85,14 +192,16 @@ try {
     config = configLoader.load();
     
     // Initialize logger with config
-    logger = createLogger({
-        level: config.logging.level,
-        format: config.logging.format,
-        logDir: config.logging.logDir,
-        rotation: config.logging.rotation,
-        syslog: config.logging.syslog,
-        performance: config.logging.performance
-    });
+    // Initialize logger with config (filter out undefined values to use defaults)
+    const loggerConfig = {};
+    if (config.logging?.level !== undefined) loggerConfig.level = config.logging.level;
+    if (config.logging?.format !== undefined) loggerConfig.format = config.logging.format;
+    if (config.logging?.logDir !== undefined) loggerConfig.logDir = config.logging.logDir;
+    if (config.logging?.rotation !== undefined) loggerConfig.rotation = config.logging.rotation;
+    if (config.logging?.syslog !== undefined) loggerConfig.syslog = config.logging.syslog;
+    if (config.logging?.performance !== undefined) loggerConfig.performance = config.logging.performance;
+    
+    logger = createLogger(loggerConfig);
     
     logger.info('Configuration loaded successfully', { 
         serverCount: config.servers.length 
@@ -221,16 +330,97 @@ try {
 const servers = config.servers;
 const globalSyncConfig = config.sync;
 
+// Track active retry timers per server (to cancel on shutdown or manual sync)
+const activeRetryTimers = new Map();
+
 // Helper function to get sync config for a server (server-specific overrides global)
 function getSyncConfig(server) {
     return {
         maxRetries: server.sync?.maxRetries ?? globalSyncConfig.maxRetries,
         baseRetryDelayMs: server.sync?.baseRetryDelayMs ?? globalSyncConfig.baseRetryDelayMs,
-        schedule: server.sync?.schedule ?? globalSyncConfig.schedule
+        schedule: server.sync?.schedule ?? globalSyncConfig.schedule,
+        autoRetry: {
+            enabled: server.sync?.autoRetry?.enabled ?? globalSyncConfig.autoRetry?.enabled ?? true,
+            maxAttempts: server.sync?.autoRetry?.maxAttempts ?? globalSyncConfig.autoRetry?.maxAttempts ?? 1,
+            delayMinutes: server.sync?.autoRetry?.delayMinutes ?? globalSyncConfig.autoRetry?.delayMinutes ?? 31
+        }
     };
 }
 
-async function syncBank(server) {
+/**
+ * Cancel any pending retry for a server
+ * @param {string} serverName - Server name
+ */
+function cancelPendingRetry(serverName) {
+    const timer = activeRetryTimers.get(serverName);
+    if (timer) {
+        clearTimeout(timer);
+        activeRetryTimers.delete(serverName);
+        logger.info('Cancelled pending retry', { server: serverName });
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Schedule automatic retry for failed sync
+ * @param {Object} server - Server configuration
+ * @param {number} attemptNumber - Current retry attempt number (1-based)
+ * @param {number} maxAttempts - Maximum retry attempts
+ * @param {number} delayMinutes - Delay in minutes before retry
+ */
+function scheduleAutoRetry(server, attemptNumber, maxAttempts, delayMinutes) {
+    if (attemptNumber > maxAttempts) {
+        logger.info('Maximum auto-retry attempts reached', { 
+            server: server.name,
+            attempts: attemptNumber - 1
+        });
+        return;
+    }
+
+    // Cancel any existing retry timer for this server
+    cancelPendingRetry(server.name);
+
+    const delayMs = delayMinutes * 60 * 1000;
+    const retryTime = new Date(Date.now() + delayMs);
+
+    logger.info('Scheduling automatic retry', {
+        server: server.name,
+        attemptNumber,
+        maxAttempts,
+        delayMinutes,
+        retryTime: retryTime.toISOString()
+    });
+
+    const timer = setTimeout(async () => {
+        activeRetryTimers.delete(server.name);
+        logger.info('Executing automatic retry', {
+            server: server.name,
+            attemptNumber
+        });
+
+        try {
+            await syncBank(server, { isAutomated: true, retryAttempt: attemptNumber });
+        } catch (error) {
+            logger.error('Auto-retry failed', {
+                server: server.name,
+                attemptNumber,
+                error: error.message
+            });
+
+            // Schedule next retry if attempts remain
+            const syncConfig = getSyncConfig(server);
+            if (syncConfig.autoRetry.enabled && attemptNumber < syncConfig.autoRetry.maxAttempts) {
+                scheduleAutoRetry(server, attemptNumber + 1, syncConfig.autoRetry.maxAttempts, syncConfig.autoRetry.delayMinutes);
+            }
+        }
+    }, delayMs);
+
+    activeRetryTimers.set(server.name, timer);
+}
+
+async function syncBank(server, options = {}) {
+    const { isAutomated = false, retryAttempt = 0 } = options;
     const { name, url, password, syncId, dataDir, encryptionPassword } = server;
     const syncIdLog = syncId ? syncId : "your_budget_name";
     const isEncrypted = !!encryptionPassword;
@@ -254,6 +444,22 @@ async function syncBank(server) {
     const correlationId = serverLogger.generateCorrelationId();
     serverLogger.setCorrelationId(correlationId);
     
+    // Cancel any pending auto-retry if this is a manual sync
+    if (!isAutomated) {
+        const cancelled = cancelPendingRetry(name);
+        if (cancelled) {
+            serverLogger.info('Cancelled pending auto-retry due to manual sync');
+        }
+    }
+    
+    // Log retry information if applicable
+    if (retryAttempt > 0) {
+        serverLogger.info('Executing automatic retry', {
+            attemptNumber: retryAttempt,
+            maxAttempts: syncConfig.autoRetry.maxAttempts
+        });
+    }
+    
     // Start performance timer
     const endTimer = serverLogger.startTimer(`sync-${name}`);
     
@@ -266,9 +472,12 @@ async function syncBank(server) {
     const failedAccounts = [];
     
     try {
-        serverLogger.info(`Starting sync for server: ${name}`, { 
+        const syncType = isAutomated ? (retryAttempt > 0 ? `automated (retry ${retryAttempt})` : 'automated') : 'manual';
+        serverLogger.info(`Starting ${syncType} sync for server: ${name}`, { 
             url, 
             dataDir,
+            isAutomated,
+            retryAttempt,
             maxRetries: syncConfig.maxRetries,
             baseRetryDelayMs: syncConfig.baseRetryDelayMs,
             schedule: syncConfig.schedule
@@ -310,74 +519,12 @@ async function syncBank(server) {
         
         // If download failed, enhance and throw error
         if (downloadError) {
-            // The Actual API throws PostError but by the time we catch it, it's a plain Error with no message
-            // We need to infer the error from context
-            let originalError = downloadError?.message || downloadError?.toString() || '';
-            
-            // Check for empty or generic error - common with PostError that loses its details
-            if (!originalError || originalError === 'Error' || originalError.trim() === '') {
-                // For encrypted budgets, the most common error is encryption key validation failure
-                if (encryptionPassword) {
-                    originalError = 'network-failure during encryption key validation';
-                    serverLogger.warn('Empty error caught for encrypted budget download - likely encryption key issue');
-                } else {
-                    originalError = 'budget download failed';
-                    serverLogger.warn('Empty error caught for budget download');
-                }
-            }
-            
-            // Check if this is a PostError with a reason field (though usually empty by now)
-            if (downloadError?.type === 'PostError' && downloadError?.reason) {
-                originalError = downloadError.reason;
-                serverLogger.debug('PostError detected with reason', { reason: downloadError.reason });
-            }
-            
-            // Also check the string representation for PostError pattern
-            const errorString = downloadError?.toString() || '';
-            if (errorString.includes('PostError: PostError: ')) {
-                // Extract the actual error type after "PostError: PostError: "
-                const match = errorString.match(/PostError: PostError: (.+)/);
-                if (match && match[1]) {
-                    originalError = match[1].trim();
-                }
-            }
-            
-            // Check stack trace for PostError pattern as well
-            if (downloadError?.stack && downloadError.stack.includes('PostError: PostError: ')) {
-                const stackMatch = downloadError.stack.match(/PostError: PostError: (.+)/);
-                if (stackMatch && stackMatch[1]) {
-                    originalError = stackMatch[1].split('\n')[0].trim();
-                }
-            }
-            
-            const errorDetails = [];
-            
-            if (originalError.includes('Could not get remote files')) {
-                errorDetails.push('Failed to retrieve budget files from server.');
-                errorDetails.push(`Verify that Sync ID "${syncId}" exists on server "${url}".`);
-                errorDetails.push('Check that file sync is enabled in your Actual Budget server settings.');
-                if (!encryptionPassword) {
-                    errorDetails.push('If this budget uses encryption, provide the encryptionPassword in config.');
-                }
-            } else if (originalError.includes('network-failure')) {
-                errorDetails.push('Network connection to Actual Budget server failed during encryption key test.');
-                errorDetails.push(`Check that server is accessible at: ${url}`);
-                errorDetails.push('Verify the encryptionPassword is correct for this encrypted budget.');
-                errorDetails.push('Ensure the Actual Budget server supports encrypted budgets.');
-            } else if (originalError.includes('decrypt-failure') || originalError.includes('Invalid password')) {
-                errorDetails.push('Failed to decrypt budget file.');
-                errorDetails.push('Verify the encryptionPassword is correct for this budget.');
-            } else if (originalError.includes('unauthorized')) {
-                errorDetails.push('Authentication failed.');
-                errorDetails.push('Verify the server password is correct.');
-            }
-            
-            const enhancedMessage = errorDetails.length > 0 
-                ? `${originalError}\n\nTroubleshooting:\n- ${errorDetails.join('\n- ')}`
-                : originalError;
-            
-            const enhancedError = new Error(enhancedMessage);
-            enhancedError.originalError = downloadError;
+            const enhancedError = enhanceActualApiError(downloadError, {
+                phase: 'download',
+                serverUrl: url,
+                syncId,
+                isEncrypted: !!encryptionPassword
+            }, serverLogger);
             enhancedError.syncId = syncId;
             enhancedError.serverUrl = url;
             throw enhancedError;
@@ -388,8 +535,17 @@ async function syncBank(server) {
         serverLogger.info('Accounts fetched successfully', { accountCount: accounts?.length || 0 });
 
         serverLogger.info('Starting file sync');
-        await actual.sync();
-        serverLogger.info('File sync completed');
+        try {
+            await actual.sync();
+            serverLogger.info('File sync completed');
+        } catch (syncError) {
+            throw enhanceActualApiError(syncError, {
+                phase: 'sync',
+                serverUrl: url,
+                syncId,
+                isEncrypted: isEncrypted
+            }, serverLogger);
+        }
             
         if (accounts && accounts.length > 0) {
             for (const account of accounts) {
@@ -400,7 +556,29 @@ async function syncBank(server) {
                     accountName: account.name 
                 });
                 try { //  Wrap runBankSync in try...catch
-                    await actual.runBankSync({ accountId: account.id });
+                    serverLogger.debug('Calling runBankSync for account', {
+                        accountId: account.id,
+                        accountName: account.name
+                    });
+                    
+                    // Wrap runBankSync with timeout (60 seconds) to catch hung promises
+                    const syncPromise = actual.runBankSync({ accountId: account.id });
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Bank sync timeout after 60 seconds')), 60000)
+                    );
+                    
+                    const result = await Promise.race([syncPromise, timeoutPromise]);
+                    
+                    // Add a small delay to allow any background operations to complete
+                    // This works around a race condition in Actual API where runBankSync
+                    // can resolve before background sync operations fully complete
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    serverLogger.debug('runBankSync result', {
+                        accountId: account.id,
+                        accountName: account.name,
+                        result: result
+                    });
                     accountsSucceeded++;
                     succeededAccounts.push(account.name);
                     const accountDuration = accountTimer();
@@ -409,8 +587,24 @@ async function syncBank(server) {
                         durationMs: accountDuration
                     });
                 } catch (bankSyncError) { // catch bankSyncError
-                    accountsFailed++;
                     const errorMsg = bankSyncError?.message || bankSyncError?.toString() || String(bankSyncError) || 'Unknown error';
+                    // Extra logging to clarify error type
+                    serverLogger.warn('runBankSync threw error', {
+                        accountId: account.id,
+                        accountName: account.name,
+                        error: errorMsg,
+                        errorCode: bankSyncError?.code || 'UNKNOWN',
+                        errorStack: bankSyncError?.stack || 'No stack trace available'
+                    });
+                    // Special case: log if error message suggests no new transactions
+                    if (errorMsg && /no new transactions|no transactions found|nothing to sync/i.test(errorMsg)) {
+                        serverLogger.info('No new transactions for account', {
+                            accountId: account.id,
+                            accountName: account.name,
+                            error: errorMsg
+                        });
+                    }
+                    accountsFailed++;
                     failedAccounts.push({
                         name: account.name,
                         error: errorMsg
@@ -430,8 +624,17 @@ async function syncBank(server) {
         }
 
         serverLogger.info('Starting final file sync');
-        await actual.sync();
-        serverLogger.info('Final file sync completed');
+        try {
+            await actual.sync();
+            serverLogger.info('Final file sync completed');
+        } catch (syncError) {
+            throw enhanceActualApiError(syncError, {
+                phase: 'sync',
+                serverUrl: url,
+                syncId,
+                isEncrypted: isEncrypted
+            }, serverLogger);
+        }
         
         // Calculate sync duration and log performance
         let durationMs = endTimer({ 
@@ -472,6 +675,11 @@ async function syncBank(server) {
                 serverName: name,
                 error: syncStatus === 'partial' ? `Partial sync: ${errorMessage}` : errorMessage
             });
+        }
+        
+        // Cancel any pending auto-retry on successful sync (success or partial)
+        if (syncStatus !== 'failure') {
+            cancelPendingRetry(name);
         }
         
         // Record sync in history
@@ -750,7 +958,23 @@ async function run() {
                     servers: serversWithSchedule.map(s => s.name)
                 });
                 for (const server of serversWithSchedule) {
-                    await syncBank(server);
+                    try {
+                        // Cancel any pending manual retry for this server
+                        cancelPendingRetry(server.name);
+                        
+                        await syncBank(server, { isAutomated: true, retryAttempt: 0 });
+                    } catch (error) {
+                        logger.error('Scheduled sync failed', {
+                            server: server.name,
+                            error: error.message
+                        });
+
+                        // Schedule automatic retry if enabled
+                        const syncConfig = getSyncConfig(server);
+                        if (syncConfig.autoRetry.enabled && syncConfig.autoRetry.maxAttempts > 0) {
+                            scheduleAutoRetry(server, 1, syncConfig.autoRetry.maxAttempts, syncConfig.autoRetry.delayMinutes);
+                        }
+                    }
                 }
                 logger.info('Scheduled sync completed', { schedule: scheduleStr });
             });
@@ -829,6 +1053,11 @@ async function run() {
 process.on('SIGTERM', async () => {
     logger.info('SIGTERM received, shutting down gracefully...');
     try {
+        logger.info('Cancelling all pending auto-retries');
+        for (const serverName of activeRetryTimers.keys()) {
+            cancelPendingRetry(serverName);
+        }
+        
         if (telegramBot) {
             telegramBot.stop();
         }
@@ -844,6 +1073,11 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
     logger.info('SIGINT received, shutting down gracefully...');
     try {
+        logger.info('Cancelling all pending auto-retries');
+        for (const serverName of activeRetryTimers.keys()) {
+            cancelPendingRetry(serverName);
+        }
+        
         if (telegramBot) {
             telegramBot.stop();
         }
