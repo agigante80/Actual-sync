@@ -268,6 +268,33 @@ Status affects `/ready` endpoint (returns 503 if UNHEALTHY).
 
 ## Development Workflows
 
+### Git Workflow and Merge Policy
+
+**Branch Strategy:**
+- **development** - Active development branch (merge automatically after testing)
+- **main** - Production-ready releases (merge ONLY when explicitly requested)
+
+**Critical Rule for AI Agents:**
+- ✅ **Automatic merges to development**: Allowed after tests pass
+- ❌ **Never merge to main automatically**: Only merge when user explicitly says "merge to main" or similar
+- 📋 **Default behavior**: Keep all changes in development branch for review
+- 🔖 **Version bumps**: Only bump versions and create tags when merging to main
+
+**Example workflow:**
+```bash
+# Feature development (automatic)
+git checkout development
+# Make changes, test, commit
+git push origin development
+
+# Production release (manual, user-initiated only)
+# Wait for explicit user instruction: "merge to main and release"
+git checkout main
+git merge development
+# Bump version, tag release
+git push origin main --tags
+```
+
 ### Local Development Setup
 
 ```bash
