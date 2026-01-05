@@ -634,7 +634,7 @@ describe('TelegramBotService', () => {
       
       await bot.handleSync(['Main', 'Budget']);
       
-      expect(mockSyncBank).toHaveBeenCalledWith(mockServers[0]);
+      expect(mockSyncBank).toHaveBeenCalledWith(mockServers[0], { isAutomated: false, retryAttempt: 0 });
       expect(mockRequest.write).toHaveBeenCalled();
       const calls = mockRequest.write.mock.calls;
       expect(calls.some(call => {

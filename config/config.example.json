@@ -27,7 +27,12 @@
   "sync": {
     "maxRetries": 5,
     "baseRetryDelayMs": 3000,
-    "schedule": "03 03 */2 * *"
+    "schedule": "03 03 */2 * *",
+    "autoRetry": {
+      "enabled": true,
+      "maxAttempts": 1,
+      "delayMinutes": 31
+    }
   },
   "logging": {
     "level": "INFO",
@@ -36,7 +41,7 @@
     "rotation": {
       "enabled": true,
       "maxSize": "10M",
-      "maxFiles": 10,
+      "maxFiles": 30,
       "compress": "gzip"
     },
     "syslog": {

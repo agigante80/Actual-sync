@@ -586,13 +586,13 @@ class TelegramBotService {
       // Send starting message
       await this.sendMessage(`🔄 Starting sync for ${serverName}...`);
 
-      // Trigger the sync
+      // Trigger the sync (manual, so isAutomated=false and no retry)
       this.logger.info('Manual sync triggered via Telegram', {
         server: serverName,
         chatId: this.config.chatId
       });
 
-      await syncBank(server);
+      await syncBank(server, { isAutomated: false, retryAttempt: 0 });
 
       // Success message will be sent by notifySync if configured
       // Send confirmation if notifications are disabled
