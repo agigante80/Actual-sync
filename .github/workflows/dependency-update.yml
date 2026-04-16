@@ -8,121 +8,101 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   check-updates:
     name: Check for Actual API Updates
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Checkout code
+      - name: Checkout development branch
         uses: actions/checkout@v4
-        
+        with:
+          ref: development
+          fetch-depth: 0
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          
+
       - name: Get current version
         id: current
         run: |
           CURRENT=$(node -p "require('./package.json').dependencies['@actual-app/api']" | sed 's/[\^~]//g')
           echo "version=$CURRENT" >> $GITHUB_OUTPUT
           echo "Current @actual-app/api version: $CURRENT"
-          
+
       - name: Check latest version
         id: latest
         run: |
           LATEST=$(npm show @actual-app/api version)
           echo "version=$LATEST" >> $GITHUB_OUTPUT
           echo "Latest @actual-app/api version: $LATEST"
-          
+
       - name: Compare versions
         id: compare
         run: |
           CURRENT="${{ steps.current.outputs.version }}"
           LATEST="${{ steps.latest.outputs.version }}"
-          
           if [ "$CURRENT" != "$LATEST" ]; then
             echo "update_needed=true" >> $GITHUB_OUTPUT
-            echo "🔔 Update available: $CURRENT → $LATEST"
+            echo "Update available: $CURRENT → $LATEST"
           else
             echo "update_needed=false" >> $GITHUB_OUTPUT
-            echo "✅ Already on latest version: $CURRENT"
+            echo "Already on latest: $CURRENT"
           fi
-          
+
+      - name: Configure git identity
+        if: steps.compare.outputs.update_needed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create update branch
+        if: steps.compare.outputs.update_needed == 'true'
+        run: |
+          LATEST="${{ steps.latest.outputs.version }}"
+          git checkout -b deps/actual-api-$LATEST
+
       - name: Update package.json
         if: steps.compare.outputs.update_needed == 'true'
         run: |
           LATEST="${{ steps.latest.outputs.version }}"
           npm install --package-lock-only @actual-app/api@^$LATEST
-          
-      - name: Get changelog
+          git add package.json package-lock.json
+          git commit -m "chore(deps): bump @actual-app/api from ${{ steps.current.outputs.version }} to $LATEST"
+
+      - name: Install dependencies for test run
         if: steps.compare.outputs.update_needed == 'true'
-        id: changelog
+        run: npm ci
+
+      - name: Run tests
+        if: steps.compare.outputs.update_needed == 'true'
+        id: tests
+        run: npm test -- --ci
+        continue-on-error: true
+
+      - name: Merge to development (tests passed)
+        if: steps.compare.outputs.update_needed == 'true' && steps.tests.outcome == 'success'
         run: |
           LATEST="${{ steps.latest.outputs.version }}"
-          # Get package info including recent versions
-          CHANGELOG=$(npm show @actual-app/api@$LATEST --json | jq -r '.version + ": Released " + .time.modified')
-          echo "info=$CHANGELOG" >> $GITHUB_OUTPUT
-          
-      - name: Create Pull Request
-        if: steps.compare.outputs.update_needed == 'true'
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore(deps): upgrade @actual-app/api to ${{ steps.latest.outputs.version }}"
-          branch: deps/actual-api-${{ steps.latest.outputs.version }}
-          delete-branch: true
-          title: "⬆️ Upgrade @actual-app/api to ${{ steps.latest.outputs.version }}"
-          body: |
-            ## 🔄 Dependency Update
-            
-            Automated update of `@actual-app/api` dependency.
-            
-            ### Changes
-            - **Current version:** `${{ steps.current.outputs.version }}`
-            - **New version:** `${{ steps.latest.outputs.version }}`
-            - **Package:** [@actual-app/api on npm](https://www.npmjs.com/package/@actual-app/api)
-            
-            ### Release Info
-            ${{ steps.changelog.outputs.info }}
-            
-            ### Testing Required
-            - [ ] Verify migration compatibility
-            - [ ] Test with existing budget files
-            - [ ] Run `npm test` to ensure tests pass
-            - [ ] Test bank sync functionality
-            
-            ### Auto-Release
-            Once merged, create a new release tag to trigger Docker image rebuild:
-            ```bash
-            git tag -a v1.0.x -m "Release v1.0.x - Update Actual API to ${{ steps.latest.outputs.version }}"
-            git push origin v1.0.x
-            ```
-            
-            ---
-            🤖 This PR was automatically created by the dependency update workflow.
-          labels: |
-            dependencies
-            automated
-            actual-api
-          reviewers: agigante80
-          
-      - name: Summary
-        if: steps.compare.outputs.update_needed == 'true'
+          git checkout development
+          git merge --no-ff deps/actual-api-$LATEST -m "chore(deps): merge @actual-app/api bump to $LATEST into development"
+          git push origin development
+          git push origin --delete deps/actual-api-$LATEST
+          echo "### ✅ Merged @actual-app/api $LATEST into development" >> $GITHUB_STEP_SUMMARY
+
+      - name: Push branch for inspection (tests failed)
+        if: steps.compare.outputs.update_needed == 'true' && steps.tests.outcome != 'success'
         run: |
-          echo "### ✅ Update PR Created" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **From:** ${{ steps.current.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **To:** ${{ steps.latest.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Review and merge the PR, then create a release tag." >> $GITHUB_STEP_SUMMARY
-          
+          LATEST="${{ steps.latest.outputs.version }}"
+          git push origin deps/actual-api-$LATEST
+          echo "### ⚠️ Tests failed — branch deps/actual-api-$LATEST pushed for manual inspection" >> $GITHUB_STEP_SUMMARY
+          exit 1
+
       - name: No update needed
         if: steps.compare.outputs.update_needed == 'false'
         run: |
           echo "### ✅ Already Up to Date" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "Current version ${{ steps.current.outputs.version }} is the latest." >> $GITHUB_STEP_SUMMARY
