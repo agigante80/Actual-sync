@@ -9,6 +9,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
+# Install git hooks (run once after cloning — also runs automatically via npm install)
+git config core.hooksPath .githooks
+# This installs a pre-push hook that runs npm test --coverage --ci before every push.
+
 # Run all tests
 npm test
 
