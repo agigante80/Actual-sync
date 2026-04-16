@@ -10,6 +10,7 @@ const { SyncHistoryService } = require('./services/syncHistory');
 const { NotificationService } = require('./services/notificationService');
 const { TelegramBotService } = require('./services/telegramBot');
 const PrometheusService = require('./services/prometheusService');
+const { enhanceActualApiError } = require('./lib/actualApiError');
 
 // Get version
 const VERSION = process.env.VERSION || (() => {
@@ -19,113 +20,6 @@ const VERSION = process.env.VERSION || (() => {
         return 'unknown';
     }
 })();
-
-/**
- * Enhance Actual API errors with contextual troubleshooting information
- * @param {Error} error - Original error from @actual-app/api
- * @param {Object} context - Context information about the sync operation
- * @param {string} context.phase - Sync phase: 'download' or 'sync'
- * @param {string} context.serverUrl - Actual Budget server URL
- * @param {string} context.syncId - Budget sync ID
- * @param {boolean} context.isEncrypted - Whether budget uses encryption
- * @param {Object} logger - Logger instance for debug messages
- * @returns {Error} Enhanced error with troubleshooting guidance
- */
-function enhanceActualApiError(error, context, logger) {
-    const { phase, serverUrl, syncId, isEncrypted } = context;
-    
-    // The Actual API throws PostError but by the time we catch it, it's often a plain Error with no message
-    let originalError = error?.message || error?.toString() || '';
-    
-    // Check for empty or generic error - common with PostError that loses its details
-    if (!originalError || originalError === 'Error' || originalError.trim() === '') {
-        if (phase === 'download' && isEncrypted) {
-            originalError = 'network-failure during encryption key validation';
-            logger.warn('Empty error caught for encrypted budget download - likely encryption key issue');
-        } else if (phase === 'download') {
-            originalError = 'budget download failed';
-            logger.warn('Empty error caught for budget download');
-        } else {
-            originalError = 'sync operation failed';
-            logger.warn('Empty error caught during sync phase');
-        }
-    }
-    
-    // Check if this is a PostError with a reason field
-    if (error?.type === 'PostError' && error?.reason) {
-        originalError = error.reason;
-        logger.debug('PostError detected with reason', { reason: error.reason });
-    }
-    
-    // Check the string representation for PostError pattern
-    const errorString = error?.toString() || '';
-    if (errorString.includes('PostError: PostError: ')) {
-        const match = errorString.match(/PostError: PostError: (.+)/);
-        if (match && match[1]) {
-            originalError = match[1].trim();
-        }
-    }
-    
-    // Check stack trace for PostError pattern
-    if (error?.stack && error.stack.includes('PostError: PostError: ')) {
-        const stackMatch = error.stack.match(/PostError: PostError: (.+)/);
-        if (stackMatch && stackMatch[1]) {
-            originalError = stackMatch[1].split('\n')[0].trim();
-        }
-    }
-    
-    // Build contextual troubleshooting guidance
-    const errorDetails = [];
-    
-    if (phase === 'download') {
-        if (originalError.includes('Could not get remote files')) {
-            errorDetails.push('Failed to retrieve budget files from server.');
-            errorDetails.push(`Verify that Sync ID "${syncId}" exists on server "${serverUrl}".`);
-            errorDetails.push('Check that file sync is enabled in your Actual Budget server settings.');
-            if (!isEncrypted) {
-                errorDetails.push('If this budget uses encryption, provide the encryptionPassword in config.');
-            }
-        } else if (originalError.includes('network-failure')) {
-            if (isEncrypted) {
-                errorDetails.push('Network connection to Actual Budget server failed during encryption key validation.');
-                errorDetails.push(`Check that server is accessible at: ${serverUrl}`);
-                errorDetails.push('Verify the encryptionPassword is correct for this encrypted budget.');
-                errorDetails.push('Ensure the Actual Budget server supports encrypted budgets.');
-            } else {
-                errorDetails.push('Network connection to Actual Budget server failed.');
-                errorDetails.push(`Check that server is accessible at: ${serverUrl}`);
-                errorDetails.push('Verify the server password is correct.');
-            }
-        } else if (originalError.includes('decrypt-failure') || originalError.includes('Invalid password')) {
-            errorDetails.push('Failed to decrypt budget file.');
-            errorDetails.push('Verify the encryptionPassword is correct for this budget.');
-        } else if (originalError.includes('unauthorized')) {
-            errorDetails.push('Authentication failed.');
-            errorDetails.push('Verify the server password is correct.');
-        }
-    } else if (phase === 'sync') {
-        if (originalError.includes('network-failure')) {
-            errorDetails.push('Network connection lost during file synchronization.');
-            errorDetails.push(`Check server connectivity at: ${serverUrl}`);
-            errorDetails.push('This may be a transient network issue - sync will retry on next schedule.');
-        } else if (originalError.includes('sync-error')) {
-            errorDetails.push('File synchronization conflict detected.');
-            errorDetails.push('This may occur if budget was modified on server during sync.');
-            errorDetails.push('Retry will automatically resolve most conflicts.');
-        }
-    }
-    
-    // Create enhanced error message
-    const enhancedMessage = errorDetails.length > 0 
-        ? `${originalError}\n\nTroubleshooting:\n- ${errorDetails.join('\n- ')}`
-        : originalError;
-    
-    const enhancedError = new Error(enhancedMessage);
-    enhancedError.originalError = error;
-    enhancedError.phase = phase;
-    
-    return enhancedError;
-}
 
 /**
  * Format next sync time in human-readable format
@@ -503,7 +397,11 @@ async function syncBank(server, options = {}) {
         // Download budget with encryption password if provided
         const downloadOptions = encryptionPassword ? { password: encryptionPassword } : undefined;
         
-        // Download budget (single attempt - no retries)
+        // Download budget — one immediate retry on failure before clearing cache.
+        // @actual-app/api 26.4.x propagates errors that 26.1.x swallowed (e.g. the
+        // internal loadBudget failure caused by resetClock:true on a cold download).
+        // The retry succeeds once the server has established its sync state, or
+        // surfaces a real persistent error that warrants clearing the cache.
         let downloadError;
         try {
             await actual.downloadBudget(syncId, downloadOptions);
@@ -512,22 +410,71 @@ async function syncBank(server, options = {}) {
             });
         } catch (error) {
             downloadError = error;
-            serverLogger.debug('Download failed', {
-                error: error?.reason || error?.message || String(error)
+            serverLogger.warn('Budget download failed, retrying once before clearing cache', {
+                error: error?.reason || error?.message || String(error),
             });
         }
-        
-        // If download failed, enhance and throw error
+
         if (downloadError) {
-            const enhancedError = enhanceActualApiError(downloadError, {
-                phase: 'download',
-                serverUrl: url,
-                syncId,
-                isEncrypted: !!encryptionPassword
-            }, serverLogger);
-            enhancedError.syncId = syncId;
-            enhancedError.serverUrl = url;
-            throw enhancedError;
+            let retryError = null;
+            try {
+                await new Promise(r => setTimeout(r, 5000));
+                await actual.downloadBudget(syncId, downloadOptions);
+                serverLogger.info('Budget file loaded successfully on retry', {
+                    encrypted: !!encryptionPassword
+                });
+                downloadError = null; // retry succeeded — fall through to loadBudget workaround
+            } catch (err) {
+                retryError = err;
+            }
+
+            if (retryError) {
+                // Both attempts failed — clear partial/corrupted cache and give up.
+                try {
+                    await fs.rm(dataDir, { recursive: true, force: true });
+                    await fs.mkdir(dataDir, { recursive: true });
+                    serverLogger.warn('Cleared local budget cache after two failed downloads', { dataDir });
+                } catch (cleanupErr) {
+                    serverLogger.warn('Failed to clear local budget cache', {
+                        dataDir,
+                        error: cleanupErr.message,
+                    });
+                }
+                const enhancedError = enhanceActualApiError(downloadError, {
+                    phase: 'download',
+                    serverUrl: url,
+                    syncId,
+                    isEncrypted: !!encryptionPassword
+                }, serverLogger);
+                enhancedError.syncId = syncId;
+                enhancedError.serverUrl = url;
+                throw enhancedError;
+            }
+        }
+
+        // Workaround for @actual-app/api 26.x: when the server sets resetClock:true
+        // (first-time client or after a sync reset in the UI), downloadBudget writes
+        // db.sqlite and metadata.json to disk but does not open the budget in memory.
+        // Scanning dataDir for the matching metadata.json and calling loadBudget
+        // explicitly ensures subsequent API calls succeed regardless of resetClock state.
+        try {
+            const entries = await fs.readdir(dataDir);
+            for (const entry of entries) {
+                try {
+                    const meta = JSON.parse(
+                        await fs.readFile(`${dataDir}/${entry}/metadata.json`, 'utf8')
+                    );
+                    if (meta.groupId === syncId && meta.id) {
+                        await actual.loadBudget(meta.id);
+                        serverLogger.debug('Explicitly loaded budget after download', {
+                            localBudgetId: meta.id,
+                        });
+                        break;
+                    }
+                } catch { /* not a budget directory, skip */ }
+            }
+        } catch (loadErr) {
+            serverLogger.debug('loadBudget workaround skipped', { error: loadErr.message });
         }
 
         serverLogger.debug('Fetching accounts...');
