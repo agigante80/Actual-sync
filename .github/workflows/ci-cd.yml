@@ -67,25 +67,29 @@ jobs:
       - name: Generate semantic version
         id: version
         run: |
-          chmod +x ./get_version.sh
-          VERSION=$(./get_version.sh)
+          BASE_VERSION=$(node -p "require('./package.json').version")
+          SHORT_SHA=$(git rev-parse --short HEAD)
+
+          # On main or a v* tag: clean semver → triggers release job
+          # Everywhere else (development, PRs, feature branches): dev build
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || \
+             [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+            VERSION="$BASE_VERSION"
+            echo "is_release=true" >> $GITHUB_OUTPUT
+            echo "🚀 Release build: $VERSION"
+          else
+            VERSION="${BASE_VERSION}-dev+${SHORT_SHA}"
+            echo "is_release=false" >> $GITHUB_OUTPUT
+            echo "🔨 Dev build: $VERSION"
+          fi
+
           # Sanitize version for Docker (replace + with - since Docker tags don't allow +)
           DOCKER_VERSION="${VERSION//+/-}"
-          
+
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "docker_version=$DOCKER_VERSION" >> $GITHUB_OUTPUT
           echo "📦 Semver version: $VERSION"
           echo "🐳 Docker version: $DOCKER_VERSION"
-          
-          # Determine if this is a stable release (version tag like v1.0.0)
-          # Stable releases: no -dev or other pre-release identifiers
-          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "is_release=true" >> $GITHUB_OUTPUT
-            echo "🚀 This is a stable release"
-          else
-            echo "is_release=false" >> $GITHUB_OUTPUT
-            echo "🔨 This is a development build"
-          fi
 
       - name: Display version info
         run: |
@@ -544,7 +548,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check if release already exists
+        id: check_tag
+        run: |
+          TAG="v${{ needs.version.outputs.version }}"
+          if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+            echo "Tag $TAG already exists — skipping release creation"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Generate changelog
+        if: steps.check_tag.outputs.skip != 'true'
         id: changelog
         run: |
           # Get previous tag
@@ -565,6 +581,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
+        if: steps.check_tag.outputs.skip != 'true'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ needs.version.outputs.version }}
@@ -594,6 +611,7 @@ jobs:
           generate_release_notes: true
 
       - name: Release summary
+        if: steps.check_tag.outputs.skip != 'true'
         run: |
           echo "### 🎉 Release Created" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
