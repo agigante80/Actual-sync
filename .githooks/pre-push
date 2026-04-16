@@ -1,0 +1,5 @@
+#!/bin/sh
+# Pre-push hook: run tests + coverage before every push.
+# Installed automatically by `npm install` via the prepare script.
+echo "Running tests before push..."
+npm test -- --coverage --ci
