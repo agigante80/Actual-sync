@@ -530,6 +530,30 @@ async function syncBank(server, options = {}) {
             throw enhancedError;
         }
 
+        // Workaround for @actual-app/api 26.x: when the server sets resetClock:true
+        // (e.g. first-time client or after a sync reset), downloadBudget downloads
+        // the files to disk but does not open the budget in memory. Explicitly call
+        // loadBudget with the local budget ID so subsequent API calls succeed.
+        try {
+            const entries = await fs.readdir(dataDir);
+            for (const entry of entries) {
+                try {
+                    const meta = JSON.parse(
+                        await fs.readFile(`${dataDir}/${entry}/metadata.json`, 'utf8')
+                    );
+                    if (meta.groupId === syncId && meta.id) {
+                        await actual.loadBudget(meta.id);
+                        serverLogger.debug('Explicitly loaded budget after download', {
+                            localBudgetId: meta.id
+                        });
+                        break;
+                    }
+                } catch { /* not a budget directory, skip */ }
+            }
+        } catch (loadErr) {
+            serverLogger.debug('loadBudget workaround skipped', { error: loadErr.message });
+        }
+
         serverLogger.debug('Fetching accounts...');
         const accounts = await actual.getAccounts();
         serverLogger.info('Accounts fetched successfully', { accountCount: accounts?.length || 0 });
