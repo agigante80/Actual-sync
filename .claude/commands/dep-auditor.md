@@ -18,7 +18,7 @@ Parse output and create GitHub issues for **moderate / high / critical** finding
 - Dependency path (which direct dep pulls it in)
 - Recommended upgrade command
 
-**Security rule**: never suggest `npm overrides` to silence a vulnerability — always upgrade the direct dependency.
+**Security rule — no overrides**: Never use `npm overrides` or `resolutions` to silence a transitive vulnerability. Always upgrade the direct dependency that pulls it in. This is a hard project rule — see `CLAUDE.md` Anti-Patterns.
 
 ### Check 2: Registry health
 

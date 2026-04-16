@@ -575,3 +575,8 @@ const tempDir = createTempDir();
 // ... test logic ...
 cleanupTempDir(tempDir);
 ```
+
+## Dependency Policy
+
+**Never use `npm overrides` or `resolutions` to force-update a transitive dependency.**
+When a transitive package has a vulnerability, identify and upgrade the direct dependency that pulls it in. Overrides mask the root fix and silently break when the direct dependency is later upgraded.

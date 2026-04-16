@@ -184,6 +184,7 @@ Note: `src/syncService.js` and `index.js` are excluded from coverage collection 
 - Forgetting `actual.shutdown()` in finally blocks
 - Accessing `server.sync.*` directly instead of using `getSyncConfig(server)`
 - Skipping documentation updates when changing observable behavior
+- Using `npm overrides` or `resolutions` to silence a transitive vulnerability — always upgrade the direct dependency that pulls it in instead
 
 ## Documentation
 
