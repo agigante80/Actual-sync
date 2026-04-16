@@ -1,0 +1,139 @@
+{
+  "lastFullAudit": "2026-04-16T00:00:00.000Z",
+  "libraries": {
+    "@actual-app/api": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-04-16",
+      "weeklyDownloads": 11003,
+      "latestVersion": "26.4.0",
+      "installedVersion": "26.4.0",
+      "deprecated": false
+    },
+    "ajv": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-02-20",
+      "weeklyDownloads": 264585441,
+      "latestVersion": "8.18.0",
+      "installedVersion": "8.17.1",
+      "deprecated": false,
+      "vulnerabilities": ["GHSA-2g4f-4pwh-qvx6"],
+      "issueUrl": "https://github.com/agigante80/Actual-sync/issues/51"
+    },
+    "better-sqlite3": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-04-12",
+      "weeklyDownloads": 5777045,
+      "latestVersion": "12.9.0",
+      "installedVersion": "12.5.0",
+      "deprecated": false
+    },
+    "cronstrue": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-03-18",
+      "weeklyDownloads": 2106529,
+      "latestVersion": "3.14.0",
+      "installedVersion": "3.9.0",
+      "deprecated": false
+    },
+    "dotenv": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-04-12",
+      "weeklyDownloads": 119621351,
+      "latestVersion": "17.4.2",
+      "installedVersion": "16.6.1",
+      "deprecated": false,
+      "issueUrl": "https://github.com/agigante80/Actual-sync/issues/54"
+    },
+    "express": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-04-01",
+      "weeklyDownloads": 92751176,
+      "latestVersion": "5.2.1",
+      "installedVersion": "5.2.1",
+      "deprecated": false
+    },
+    "express-rate-limit": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-03-30",
+      "weeklyDownloads": 35400792,
+      "latestVersion": "8.3.2",
+      "installedVersion": "8.2.1",
+      "deprecated": false,
+      "vulnerabilities": ["GHSA-46wh-pxpv-q5gq"],
+      "issueUrl": "https://github.com/agigante80/Actual-sync/issues/48"
+    },
+    "moment-timezone": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-03-18",
+      "weeklyDownloads": 15616191,
+      "latestVersion": "0.6.1",
+      "installedVersion": "0.6.0",
+      "deprecated": false
+    },
+    "node-schedule": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2025-10-13",
+      "weeklyDownloads": 4173741,
+      "latestVersion": "2.1.1",
+      "installedVersion": "2.1.1",
+      "deprecated": false
+    },
+    "nodemailer": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-04-07",
+      "weeklyDownloads": 12456087,
+      "latestVersion": "8.0.5",
+      "installedVersion": "7.0.12",
+      "deprecated": false,
+      "issueUrl": "https://github.com/agigante80/Actual-sync/issues/55"
+    },
+    "prom-client": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2024-06-27",
+      "weeklyDownloads": 6120768,
+      "latestVersion": "15.1.3",
+      "installedVersion": "15.1.3",
+      "deprecated": false,
+      "note": "Last publish June 2024 — ~22 months. No newer version available; package is current."
+    },
+    "rotating-file-stream": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-02-21",
+      "weeklyDownloads": 173336,
+      "latestVersion": "3.2.9",
+      "installedVersion": "3.2.7",
+      "deprecated": false
+    },
+    "uuid": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2025-09-08",
+      "weeklyDownloads": 240124963,
+      "latestVersion": "13.0.0",
+      "installedVersion": "11.1.0",
+      "deprecated": false,
+      "issueUrl": "https://github.com/agigante80/Actual-sync/issues/56"
+    },
+    "ws": {
+      "lastChecked": "2026-04-16",
+      "status": "maintained",
+      "lastPublish": "2026-03-21",
+      "weeklyDownloads": 187192988,
+      "latestVersion": "8.20.0",
+      "installedVersion": "8.18.3",
+      "deprecated": false
+    }
+  }
+}
