@@ -163,7 +163,7 @@ jobs:
         run: npm test -- --coverage --ci
 
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         if: always()
         with:
           files: ./coverage/lcov.info
