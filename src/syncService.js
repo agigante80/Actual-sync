@@ -397,7 +397,11 @@ async function syncBank(server, options = {}) {
         // Download budget with encryption password if provided
         const downloadOptions = encryptionPassword ? { password: encryptionPassword } : undefined;
         
-        // Download budget (single attempt - no retries)
+        // Download budget — one immediate retry on failure before clearing cache.
+        // @actual-app/api 26.4.x propagates errors that 26.1.x swallowed (e.g. the
+        // internal loadBudget failure caused by resetClock:true on a cold download).
+        // The retry succeeds once the server has established its sync state, or
+        // surfaces a real persistent error that warrants clearing the cache.
         let downloadError;
         try {
             await actual.downloadBudget(syncId, downloadOptions);
@@ -406,33 +410,46 @@ async function syncBank(server, options = {}) {
             });
         } catch (error) {
             downloadError = error;
-            serverLogger.debug('Download failed', {
-                error: error?.reason || error?.message || String(error)
+            serverLogger.warn('Budget download failed, retrying once before clearing cache', {
+                error: error?.reason || error?.message || String(error),
             });
         }
-        
-        // If download failed, clear the local cache so the next sync attempt starts
-        // from a clean state rather than compounding a partial download into repeated failures.
+
         if (downloadError) {
+            let retryError = null;
             try {
-                await fs.rm(dataDir, { recursive: true, force: true });
-                await fs.mkdir(dataDir, { recursive: true });
-                serverLogger.warn('Cleared local budget cache after failed download', { dataDir });
-            } catch (cleanupErr) {
-                serverLogger.warn('Failed to clear local budget cache', {
-                    dataDir,
-                    error: cleanupErr.message,
+                await new Promise(r => setTimeout(r, 5000));
+                await actual.downloadBudget(syncId, downloadOptions);
+                serverLogger.info('Budget file loaded successfully on retry', {
+                    encrypted: !!encryptionPassword
                 });
+                downloadError = null; // retry succeeded — fall through to loadBudget workaround
+            } catch (err) {
+                retryError = err;
             }
-            const enhancedError = enhanceActualApiError(downloadError, {
-                phase: 'download',
-                serverUrl: url,
-                syncId,
-                isEncrypted: !!encryptionPassword
-            }, serverLogger);
-            enhancedError.syncId = syncId;
-            enhancedError.serverUrl = url;
-            throw enhancedError;
+
+            if (retryError) {
+                // Both attempts failed — clear partial/corrupted cache and give up.
+                try {
+                    await fs.rm(dataDir, { recursive: true, force: true });
+                    await fs.mkdir(dataDir, { recursive: true });
+                    serverLogger.warn('Cleared local budget cache after two failed downloads', { dataDir });
+                } catch (cleanupErr) {
+                    serverLogger.warn('Failed to clear local budget cache', {
+                        dataDir,
+                        error: cleanupErr.message,
+                    });
+                }
+                const enhancedError = enhanceActualApiError(downloadError, {
+                    phase: 'download',
+                    serverUrl: url,
+                    syncId,
+                    isEncrypted: !!encryptionPassword
+                }, serverLogger);
+                enhancedError.syncId = syncId;
+                enhancedError.serverUrl = url;
+                throw enhancedError;
+            }
         }
 
         // Workaround for @actual-app/api 26.x: when the server sets resetClock:true

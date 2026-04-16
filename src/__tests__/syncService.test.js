@@ -439,7 +439,7 @@ describe('syncService Integration Tests', () => {
     // Fix 4: loadBudget workaround for resetClock:true
     // Fix 2: enhanceActualApiError preserves error.code / error.errorCode
     // -------------------------------------------------------------------------
-    describe('Fix 1 — download failure clears dataDir', () => {
+    describe('Fix 1 — download failure clears dataDir (with retry)', () => {
         let tempDir;
         let consoleSuppress;
 
@@ -456,40 +456,69 @@ describe('syncService Integration Tests', () => {
             cleanupTempDir(tempDir);
         });
 
-        test('dataDir is emptied after downloadBudget failure, error re-thrown, shutdown called', async () => {
-            actual.init.mockResolvedValue(undefined);
-            actual.downloadBudget.mockRejectedValue(new Error('Network error'));
-            actual.shutdown.mockResolvedValue(undefined);
-
-            // Test-local syncBank that mirrors the Fix 1 logic in syncService.js
-            async function syncBankWithCacheClearing(server) {
-                const { url, password, syncId, dataDir } = server;
+        // Test-local function mirroring the download+retry+clear logic in syncService.js
+        async function syncBankWithRetry(server) {
+            const { url, password, syncId, dataDir } = server;
+            const opts = password ? { password } : undefined;
+            try {
+                await actual.init({ serverURL: url, password, dataDir });
+                let downloadError;
                 try {
-                    await actual.init({ serverURL: url, password, dataDir });
-                    let downloadError;
+                    await actual.downloadBudget(syncId, opts);
+                } catch (err) {
+                    downloadError = err;
+                }
+                if (downloadError) {
+                    let retryError = null;
                     try {
-                        await actual.downloadBudget(syncId);
+                        await actual.downloadBudget(syncId, opts); // retry (no sleep in tests)
                     } catch (err) {
-                        downloadError = err;
+                        retryError = err;
                     }
-                    if (downloadError) {
-                        // Fix 1: clear corrupted cache before re-throwing
+                    if (retryError) {
                         await fs.rm(dataDir, { recursive: true, force: true });
                         await fs.mkdir(dataDir, { recursive: true });
                         throw downloadError;
                     }
-                } finally {
-                    await actual.shutdown();
+                    // retry succeeded — fall through
                 }
+            } finally {
+                await actual.shutdown();
             }
+        }
+
+        test('both downloads fail → dataDir is emptied, error re-thrown, shutdown called', async () => {
+            actual.init.mockResolvedValue(undefined);
+            actual.downloadBudget.mockRejectedValue(new Error('Network error'));
+            actual.shutdown.mockResolvedValue(undefined);
 
             await expect(
-                syncBankWithCacheClearing({ url: 'http://x', password: 'p', syncId: 'sid', dataDir: tempDir })
+                syncBankWithRetry({ url: 'http://x', password: 'p', syncId: 'sid', dataDir: tempDir })
             ).rejects.toThrow('Network error');
 
-            // dataDir should exist but be empty (stale db.sqlite was removed)
+            // downloadBudget called twice (initial + retry)
+            expect(actual.downloadBudget).toHaveBeenCalledTimes(2);
+            // dataDir cleared (stale db.sqlite removed)
             const entries = await fs.readdir(tempDir);
             expect(entries).toHaveLength(0);
+            expect(actual.shutdown).toHaveBeenCalledTimes(1);
+        });
+
+        test('first download fails, retry succeeds → dataDir NOT cleared, no error thrown', async () => {
+            actual.init.mockResolvedValue(undefined);
+            actual.downloadBudget
+                .mockRejectedValueOnce(new Error('Transient error'))
+                .mockResolvedValueOnce(undefined);
+            actual.shutdown.mockResolvedValue(undefined);
+
+            await expect(
+                syncBankWithRetry({ url: 'http://x', password: 'p', syncId: 'sid', dataDir: tempDir })
+            ).resolves.toBeUndefined();
+
+            expect(actual.downloadBudget).toHaveBeenCalledTimes(2);
+            // dataDir intact (stale file still present — was not cleared)
+            const entries = await fs.readdir(tempDir);
+            expect(entries).toContain('db.sqlite');
             expect(actual.shutdown).toHaveBeenCalledTimes(1);
         });
     });
