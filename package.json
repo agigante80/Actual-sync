@@ -1,6 +1,6 @@
 {
   "name": "actual-sync",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Automated bank synchronization service for Actual Budget",
   "main": "index.js",
   "scripts": {
