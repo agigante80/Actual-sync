@@ -63,6 +63,15 @@ docker run --rm \
   actual-sync:dev
 ```
 
+### NAS Deployment (Synology DS220+)
+
+The NAS pulls a pre-built image from GHCR — **`docker compose build` is a no-op there** (no `build:` key in the compose file). To update after a new image is published:
+
+```bash
+cd /volume1/docker/project/Finance-actual-budget
+docker compose pull actual-sync && docker compose up -d actual-sync
+```
+
 ## Architecture
 
 ### Core Data Flow
