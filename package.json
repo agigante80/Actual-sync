@@ -57,7 +57,7 @@
     "url": ""
   },
   "dependencies": {
-    "@actual-app/api": "^26.4.0",
+    "@actual-app/api": "^26.5.0",
     "ajv": "^8.18.0",
     "better-sqlite3": "^12.5.0",
     "cronstrue": "^3.9.0",
