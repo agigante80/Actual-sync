@@ -71,7 +71,29 @@ $ ./get_version.sh
 - Build metadata (`+HASH`) includes 7-character commit hash
 - Fully compliant with [Semantic Versioning 2.0.0](https://semver.org/)
 
-## Automated Version Management
+## Automated Releases
+
+Every successful **CI/CD Pipeline** run on `main` triggers the **Auto Release**
+workflow (`.github/workflows/auto-release.yml`), which:
+
+1. Runs only if the CI pipeline **succeeded** (`workflow_run.conclusion == 'success'`) — broken code is never released.
+2. **Patch-bumps** the version via `npm run version:bump -- patch`, keeping `VERSION`, `package.json`, and `package-lock.json` in sync.
+3. Commits `chore(release): bump version to X.Y.Z`, creates the `vX.Y.Z` tag, and pushes both to `main`.
+4. Creates the GitHub Release with auto-generated notes.
+
+**Recursion guard:** the bump commit re-triggers CI; the workflow skips when the
+head commit message starts with `chore(release): bump version`, so it releases
+once and stops.
+
+**Authentication:** the workflow uses a **GitHub App token** (`APP_ID` /
+`APP_PRIVATE_KEY` secrets). The default `GITHUB_TOKEN` is intentionally not used —
+tags it pushes do not trigger downstream workflows, so the new `v*` tag would not
+trigger the tag-based Docker publish.
+
+> Manual bumps are still possible locally with `npm run release:patch` (or
+> `:minor` / `:major`), which run the same `version-bump.js` script. The script
+> aborts if your local version is behind the latest released tag (use `--force`
+> to override).
 
 ### CI/CD Integration
 
