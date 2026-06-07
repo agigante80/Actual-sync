@@ -1,4 +1,8 @@
-# 🏦 Actual-sync
+<p align="center">
+  <img src="unraid/actual-sync-icon.png" alt="Actual-sync logo" width="128" height="128">
+</p>
+
+<h1 align="center">Actual-sync</h1>
 
 > Automated bank synchronization service for Actual Budget with multi-server support, health monitoring, and comprehensive error handling
 
