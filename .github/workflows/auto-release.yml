@@ -1,0 +1,123 @@
+name: Auto Release
+
+# -----------------------------------------------------------------------------
+# Creates a GitHub Release on every SUCCESSFUL CI run on main.
+#
+# Trigger: workflow_run (NOT push). It fires only after the "CI/CD Pipeline"
+# workflow completes on main, and the success guard below stops it cold if CI
+# failed — so a release is never created for broken code. This replaces the old
+# `release` job in ci-cd.yml, which was keyed off an unbumped static version and
+# therefore never produced a new release (issue #86).
+#
+# On each successful run it patch-bumps the version (package.json + VERSION +
+# package-lock.json), commits, tags, and releases.
+#
+# Recursion guard: the bump commit it pushes to main re-triggers CI, which would
+# re-trigger this workflow. The guard skips when the validated head commit is the
+# bump commit itself (message prefix `chore(release): bump version`), so the loop
+# terminates after one extra CI run (which usefully builds the version-tagged
+# Docker image).
+#
+# Auth: uses a GitHub App token (APP_ID / APP_PRIVATE_KEY secrets). The default
+# GITHUB_TOKEN cannot be used because commits/tags it pushes do NOT trigger
+# downstream workflows, so the new v* tag would not trigger ci-cd's tag-based
+# docker-publish. The App token makes the tag push trigger CI normally.
+# -----------------------------------------------------------------------------
+
+on:
+  workflow_run:
+    workflows: ["CI/CD Pipeline"]
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  auto-release:
+    name: Patch Bump & Release
+    runs-on: ubuntu-latest
+    # Primary safeguard: never release unless the CI pipeline succeeded.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Generate GitHub App token
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout the validated commit
+        uses: actions/checkout@v4
+        with:
+          # Check out the exact commit CI validated, not current HEAD.
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0          # full history + tags for the freshness check
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Recursion guard — skip our own bump commit
+        id: guard
+        run: |
+          MSG=$(git log -1 --pretty=%s)
+          echo "Head commit: $MSG"
+          if printf '%s' "$MSG" | grep -q '^chore(release): bump version'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Head is a release bump commit — skipping to avoid a release loop."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Patch-bump version
+        if: steps.guard.outputs.skip != 'true'
+        id: bump
+        run: |
+          npm run version:bump -- patch
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumped to $NEW_VERSION"
+
+      - name: Commit, tag, and push
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION package.json package-lock.json
+          git commit -m "chore(release): bump version to ${{ steps.bump.outputs.new_version }}"
+          git tag -a "v${{ steps.bump.outputs.new_version }}" -m "Release v${{ steps.bump.outputs.new_version }}"
+          # workflow_run runs on a detached HEAD; push the commit to the remote
+          # main ref explicitly, then the tag.
+          git push origin HEAD:main
+          git push origin "v${{ steps.bump.outputs.new_version }}"
+
+      - name: Create GitHub Release
+        if: steps.guard.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.bump.outputs.new_version }}
+          name: v${{ steps.bump.outputs.new_version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ steps.guard.outputs.skip }}" = "true" ]; then
+            echo "### ⏭️ Auto-Release Skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "Head commit is a version bump; no release created (recursion guard)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### 🎉 Auto-Release Complete" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Version:** v${{ steps.bump.outputs.new_version }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Release:** [v${{ steps.bump.outputs.new_version }}](https://github.com/${{ github.repository }}/releases/tag/v${{ steps.bump.outputs.new_version }})" >> "$GITHUB_STEP_SUMMARY"
+          fi
