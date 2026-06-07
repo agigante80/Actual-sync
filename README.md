@@ -161,6 +161,7 @@ docker run -d \
   -v ./data:/app/data \
   -v ./logs:/app/logs \
   -p 3000:3000 \
+  -e PUID=1001 -e PGID=1001 \
   -e TZ=America/New_York \
   agigante80/actual-sync:latest
 
@@ -172,11 +173,18 @@ docker run -d \
   -v ./data:/app/data \
   -v ./logs:/app/logs \
   -p 3000:3000 \
+  -e PUID=1001 -e PGID=1001 \
   -e TZ=America/New_York \
   ghcr.io/agigante80/actual-sync:latest
 ```
 
 Create `config/config.json` in your mounted directory and you're ready to go!
+
+> **PUID / PGID:** the container starts as root only to align its user to `PUID`/`PGID`
+> (default `1001:1001`) and fix ownership of the `data` and `logs` volumes, then drops
+> to that non-root user. Set these to match the owner of your mounted directories — on
+> **Unraid** use `PUID=99` and `PGID=100` (`nobody:users`). Without this, a container
+> whose volumes are owned by a different UID cannot write its database or logs.
 
 See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for complete Docker setup.
 
@@ -248,6 +256,7 @@ docker run -d \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/logs:/app/logs \
   -p 3000:3000 \
+  -e PUID=1001 -e PGID=1001 \
   -e TZ=America/New_York \
   agigante80/actual-sync:latest
 ```
@@ -268,6 +277,8 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     environment:
+      - PUID=1001          # set to 99 on Unraid (nobody)
+      - PGID=1001          # set to 100 on Unraid (users)
       - TZ=America/New_York
       - NODE_ENV=production
 ```
@@ -476,6 +487,8 @@ services:
       - ./logs:/app/logs              # Log files
     
     environment:
+      - PUID=1001                     # Run-as UID (99 on Unraid)
+      - PGID=1001                     # Run-as GID (100 on Unraid)
       - TZ=America/New_York           # Timezone for schedules
       - NODE_ENV=production
     

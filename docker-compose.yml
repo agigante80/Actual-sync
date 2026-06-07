@@ -11,6 +11,10 @@ services:
     
     # Environment variables (optional, overrides config.json)
     environment:
+      # PUID/PGID: run as this UID/GID and chown the data/logs volumes to match.
+      # Defaults to 1001:1001. On Unraid set 99:100 (nobody:users).
+      - PUID=1001
+      - PGID=1001
       - TZ=Europe/Madrid
       - NODE_ENV=production
     
