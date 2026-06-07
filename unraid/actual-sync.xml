@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>actual-sync</Name>
+  <Repository>ghcr.io/agigante80/actual-sync:latest</Repository>
+  <Registry>https://github.com/agigante80/Actual-sync/pkgs/container/actual-sync</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/agigante80/Actual-sync/issues</Support>
+  <Project>https://github.com/agigante80/Actual-sync</Project>
+  <Overview>Automated bank transaction synchronization for Actual Budget. Runs scheduled syncs across multiple budget instances (including encrypted budgets), with a web dashboard, Prometheus metrics, multi-channel notifications (Email/Telegram/Slack/Discord), retry logic, and health monitoring. Provide a config.json in the Config path before starting — see the project README for the schema.</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:3000]/dashboard</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/agigante80/Actual-sync/main/unraid/actual-sync-icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Description>Automated bank transaction synchronization for Actual Budget with multi-server support, scheduling, encrypted-budget support, a web dashboard, Prometheus metrics, and multi-channel notifications.&#xD;&#xD;Before first start, place your config.json inside the mapped Config directory. The health/dashboard/metrics endpoint is served on container port 3000 (/health, /ready, /metrics, /dashboard).</Description>
+  <Config Name="WebUI / Health Port" Target="3000" Default="3000" Mode="tcp" Description="Health, dashboard and Prometheus endpoint (/health, /ready, /metrics, /dashboard)." Type="Port" Display="always" Required="true" Mask="false">3000</Config>
+  <Config Name="Config" Target="/app/config" Default="/mnt/user/appdata/actual-sync/config" Mode="rw" Description="Directory containing config.json (validated against the project schema at startup)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/actual-sync/config</Config>
+  <Config Name="Data" Target="/app/data" Default="/mnt/user/appdata/actual-sync/data" Mode="rw" Description="Persistent data: SQLite sync history and per-server Actual Budget data directories." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/actual-sync/data</Config>
+  <Config Name="Logs" Target="/app/logs" Default="/mnt/user/appdata/actual-sync/logs" Mode="rw" Description="Rotated application log files." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/actual-sync/logs</Config>
+  <Config Name="Timezone" Target="TZ" Default="Europe/Madrid" Mode="" Description="Container timezone used for scheduling and log timestamps, e.g. America/New_York." Type="Variable" Display="always" Required="false" Mask="false">Europe/Madrid</Config>
+  <Config Name="Node Environment" Target="NODE_ENV" Default="production" Mode="" Description="Node.js runtime environment. Leave as production unless debugging." Type="Variable" Display="advanced" Required="false" Mask="false">production</Config>
+</Container>
