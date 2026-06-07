@@ -206,6 +206,18 @@ npm run sync
 npm start
 ```
 
+### Option 3: Unraid (Community Applications)
+
+[![Unraid](https://img.shields.io/badge/Unraid-Community%20Applications-orange)](https://unraid.net/community/apps)
+
+Unraid users can install actual-sync from the **Apps** tab (Community Applications):
+
+1. Open the **Apps** tab and search for **`actual-sync`**.
+2. Click **Install**, then set the **Config** path and place your `config.json` inside it before starting (see [Configuration](#%EF%B8%8F-configuration)).
+3. After it starts, open the dashboard via the container's **WebUI** link (port `3000`).
+
+The Unraid template lives in [`unraid/actual-sync.xml`](unraid/actual-sync.xml).
+
 ---
 
 ## 📦 Installation
