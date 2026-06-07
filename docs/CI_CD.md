@@ -324,8 +324,12 @@ curl http://localhost:3000/metrics
 **Duration**: ~10-15 minutes (multi-platform builds)
 
 **Platforms Built**:
-- linux/amd64 (x86_64)
-- linux/arm64 (ARM 64-bit)
+- `main` and `v*` tags → **`linux/amd64` + `linux/arm64`** (multi-arch release builds)
+- `development` and other pushes → **`linux/amd64` only**
+
+> arm64 is built via QEMU emulation and is slow, so it is reserved for release
+> builds on `main`/tags. `development` pushes build amd64 only to keep the
+> pipeline fast. The published `main`/tag images remain multi-arch.
 
 **Tags Generated**:
 

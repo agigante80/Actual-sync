@@ -45,7 +45,6 @@ on:
 env:
   NODE_VERSION: '20'
   DOCKER_IMAGE_NAME: actual-sync
-  DOCKER_PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   # ============================================================================
@@ -394,11 +393,21 @@ jobs:
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
           echo "📦 Docker tags: ${TAGS}"
 
+          # Multi-arch (amd64+arm64) only for releases (main / v* tags); arm64 is
+          # emulated via QEMU and slow, so development pushes build amd64 only.
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+            PLATFORMS="linux/amd64,linux/arm64"
+          else
+            PLATFORMS="linux/amd64"
+          fi
+          echo "platforms=${PLATFORMS}" >> $GITHUB_OUTPUT
+          echo "🏗️ Platforms: ${PLATFORMS}"
+
       - name: Build and push Docker images
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: ${{ env.DOCKER_PLATFORMS }}
+          platforms: ${{ steps.meta.outputs.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
@@ -416,7 +425,7 @@ jobs:
           echo "### 🐳 Docker Images Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: \`${{ needs.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Platforms**: \`${{ env.DOCKER_PLATFORMS }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platforms**: \`${{ steps.meta.outputs.platforms }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Tags**:" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY

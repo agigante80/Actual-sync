@@ -17,14 +17,13 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies (including devDependencies for build)
-RUN npm ci
+# Install production dependencies only. devDependencies (jest, puppeteer — which
+# downloads Chromium) are not needed: tests run in the dedicated CI job, and the
+# production stage copies this node_modules verbatim, so it must be dev-free.
+RUN npm ci --omit=dev
 
 # Copy source code
 COPY . .
-
-# Run tests to ensure build quality
-RUN npm test
 
 # Stage 2: Production image
 FROM node:22-alpine
@@ -57,9 +56,12 @@ COPY --from=builder /app/index.js ./
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Create directories with proper permissions
+# Create the writable volume dirs and own only those. App code and node_modules
+# are world-readable as copied, so the runtime user can read them — a recursive
+# chown over /app (thousands of node_modules files) is needlessly slow. The
+# entrypoint also re-chowns data/logs to the runtime PUID/PGID at startup.
 RUN mkdir -p /app/data /app/logs && \
-    chown -R actualuser:actualuser /app
+    chown -R actualuser:actualuser /app/data /app/logs
 
 # OCI metadata labels
 LABEL org.opencontainers.image.version="${VERSION}" \
