@@ -270,6 +270,18 @@ Use relative paths in config for mounted volumes:
 }
 ```
 
+## The Image
+
+The published image is built from a multi-stage `Dockerfile` and ships **only
+production dependencies** — the builder installs with `npm ci --omit=dev`, so
+devDependencies (`jest`, `puppeteer` and its bundled Chromium, etc.) are **not
+present** in `/app/node_modules`. This keeps the image small and reduces its
+attack surface. Tests are run in CI, not inside the image build.
+
+The container starts as root only to apply `PUID`/`PGID` and fix ownership of the
+writable volumes, then drops to a non-root user (see
+[Issue 1: Permission Denied](#issue-1-permission-denied--database-write-errors)).
+
 ## Production Tips
 
 ### 1. Security

@@ -45,7 +45,6 @@ on:
 env:
   NODE_VERSION: '20'
   DOCKER_IMAGE_NAME: actual-sync
-  DOCKER_PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   # ============================================================================
@@ -394,11 +393,21 @@ jobs:
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
           echo "📦 Docker tags: ${TAGS}"
 
+          # Multi-arch (amd64+arm64) only for releases (main / v* tags); arm64 is
+          # emulated via QEMU and slow, so development pushes build amd64 only.
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" =~ ^refs/tags/v ]]; then
+            PLATFORMS="linux/amd64,linux/arm64"
+          else
+            PLATFORMS="linux/amd64"
+          fi
+          echo "platforms=${PLATFORMS}" >> $GITHUB_OUTPUT
+          echo "🏗️ Platforms: ${PLATFORMS}"
+
       - name: Build and push Docker images
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: ${{ env.DOCKER_PLATFORMS }}
+          platforms: ${{ steps.meta.outputs.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
@@ -416,7 +425,7 @@ jobs:
           echo "### 🐳 Docker Images Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: \`${{ needs.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Platforms**: \`${{ env.DOCKER_PLATFORMS }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platforms**: \`${{ steps.meta.outputs.platforms }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Tags**:" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
@@ -529,97 +538,6 @@ jobs:
           echo "- **Long Description**: Updated from docker/description/long.md" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
-  # Job 10: Create GitHub Release
-  # ============================================================================
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs: [version, docker-publish, security-scan]
-    if: |
-      always() &&
-      needs.version.outputs.is_release == 'true' &&
-      needs.docker-publish.result == 'success' &&
-      (needs.security-scan.result == 'success' || needs.security-scan.result == 'skipped')
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Check if release already exists
-        id: check_tag
-        run: |
-          TAG="v${{ needs.version.outputs.version }}"
-          if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
-            echo "Tag $TAG already exists — skipping release creation"
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Generate changelog
-        if: steps.check_tag.outputs.skip != 'true'
-        id: changelog
-        run: |
-          # Get previous tag
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          
-          if [ -n "$PREV_TAG" ]; then
-            echo "Generating changelog from $PREV_TAG to ${{ needs.version.outputs.version }}"
-            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
-          else
-            echo "No previous tag found, showing recent commits"
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges -n 20)
-          fi
-          
-          # Save changelog to file
-          echo "$CHANGELOG" > changelog.txt
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGELOG" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Create GitHub Release
-        if: steps.check_tag.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ needs.version.outputs.version }}
-          name: Release v${{ needs.version.outputs.version }}
-          body: |
-            ## 🎉 Release v${{ needs.version.outputs.version }}
-            
-            ### 📦 Docker Images
-            
-            ```bash
-            # Docker Hub
-            docker pull ${{ secrets.DOCKERHUB_USER }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.docker_version }}
-            
-            # GitHub Container Registry
-            docker pull ghcr.io/${{ github.repository_owner }}/${{ env.DOCKER_IMAGE_NAME }}:${{ needs.version.outputs.docker_version }}
-            ```
-            
-            ### 📝 Changelog
-            
-            ${{ steps.changelog.outputs.changelog }}
-            
-            ### 🔒 Security
-            
-            This release has been scanned for vulnerabilities. Check the Security tab for details.
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-
-      - name: Release summary
-        if: steps.check_tag.outputs.skip != 'true'
-        run: |
-          echo "### 🎉 Release Created" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version**: \`${{ needs.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tag**: \`v${{ needs.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: Published" >> $GITHUB_STEP_SUMMARY
-
-  # ============================================================================
   # Job 10: Deployment Test
   # ============================================================================
   deployment-test:
@@ -671,7 +589,7 @@ jobs:
   summary:
     name: Pipeline Summary
     runs-on: ubuntu-latest
-    needs: [version, lint, test, build, validate-short-description, docker-test, docker-publish, docker-hub-description, security-scan, deployment-test, release]
+    needs: [version, lint, test, build, validate-short-description, docker-test, docker-publish, docker-hub-description, security-scan, deployment-test]
     if: always()
     steps:
       - name: Generate pipeline summary
@@ -690,6 +608,5 @@ jobs:
           echo "| Docker Hub Description | ${{ needs.docker-hub-description.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Security Scan | ${{ needs.security-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Deployment Test | ${{ needs.deployment-test.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Release | ${{ needs.release.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version**: \`${{ needs.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
