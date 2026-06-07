@@ -1,0 +1,28 @@
+name: Validate Unraid templates
+
+# Mirrors the official Community Applications gate (selfhosters/unRAID-CA-templates),
+# which validates submissions with xmllint well-formedness only.
+
+on:
+  push:
+    paths:
+      - 'unraid/**.xml'
+      - '.github/workflows/unraid-xmllint.yml'
+  pull_request:
+    paths:
+      - 'unraid/**.xml'
+      - '.github/workflows/unraid-xmllint.yml'
+  workflow_dispatch:
+
+jobs:
+  xmllint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install xmllint
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+
+      - name: Validate Unraid template XML well-formedness
+        run: xmllint --noout unraid/*.xml

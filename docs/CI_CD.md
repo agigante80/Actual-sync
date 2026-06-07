@@ -57,21 +57,22 @@ The CI/CD pipeline consists of 10 interconnected jobs that run in a specific ord
       │     Test       │
       └────────┬───────┘
                │
-               ▼
-         ┌──────────┐
-         │ Release  │
-         │ (if tag) │
-         └──────────┘
+               ▼  (on success on main)
+   ┌──────────────────────────┐
+   │  Auto Release workflow    │
+   │  (separate; patch-bump +  │
+   │   tag + GitHub Release)    │
+   └──────────────────────────┘
 ```
 
 ### Pipeline Triggers
 
 The pipeline runs automatically on:
 
-- **Push to main branch**: Full pipeline including Docker publish and potential release
+- **Push to main branch**: Full pipeline + Docker publish; on success triggers the separate Auto Release workflow (patch-bump + GitHub Release)
 - **Push to develop branch**: Full pipeline with development tags
 - **Pull requests**: Testing and validation only (no publishing)
-- **Git tags (v*)**: Full pipeline with GitHub release creation
+- **Git tags (v*)**: Full pipeline with Docker publish for the version tag (the release itself is created by the Auto Release workflow, which also pushes the tag)
 - **Manual dispatch**: Configurable workflow with custom options
 
 ---
@@ -323,8 +324,12 @@ curl http://localhost:3000/metrics
 **Duration**: ~10-15 minutes (multi-platform builds)
 
 **Platforms Built**:
-- linux/amd64 (x86_64)
-- linux/arm64 (ARM 64-bit)
+- `main` and `v*` tags → **`linux/amd64` + `linux/arm64`** (multi-arch release builds)
+- `development` and other pushes → **`linux/amd64` only**
+
+> arm64 is built via QEMU emulation and is slow, so it is reserved for release
+> builds on `main`/tags. `development` pushes build amd64 only to keep the
+> pipeline fast. The published `main`/tag images remain multi-arch.
 
 **Tags Generated**:
 
@@ -383,54 +388,33 @@ curl http://localhost:3000/metrics
 
 ---
 
-### 9. Release
+### Release (separate workflow)
 
-**Purpose**: Create GitHub release with changelog
+Releases are **not** a job in this pipeline. They are handled by the dedicated
+**Auto Release** workflow (`.github/workflows/auto-release.yml`), which runs
+*after* this CI/CD Pipeline finishes successfully on `main`.
 
-**Runs on**: Git tags on `main` branch only
+Why separate: keying a release off an unbumped `package.json` version meant the
+duplicate-tag guard skipped every release, so dependency updates never produced a
+new release (issue #86). The Auto Release workflow instead **patch-bumps** the
+version on each successful `main` run and creates the release.
 
-**Dependencies**: `version`, `docker-publish`, `security-scan`
+**Trigger**: `workflow_run` — when "CI/CD Pipeline" completes on `main`.
 
-**Condition**: Only if `is_release == true`
+**Guard**: only runs if `workflow_run.conclusion == 'success'`; skips its own bump
+commit (message prefix `chore(release): bump version`) to avoid a release loop.
 
 **Steps**:
-1. Checkout code with full history
-2. Generate changelog from previous tag
-3. Create GitHub release
-4. Attach artifacts
-5. Generate release notes
+1. Generate a GitHub App token (`APP_ID` / `APP_PRIVATE_KEY` secrets).
+2. Check out the exact validated commit (`workflow_run.head_sha`).
+3. `npm run version:bump -- patch` (updates `VERSION`, `package.json`, `package-lock.json`).
+4. Commit, tag `vX.Y.Z`, push commit + tag to `main`.
+5. Create the GitHub Release with auto-generated notes.
 
-**Duration**: ~30 seconds
+> The App token is required (not `GITHUB_TOKEN`) so the new `v*` tag triggers this
+> pipeline's tag-based `docker-publish`, producing a version-tagged image.
 
-**Release Contents**:
-- Version number
-- Docker pull commands (Docker Hub + GHCR)
-- Changelog with commits
-- Security scan status
-- Auto-generated release notes
-
-**Example Release**:
-```markdown
-## 🎉 Release v1.0.0
-
-### 📦 Docker Images
-
-# Docker Hub
-docker pull <username>/actual-sync:1.0.0
-
-# GitHub Container Registry
-docker pull ghcr.io/<owner>/actual-sync:1.0.0
-
-### 📝 Changelog
-
-- Add CI/CD pipeline (abc1234)
-- Fix security vulnerabilities (def5678)
-- Update dependencies (ghi9012)
-
-### 🔒 Security
-
-This release has been scanned for vulnerabilities.
-```
+See [VERSIONING.md](VERSIONING.md#automated-releases) for the full flow.
 
 ---
 

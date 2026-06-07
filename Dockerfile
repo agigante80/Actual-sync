@@ -17,14 +17,13 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies (including devDependencies for build)
-RUN npm ci
+# Install production dependencies only. devDependencies (jest, puppeteer — which
+# downloads Chromium) are not needed: tests run in the dedicated CI job, and the
+# production stage copies this node_modules verbatim, so it must be dev-free.
+RUN npm ci --omit=dev
 
 # Copy source code
 COPY . .
-
-# Run tests to ensure build quality
-RUN npm test
 
 # Stage 2: Production image
 FROM node:22-alpine
@@ -33,8 +32,9 @@ FROM node:22-alpine
 ARG VERSION=unknown
 ENV VERSION=${VERSION}
 
-# Install runtime dependencies and tini
-RUN apk add --no-cache sqlite tini
+# Install runtime dependencies, tini, and the tools needed for PUID/PGID support
+# (su-exec to drop privileges, shadow for usermod/groupmod)
+RUN apk add --no-cache sqlite tini su-exec shadow
 
 # Create non-root user
 RUN addgroup -g 1001 -S actualuser && \
@@ -52,9 +52,16 @@ COPY --from=builder /app/config ./config
 COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/index.js ./
 
-# Create directories with proper permissions
+# Entrypoint handles PUID/PGID alignment and privilege drop
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Create the writable volume dirs and own only those. App code and node_modules
+# are world-readable as copied, so the runtime user can read them — a recursive
+# chown over /app (thousands of node_modules files) is needlessly slow. The
+# entrypoint also re-chowns data/logs to the runtime PUID/PGID at startup.
 RUN mkdir -p /app/data /app/logs && \
-    chown -R actualuser:actualuser /app
+    chown -R actualuser:actualuser /app/data /app/logs
 
 # OCI metadata labels
 LABEL org.opencontainers.image.version="${VERSION}" \
@@ -63,8 +70,8 @@ LABEL org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.vendor="Actual-sync" \
       org.opencontainers.image.licenses="MIT"
 
-# Switch to non-root user
-USER actualuser
+# NOTE: the container starts as root so the entrypoint can align PUID/PGID and
+# fix volume ownership; it then drops to the non-root actualuser via su-exec.
 
 # Expose health check port
 EXPOSE 3000
@@ -73,8 +80,8 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD node -e "require('http').get('http://localhost:3000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"
 
-# Use tini for proper signal handling
-ENTRYPOINT ["/sbin/tini", "--"]
+# tini for signal handling; entrypoint applies PUID/PGID then drops privileges
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 
 # Start the application
 CMD ["node", "index.js"]
