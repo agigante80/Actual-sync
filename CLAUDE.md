@@ -45,6 +45,11 @@ npm run list-accounts
 
 # View sync history
 npm run history
+
+# Bump version (updates VERSION + package.json + package-lock.json in sync;
+# aborts if local version is behind the latest released tag). Rarely needed
+# manually — releases auto-bump (see Git Workflow).
+npm run version:bump -- patch   # or: release:patch / release:minor / release:major
 ```
 
 No build step — this is plain JavaScript (no TypeScript, no bundler).
@@ -55,20 +60,22 @@ No build step — this is plain JavaScript (no TypeScript, no bundler).
 # Build image
 docker build -t actual-sync:dev .
 
-# Run locally with volume mounts (note: image runs as non-root UID 1001)
+# Run locally with volume mounts
 docker run --rm \
   -v ./config:/app/config:ro \
   -v ./data:/app/data \
   -v ./logs:/app/logs \
+  -e PUID=1001 -e PGID=1001 \
   actual-sync:dev
 ```
 
-### NAS Deployment (Synology DS220+)
+**PUID/PGID & privilege drop:** the container starts as root via `docker/entrypoint.sh`, aligns its user to `PUID`/`PGID` (default `1001:1001`), chowns `/app/data` + `/app/logs`, then drops to that non-root user with `su-exec` under `tini`. Set `PUID`/`PGID` to match the owner of the mounted volumes (Unraid: `99`/`100`); otherwise the budget SQLite DB can't be written and sync fails with "No budget file is open". The published image is built with `npm ci --omit=dev`, so it contains **no** devDependencies. Multi-arch (arm64) images are built only on `main`/`v*` tags; `development` builds amd64 only.
 
-The NAS pulls a pre-built image from GHCR — **`docker compose build` is a no-op there** (no `build:` key in the compose file). To update after a new image is published:
+### NAS / server deployment (pull pre-built image)
+
+In deployments that consume the pre-built GHCR image (no `build:` key in the compose file), **`docker compose build` is a no-op** — update by pulling the newly published image:
 
 ```bash
-cd /volume1/docker/project/Finance-actual-budget
 docker compose pull actual-sync && docker compose up -d actual-sync
 ```
 
@@ -186,7 +193,25 @@ Note: `src/syncService.js` and `index.js` are excluded from coverage collection 
 
 ## Git Workflow
 
-**Never push to `main` directly.** All code changes must go through a PR and wait for explicit user approval before merging or pushing. Do not run `git push` unless the user has explicitly asked for it in that message. Open a PR and present it for review instead.
+**Branch model:** `development` is the active integration branch; `main` holds production-ready releases. Feature work lands on `development`.
+
+**Auto-release:** every successful CI run on `main` triggers `.github/workflows/auto-release.yml`, which **patch-bumps the version, tags `vX.Y.Z`, and publishes a GitHub Release automatically**. So:
+- **Do not bump the version manually** for a normal release — merging `development` → `main` is what cuts the release (1.4.4 → 1.4.5, etc.). A manual bump on top of this double-bumps or trips the recursion guard.
+- The auto-release commits the bump to `main` only, so **after each release, back-merge `main` → `development`** (fast-forward) to avoid version drift.
+- Auth uses a GitHub App token (`APP_ID` / `APP_PRIVATE_KEY` secrets), not `GITHUB_TOKEN` — otherwise the new tag wouldn't trigger the tag-based Docker publish.
+
+**Rules:**
+- **Never push to `main` directly.** Merging `development` → `main` happens ONLY when the user explicitly asks (e.g. "merge to main").
+- Do not run `git push` unless the user asked for it in that message.
+
+## Dependency Policy
+
+**Never force transitive versions.** No `npm overrides`, `resolutions`, or `.npmrc` pins — none exist and none should be added.
+
+- **Direct dependencies** (in `package.json`): upgrade these to fix advisories. Dependabot PRs for direct deps + GitHub Actions are fine to merge.
+- **Transitive dependencies** (not in `package.json`): do **not** bump them directly. Wait for the **direct parent** to release a version that pulls the fix. Close standalone transitive-upgrade issues and Dependabot PRs (`@dependabot ignore this dependency`) rather than overriding.
+- A transitive only clears if the parent's range *floor* moves above the vulnerable version. Bumping a parent whose range still admits the old version (e.g. `ajv ^3.0.1` still allowing the old `fast-uri`) won't help — that one waits.
+- The app's own code must only `require()` declared direct dependencies, never transitive-only packages.
 
 ## Anti-Patterns to Avoid
 
@@ -197,7 +222,8 @@ Note: `src/syncService.js` and `index.js` are excluded from coverage collection 
 - Forgetting `actual.shutdown()` in finally blocks
 - Accessing `server.sync.*` directly instead of using `getSyncConfig(server)`
 - Skipping documentation updates when changing observable behavior
-- Using `npm overrides` or `resolutions` to silence a transitive vulnerability — always upgrade the direct dependency that pulls it in instead
+- Forcing transitive versions via `overrides`/`resolutions` (see Dependency Policy)
+- Manually bumping the version for a release (the auto-release does it — see Git Workflow)
 
 ## Documentation
 
