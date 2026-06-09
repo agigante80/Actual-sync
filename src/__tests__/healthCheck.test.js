@@ -104,46 +104,74 @@ describe('HealthCheckService', () => {
   });
 
   describe('Listen host fallback (#94)', () => {
+    const EventEmitter = require('events');
+    const WebSocket = require('ws');
+
+    // Build a fake HTTP server + ws server so we can drive listen() outcomes
+    // deterministically (no real port binding → no flakiness / collisions).
+    function mockServers(listenBehavior) {
+      const fakeServer = new EventEmitter();
+      fakeServer.listening = false;
+      fakeServer.listen = jest.fn((port, host) => {
+        listenBehavior(fakeServer, host);
+        return fakeServer;
+      });
+      fakeServer.close = jest.fn((cb) => { fakeServer.listening = false; if (cb) cb(); });
+
+      const fakeWss = new EventEmitter();
+      fakeWss.clients = new Set();
+      fakeWss.close = jest.fn((cb) => { fakeWss.emit('close'); if (cb) cb(); });
+
+      const createServerSpy = jest.spyOn(http, 'createServer').mockReturnValue(fakeServer);
+      const wssSpy = jest.spyOn(WebSocket, 'Server').mockImplementation(() => fakeWss);
+      return { fakeServer, fakeWss, restore: () => { createServerSpy.mockRestore(); wssSpy.mockRestore(); } };
+    }
+
     test('falls back to 0.0.0.0 when the configured host is unbindable (EADDRNOTAVAIL)', async () => {
-      // 192.0.2.1 (RFC 5737 TEST-NET-1) is never assigned to a local interface,
-      // so binding it yields EADDRNOTAVAIL — the #66 scenario (host set to a LAN IP
-      // the bridge-networked container can't bind).
       const hc = new HealthCheckService({
-        port: testPort,
-        host: '192.0.2.1',
-        loggerConfig: { level: 'ERROR' }
+        port: testPort, host: '192.168.50.224', loggerConfig: { level: 'ERROR' }
       });
       const warnSpy = jest.spyOn(hc.logger, 'warn');
+      // First listen (the configured LAN IP) → EADDRNOTAVAIL; retry on 0.0.0.0 → success.
+      const { fakeServer, restore } = mockServers((srv, host) => {
+        if (host === '0.0.0.0') {
+          srv.listening = true;
+          setImmediate(() => srv.emit('listening'));
+        } else {
+          setImmediate(() => srv.emit('error', Object.assign(new Error('listen EADDRNOTAVAIL'), { code: 'EADDRNOTAVAIL' })));
+        }
+      });
       try {
         await expect(hc.start()).resolves.toBeUndefined();
-        expect(hc.host).toBe('0.0.0.0');           // fell back
-        expect(hc.server.listening).toBe(true);     // and actually started
+        expect(hc.host).toBe('0.0.0.0');                        // fell back
+        expect(fakeServer.listen).toHaveBeenCalledTimes(2);     // first + retry
+        expect(fakeServer.listen.mock.calls[1][1]).toBe('0.0.0.0');
+        expect(warnSpy).toHaveBeenCalledTimes(1);               // started log fires once
         expect(warnSpy).toHaveBeenCalledWith(
           expect.stringContaining('EADDRNOTAVAIL'),
-          expect.objectContaining({ configuredHost: '192.0.2.1' })
+          expect.objectContaining({ configuredHost: '192.168.50.224' })
         );
       } finally {
         warnSpy.mockRestore();
-        await hc.stop();
+        restore();
+        await hc.stop().catch(() => {});
       }
     });
 
-    test('rejects on a non-EADDRNOTAVAIL listen error (EADDRINUSE) without falling back', async () => {
-      const blocker = http.createServer();
-      await new Promise((resolve) => blocker.listen(testPort, '127.0.0.1', resolve));
+    test('rejects on a non-EADDRNOTAVAIL listen error (EADDRINUSE) and cleans up', async () => {
       const hc = new HealthCheckService({
-        port: testPort,
-        host: '127.0.0.1',
-        loggerConfig: { level: 'ERROR' }
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' }
+      });
+      const { restore } = mockServers((srv) => {
+        setImmediate(() => srv.emit('error', Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' })));
       });
       try {
         await expect(hc.start()).rejects.toMatchObject({ code: 'EADDRINUSE' });
         expect(hc.host).toBe('127.0.0.1'); // unchanged — fallback NOT triggered
+        expect(hc.server).toBeNull();       // cleaned up so a later stop() is a no-op
+        await expect(hc.stop()).resolves.toBeUndefined();
       } finally {
-        // start() rejected, so the server never listened; stop() can reject with
-        // "Server is not running" — ignore it, but always free the blocker port.
-        await hc.stop().catch(() => {});
-        await new Promise((resolve) => blocker.close(resolve));
+        restore();
       }
     });
   });

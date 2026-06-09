@@ -1068,8 +1068,12 @@ This test verifies that Telegram notifications are working correctly.`
           });
           resolve();
         };
+        // Register the success handler once for the server's lifetime. Passing it
+        // as the listen() callback would re-register it on the fallback retry
+        // below, so it would fire twice on success. (#94)
+        this.server.once('listening', onListening);
 
-        this.server.listen(this.port, this.host, onListening);
+        this.server.listen(this.port, this.host);
 
         this.server.on('error', (error) => {
           // A configured host the container can't bind (e.g. the Unraid host's LAN
@@ -1084,13 +1088,24 @@ This test verifies that Telegram notifications are working correctly.`
               hint: 'In containers set healthCheck.host to 0.0.0.0 — a host LAN IP is not bindable inside a bridge-networked container.'
             });
             this.host = '0.0.0.0';
-            this.server.listen(this.port, this.host, onListening);
+            this.server.listen(this.port, this.host);
             return;
           }
           this.logger.error('Health check service error', {
             error: error.message,
             code: error.code
           });
+          // Start failed for good — release what we created above so we don't leak
+          // the heartbeat timer or leave a dangling, never-listened server that
+          // makes a later stop() reject with "Server is not running". (#94)
+          clearInterval(heartbeatInterval);
+          try {
+            this.server.removeListener('listening', onListening);
+            if (this.wss) this.wss.close();
+          } catch (cleanupErr) {
+            this.logger.debug('Cleanup after failed health check start failed', { error: cleanupErr.message });
+          }
+          this.server = null;
           reject(error);
         });
       } catch (error) {
