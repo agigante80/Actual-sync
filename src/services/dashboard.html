@@ -835,6 +835,19 @@
                         };">${status.lastSyncStatus}</span>` : '';
                     lastSyncText = `${formatTime(status.lastSync)}${statusBadge}`;
                 }
+
+                // Per-account breakdown for the last sync (#101)
+                let accountCountsText = '';
+                if (status.lastSyncCounts) {
+                    const counts = formatAccountCounts(
+                        status.lastSyncCounts.succeeded,
+                        status.lastSyncCounts.failed,
+                        status.lastSyncCounts.skipped
+                    );
+                    if (counts !== '-') {
+                        accountCountsText = `<br><span style="color: #94a3b8; font-size: 0.85em;">Accounts: ${counts}</span>`;
+                    }
+                }
                 
                 // Escape server name for safe HTML rendering
                 const escapedName = name
@@ -857,6 +870,7 @@
                         <div class="server-name">${name}${encryptionBadge}</div>
                         <div class="server-info">
                             Last sync: ${lastSyncText}
+                            ${accountCountsText}
                             ${scheduleInfo}
                             ${errorDisplay}
                         </div>
@@ -947,7 +961,7 @@
                             ${record.status}
                         </td>
                         <td>${record.duration_ms}ms</td>
-                        <td>${record.accounts_processed || '-'}</td>
+                        <td>${formatAccountCounts(record.accounts_succeeded, record.accounts_failed, record.accounts_skipped)}</td>
                     </tr>
                 `).join('');
             } catch (error) {
@@ -1106,6 +1120,17 @@
             if (days > 0) return `${days}d ${hours}h ${minutes}m`;
             if (hours > 0) return `${hours}h ${minutes}m`;
             return `${minutes}m`;
+        }
+
+        // Render the per-sync account breakdown: "N synced · M failed · K skipped".
+        // Returns '-' for server-level failures where no account was reached
+        // (all three counts zero/absent), matching notification wording (#101).
+        function formatAccountCounts(succeeded, failed, skipped) {
+            const s = Number(succeeded) || 0;
+            const f = Number(failed) || 0;
+            const k = Number(skipped) || 0;
+            if (s === 0 && f === 0 && k === 0) return '-';
+            return `${s} synced · ${f} failed · ${k} skipped`;
         }
 
         function formatTime(isoString) {
@@ -1475,7 +1500,7 @@
                             ${record.status}
                         </td>
                         <td>${record.duration_ms ? record.duration_ms + 'ms' : '-'}</td>
-                        <td>${record.accounts_processed || '-'}</td>
+                        <td>${formatAccountCounts(record.accounts_succeeded, record.accounts_failed, record.accounts_skipped)}</td>
                         <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${record.error_message || '-'}">
                             ${record.error_message ? `<span style="color: #ef4444;">${record.error_message}</span>` : '-'}
                         </td>
@@ -1832,13 +1857,18 @@
                     const icon = record.status === 'success' ? '✓' : '✗';
                     const color = record.status === 'success' ? '#10b981' : '#ef4444';
                     const duration = record.duration_ms ? `(${(record.duration_ms / 1000).toFixed(1)}s)` : '';
-                    
+                    const counts = formatAccountCounts(record.accounts_succeeded, record.accounts_failed, record.accounts_skipped);
+                    const countsDisplay = counts !== '-'
+                        ? `<span style="color: #64748b;"> · ${counts}</span>`
+                        : '';
+
                     return `
                         <div style="padding: 8px 0; border-bottom: 1px solid #334155;">
                             <span style="color: ${color};">${icon}</span>
                             <span style="color: #e2e8f0;">${formatTime(record.timestamp)}</span>
                             <span style="color: #94a3b8;"> - ${record.server_name}</span>
                             <span style="color: #64748b;"> ${duration}</span>
+                            ${countsDisplay}
                         </div>
                     `;
                 }).join('');

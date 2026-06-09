@@ -665,6 +665,7 @@ async function syncBank(server, options = {}) {
                 accountsProcessed,
                 accountsSucceeded,
                 accountsFailed,
+                accountsSkipped: skippedAccounts.length,
                 errorMessage,
                 correlationId
             });
@@ -803,6 +804,7 @@ async function syncBank(server, options = {}) {
                 accountsProcessed,
                 accountsSucceeded,
                 accountsFailed,
+                accountsSkipped: skippedAccounts.length,
                 errorMessage: errorMessage,
                 errorCode: errorCode,
                 correlationId

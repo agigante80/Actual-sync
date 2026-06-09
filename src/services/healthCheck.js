@@ -270,6 +270,12 @@ class HealthCheckService {
                 const lastSync = this.syncHistory.getLastSync(server.name);
                 if (lastSync) {
                   serverStatus.lastSyncStatus = lastSync.status;
+                  // Per-account breakdown for the dashboard server card (#101)
+                  serverStatus.lastSyncCounts = {
+                    succeeded: lastSync.accounts_succeeded,
+                    failed: lastSync.accounts_failed,
+                    skipped: lastSync.accounts_skipped
+                  };
                 }
               } catch (error) {
                 this.logger.debug('Failed to get last sync status for server', { 

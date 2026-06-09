@@ -5,6 +5,7 @@
  */
 
 const { SyncHistoryService } = require('../services/syncHistory');
+const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
 
@@ -403,6 +404,105 @@ describe('SyncHistoryService', () => {
     test('should return null for unknown server', () => {
       const lastSync = syncHistory.getLastSync('UnknownServer');
       expect(lastSync).toBeNull();
+    });
+  });
+
+  describe('accounts_skipped (#101)', () => {
+    const hasColumn = (db, name) =>
+      db.prepare('PRAGMA table_info(sync_history)').all().some(c => c.name === name);
+
+    test('fresh DB includes the accounts_skipped column', () => {
+      expect(hasColumn(syncHistory.db, 'accounts_skipped')).toBe(true);
+    });
+
+    test('migrates a pre-existing DB without the column, preserving rows (idempotent)', () => {
+      const legacyDbPath = path.join(__dirname, 'test-legacy-schema.db');
+      if (fs.existsSync(legacyDbPath)) fs.unlinkSync(legacyDbPath);
+
+      // Build an old-schema table that lacks accounts_skipped, with one legacy row.
+      const legacy = new Database(legacyDbPath);
+      legacy.exec(`
+        CREATE TABLE sync_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp TEXT NOT NULL,
+          server_name TEXT NOT NULL,
+          status TEXT NOT NULL,
+          duration_ms INTEGER,
+          accounts_processed INTEGER,
+          accounts_succeeded INTEGER,
+          accounts_failed INTEGER,
+          error_message TEXT,
+          error_code TEXT,
+          correlation_id TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      legacy.prepare(
+        'INSERT INTO sync_history (timestamp, server_name, status) VALUES (?, ?, ?)'
+      ).run(new Date().toISOString(), 'LegacyServer', 'success');
+      expect(hasColumn(legacy, 'accounts_skipped')).toBe(false);
+      legacy.close();
+
+      // Opening the service migrates the schema in place.
+      const migrated = new SyncHistoryService({
+        dbPath: legacyDbPath,
+        loggerConfig: { level: 'ERROR' }
+      });
+      expect(hasColumn(migrated.db, 'accounts_skipped')).toBe(true);
+
+      const legacyRow = migrated.db
+        .prepare('SELECT * FROM sync_history WHERE server_name = ?')
+        .get('LegacyServer');
+      expect(legacyRow).toBeDefined();
+      expect(legacyRow.status).toBe('success');
+      expect(legacyRow.accounts_skipped).toBeNull(); // older row, column added later
+      migrated.close();
+
+      // Re-opening must not throw and must keep the column (idempotent).
+      const reopened = new SyncHistoryService({
+        dbPath: legacyDbPath,
+        loggerConfig: { level: 'ERROR' }
+      });
+      expect(hasColumn(reopened.db, 'accounts_skipped')).toBe(true);
+      reopened.close();
+
+      fs.unlinkSync(legacyDbPath);
+    });
+
+    test('recordSync persists accountsSkipped', () => {
+      const id = syncHistory.recordSync({
+        serverName: 'TestServer',
+        status: 'success',
+        accountsProcessed: 2,
+        accountsSucceeded: 2,
+        accountsFailed: 0,
+        accountsSkipped: 3
+      });
+
+      const record = syncHistory.db.prepare('SELECT * FROM sync_history WHERE id = ?').get(id);
+      expect(record.accounts_skipped).toBe(3);
+    });
+
+    test('recordSync defaults accountsSkipped to 0 when omitted', () => {
+      const id = syncHistory.recordSync({
+        serverName: 'TestServer',
+        status: 'success'
+      });
+
+      const record = syncHistory.db.prepare('SELECT * FROM sync_history WHERE id = ?').get(id);
+      expect(record.accounts_skipped).toBe(0);
+    });
+
+    test('getRecentSyncs exposes accountsSkipped (camelCase alias)', () => {
+      syncHistory.recordSync({
+        serverName: 'TestServer',
+        status: 'success',
+        accountsSkipped: 2
+      });
+
+      const recent = syncHistory.getRecentSyncs(1);
+      expect(recent).toHaveLength(1);
+      expect(recent[0].accountsSkipped).toBe(2);
     });
   });
 
