@@ -139,22 +139,31 @@ class MessageFormatter {
     let text = `${content.emoji} Sync ${content.statusText}\n\n`;
     text += `Server: ${content.serverName}\n`;
     text += `Duration: ${content.duration}\n`;
-    
-    if (content.isSuccess) {
-      text += `Result: ${content.accountsProcessed}/${content.totalAccounts} synced`;
-      if (content.accountsFailed > 0) {
-        text += `, ${content.accountsFailed} failed ❌`;
+
+    // Server-level error (e.g. connection/auth) shown regardless of account data.
+    if (!content.isSuccess && content.error) {
+      text += `Error: ${content.error}\n`;
+      if (content.errorCode) {
+        text += `Code: ${content.errorCode}\n`;
       }
-      text += `\n`;
-      
-      if (content.succeededAccounts.length > 0) {
+    }
+
+    // Account breakdown — shown on both success and failure, suppressed entirely
+    // when no accounts were reached (server-level failure). (#100)
+    const synced = content.succeededAccounts.length;
+    const failed = content.failedAccounts.length;
+    const skipped = content.skippedAccounts.length;
+    if (synced || failed || skipped) {
+      text += `\nAccounts: ${synced} synced, ${failed} failed, ${skipped} skipped\n`;
+
+      if (synced > 0) {
         text += `\n✅ Synced:\n`;
         content.succeededAccounts.forEach(name => {
           text += `  • ${name}\n`;
         });
       }
-      
-      if (content.failedAccounts.length > 0) {
+
+      if (failed > 0) {
         text += `\n❌ Failed:\n`;
         content.failedAccounts.forEach(account => {
           text += `  • ${account.name}\n`;
@@ -167,19 +176,14 @@ class MessageFormatter {
         });
       }
 
-      if (content.skippedAccounts.length > 0) {
-        text += `\n⏭️ Skipped (not bank-linked / closed): ${content.skippedAccounts.length}\n`;
+      if (skipped > 0) {
+        text += `\n⏭️ Skipped (not bank-linked / closed): ${skipped}\n`;
         content.skippedAccounts.forEach(account => {
           text += `  • ${account.name} (${account.reason})\n`;
         });
       }
-    } else {
-      text += `Error: ${content.error}\n`;
-      if (content.errorCode) {
-        text += `Code: ${content.errorCode}\n`;
-      }
     }
-    
+
     return text;
   }
   
@@ -218,18 +222,35 @@ class MessageFormatter {
         <span class="value">${content.duration}</span>
       </div>`;
     
-    if (content.isSuccess) {
+    if (!content.isSuccess && content.error) {
       html += `
       <div class="field">
-        <span class="label">Result:</span>
-        <span class="value">${content.accountsProcessed}/${content.totalAccounts} synced`;
-      if (content.accountsFailed > 0) {
-        html += `, ${content.accountsFailed} failed ❌`;
-      }
-      html += `</span>
+        <span class="label">Error:</span>
+        <span class="value">${content.error}</span>
       </div>`;
-      
-      if (content.succeededAccounts.length > 0) {
+      if (content.errorCode) {
+        html += `
+      <div class="field">
+        <span class="label">Code:</span>
+        <span class="value">${content.errorCode}</span>
+      </div>`;
+      }
+    }
+
+    // Account breakdown on both paths; suppressed when no accounts were reached. (#100)
+    {
+      const synced = content.succeededAccounts.length;
+      const failed = content.failedAccounts.length;
+      const skipped = content.skippedAccounts.length;
+      if (synced || failed || skipped) {
+        html += `
+      <div class="field">
+        <span class="label">Accounts:</span>
+        <span class="value">${synced} synced, ${failed} failed, ${skipped} skipped</span>
+      </div>`;
+      }
+
+      if (synced > 0) {
         html += `
       <div class="field">
         <span class="label">✅ Synced Accounts:</span>
@@ -240,8 +261,8 @@ class MessageFormatter {
         html += `</ul>
       </div>`;
       }
-      
-      if (content.failedAccounts.length > 0) {
+
+      if (failed > 0) {
         html += `
       <div class="field">
         <span class="label">❌ Failed Accounts:</span>
@@ -257,7 +278,7 @@ class MessageFormatter {
       </div>`;
       }
 
-      if (content.skippedAccounts.length > 0) {
+      if (skipped > 0) {
         html += `
       <div class="field">
         <span class="label">⏭️ Skipped (not bank-linked / closed):</span>
@@ -268,27 +289,14 @@ class MessageFormatter {
         html += `</ul>
       </div>`;
       }
-    } else {
-      html += `
-      <div class="field">
-        <span class="label">Error:</span>
-        <span class="value">${content.error}</span>
-      </div>`;
-      if (content.errorCode) {
-        html += `
-      <div class="field">
-        <span class="label">Code:</span>
-        <span class="value">${content.errorCode}</span>
-      </div>`;
-      }
     }
-    
+
     html += `
     </div>
   </div>
 </body>
 </html>`;
-    
+
     return html;
   }
   
@@ -313,41 +321,8 @@ class MessageFormatter {
       ]
     };
     
-    if (content.isSuccess) {
-      let resultText = `*Result:*\n${content.accountsProcessed}/${content.totalAccounts} synced`;
-      if (content.accountsFailed > 0) {
-        resultText += `, ${content.accountsFailed} failed ❌`;
-      }
-      payload.blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: resultText
-        }
-      });
-      
-      if (content.succeededAccounts.length > 0 || content.failedAccounts.length > 0 || content.skippedAccounts.length > 0) {
-        let accountsText = '';
-        if (content.succeededAccounts.length > 0) {
-          accountsText += `*✅ Synced:*\n${content.succeededAccounts.map(n => `• ${n}`).join('\n')}`;
-        }
-        if (content.failedAccounts.length > 0) {
-          if (accountsText) accountsText += '\n\n';
-          accountsText += `*❌ Failed:*\n${content.failedAccounts.map(a => `• ${a.name}`).join('\n')}`;
-        }
-        if (content.skippedAccounts.length > 0) {
-          if (accountsText) accountsText += '\n\n';
-          accountsText += `*⏭️ Skipped (not bank-linked / closed):*\n${content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`).join('\n')}`;
-        }
-        payload.blocks.push({
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: accountsText
-          }
-        });
-      }
-    } else {
+    // Server-level error first (failure path).
+    if (!content.isSuccess && content.error) {
       payload.blocks.push({
         type: 'section',
         text: {
@@ -355,6 +330,32 @@ class MessageFormatter {
           text: `*Error:*\n${content.error}${content.errorCode ? `\n*Code:* ${content.errorCode}` : ''}`
         }
       });
+    }
+
+    // Account breakdown on both paths; suppressed when no accounts were reached. (#100)
+    const synced = content.succeededAccounts.length;
+    const failed = content.failedAccounts.length;
+    const skipped = content.skippedAccounts.length;
+    if (synced || failed || skipped) {
+      payload.blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Accounts:* ${synced} synced, ${failed} failed, ${skipped} skipped` }
+      });
+      let accountsText = '';
+      if (synced > 0) {
+        accountsText += `*✅ Synced:*\n${content.succeededAccounts.map(n => `• ${n}`).join('\n')}`;
+      }
+      if (failed > 0) {
+        if (accountsText) accountsText += '\n\n';
+        accountsText += `*❌ Failed:*\n${content.failedAccounts.map(a => `• ${a.name}`).join('\n')}`;
+      }
+      if (skipped > 0) {
+        if (accountsText) accountsText += '\n\n';
+        accountsText += `*⏭️ Skipped (not bank-linked / closed):*\n${content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`).join('\n')}`;
+      }
+      if (accountsText) {
+        payload.blocks.push({ type: 'section', text: { type: 'mrkdwn', text: accountsText } });
+      }
     }
     
     return payload;
@@ -368,37 +369,27 @@ class MessageFormatter {
       { name: 'Duration', value: content.duration, inline: true }
     ];
     
-    if (content.isSuccess) {
-      let resultValue = `${content.accountsProcessed}/${content.totalAccounts} synced`;
-      if (content.accountsFailed > 0) {
-        resultValue += `, ${content.accountsFailed} failed ❌`;
-      }
-      fields.push({ name: 'Result', value: resultValue });
-      
-      if (content.succeededAccounts.length > 0) {
-        fields.push({ 
-          name: '✅ Synced Accounts', 
-          value: content.succeededAccounts.map(n => `• ${n}`).join('\n') 
-        });
-      }
-      
-      if (content.failedAccounts.length > 0) {
-        fields.push({
-          name: '❌ Failed Accounts',
-          value: content.failedAccounts.map(a => `• ${a.name}`).join('\n')
-        });
-      }
-
-      if (content.skippedAccounts.length > 0) {
-        fields.push({
-          name: '⏭️ Skipped (not bank-linked / closed)',
-          value: content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`).join('\n')
-        });
-      }
-    } else {
+    if (!content.isSuccess && content.error) {
       fields.push({ name: 'Error', value: content.error });
       if (content.errorCode) {
         fields.push({ name: 'Code', value: content.errorCode, inline: true });
+      }
+    }
+
+    // Account breakdown on both paths; suppressed when no accounts were reached. (#100)
+    const synced = content.succeededAccounts.length;
+    const failed = content.failedAccounts.length;
+    const skipped = content.skippedAccounts.length;
+    if (synced || failed || skipped) {
+      fields.push({ name: 'Accounts', value: `${synced} synced, ${failed} failed, ${skipped} skipped` });
+      if (synced > 0) {
+        fields.push({ name: '✅ Synced Accounts', value: content.succeededAccounts.map(n => `• ${n}`).join('\n') });
+      }
+      if (failed > 0) {
+        fields.push({ name: '❌ Failed Accounts', value: content.failedAccounts.map(a => `• ${a.name}`).join('\n') });
+      }
+      if (skipped > 0) {
+        fields.push({ name: '⏭️ Skipped (not bank-linked / closed)', value: content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`).join('\n') });
       }
     }
     

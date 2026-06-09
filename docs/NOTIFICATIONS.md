@@ -26,6 +26,25 @@ The Notification System provides automated alerts and interactive commands to mo
 - **Configurable Notifications**: Choose to receive notifications for all syncs, only failures, or never
 - **Graceful Degradation**: Continues operation even if notifications fail
 
+## Sync notification content
+
+Every sync notification (across Telegram/text, Slack, Discord and email) explains
+the per-account outcome, on **both** success and failure:
+
+- An **`Accounts: N synced, M failed, K skipped`** summary line.
+- **✅ Synced** — bank-linked accounts that synced.
+- **❌ Failed** — accounts whose bank sync errored (with the error). This appears on
+  the failure path too — e.g. a single rate-limited account shows up here rather
+  than only as a terse top-level error.
+- **⏭️ Skipped (not bank-linked / closed)** — accounts that were *not* attempted,
+  each with its reason: `closed` or `not-linked` (no bank link). Only bank-linked,
+  open accounts are bank-synced (see the account-syncability behavior), so this
+  explains why e.g. a budget with 7 accounts may report `1 synced … 6 skipped`.
+
+A **server-level failure** that never reached the accounts (e.g. connection or
+auth error) shows only the `Error:` line — the account summary and synced/failed/
+skipped sections are **suppressed** (no misleading `0 synced` clutter).
+
 ## Configuration
 
 Add the `notifications` section to your `config/config.json`:
