@@ -1060,7 +1060,9 @@ This test verifies that Telegram notifications are working correctly.`
           clearInterval(heartbeatInterval);
         });
 
+        let settled = false;
         const onListening = () => {
+          settled = true;
           this.logger.info('Health check service started', {
             port: this.port,
             host: this.host,
@@ -1095,9 +1097,15 @@ This test verifies that Telegram notifications are working correctly.`
             error: error.message,
             code: error.code
           });
-          // Start failed for good — release what we created above so we don't leak
-          // the heartbeat timer or leave a dangling, never-listened server that
-          // makes a later stop() reject with "Server is not running". (#94)
+          // This handler stays attached for the server's lifetime. A runtime error
+          // AFTER a successful start must only be logged — tearing the service down
+          // here would orphan the live listening socket. Only a startup failure
+          // (before 'listening') cleans up and rejects, so we don't leak the
+          // heartbeat timer or leave a never-listened server that makes a later
+          // stop() reject with "Server is not running". (#94)
+          if (settled) {
+            return;
+          }
           clearInterval(heartbeatInterval);
           try {
             this.server.removeListener('listening', onListening);
@@ -1105,6 +1113,7 @@ This test verifies that Telegram notifications are working correctly.`
           } catch (cleanupErr) {
             this.logger.debug('Cleanup after failed health check start failed', { error: cleanupErr.message });
           }
+          this.wss = null;
           this.server = null;
           reject(error);
         });
