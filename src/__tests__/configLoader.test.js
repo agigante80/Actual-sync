@@ -247,8 +247,34 @@ describe('ConfigLoader', () => {
             const loader = new ConfigLoader(configPath);
             
             loader.validateLogic(config);
-            
+
             expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('default/example password'));
+        });
+
+        test('should warn when healthCheck.host is a specific routable IP (#94)', () => {
+            for (const host of ['192.168.50.224', '10.0.0.1']) {
+                console.warn.mockClear();
+                const config = {
+                    servers: [{ name: 'Test', url: 'https://test.com', password: 'password123', syncId: 'id', dataDir: '/tmp' }],
+                    sync: { maxRetries: 3, baseRetryDelayMs: 1000, schedule: '0 0 * * *' },
+                    healthCheck: { port: 3000, host }
+                };
+                new ConfigLoader().validateLogic(config);
+                expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('healthCheck.host'));
+            }
+        });
+
+        test('should NOT warn for safe health hosts incl. IPv6 wildcard/loopback (#94)', () => {
+            for (const host of ['0.0.0.0', '127.0.0.1', 'localhost', '::', '::1']) {
+                console.warn.mockClear();
+                const config = {
+                    servers: [{ name: 'Test', url: 'https://test.com', password: 'password123', syncId: 'id', dataDir: '/tmp' }],
+                    sync: { maxRetries: 3, baseRetryDelayMs: 1000, schedule: '0 0 * * *' },
+                    healthCheck: { port: 3000, host }
+                };
+                new ConfigLoader().validateLogic(config);
+                expect(console.warn).not.toHaveBeenCalledWith(expect.stringContaining('healthCheck.host'));
+            }
         });
     });
 

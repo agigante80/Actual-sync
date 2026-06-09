@@ -178,6 +178,19 @@ class ConfigLoader {
             );
         }
 
+        // Warn if the health-check server is bound to a specific routable IP.
+        // In a container the host's LAN IP isn't bindable in bridge mode, so the
+        // server fails with EADDRNOTAVAIL and the dashboard is unreachable.
+        // 0.0.0.0 / 127.0.0.1 / localhost are safe. (#94)
+        const hcHost = config.healthCheck && config.healthCheck.host;
+        // Safe binds: IPv4/IPv6 wildcard + loopback. (#94)
+        if (hcHost && !['0.0.0.0', '::', '::1', '127.0.0.1', 'localhost'].includes(hcHost)) {
+            console.warn(
+                `⚠️  Warning: healthCheck.host is set to "${hcHost}".\n` +
+                `   In containers use "0.0.0.0" — a specific host IP may not be bindable (EADDRNOTAVAIL) and the dashboard will be unreachable.`
+            );
+        }
+
         // Validate retry settings
         if (config.sync.maxRetries < 0 || config.sync.maxRetries > 10) {
             throw new Error(

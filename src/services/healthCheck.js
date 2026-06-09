@@ -978,11 +978,23 @@ This test verifies that Telegram notifications are working correctly.`
         this.server = http.createServer(this.app);
 
         // Create WebSocket server
-        this.wss = new WebSocket.Server({ 
+        this.wss = new WebSocket.Server({
           server: this.server,
           path: '/ws/logs',
           clientTracking: true,
           perMessageDeflate: false
+        });
+
+        // ws forwards the underlying HTTP server's errors (e.g. a bind failure)
+        // onto the WebSocket.Server. Without a listener that becomes an
+        // 'Unhandled "error" event' / uncaught exception. The HTTP server's own
+        // 'error' handler below does the real handling (fallback/reject); this
+        // just prevents the forwarded copy from crashing the process. (#94)
+        this.wss.on('error', (error) => {
+          this.logger.debug('WebSocket server error (handled by HTTP server listener)', {
+            error: error.message,
+            code: error.code
+          });
         });
 
         this.wss.on('connection', (ws, req) => {
@@ -1048,20 +1060,61 @@ This test verifies that Telegram notifications are working correctly.`
           clearInterval(heartbeatInterval);
         });
 
-        this.server.listen(this.port, this.host, () => {
+        let settled = false;
+        const onListening = () => {
+          settled = true;
           this.logger.info('Health check service started', {
             port: this.port,
             host: this.host,
             dashboard: `http://${this.host === '0.0.0.0' ? 'localhost' : this.host}:${this.port}/dashboard`
           });
           resolve();
-        });
+        };
+        // Register the success handler once for the server's lifetime. Passing it
+        // as the listen() callback would re-register it on the fallback retry
+        // below, so it would fire twice on success. (#94)
+        this.server.once('listening', onListening);
+
+        this.server.listen(this.port, this.host);
 
         this.server.on('error', (error) => {
+          // A configured host the container can't bind (e.g. the Unraid host's LAN
+          // IP in bridge mode) yields EADDRNOTAVAIL. Rather than failing — which
+          // leaves the dashboard unreachable — fall back to 0.0.0.0 with a warning
+          // so it still comes up. The guard on host !== '0.0.0.0' prevents a loop. (#94)
+          if (error.code === 'EADDRNOTAVAIL' && this.host !== '0.0.0.0') {
+            this.logger.warn('Could not bind health server to configured host; falling back to 0.0.0.0 (EADDRNOTAVAIL)', {
+              configuredHost: this.host,
+              port: this.port,
+              error: error.message,
+              hint: 'In containers set healthCheck.host to 0.0.0.0 — a host LAN IP is not bindable inside a bridge-networked container.'
+            });
+            this.host = '0.0.0.0';
+            this.server.listen(this.port, this.host);
+            return;
+          }
           this.logger.error('Health check service error', {
             error: error.message,
             code: error.code
           });
+          // This handler stays attached for the server's lifetime. A runtime error
+          // AFTER a successful start must only be logged — tearing the service down
+          // here would orphan the live listening socket. Only a startup failure
+          // (before 'listening') cleans up and rejects, so we don't leak the
+          // heartbeat timer or leave a never-listened server that makes a later
+          // stop() reject with "Server is not running". (#94)
+          if (settled) {
+            return;
+          }
+          clearInterval(heartbeatInterval);
+          try {
+            this.server.removeListener('listening', onListening);
+            if (this.wss) this.wss.close();
+          } catch (cleanupErr) {
+            this.logger.debug('Cleanup after failed health check start failed', { error: cleanupErr.message });
+          }
+          this.wss = null;
+          this.server = null;
           reject(error);
         });
       } catch (error) {
