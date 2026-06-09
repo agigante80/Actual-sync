@@ -264,8 +264,8 @@ describe('ConfigLoader', () => {
             }
         });
 
-        test('should NOT warn when healthCheck.host is 0.0.0.0 / 127.0.0.1 / localhost (#94)', () => {
-            for (const host of ['0.0.0.0', '127.0.0.1', 'localhost']) {
+        test('should NOT warn for safe health hosts incl. IPv6 wildcard/loopback (#94)', () => {
+            for (const host of ['0.0.0.0', '127.0.0.1', 'localhost', '::', '::1']) {
                 console.warn.mockClear();
                 const config = {
                     servers: [{ name: 'Test', url: 'https://test.com', password: 'password123', syncId: 'id', dataDir: '/tmp' }],
