@@ -228,4 +228,59 @@ describe('MessageFormatter', () => {
       expect(formatted.discord.embeds[0].color).toBe(5025616); // Green
     });
   });
+
+  describe('skipped accounts (#98)', () => {
+    test('F5: reports real synced count and a skipped section', () => {
+      const result = {
+        status: 'success',
+        serverName: "Main's Budget",
+        duration: 9600,
+        accountsProcessed: 1,
+        accountsFailed: 0,
+        succeededAccounts: ['SabadellSync'],
+        failedAccounts: [],
+        skippedAccounts: [
+          { name: 'Mortgage', reason: 'not-linked' },
+          { name: 'House Asset', reason: 'not-linked' },
+          { name: 'Old Card', reason: 'closed' }
+        ]
+      };
+      const f = MessageFormatter.formatSyncNotification(result);
+
+      expect(f.text).toContain('Result: 1/1 synced');       // syncable-based, not total
+      expect(f.text).toContain('SabadellSync');
+      expect(f.text).not.toContain('Mortgage\n  • House'); // manual accts not under Synced
+      expect(f.text).toMatch(/Skipped.*3/);                 // skipped count shown
+      expect(f.text).toContain('Mortgage (not-linked)');
+      expect(f.text).toContain('Old Card (closed)');
+    });
+
+    test('F6: no Skipped section when there are no skipped accounts', () => {
+      const result = {
+        status: 'success', serverName: 'X', duration: 1000,
+        accountsProcessed: 2, accountsFailed: 0,
+        succeededAccounts: ['A', 'B'], failedAccounts: [], skippedAccounts: []
+      };
+      const f = MessageFormatter.formatSyncNotification(result);
+      expect(f.text).toContain('Result: 2/2 synced');
+      expect(f.text).not.toMatch(/Skipped/);
+    });
+
+    test('F7: zero-syncable budget renders 0/0 + skipped, no broken render', () => {
+      const result = {
+        status: 'success', serverName: 'All Manual', duration: 500,
+        accountsProcessed: 0, accountsFailed: 0,
+        succeededAccounts: [], failedAccounts: [],
+        skippedAccounts: [
+          { name: 'Mortgage', reason: 'not-linked' },
+          { name: 'House Asset', reason: 'not-linked' }
+        ]
+      };
+      const f = MessageFormatter.formatSyncNotification(result);
+      expect(f.text).toContain('Result: 0/0 synced');
+      expect(f.text).not.toContain('✅ Synced:');     // nothing actually synced
+      expect(f.text).toMatch(/Skipped.*2/);
+      expect(f.text).toContain('Mortgage (not-linked)');
+    });
+  });
 });

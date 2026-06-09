@@ -67,7 +67,19 @@ function createMockActualAPI() {
         getAccounts: jest.fn().mockResolvedValue([
             { id: 'account1', name: 'Test Account 1' },
             { id: 'account2', name: 'Test Account 2' }
-        ])
+        ]),
+        // ActualQL — accounts are read via aqlQuery so account_sync_source is
+        // available for syncability filtering. q() returns a chainable builder. (#98)
+        q: jest.fn(() => {
+            const builder = { filter: () => builder, select: () => builder };
+            return builder;
+        }),
+        aqlQuery: jest.fn().mockResolvedValue({
+            data: [
+                { id: 'account1', name: 'Test Account 1', closed: false, account_sync_source: 'goCardless' },
+                { id: 'account2', name: 'Test Account 2', closed: false, account_sync_source: 'goCardless' }
+            ]
+        })
     };
 }
 
