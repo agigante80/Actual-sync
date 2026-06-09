@@ -661,5 +661,110 @@ describe('syncService Integration Tests', () => {
             expect(result.originalError).toBe(originalError);
         });
     });
+
+    // -------------------------------------------------------------------------
+    // #101: the skipped-account count is recorded in sync history on BOTH the
+    // success and the failure path, and shutdown() always runs in finally.
+    // Mirrors the recordSync wiring in syncService.js (excluded from coverage).
+    // -------------------------------------------------------------------------
+    describe('accounts_skipped recorded in history (#101)', () => {
+        const { partitionSyncableAccounts } = require('../lib/accountFilter');
+
+        // 2 syncable (open, bank-linked) + 3 non-syncable (2 closed, 1 manual)
+        // → partitionSyncableAccounts yields skipped.length === 3.
+        const FIVE_ACCOUNTS = [
+            { id: 'a1', name: 'Checking', closed: false, account_sync_source: 'goCardless' },
+            { id: 'a2', name: 'Savings', closed: false, account_sync_source: 'goCardless' },
+            { id: 'a3', name: 'Old Checking', closed: true, account_sync_source: 'goCardless' },
+            { id: 'a4', name: 'Old Savings', closed: true, account_sync_source: 'goCardless' },
+            { id: 'a5', name: 'Cash', closed: false, account_sync_source: null }
+        ];
+
+        async function syncBankWithHistory(server, syncHistory, { failOnFinalSync = false } = {}) {
+            let skippedAccounts = [];
+            let accountsProcessed = 0;
+            let accountsSucceeded = 0;
+            const accountsFailed = 0;
+            try {
+                await actual.init({ serverURL: server.url, password: server.password, dataDir: server.dataDir });
+                await actual.downloadBudget(server.syncId);
+
+                const { data: allAccounts } = await actual.aqlQuery(
+                    actual.q('accounts').filter({ tombstone: false }).select(['id', 'name', 'closed', 'account_sync_source'])
+                );
+                const { syncable, skipped } = partitionSyncableAccounts(allAccounts);
+                skippedAccounts = skipped;
+
+                for (const account of syncable) {
+                    accountsProcessed++;
+                    await actual.runBankSync({ accountId: account.id });
+                    accountsSucceeded++;
+                }
+
+                if (failOnFinalSync) {
+                    await actual.sync(); // mocked to reject on the failure-path test
+                }
+
+                syncHistory.recordSync({
+                    serverName: server.name,
+                    status: 'success',
+                    accountsProcessed,
+                    accountsSucceeded,
+                    accountsFailed,
+                    accountsSkipped: skippedAccounts.length
+                });
+            } catch (err) {
+                syncHistory.recordSync({
+                    serverName: server.name,
+                    status: 'failure',
+                    accountsProcessed,
+                    accountsSucceeded,
+                    accountsFailed,
+                    accountsSkipped: skippedAccounts.length,
+                    errorMessage: err.message
+                });
+                throw err;
+            } finally {
+                await actual.shutdown();
+            }
+        }
+
+        const server = {
+            name: 'Test Server',
+            url: 'https://test.example.com',
+            password: 'test-password',
+            syncId: 'test-sync-id',
+            dataDir: '/tmp/test-data'
+        };
+
+        test('success path records accountsSkipped and calls shutdown once', async () => {
+            mockAqlAccounts(FIVE_ACCOUNTS);
+            const syncHistory = { recordSync: jest.fn() };
+
+            await syncBankWithHistory(server, syncHistory);
+
+            expect(syncHistory.recordSync).toHaveBeenCalledTimes(1);
+            expect(syncHistory.recordSync).toHaveBeenCalledWith(
+                expect.objectContaining({ status: 'success', accountsSkipped: 3 })
+            );
+            expect(actual.shutdown).toHaveBeenCalledTimes(1);
+        });
+
+        test('failure path records accountsSkipped and calls shutdown once', async () => {
+            mockAqlAccounts(FIVE_ACCOUNTS);
+            actual.sync.mockRejectedValueOnce(new Error('Final sync failed'));
+            const syncHistory = { recordSync: jest.fn() };
+
+            await expect(
+                syncBankWithHistory(server, syncHistory, { failOnFinalSync: true })
+            ).rejects.toThrow('Final sync failed');
+
+            expect(syncHistory.recordSync).toHaveBeenCalledTimes(1);
+            expect(syncHistory.recordSync).toHaveBeenCalledWith(
+                expect.objectContaining({ status: 'failure', accountsSkipped: 3 })
+            );
+            expect(actual.shutdown).toHaveBeenCalledTimes(1);
+        });
+    });
 });
 

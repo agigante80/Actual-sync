@@ -8,7 +8,7 @@ The dashboard is a responsive single-page application that offers:
 
 - **📊 Overview Tab** - 2-column layout with service health, server status, recent activity, and live logs
 - **�� Analytics Tab** - All-time statistics with interactive charts (success rates, duration trends, timeline)
-- **🗂️ History Tab** - Searchable sync history with server/limit filters and detailed error messages
+- **🗂️ History Tab** - Searchable sync history with server/limit filters, a per-sync account breakdown (`N synced · M failed · K skipped`), and detailed error messages
 - **⚙️ Settings Tab** - Date format preferences, orphaned server cleanup, and data management
 - **🔴 Live Status** - Real-time WebSocket streaming with ring buffer (500 logs, 200 displayed)
 - **🔐 Authentication** - Optional basic auth or token-based authentication

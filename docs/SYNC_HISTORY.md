@@ -47,9 +47,16 @@ Each sync operation is recorded with:
 | `accounts_processed` | INTEGER | Total accounts processed |
 | `accounts_succeeded` | INTEGER | Accounts synced successfully |
 | `accounts_failed` | INTEGER | Accounts that failed |
+| `accounts_skipped` | INTEGER | Accounts skipped (manual / closed) — see account syncability |
 | `error_message` | TEXT | Error message if failed |
 | `error_code` | TEXT | Error code if failed |
 | `correlation_id` | TEXT | UUID for tracking |
+
+> **Schema migrations:** New columns are added additively at startup. A database
+> created by an older version is migrated in place via a guarded `ALTER TABLE`
+> (checked against `PRAGMA table_info`), so the migration is idempotent and
+> preserves existing rows — older rows read `NULL` for columns added later
+> (e.g. `accounts_skipped`).
 
 ## Viewing History
 

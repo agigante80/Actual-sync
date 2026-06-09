@@ -48,6 +48,9 @@ class SyncHistoryService {
       // Create tables
       this.createTables();
 
+      // Apply schema migrations for databases created before newer columns existed
+      this.migrateSchema();
+
       // Clean up old records
       this.cleanup();
 
@@ -77,6 +80,7 @@ class SyncHistoryService {
         accounts_processed INTEGER,
         accounts_succeeded INTEGER,
         accounts_failed INTEGER,
+        accounts_skipped INTEGER,
         error_message TEXT,
         error_code TEXT,
         correlation_id TEXT,
@@ -101,6 +105,25 @@ class SyncHistoryService {
   }
 
   /**
+   * Apply additive schema migrations to existing databases.
+   *
+   * `CREATE TABLE IF NOT EXISTS` only defines columns for brand-new databases;
+   * a database created by an older version keeps its original column set. Each
+   * migration is guarded by a PRAGMA check so it is idempotent and safe to run
+   * on every startup. Adding a column preserves existing rows (new column reads
+   * as NULL for them).
+   */
+  migrateSchema() {
+    const columns = this.db.prepare('PRAGMA table_info(sync_history)').all();
+    const hasColumn = (name) => columns.some(col => col.name === name);
+
+    if (!hasColumn('accounts_skipped')) {
+      this.db.exec('ALTER TABLE sync_history ADD COLUMN accounts_skipped INTEGER');
+      this.logger.info('Migrated sync_history: added accounts_skipped column');
+    }
+  }
+
+  /**
    * Record a sync operation
    * @param {Object} record - Sync operation record
    * @param {string} record.serverName - Server name
@@ -109,6 +132,7 @@ class SyncHistoryService {
    * @param {number} record.accountsProcessed - Number of accounts processed
    * @param {number} record.accountsSucceeded - Number of accounts succeeded
    * @param {number} record.accountsFailed - Number of accounts failed
+   * @param {number} record.accountsSkipped - Number of accounts skipped (manual/closed)
    * @param {string} record.errorMessage - Error message if failed
    * @param {string} record.errorCode - Error code if failed
    * @param {string} record.correlationId - Correlation ID for tracking
@@ -125,10 +149,11 @@ class SyncHistoryService {
           accounts_processed,
           accounts_succeeded,
           accounts_failed,
+          accounts_skipped,
           error_message,
           error_code,
           correlation_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const result = stmt.run(
@@ -139,6 +164,7 @@ class SyncHistoryService {
         record.accountsProcessed || 0,
         record.accountsSucceeded || 0,
         record.accountsFailed || 0,
+        record.accountsSkipped || 0,
         record.errorMessage || null,
         record.errorCode || null,
         record.correlationId || null
@@ -450,6 +476,7 @@ class SyncHistoryService {
           accounts_processed as accountsProcessed,
           accounts_succeeded as accountsSucceeded,
           accounts_failed as accountsFailed,
+          accounts_skipped as accountsSkipped,
           error_message as errorMessage,
           error_code as errorCode,
           correlation_id as correlationId
