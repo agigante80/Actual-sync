@@ -282,11 +282,12 @@ class NotificationService {
       serverName, 
       duration, 
       accountsProcessed = 0,
-      accountsFailed = 0, 
+      accountsFailed = 0,
       succeededAccounts = [],
       failedAccounts = [],
-      error, 
-      errorCode, 
+      skippedAccounts = [],
+      error,
+      errorCode,
       correlationId,
       bypassThresholds = false
     } = result;
@@ -329,6 +330,7 @@ class NotificationService {
       accountsFailed,
       succeededAccounts,
       failedAccounts,
+      skippedAccounts,
       error,
       errorCode
     });

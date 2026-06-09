@@ -3,6 +3,7 @@
  */
 
 const { NotificationService } = require('../services/notificationService');
+const { MessageFormatter } = require('../lib/messageFormatter');
 const nodemailer = require('nodemailer');
 
 // Mock nodemailer
@@ -660,6 +661,39 @@ describe('NotificationService', () => {
       expect(service.notificationHistory).toEqual({});
       expect(service.consecutiveFailures).toEqual({});
       expect(service.recentSyncs).toEqual({});
+    });
+  });
+
+  describe('notifySync forwards account details (#100)', () => {
+    test('passes skippedAccounts (and synced/failed) through to the formatter', async () => {
+      const service = new NotificationService(); // no channels → sends are no-ops
+      const spy = jest.spyOn(MessageFormatter, 'formatSyncNotification');
+
+      await service.notifySync({
+        status: 'failure',
+        serverName: "Main's Budget",
+        duration: 1200,
+        accountsProcessed: 0,
+        accountsFailed: 1,
+        succeededAccounts: [],
+        failedAccounts: [{ name: 'SabadellSync', error: 'Rate limit exceeded.' }],
+        skippedAccounts: [
+          { name: 'Old Card', reason: 'closed' },
+          { name: 'Mortgage', reason: 'not-linked' }
+        ],
+        error: '1 account(s) failed to sync',
+        bypassThresholds: true // skip threshold/rate-limit gating for the test
+      });
+
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({
+        skippedAccounts: [
+          { name: 'Old Card', reason: 'closed' },
+          { name: 'Mortgage', reason: 'not-linked' }
+        ],
+        failedAccounts: [{ name: 'SabadellSync', error: 'Rate limit exceeded.' }]
+      }));
+
+      spy.mockRestore();
     });
   });
 });
