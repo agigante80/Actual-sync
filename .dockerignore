@@ -26,9 +26,9 @@ __tests__
 # Documentation (except README)
 docs
 
-# Configuration examples (use mounted config.json instead)
-config/config.example.json
-config.example.json
+# NOTE: config/config.example.json is intentionally NOT ignored — it is bundled
+# into the image (config-defaults) and seeded into the config volume on first
+# run so new users get a template to fill in. (#96)
 
 # Local data and logs (will be mounted as volumes)
 data

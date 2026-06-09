@@ -52,6 +52,11 @@ COPY --from=builder /app/config ./config
 COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/index.js ./
 
+# Bundle the config defaults (example + schema) at a path the user's config
+# volume mount does NOT shadow, so first-run seeding and schema validation
+# still work when /app/config is a fresh bind mount. (#96)
+COPY --from=builder /app/config ./config-defaults
+
 # Entrypoint handles PUID/PGID alignment and privilege drop
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

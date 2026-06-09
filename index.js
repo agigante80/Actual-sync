@@ -7,6 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { ensureConfig, resolveDefaultsDir } = require('./src/lib/configBootstrap');
 
 // Get version from environment or package.json
 const VERSION = process.env.VERSION || (() => {
@@ -43,11 +44,23 @@ function validateStartup() {
         // Check if config.json exists
         const configFile = path.join(configDir, 'config.json');
         if (!fs.existsSync(configFile)) {
-            errors.push(
-                'Configuration file not found: config/config.json\n' +
-                '  Please create config.json based on config.example.json.\n' +
-                '  Example: cp config/config.example.json config/config.json'
-            );
+            // First run: seed an example template into the (likely empty,
+            // freshly-mounted) config dir so the user has something to fill in. (#96)
+            const { seeded } = ensureConfig({ configDir });
+            const syncIdHint = '  Sync ID: in Actual Budget open the budget → Settings → Advanced → "Sync ID".';
+            if (seeded) {
+                errors.push(
+                    'No config.json found — a starter template was written to config/config.example.json.\n' +
+                    '  Fill in each server\'s url / password / syncId, rename it to config.json, and restart.\n' +
+                    syncIdHint
+                );
+            } else {
+                errors.push(
+                    'Configuration file not found: config/config.json\n' +
+                    '  Create config.json based on config.example.json.\n' +
+                    syncIdHint
+                );
+            }
         } else {
             // Verify config.json is readable and valid JSON
             try {
@@ -68,10 +81,11 @@ function validateStartup() {
             }
         }
 
-        // Check if schema exists (optional, but warn if missing)
-        const schemaFile = path.join(configDir, 'config.schema.json');
+        // Check if schema exists (optional, but warn if missing). Resolve from the
+        // bundled defaults dir so a shadowed config mount doesn't degrade validation. (#96)
+        const schemaFile = path.join(resolveDefaultsDir(__dirname), 'config.schema.json');
         if (!fs.existsSync(schemaFile)) {
-            warnings.push('Configuration schema not found: config/config.schema.json (validation will be limited)');
+            warnings.push('Configuration schema not found (validation will be limited)');
         }
     }
 

@@ -112,6 +112,18 @@ Your final structure should look like:
 
 ## Configuration
 
+### First run (auto-seeded template)
+
+On first start, if the mounted config directory has **no `config.json`**, the
+container writes a **`config.example.json` template** into it and exits with
+instructions. Fill that in and rename it to `config.json`:
+
+- For each budget, set `url`, `password`, and `syncId`.
+- **Where to get the Sync ID:** in Actual Budget, open the budget → **Settings → Advanced → "Sync ID"**.
+- Rename `config.example.json` → `config.json` and restart the container.
+
+(The schema used for validation is bundled in the image, so validation works even though the config directory is a mounted volume.)
+
 ### Basic Configuration Example
 
 Create `actual-sync/config.json`:
