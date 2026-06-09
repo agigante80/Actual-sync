@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const Ajv = require('ajv');
+const { resolveDefaultsDir } = require('./configBootstrap');
 
 /**
  * Configuration loader with validation
@@ -13,7 +14,9 @@ class ConfigLoader {
             // Find project root (where package.json is)
             const projectRoot = path.resolve(__dirname, '../..');
             this.configPath = path.join(projectRoot, 'config', 'config.json');
-            this.schemaPath = path.join(projectRoot, 'config', 'config.schema.json');
+            // Load the schema from the bundled defaults dir so it's still found
+            // when the config dir is a fresh/empty bind mount in a container. (#96)
+            this.schemaPath = path.join(resolveDefaultsDir(projectRoot), 'config.schema.json');
         } else {
             // Use provided paths (assume absolute or relative to cwd)
             this.configPath = path.resolve(configPath);

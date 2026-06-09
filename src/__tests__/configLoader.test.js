@@ -92,10 +92,32 @@ describe('ConfigLoader', () => {
             const configPath = createTestConfigFile(tempDir, config);
             const schemaPath = createTestSchemaFile(tempDir);
             const loader = new ConfigLoader(configPath, schemaPath);
-            
+
             const loadedConfig = loader.load();
-            
+
             expect(loadedConfig).toBeDefined();
+        });
+
+        test('T5: schema is read from a separate (bundled) dir, not the config dir (#96)', () => {
+            const cfgDir = createTempDir();
+            const schemaDir = createTempDir();
+            // config dir has the config but NO schema; schema lives elsewhere (bundled defaults)
+            const configPath = createTestConfigFile(cfgDir, { servers: [] });
+            const schemaPath = createTestSchemaFile(schemaDir);
+            expect(fs.existsSync(path.join(cfgDir, 'config.schema.json'))).toBe(false);
+
+            console.warn.mockClear();
+            const loader = new ConfigLoader(configPath, schemaPath);
+            // validateLogic rejects the empty servers array...
+            expect(() => loader.load()).toThrow(/at least one server/);
+            // ...and the schema (found in the SEPARATE dir) was applied — the soft
+            // schema-validation warning fired, proving it wasn't sourced from cfgDir.
+            expect(console.warn).toHaveBeenCalledWith(
+                expect.stringContaining('Could not validate config against schema')
+            );
+
+            cleanupTempDir(cfgDir);
+            cleanupTempDir(schemaDir);
         });
 
         test('should apply default values for optional fields', () => {

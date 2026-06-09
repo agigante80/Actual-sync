@@ -221,8 +221,9 @@ npm start
 Unraid users can install actual-sync from the **Apps** tab (Community Applications):
 
 1. Open the **Apps** tab and search for **`actual-sync`**.
-2. Click **Install**, then set the **Config** path and place your `config.json` inside it before starting (see [Configuration](#%EF%B8%8F-configuration)).
-3. After it starts, open the dashboard via the container's **WebUI** link (port `3000`).
+2. Click **Install** and set the **Config** path.
+3. On first start (empty config dir), the container drops a **`config.example.json`** in that folder and exits. Fill in each server's `url` / `password` / `syncId` (Sync ID: Actual Budget → the budget → **Settings → Advanced → "Sync ID"**), rename it to **`config.json`**, and start the container again (see [Configuration](#%EF%B8%8F-configuration)).
+4. Open the dashboard via the container's **WebUI** link (port `3000`).
 
 The Unraid template lives in [`unraid/actual-sync.xml`](unraid/actual-sync.xml).
 
