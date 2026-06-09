@@ -29,7 +29,7 @@ describe('MessageFormatter', () => {
       expect(formatted.text).toContain('✅ Sync Successful');
       expect(formatted.text).toContain('Main Budget');
       expect(formatted.text).toContain('2.5s');
-      expect(formatted.text).toContain('3/3 synced');
+      expect(formatted.text).toContain('Accounts: 3 synced, 0 failed, 0 skipped');
       expect(formatted.text).toContain('✅ Synced:');
       expect(formatted.text).toContain('Checking');
       expect(formatted.text).toContain('Savings');
@@ -68,7 +68,7 @@ describe('MessageFormatter', () => {
       
       // Check warning status
       expect(formatted.text).toContain('⚠️ Sync Completed with Issues');
-      expect(formatted.text).toContain('2/3 synced, 1 failed ❌');
+      expect(formatted.text).toContain('Accounts: 2 synced, 1 failed, 0 skipped');
       expect(formatted.text).toContain('❌ Failed:');
       expect(formatted.text).toContain('Credit Card');
       expect(formatted.text).toContain('Connection timeout');
@@ -247,7 +247,7 @@ describe('MessageFormatter', () => {
       };
       const f = MessageFormatter.formatSyncNotification(result);
 
-      expect(f.text).toContain('Result: 1/1 synced');       // syncable-based, not total
+      expect(f.text).toContain('Accounts: 1 synced, 0 failed, 3 skipped');
       expect(f.text).toContain('SabadellSync');
       expect(f.text).not.toContain('Mortgage\n  • House'); // manual accts not under Synced
       expect(f.text).toMatch(/Skipped.*3/);                 // skipped count shown
@@ -262,7 +262,7 @@ describe('MessageFormatter', () => {
         succeededAccounts: ['A', 'B'], failedAccounts: [], skippedAccounts: []
       };
       const f = MessageFormatter.formatSyncNotification(result);
-      expect(f.text).toContain('Result: 2/2 synced');
+      expect(f.text).toContain('Accounts: 2 synced, 0 failed, 0 skipped');
       expect(f.text).not.toMatch(/Skipped/);
     });
 
@@ -277,10 +277,80 @@ describe('MessageFormatter', () => {
         ]
       };
       const f = MessageFormatter.formatSyncNotification(result);
-      expect(f.text).toContain('Result: 0/0 synced');
+      expect(f.text).toContain('Accounts: 0 synced, 0 failed, 2 skipped');
       expect(f.text).not.toContain('✅ Synced:');     // nothing actually synced
       expect(f.text).toMatch(/Skipped.*2/);
       expect(f.text).toContain('Mortgage (not-linked)');
+    });
+  });
+
+  describe('notification clarity (#100)', () => {
+    const slackText = (f) => JSON.stringify(f.slack);
+    const discordText = (f) => JSON.stringify(f.discord);
+
+    test('M1: failure shows error + Accounts summary + failed + skipped (all channels)', () => {
+      const result = {
+        status: 'failure',
+        serverName: "Main's Budget",
+        duration: 1100,
+        accountsProcessed: 0,
+        accountsFailed: 1,
+        succeededAccounts: [],
+        failedAccounts: [{ name: 'SabadellSync', error: 'Rate limit exceeded. Please try again later.' }],
+        skippedAccounts: [
+          { name: 'Old Card', reason: 'closed' },
+          { name: 'MCP-Test', reason: 'closed' }
+        ],
+        error: '1 account(s) failed to sync: Failed syncing account SabadellSync. Rate limit exceeded.'
+      };
+      const f = MessageFormatter.formatSyncNotification(result);
+
+      // text
+      expect(f.text).toContain('Error:');
+      expect(f.text).toContain('Accounts: 0 synced, 1 failed, 2 skipped');
+      expect(f.text).toContain('SabadellSync');
+      expect(f.text).toMatch(/Skipped.*2/);
+      expect(f.text).toContain('Old Card (closed)');
+      // slack + discord carry the same summary + skipped info
+      expect(slackText(f)).toContain('Accounts:');
+      expect(slackText(f)).toContain('0 synced, 1 failed, 2 skipped');
+      expect(slackText(f)).toContain('Skipped');
+      expect(discordText(f)).toContain('0 synced, 1 failed, 2 skipped');
+      expect(discordText(f)).toContain('Skipped');
+    });
+
+    test('M2: success Accounts summary appears in text, slack, and discord', () => {
+      const result = {
+        status: 'success', serverName: 'X', duration: 9600,
+        accountsProcessed: 1, accountsFailed: 0,
+        succeededAccounts: ['SabadellSync'], failedAccounts: [],
+        skippedAccounts: [
+          { name: 'a', reason: 'closed' }, { name: 'b', reason: 'closed' },
+          { name: 'c', reason: 'closed' }, { name: 'd', reason: 'closed' },
+          { name: 'e', reason: 'closed' }, { name: 'f', reason: 'closed' }
+        ]
+      };
+      const f = MessageFormatter.formatSyncNotification(result);
+      expect(f.text).toContain('Accounts: 1 synced, 0 failed, 6 skipped');
+      expect(slackText(f)).toContain('1 synced, 0 failed, 6 skipped');
+      expect(discordText(f)).toContain('1 synced, 0 failed, 6 skipped');
+    });
+
+    test('M3: server-level failure with no accounts shows no Accounts/Skipped sections', () => {
+      const result = {
+        status: 'failure', serverName: 'X', duration: 500,
+        accountsProcessed: 0, accountsFailed: 0,
+        succeededAccounts: [], failedAccounts: [], skippedAccounts: [],
+        error: 'Connection refused'
+      };
+      const f = MessageFormatter.formatSyncNotification(result);
+      expect(f.text).toContain('Connection refused');
+      expect(f.text).not.toContain('Accounts:');
+      expect(f.text).not.toMatch(/Skipped/);
+      expect(slackText(f)).not.toContain('Accounts:');
+      expect(slackText(f)).not.toContain('Skipped');
+      expect(discordText(f)).not.toContain('"Accounts"');
+      expect(discordText(f)).not.toContain('Skipped');
     });
   });
 });
