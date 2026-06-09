@@ -132,6 +132,7 @@ describe('HealthCheckService', () => {
         port: testPort, host: '192.168.50.224', loggerConfig: { level: 'ERROR' }
       });
       const warnSpy = jest.spyOn(hc.logger, 'warn');
+      const infoSpy = jest.spyOn(hc.logger, 'info');
       // First listen (the configured LAN IP) → EADDRNOTAVAIL; retry on 0.0.0.0 → success.
       const { fakeServer, restore } = mockServers((srv, host) => {
         if (host === '0.0.0.0') {
@@ -146,12 +147,19 @@ describe('HealthCheckService', () => {
         expect(hc.host).toBe('0.0.0.0');                        // fell back
         expect(fakeServer.listen).toHaveBeenCalledTimes(2);     // first + retry
         expect(fakeServer.listen.mock.calls[1][1]).toBe('0.0.0.0');
-        expect(warnSpy).toHaveBeenCalledTimes(1);               // started log fires once
+        expect(warnSpy).toHaveBeenCalledTimes(1);               // exactly one fallback warning
         expect(warnSpy).toHaveBeenCalledWith(
           expect.stringContaining('EADDRNOTAVAIL'),
           expect.objectContaining({ configuredHost: '192.168.50.224' })
         );
+        // The success handler must fire exactly once despite two listen() calls —
+        // guards the double-'started'/double-resolve regression. (#94)
+        const startedLogs = infoSpy.mock.calls.filter(
+          (c) => typeof c[0] === 'string' && c[0].includes('Health check service started')
+        );
+        expect(startedLogs).toHaveLength(1);
       } finally {
+        infoSpy.mockRestore();
         warnSpy.mockRestore();
         restore();
         await hc.stop().catch(() => {});
