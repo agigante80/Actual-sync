@@ -270,6 +270,27 @@ Use relative paths in config for mounted volumes:
 }
 ```
 
+### Issue 5: Dashboard unreachable in a container (`EADDRNOTAVAIL`)
+
+**Symptom:**
+```
+listen EADDRNOTAVAIL: address not available 192.168.x.x:3000
+```
+The dashboard can't be reached, often only working with `--network host`.
+
+**Cause:** `healthCheck.host` was set to the host's LAN IP. A bridge-networked
+container can't bind the host's external IP — only `0.0.0.0` (all interfaces),
+`127.0.0.1`, or `localhost`.
+
+**Solution:** set `healthCheck.host` to `0.0.0.0` (the default) and reach the
+dashboard via the published port:
+```json
+{ "healthCheck": { "port": 3000, "host": "0.0.0.0" } }
+```
+As of the `EADDRNOTAVAIL` fix the container also **falls back to `0.0.0.0`
+automatically** (with a warning) if a host is set that it can't bind — but the
+correct config is still `0.0.0.0`.
+
 ## The Image
 
 The published image is built from a multi-stage `Dockerfile` and ships **only
