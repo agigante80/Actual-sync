@@ -978,11 +978,23 @@ This test verifies that Telegram notifications are working correctly.`
         this.server = http.createServer(this.app);
 
         // Create WebSocket server
-        this.wss = new WebSocket.Server({ 
+        this.wss = new WebSocket.Server({
           server: this.server,
           path: '/ws/logs',
           clientTracking: true,
           perMessageDeflate: false
+        });
+
+        // ws forwards the underlying HTTP server's errors (e.g. a bind failure)
+        // onto the WebSocket.Server. Without a listener that becomes an
+        // 'Unhandled "error" event' / uncaught exception. The HTTP server's own
+        // 'error' handler below does the real handling (fallback/reject); this
+        // just prevents the forwarded copy from crashing the process. (#94)
+        this.wss.on('error', (error) => {
+          this.logger.debug('WebSocket server error (handled by HTTP server listener)', {
+            error: error.message,
+            code: error.code
+          });
         });
 
         this.wss.on('connection', (ws, req) => {
@@ -1048,16 +1060,33 @@ This test verifies that Telegram notifications are working correctly.`
           clearInterval(heartbeatInterval);
         });
 
-        this.server.listen(this.port, this.host, () => {
+        const onListening = () => {
           this.logger.info('Health check service started', {
             port: this.port,
             host: this.host,
             dashboard: `http://${this.host === '0.0.0.0' ? 'localhost' : this.host}:${this.port}/dashboard`
           });
           resolve();
-        });
+        };
+
+        this.server.listen(this.port, this.host, onListening);
 
         this.server.on('error', (error) => {
+          // A configured host the container can't bind (e.g. the Unraid host's LAN
+          // IP in bridge mode) yields EADDRNOTAVAIL. Rather than failing — which
+          // leaves the dashboard unreachable — fall back to 0.0.0.0 with a warning
+          // so it still comes up. The guard on host !== '0.0.0.0' prevents a loop. (#94)
+          if (error.code === 'EADDRNOTAVAIL' && this.host !== '0.0.0.0') {
+            this.logger.warn('Could not bind health server to configured host; falling back to 0.0.0.0 (EADDRNOTAVAIL)', {
+              configuredHost: this.host,
+              port: this.port,
+              error: error.message,
+              hint: 'In containers set healthCheck.host to 0.0.0.0 — a host LAN IP is not bindable inside a bridge-networked container.'
+            });
+            this.host = '0.0.0.0';
+            this.server.listen(this.port, this.host, onListening);
+            return;
+          }
           this.logger.error('Health check service error', {
             error: error.message,
             code: error.code
