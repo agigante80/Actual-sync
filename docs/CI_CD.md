@@ -75,6 +75,10 @@ The pipeline runs automatically on:
 - **Git tags (v*)**: Full pipeline with Docker publish for the version tag (the release itself is created by the Auto Release workflow, which also pushes the tag)
 - **Manual dispatch**: Configurable workflow with custom options
 
+**Docs-only changes are skipped.** Pushes/PRs that touch only `**/*.md`, `docs/**`, or `LICENSE` do not trigger the pipeline (`paths-ignore`), so documentation edits don't run builds/tests/publish — and a docs-only push to `main` does not fire the Auto Release.
+
+**Chromium download is skipped in CI.** The workflow sets `PUPPETEER_SKIP_DOWNLOAD=true`, so `npm ci` in the lint/test/build jobs does not download Puppeteer's ~170 MB Chromium (it's only needed by the local screenshots script, never in CI).
+
 ---
 
 ## Dynamic Versioning

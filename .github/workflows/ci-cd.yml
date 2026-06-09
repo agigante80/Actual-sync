@@ -14,11 +14,20 @@ on:
       - development
     tags:
       - 'v*'
+    # Docs-only changes don't need the build/test/publish pipeline.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
   pull_request:
     branches:
       - main
       - develop
       - development
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
   workflow_dispatch:
     inputs:
       skip_tests:
@@ -45,6 +54,9 @@ on:
 env:
   NODE_VERSION: '20'
   DOCKER_IMAGE_NAME: actual-sync
+  # Puppeteer is only used by the screenshots script, never in CI jobs — skip its
+  # ~170 MB Chromium download (not covered by actions/setup-node's npm cache).
+  PUPPETEER_SKIP_DOWNLOAD: 'true'
 
 jobs:
   # ============================================================================
