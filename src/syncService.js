@@ -11,6 +11,7 @@ const { NotificationService } = require('./services/notificationService');
 const { TelegramBotService } = require('./services/telegramBot');
 const PrometheusService = require('./services/prometheusService');
 const { enhanceActualApiError } = require('./lib/actualApiError');
+const { partitionSyncableAccounts } = require('./lib/accountFilter');
 
 // Get version
 const VERSION = process.env.VERSION || (() => {
@@ -364,6 +365,7 @@ async function syncBank(server, options = {}) {
     let accountsFailed = 0;
     const succeededAccounts = [];
     const failedAccounts = [];
+    let skippedAccounts = []; // accounts skipped (manual / closed) — see partitionSyncableAccounts (#98)
     
     try {
         const syncType = isAutomated ? (retryAttempt > 0 ? `automated (retry ${retryAttempt})` : 'automated') : 'manual';
@@ -478,8 +480,27 @@ async function syncBank(server, options = {}) {
         }
 
         serverLogger.debug('Fetching accounts...');
-        const accounts = await actual.getAccounts();
-        serverLogger.info('Accounts fetched successfully', { accountCount: accounts?.length || 0 });
+        // getAccounts() strips the bank-linkage fields (account_sync_source), so we
+        // query via ActualQL, which exposes them. Only bank-linked, open accounts
+        // can actually bank-sync; runBankSync is a silent no-op on manual/closed
+        // accounts (which we'd otherwise miscount as successful). (#98)
+        const { data: allAccounts } = await actual.aqlQuery(
+            actual.q('accounts')
+                .filter({ tombstone: false })
+                .select(['id', 'name', 'closed', 'account_sync_source'])
+        );
+        const { syncable: accounts, skipped } = partitionSyncableAccounts(allAccounts);
+        skippedAccounts = skipped;
+        serverLogger.info('Accounts fetched successfully', {
+            accountCount: allAccounts?.length || 0,
+            syncable: accounts.length,
+            skipped: skippedAccounts.length
+        });
+        if (skippedAccounts.length > 0) {
+            serverLogger.info('Skipping non-syncable accounts', {
+                skipped: skippedAccounts.map(a => `${a.name} (${a.reason})`)
+            });
+        }
 
         serverLogger.info('Starting file sync');
         try {
@@ -535,7 +556,21 @@ async function syncBank(server, options = {}) {
                     });
                 } catch (bankSyncError) { // catch bankSyncError
                     const errorMsg = bankSyncError?.message || bankSyncError?.toString() || String(bankSyncError) || 'Unknown error';
-                    // Extra logging to clarify error type
+
+                    // "No new transactions" is a healthy outcome, not a failure —
+                    // count it as a success so a quiet linked account isn't reported
+                    // as failed. (#98)
+                    if (errorMsg && /no new transactions|no transactions found|nothing to sync/i.test(errorMsg)) {
+                        accountsSucceeded++;
+                        succeededAccounts.push(account.name);
+                        accountTimer();
+                        serverLogger.info('No new transactions for account', {
+                            accountId: account.id,
+                            accountName: account.name
+                        });
+                        continue;
+                    }
+
                     serverLogger.warn('runBankSync threw error', {
                         accountId: account.id,
                         accountName: account.name,
@@ -543,14 +578,6 @@ async function syncBank(server, options = {}) {
                         errorCode: bankSyncError?.code || 'UNKNOWN',
                         errorStack: bankSyncError?.stack || 'No stack trace available'
                     });
-                    // Special case: log if error message suggests no new transactions
-                    if (errorMsg && /no new transactions|no transactions found|nothing to sync/i.test(errorMsg)) {
-                        serverLogger.info('No new transactions for account', {
-                            accountId: account.id,
-                            accountName: account.name,
-                            error: errorMsg
-                        });
-                    }
                     accountsFailed++;
                     failedAccounts.push({
                         name: account.name,
@@ -679,6 +706,7 @@ async function syncBank(server, options = {}) {
                     accountsFailed: accountsFailed,
                     succeededAccounts: succeededAccounts,
                     failedAccounts: failedAccounts,
+                    skippedAccounts: skippedAccounts,
                     error: errorMessage,
                     errorCode: errorCode,
                     correlationId,
@@ -806,6 +834,7 @@ async function syncBank(server, options = {}) {
                     accountsFailed: accountsFailed,
                     succeededAccounts: succeededAccounts,
                     failedAccounts: failedAccounts,
+                    skippedAccounts: skippedAccounts,
                     error: errorMessage,
                     errorCode: errorCode,
                     correlationId,

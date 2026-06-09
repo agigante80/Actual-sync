@@ -20,9 +20,16 @@ jest.mock('@actual-app/api', () => {
         runBankSync: jest.fn(),
         sync: jest.fn(),
         shutdown: jest.fn(),
-        getAccounts: jest.fn()
+        getAccounts: jest.fn(),
+        q: jest.fn(() => { const b = { filter: () => b, select: () => b }; return b; }),
+        aqlQuery: jest.fn()
     };
 });
+
+// Helper: set the accounts returned by aqlQuery (the #98 syncable-detection path)
+function mockAqlAccounts(accounts) {
+    actual.aqlQuery.mockResolvedValue({ data: accounts });
+}
 
 const actual = require('@actual-app/api');
 
@@ -43,6 +50,11 @@ describe('syncService Integration Tests', () => {
             { id: 'account1', name: 'Test Account 1' },
             { id: 'account2', name: 'Test Account 2' }
         ]);
+        // Default: two bank-linked, open accounts (so both are syncable). (#98)
+        mockAqlAccounts([
+            { id: 'account1', name: 'Test Account 1', closed: false, account_sync_source: 'goCardless' },
+            { id: 'account2', name: 'Test Account 2', closed: false, account_sync_source: 'goCardless' }
+        ]);
     });
 
     afterEach(() => {
@@ -51,10 +63,11 @@ describe('syncService Integration Tests', () => {
 
     describe('syncBank function behavior', () => {
         // Create a mock syncBank function for testing
+        const { partitionSyncableAccounts } = require('../lib/accountFilter');
         async function createMockSyncBank(runWithRetries) {
             return async function syncBank(server) {
-                const { name, url, password, syncId, dataDir } = server;
-                
+                const { url, password, syncId, dataDir } = server;
+
                 await actual.init({
                     serverURL: url,
                     password: password,
@@ -62,18 +75,21 @@ describe('syncService Integration Tests', () => {
                 });
 
                 await runWithRetries(async () => await actual.downloadBudget(syncId));
-                
-                const accounts = await actual.getAccounts();
+
+                // #98: read accounts via aqlQuery (exposes account_sync_source) and
+                // only bank-sync the linked, open ones.
+                const { data: allAccounts } = await actual.aqlQuery(
+                    actual.q('accounts').filter({ tombstone: false }).select(['id', 'name', 'closed', 'account_sync_source'])
+                );
+                const { syncable } = partitionSyncableAccounts(allAccounts);
 
                 await runWithRetries(async () => await actual.sync());
-                
-                if (accounts && accounts.length > 0) {
-                    for (const account of accounts) {
-                        try {
-                            await runWithRetries(async () => await actual.runBankSync({ accountId: account.id }));
-                        } catch (bankSyncError) {
-                            console.error(`Error syncing bank for account ${account.id}:`, bankSyncError);
-                        }
+
+                for (const account of syncable) {
+                    try {
+                        await runWithRetries(async () => await actual.runBankSync({ accountId: account.id }));
+                    } catch (bankSyncError) {
+                        console.error(`Error syncing bank for account ${account.id}:`, bankSyncError);
                     }
                 }
 
@@ -101,7 +117,7 @@ describe('syncService Integration Tests', () => {
                 dataDir: server.dataDir
             });
             expect(actual.downloadBudget).toHaveBeenCalledWith(server.syncId);
-            expect(actual.getAccounts).toHaveBeenCalled();
+            expect(actual.aqlQuery).toHaveBeenCalled();
             expect(actual.sync).toHaveBeenCalled();
             expect(actual.runBankSync).toHaveBeenCalledTimes(2); // Two accounts
             expect(actual.shutdown).toHaveBeenCalled();
@@ -181,7 +197,7 @@ describe('syncService Integration Tests', () => {
         });
 
         test('should handle empty account list', async () => {
-            actual.getAccounts.mockResolvedValue([]);
+            mockAqlAccounts([]);
 
             const syncBank = await createMockSyncBank(mockRunWithRetries);
             const server = {
@@ -196,14 +212,14 @@ describe('syncService Integration Tests', () => {
 
             expect(actual.init).toHaveBeenCalled();
             expect(actual.downloadBudget).toHaveBeenCalled();
-            expect(actual.getAccounts).toHaveBeenCalled();
+            expect(actual.aqlQuery).toHaveBeenCalled();
             expect(actual.sync).toHaveBeenCalled();
             expect(actual.runBankSync).not.toHaveBeenCalled();
             expect(actual.shutdown).toHaveBeenCalled();
         });
 
         test('should handle null account list', async () => {
-            actual.getAccounts.mockResolvedValue(null);
+            mockAqlAccounts(null);
 
             const syncBank = await createMockSyncBank(mockRunWithRetries);
             const server = {
@@ -221,10 +237,10 @@ describe('syncService Integration Tests', () => {
         });
 
         test('should pass correct account IDs to runBankSync', async () => {
-            actual.getAccounts.mockResolvedValue([
-                { id: 'acc-123', name: 'Checking' },
-                { id: 'acc-456', name: 'Savings' },
-                { id: 'acc-789', name: 'Credit Card' }
+            mockAqlAccounts([
+                { id: 'acc-123', name: 'Checking', closed: false, account_sync_source: 'goCardless' },
+                { id: 'acc-456', name: 'Savings', closed: false, account_sync_source: 'goCardless' },
+                { id: 'acc-789', name: 'Credit Card', closed: false, account_sync_source: 'goCardless' }
             ]);
 
             const syncBank = await createMockSyncBank(mockRunWithRetries);
