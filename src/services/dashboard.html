@@ -379,6 +379,16 @@
             border-radius: 6px;
             margin-top: 10px;
         }
+        /* Account syncability list (#99) */
+        .acct-server { margin-bottom: 14px; }
+        .acct-server-name { font-size: 0.85rem; color: #94a3b8; margin-bottom: 6px; }
+        .acct-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; font-size: 0.9rem; }
+        .acct-row.closed { opacity: 0.6; }
+        .acct-badge { font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+        .acct-badge.syncable { background: #064e3b; color: #6ee7b7; }
+        .acct-badge.manual   { background: #334155; color: #cbd5e1; }
+        .acct-badge.closed   { background: #422006; color: #fca5a5; }
+        .acct-toggle { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #94a3b8; cursor: pointer; user-select: none; }
     </style>
 </head>
 <body>
@@ -432,6 +442,19 @@
                             <h3 style="margin-bottom: 10px; font-size: 0.9rem; color: #94a3b8;">Quick Actions</h3>
                             <div id="server-buttons" class="loading">Loading servers...</div>
                             <div id="sync-message"></div>
+                        </div>
+                    </div>
+
+                    <!-- Account syncability (#99) -->
+                    <div class="card">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                            <h2 style="margin: 0;">Accounts</h2>
+                            <label class="acct-toggle">
+                                <input type="checkbox" id="show-closed-accounts" onchange="renderAccounts()"> Show closed
+                            </label>
+                        </div>
+                        <div id="accounts-list">
+                            <div class="loading">Loading accounts...</div>
                         </div>
                     </div>
                 </div>
@@ -770,9 +793,80 @@
                 // Update server buttons
                 updateServerButtons(data.servers);
 
+                // Refresh the per-account syncability snapshot
+                loadAccounts();
+
             } catch (error) {
                 console.error('Failed to update dashboard:', error);
             }
+        }
+
+        // Escape user-supplied text (account/server names) before innerHTML. (#99)
+        function escapeHtml(value) {
+            return String(value == null ? '' : value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // Account syncability snapshot (#99): fetched on each dashboard refresh and
+        // cached so the "Show closed" toggle re-renders without re-fetching.
+        let accountsData = [];
+
+        let accountsUnavailable = false;
+
+        async function loadAccounts() {
+            try {
+                const response = await fetch('/api/dashboard/accounts', getFetchOptions());
+                if (!response.ok) {
+                    // Don't leave the card stuck on "Loading…" forever: show an
+                    // explicit unavailable state (e.g. 503 before any sync). (#99)
+                    accountsUnavailable = true;
+                    accountsData = [];
+                    renderAccounts();
+                    return;
+                }
+                accountsUnavailable = false;
+                accountsData = await response.json();
+                renderAccounts();
+            } catch (error) {
+                // Network/transient error. Re-render: if we already have data this
+                // keeps it; on the very first load (no data yet) it replaces the
+                // "Loading…" placeholder with the empty state rather than hanging.
+                renderAccounts();
+            }
+        }
+
+        function renderAccounts() {
+            const container = document.getElementById('accounts-list');
+            if (!container) return;
+            const showClosed = document.getElementById('show-closed-accounts')?.checked;
+
+            if (!accountsData || accountsData.length === 0) {
+                container.innerHTML = accountsUnavailable
+                    ? '<div style="color:#64748b;font-size:0.9rem;">Account data unavailable.</div>'
+                    : '<div style="color:#64748b;font-size:0.9rem;">No account data yet — run a sync.</div>';
+                return;
+            }
+
+            const badge = (c) => `<span class="acct-badge ${c}">${c}</span>`;
+            container.innerHTML = accountsData.map(group => {
+                const accounts = (group.accounts || []).filter(a => showClosed || a.classification !== 'closed');
+                const hiddenClosed = (group.accounts || []).length - accounts.length;
+                const rows = accounts.length
+                    ? accounts.map(a => `
+                        <div class="acct-row ${a.classification}">
+                            <span>${escapeHtml(a.name || a.id)}</span>
+                            ${badge(a.classification)}
+                        </div>`).join('')
+                    : `<div style="color:#64748b;font-size:0.85rem;">No open accounts.</div>`;
+                const hint = (!showClosed && hiddenClosed > 0)
+                    ? `<div style="color:#64748b;font-size:0.75rem;margin-top:4px;">${hiddenClosed} closed hidden</div>`
+                    : '';
+                return `<div class="acct-server"><div class="acct-server-name">${escapeHtml(group.server)}</div>${rows}${hint}</div>`;
+            }).join('');
         }
 
         function updateServersList(servers) {
@@ -858,24 +952,19 @@
                 }
                 
                 // Escape server name for safe HTML rendering
-                const escapedName = name
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/'/g, '&#39;');
-                    
+                const escapedName = escapeHtml(name);
+
                 const errorDisplay = status.error ? `
                     <br>
                     <span style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
-                        <span style="color: #ef4444;">Error: ${status.error}</span>
+                        <span style="color: #ef4444;">Error: ${escapeHtml(status.error)}</span>
                         <button onclick="dismissErrorByName(this)" data-server-name="${escapedName}" style="padding: 2px 8px; font-size: 0.75rem; background: #7f1d1d; border-radius: 4px;">Dismiss</button>
                     </span>
                 ` : '';
-                
+
                 return `
                     <li class="server-item ${status.status === 'failure' ? 'error' : ''}" id="server-${name.replace(/[^a-zA-Z0-9]/g, '_')}">
-                        <div class="server-name">${name}${encryptionBadge}</div>
+                        <div class="server-name">${escapedName}${encryptionBadge}</div>
                         <div class="server-info">
                             Last sync: ${lastSyncText}
                             ${accountCountsText}
@@ -903,13 +992,7 @@
                 </div>
                 <div class="button-group" style="margin-top: 10px;">
                     ${Object.keys(servers).map((name, index) => {
-                        const escapedName = name
-                            .replace(/&/g, '&amp;')
-                            .replace(/</g, '&lt;')
-                            .replace(/>/g, '&gt;')
-                            .replace(/"/g, '&quot;')
-                            .replace(/'/g, '&#39;');
-                        return `<button onclick="triggerSyncByIndex(${index})">${escapedName}</button>`;
+                        return `<button onclick="triggerSyncByIndex(${index})">${escapeHtml(name)}</button>`;
                     }).join('')}
                 </div>
             `;
@@ -1564,13 +1647,8 @@
                 if (result.orphaned && result.orphaned.length > 0) {
                     orphanedDiv.innerHTML = result.orphaned.map((server, index) => {
                         // Escape HTML entities to prevent XSS and handle special characters
-                        const escapedName = server.server_name
-                            .replace(/&/g, '&amp;')
-                            .replace(/</g, '&lt;')
-                            .replace(/>/g, '&gt;')
-                            .replace(/"/g, '&quot;')
-                            .replace(/'/g, '&#39;');
-                        
+                        const escapedName = escapeHtml(server.server_name);
+
                         return `
                         <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px; background: #1e293b; border-radius: 4px; margin-bottom: 8px;">
                             <div>

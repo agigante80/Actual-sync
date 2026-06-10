@@ -562,4 +562,113 @@ describe('SyncHistoryService', () => {
       expect(syncHistory.getDbPath()).toBe(testDbPath);
     });
   });
+
+  describe('account metadata (#99)', () => {
+    const sample = [
+      { id: 'a1', name: 'Checking', classification: 'syncable' },
+      { id: 'a2', name: 'Savings', classification: 'closed' },
+      { id: 'a3', name: 'Cash', classification: 'manual' }
+    ];
+
+    test('persists and reads back the classified accounts for a server', () => {
+      const stored = syncHistory.replaceAccountMetadata('Main', sample);
+      expect(stored).toBe(3);
+
+      const rows = syncHistory.getAccountMetadata('Main');
+      expect(rows).toHaveLength(3);
+      const byId = Object.fromEntries(rows.map(r => [r.id, r]));
+      expect(byId.a1).toMatchObject({ name: 'Checking', classification: 'syncable' });
+      expect(byId.a2).toMatchObject({ name: 'Savings', classification: 'closed' });
+      expect(byId.a3).toMatchObject({ name: 'Cash', classification: 'manual' });
+      expect(byId.a1.updatedAt).toBeDefined();
+    });
+
+    test('getAccountMetadata returns an empty array (not null) for an unknown server', () => {
+      const rows = syncHistory.getAccountMetadata('NeverSyncedServer');
+      expect(rows).toEqual([]);
+    });
+
+    test('replace overwrites the previous snapshot (removed accounts disappear)', () => {
+      syncHistory.replaceAccountMetadata('Main', sample); // 3 accounts
+      syncHistory.replaceAccountMetadata('Main', [{ id: 'a1', name: 'Checking', classification: 'syncable' }]);
+      const rows = syncHistory.getAccountMetadata('Main');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('a1');
+    });
+
+    test('keeps servers isolated from each other', () => {
+      syncHistory.replaceAccountMetadata('Main', sample);
+      syncHistory.replaceAccountMetadata('Other', [{ id: 'b1', name: 'Brokerage', classification: 'manual' }]);
+      expect(syncHistory.getAccountMetadata('Main')).toHaveLength(3);
+      expect(syncHistory.getAccountMetadata('Other')).toHaveLength(1);
+    });
+
+    test('getAllAccountMetadata groups accounts by server', () => {
+      syncHistory.replaceAccountMetadata('Main', sample);
+      syncHistory.replaceAccountMetadata('Other', [{ id: 'b1', name: 'Brokerage', classification: 'manual' }]);
+      const all = syncHistory.getAllAccountMetadata();
+      const main = all.find(g => g.server === 'Main');
+      const other = all.find(g => g.server === 'Other');
+      expect(main.accounts).toHaveLength(3);
+      expect(other.accounts).toHaveLength(1);
+      expect(other.accounts[0]).toMatchObject({ id: 'b1', classification: 'manual' });
+    });
+
+    test('replaceAccountMetadata with an empty list clears the server', () => {
+      syncHistory.replaceAccountMetadata('Main', sample);
+      expect(syncHistory.replaceAccountMetadata('Main', [])).toBe(0);
+      expect(syncHistory.getAccountMetadata('Main')).toEqual([]);
+    });
+
+    test('the account_metadata table is created on a fresh database (idempotent migration)', () => {
+      // A brand-new SyncHistoryService must have the table; CREATE TABLE IF NOT
+      // EXISTS runs on every init, so re-initializing the same DB is safe.
+      const probe = path.join(__dirname, 'test-acct-meta-migration.db');
+      if (fs.existsSync(probe)) fs.unlinkSync(probe);
+      const has = (db) => db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='account_metadata'"
+      ).get();
+      let first, second;
+      try {
+        first = new SyncHistoryService({ dbPath: probe, loggerConfig: { level: 'ERROR' } });
+        expect(has(first.db)).toBeTruthy();
+        first.replaceAccountMetadata('S', [{ id: 'x', name: 'X', classification: 'syncable' }]);
+        first.close();
+        // Re-open the same DB: table still present, data intact, no throw.
+        second = new SyncHistoryService({ dbPath: probe, loggerConfig: { level: 'ERROR' } });
+        expect(has(second.db)).toBeTruthy();
+        expect(second.getAccountMetadata('S')).toHaveLength(1);
+      } finally {
+        // Clean up even if an assertion above throws, so no stale probe DB lingers.
+        if (first && first.db) try { first.close(); } catch { /* already closed */ }
+        if (second && second.db) try { second.close(); } catch { /* already closed */ }
+        ['', '-wal', '-shm'].forEach(suffix => { if (fs.existsSync(probe + suffix)) fs.unlinkSync(probe + suffix); });
+      }
+    });
+
+    test('resetServerHistory clears that server account snapshot (#99)', async () => {
+      syncHistory.replaceAccountMetadata('Main', sample);
+      syncHistory.replaceAccountMetadata('Other', [{ id: 'b1', name: 'B', classification: 'manual' }]);
+      await syncHistory.resetServerHistory('Main');
+      expect(syncHistory.getAccountMetadata('Main')).toEqual([]);
+      expect(syncHistory.getAccountMetadata('Other')).toHaveLength(1); // untouched
+    });
+
+    test('resetAllHistory clears every server account snapshot (#99)', async () => {
+      syncHistory.replaceAccountMetadata('Main', sample);
+      syncHistory.replaceAccountMetadata('Other', [{ id: 'b1', name: 'B', classification: 'manual' }]);
+      await syncHistory.resetAllHistory();
+      expect(syncHistory.getAllAccountMetadata()).toEqual([]);
+    });
+
+    test('duplicate account ids in one batch self-heal instead of throwing (#99)', () => {
+      expect(() => syncHistory.replaceAccountMetadata('Main', [
+        { id: 'dup', name: 'First', classification: 'syncable' },
+        { id: 'dup', name: 'Second', classification: 'closed' }
+      ])).not.toThrow();
+      const rows = syncHistory.getAccountMetadata('Main');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: 'dup', name: 'Second', classification: 'closed' }); // last wins
+    });
+  });
 });

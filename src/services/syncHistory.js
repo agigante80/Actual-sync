@@ -88,20 +88,36 @@ class SyncHistoryService {
       )
     `;
 
+    // Current-state snapshot of each server's accounts and whether they can
+    // bank-sync, so the dashboard can show syncable/manual/closed without a live
+    // Actual connection. Refreshed (replaced per server) on every sync. (#99)
+    const createAccountMetadataTable = `
+      CREATE TABLE IF NOT EXISTS account_metadata (
+        server_name TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        account_name TEXT,
+        classification TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (server_name, account_id)
+      )
+    `;
+
     const createIndexes = [
       'CREATE INDEX IF NOT EXISTS idx_timestamp ON sync_history(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_server_name ON sync_history(server_name)',
       'CREATE INDEX IF NOT EXISTS idx_status ON sync_history(status)',
-      'CREATE INDEX IF NOT EXISTS idx_correlation_id ON sync_history(correlation_id)'
+      'CREATE INDEX IF NOT EXISTS idx_correlation_id ON sync_history(correlation_id)',
+      'CREATE INDEX IF NOT EXISTS idx_account_meta_server ON account_metadata(server_name)'
     ];
 
     this.db.exec(createSyncHistoryTable);
-    this.logger.debug('Created sync_history table');
+    this.db.exec(createAccountMetadataTable);
+    this.logger.debug('Created sync_history and account_metadata tables');
 
     createIndexes.forEach(idx => {
       this.db.exec(idx);
     });
-    this.logger.debug('Created indexes on sync_history table');
+    this.logger.debug('Created indexes');
   }
 
   /**
@@ -121,6 +137,11 @@ class SyncHistoryService {
       this.db.exec('ALTER TABLE sync_history ADD COLUMN accounts_skipped INTEGER');
       this.logger.info('Migrated sync_history: added accounts_skipped column');
     }
+
+    // NOTE: account_metadata is created via CREATE TABLE IF NOT EXISTS in
+    // createTables() (so a missing table is added to existing DBs). If a NEW
+    // COLUMN is ever added to account_metadata, add an ALTER guard here too —
+    // CREATE TABLE IF NOT EXISTS will not add columns to an existing table. (#99)
   }
 
   /**
@@ -182,6 +203,85 @@ class SyncHistoryService {
         error: error.message,
         serverName: record.serverName
       });
+      throw error;
+    }
+  }
+
+  /**
+   * Replace the stored account snapshot for a server with the current set.
+   * Deletes the server's previous rows and inserts the new ones in one
+   * transaction, so a removed/renamed account never lingers. (#99)
+   * @param {string} serverName
+   * @param {Array<{id:string,name:string,classification:string}>} accounts
+   *   classification is 'syncable' | 'manual' | 'closed'
+   * @returns {number} number of accounts stored
+   */
+  replaceAccountMetadata(serverName, accounts = []) {
+    try {
+      const del = this.db.prepare('DELETE FROM account_metadata WHERE server_name = ?');
+      // OR REPLACE so a duplicate account id within one batch self-heals (last
+      // wins) instead of throwing a PRIMARY KEY error that rolls back the whole
+      // snapshot. (#99)
+      const ins = this.db.prepare(`
+        INSERT OR REPLACE INTO account_metadata (server_name, account_id, account_name, classification, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      const now = new Date().toISOString();
+      const replace = this.db.transaction((rows) => {
+        del.run(serverName);
+        for (const a of rows) {
+          ins.run(serverName, a.id, a.name ?? null, a.classification, now);
+        }
+      });
+      replace(accounts);
+      this.logger.debug('Account metadata persisted', { serverName, count: accounts.length });
+      return accounts.length;
+    } catch (error) {
+      this.logger.error('Failed to persist account metadata', {
+        error: error.message,
+        serverName
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Get the stored account snapshot for one server.
+   * @param {string} serverName
+   * @returns {Array<{id:string,name:string,classification:string,updatedAt:string}>}
+   *   empty array when nothing is stored for that server
+   */
+  getAccountMetadata(serverName) {
+    try {
+      return this.db.prepare(`
+        SELECT account_id AS id, account_name AS name, classification, updated_at AS updatedAt
+        FROM account_metadata WHERE server_name = ?
+        ORDER BY COALESCE(account_name, account_id)
+      `).all(serverName);
+    } catch (error) {
+      this.logger.error('Failed to read account metadata', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Get the stored account snapshots for every server, grouped by server.
+   * @returns {Array<{server:string, accounts:Array}>}
+   */
+  getAllAccountMetadata() {
+    try {
+      const rows = this.db.prepare(`
+        SELECT server_name AS server, account_id AS id, account_name AS name, classification, updated_at AS updatedAt
+        FROM account_metadata ORDER BY server_name, COALESCE(account_name, account_id)
+      `).all();
+      const byServer = new Map();
+      for (const r of rows) {
+        if (!byServer.has(r.server)) byServer.set(r.server, []);
+        byServer.get(r.server).push({ id: r.id, name: r.name, classification: r.classification, updatedAt: r.updatedAt });
+      }
+      return [...byServer.entries()].map(([server, accounts]) => ({ server, accounts }));
+    } catch (error) {
+      this.logger.error('Failed to read all account metadata', { error: error.message });
       throw error;
     }
   }
@@ -544,8 +644,16 @@ class SyncHistoryService {
    */
   async resetServerHistory(serverName) {
     try {
-      const stmt = this.db.prepare('DELETE FROM sync_history WHERE server_name = ?');
-      const result = stmt.run(serverName);
+      // Clear sync history AND the dashboard account snapshot atomically, so a
+      // reset never leaves orphaned account badges (or half-cleared state). (#99)
+      const delHistory = this.db.prepare('DELETE FROM sync_history WHERE server_name = ?');
+      const delMeta = this.db.prepare('DELETE FROM account_metadata WHERE server_name = ?');
+      const reset = this.db.transaction((s) => {
+        const r = delHistory.run(s);
+        delMeta.run(s);
+        return r;
+      });
+      const result = reset(serverName);
 
       this.logger.info('Sync history reset for server', {
         serverName,
@@ -567,8 +675,15 @@ class SyncHistoryService {
    */
   async resetAllHistory() {
     try {
-      const stmt = this.db.prepare('DELETE FROM sync_history');
-      const result = stmt.run();
+      // Clear all sync history AND all account snapshots atomically. (#99)
+      const delHistory = this.db.prepare('DELETE FROM sync_history');
+      const delMeta = this.db.prepare('DELETE FROM account_metadata');
+      const reset = this.db.transaction(() => {
+        const r = delHistory.run();
+        delMeta.run();
+        return r;
+      });
+      const result = reset();
 
       this.logger.info('All sync history reset', {
         deletedRows: result.changes

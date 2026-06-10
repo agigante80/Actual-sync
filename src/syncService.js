@@ -11,7 +11,7 @@ const { NotificationService } = require('./services/notificationService');
 const { TelegramBotService } = require('./services/telegramBot');
 const PrometheusService = require('./services/prometheusService');
 const { enhanceActualApiError } = require('./lib/actualApiError');
-const { partitionSyncableAccounts } = require('./lib/accountFilter');
+const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 
 // Get version
 const VERSION = process.env.VERSION || (() => {
@@ -504,6 +504,11 @@ async function syncBank(server, options = {}) {
                 skipped: skippedAccounts.map(a => `${a.name} (${a.reason})`)
             });
         }
+
+        // Persist the account snapshot so the dashboard can show syncable / manual /
+        // closed badges without a live Actual connection. Best-effort and non-fatal
+        // (see persistAccountMetadata). (#99)
+        persistAccountMetadata(syncHistory, name, { syncable: accounts, skipped }, serverLogger);
 
         serverLogger.info('Starting file sync');
         try {
