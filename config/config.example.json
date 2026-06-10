@@ -80,6 +80,7 @@
     "includeDefaultMetrics": true
   },
   "notifications": {
+    "branding": true,
     "email": {
       "enabled": false,
       "host": "smtp.gmail.com",

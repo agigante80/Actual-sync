@@ -123,8 +123,32 @@ describe('TelegramBotService', () => {
         },
         {}
       );
-      
+
       expect(bot.config.notifyOnSuccess).toBe('errors_only');
+    });
+
+    test('binds chatId from a chatIds-only config (#114)', () => {
+      // A config using chatIds[] (now valid per the schema) must still start the
+      // interactive bot, not silently fail to bind.
+      const bot = new TelegramBotService(
+        { botToken: '123:ABC', chatIds: [789, 999] },
+        {}
+      );
+      expect(bot.config.chatId).toBe(789);
+    });
+
+    test('does not clobber the env-var chatId fallback with the spread (#114)', () => {
+      // Regression: the `...config` spread used to overwrite the computed chatId
+      // back to undefined when config.chatId was absent.
+      const prev = process.env.TELEGRAM_CHAT_ID;
+      process.env.TELEGRAM_CHAT_ID = '555';
+      try {
+        const bot = new TelegramBotService({ botToken: '123:ABC' }, {});
+        expect(bot.config.chatId).toBe('555');
+      } finally {
+        if (prev === undefined) delete process.env.TELEGRAM_CHAT_ID;
+        else process.env.TELEGRAM_CHAT_ID = prev;
+      }
     });
     
     test('should initialize commands', () => {
