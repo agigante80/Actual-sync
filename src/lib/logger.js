@@ -5,7 +5,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+// Node's built-in v4 UUID generator — no external dependency (replaces `uuid`,
+// which went ESM-only at v14 and could not be required under the CJS test runner). (#56)
+const { randomUUID } = require('crypto');
 const { createStream } = require('rotating-file-stream');
 const dgram = require('dgram');
 
@@ -174,7 +176,7 @@ class Logger {
      * Set correlation ID for tracking related log entries
      */
     setCorrelationId(id) {
-        this.correlationId = id || uuidv4();
+        this.correlationId = id || randomUUID();
         return this.correlationId;
     }
 
@@ -189,7 +191,7 @@ class Logger {
      * Generate correlation ID
      */
     generateCorrelationId() {
-        return uuidv4();
+        return randomUUID();
     }
 
     /**
