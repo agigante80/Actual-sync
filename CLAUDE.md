@@ -156,7 +156,9 @@ logger.error('Attempt failed', { attempt: i + 1, error: err.message, errorCode: 
 logger.info(`Starting sync for ${name} at ${url} with ${maxRetries} retries`);
 ```
 
-Log levels: `ERROR` (failures), `WARN` (retries/threshold warnings), `INFO` (normal operations), `DEBUG` (verbose).
+Log levels: `ERROR` (failures needing attention), `WARN` (retries/threshold warnings), `INFO` (normal operations), `DEBUG` (verbose). **Level discipline:** a failure the service recovered from (a retry, a transient remote 429/5xx, a network blip, an already-handled `@actual-app/api` rejection) is `WARN`/`DEBUG`, never `ERROR`. Keep the error log honest.
+
+Secrets are redacted automatically before writing (console/file/syslog/dashboard) by key name and by secret-looking string patterns, so passing a token in metadata is masked, not leaked. Files default to single-line JSON (`fileFormat`), console to `pretty`. See `docs/LOGGING.md` for the full standard (redaction keys, rotation, syslog).
 
 ### Configuration
 
