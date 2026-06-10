@@ -29,8 +29,15 @@ describe('HealthCheckService', () => {
   let testPort = 3456; // Use non-standard port for testing
 
   beforeEach(() => {
-    // Use a different port for each test to avoid conflicts
-    testPort = 3456 + Math.floor(Math.random() * 1000);
+    // Each Jest worker gets its own 1000-port band, so parallel worker processes
+    // can never pick the same real port and collide with EADDRINUSE. Bands are
+    // wrapped into a fixed set kept BELOW the OS ephemeral range (32768+), so they
+    // never overflow the valid port space or clash with OS-assigned (:0) ports,
+    // even on high-core machines. Within a worker, tests run sequentially and
+    // afterEach awaits stop(), so the band is reused safely. (#95)
+    const workerId = Number(process.env.JEST_WORKER_ID) || 1;
+    const band = (workerId - 1) % 28; // bands 4000-4899 .. 31000-31899
+    testPort = 4000 + band * 1000 + Math.floor(Math.random() * 900);
     healthCheck = new HealthCheckService({
       port: testPort,
       host: '127.0.0.1',
