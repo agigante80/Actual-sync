@@ -106,18 +106,41 @@ describe('ConfigLoader', () => {
             const schemaPath = createTestSchemaFile(schemaDir);
             expect(fs.existsSync(path.join(cfgDir, 'config.schema.json'))).toBe(false);
 
-            console.warn.mockClear();
             const loader = new ConfigLoader(configPath, schemaPath);
-            // validateLogic rejects the empty servers array...
+            // The schema (found in the SEPARATE dir) is applied: its `servers`
+            // minItems:1 rejects the empty array. During the grace period that is
+            // surfaced as an advisory WARNING (proving the schema from the separate
+            // dir was read and run), while validateLogic still HARD-FAILS on the
+            // empty servers array. (#96, #115)
             expect(() => loader.load()).toThrow(/at least one server/);
-            // ...and the schema (found in the SEPARATE dir) was applied — the soft
-            // schema-validation warning fired, proving it wasn't sourced from cfgDir.
             expect(console.warn).toHaveBeenCalledWith(
-                expect.stringContaining('Could not validate config against schema')
+                expect.stringContaining('does not fully match the schema')
             );
 
             cleanupTempDir(cfgDir);
             cleanupTempDir(schemaDir);
+        });
+
+        test('schema validation is ADVISORY at startup: warns but does not block a logic-valid config (#115)', () => {
+            // Structurally fine (passes validateLogic) but schema-invalid: branding
+            // must be a boolean. During the grace period this must WARN, not crash.
+            const config = createMockConfig({ notifications: { branding: 'not-a-boolean' } });
+            const configPath = createTestConfigFile(tempDir, config);
+            const realSchemaPath = path.join(__dirname, '..', '..', 'config', 'config.schema.json');
+            const loader = new ConfigLoader(configPath, realSchemaPath);
+            expect(() => loader.load()).not.toThrow();
+            expect(console.warn).toHaveBeenCalledWith(
+                expect.stringContaining('does not fully match the schema')
+            );
+        });
+
+        test('a corrupt bundled schema fails with a clear, distinct message (#115)', () => {
+            const config = createMockConfig();
+            const configPath = createTestConfigFile(tempDir, config);
+            const schemaPath = path.join(tempDir, 'config.schema.json');
+            fs.writeFileSync(schemaPath, '{ this is not valid json');
+            const loader = new ConfigLoader(configPath, schemaPath);
+            expect(() => loader.load()).toThrow(/Could not load bundled config schema/);
         });
 
         test('should apply default values for optional fields', () => {
@@ -162,8 +185,83 @@ describe('ConfigLoader', () => {
             };
             const configPath = createTestConfigFile(tempDir, config);
             const loader = new ConfigLoader(configPath);
-            
+
             expect(() => loader.validateConfig(config, schema)).toThrow('Configuration validation failed');
+        });
+
+        test('compiles a schema with string formats instead of throwing (#115 regression)', () => {
+            // The original bug: a `format` keyword made ajv.compile() throw, which
+            // load() swallowed — silently disabling validation. ajv-formats fixes it.
+            const loader = new ConfigLoader('x', 'y');
+            const schema = {
+                type: 'object',
+                properties: { email: { type: 'string', format: 'email' } }
+            };
+            expect(() => loader.validateConfig({ email: 'a@b.com' }, schema)).not.toThrow();
+            expect(() => loader.validateConfig({ email: 'not-an-email' }, schema))
+                .toThrow('Configuration validation failed');
+        });
+    });
+
+    describe('real bundled schema enforcement (#115)', () => {
+        const realSchema = JSON.parse(
+            fs.readFileSync(path.join(__dirname, '..', '..', 'config', 'config.schema.json'), 'utf8')
+        );
+        const loader = new ConfigLoader('x', 'y');
+
+        test('the example/mock config validates against the real schema', () => {
+            expect(() => loader.validateConfig(createMockConfig(), realSchema)).not.toThrow();
+        });
+
+        test('enforces format: email on notifications.email.from', () => {
+            const cfg = createMockConfig({
+                notifications: { email: { enabled: true, from: 'definitely-not-an-email', to: [] } }
+            });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
+        test('enforces format: uri on notifications.ntfy.icon', () => {
+            const cfg = createMockConfig({
+                notifications: { ntfy: { enabled: true, url: 'https://ntfy.sh/t', icon: 'not a url' } }
+            });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
+        test('rejects a wrong-typed field (branding as the string "false")', () => {
+            // The footgun: `"false"` is truthy, so without schema enforcement it would
+            // leave branding ON — the opposite of intent. Schema now rejects it. (#115)
+            const cfg = createMockConfig({ notifications: { branding: 'false' } });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
+        test('allows ntfy.icon:"" — the documented opt-out (#1)', () => {
+            const cfg = createMockConfig({ notifications: { ntfy: { enabled: true, url: 'https://ntfy.sh/t', icon: '' } } });
+            expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();
+        });
+
+        test('does NOT enforce email format on a DISABLED stub (#2)', () => {
+            const cfg = createMockConfig({ notifications: { email: { enabled: false, from: 'YOUR_EMAIL', to: [] } } });
+            expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();
+        });
+
+        test('accepts numeric chatIds when telegram is enabled (#4)', () => {
+            const cfg = createMockConfig({ notifications: { telegram: { enabled: true, botToken: '1:AAAA', chatIds: [123456] } } });
+            expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();
+        });
+
+        test('rejects an enabled telegram with an EMPTY chatIds array (#4)', () => {
+            const cfg = createMockConfig({ notifications: { telegram: { enabled: true, botToken: '1:AAAA', chatIds: [] } } });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
+        test('rejects an enabled telegram with a BLANK chatId (#4)', () => {
+            const cfg = createMockConfig({ notifications: { telegram: { enabled: true, botToken: '1:AAAA', chatId: '' } } });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
+        test('rejects an unknown/misspelled telegram property (#9)', () => {
+            const cfg = createMockConfig({ notifications: { telegram: { enabled: false, chatID: 'typo' } } });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
         });
     });
 

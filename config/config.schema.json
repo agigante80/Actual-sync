@@ -406,21 +406,30 @@
             },
             "from": {
               "type": "string",
-              "description": "From email address",
-              "format": "email"
+              "description": "From email address. Validated as an email only when email notifications are enabled, so a disabled stub may hold a placeholder."
             },
             "to": {
               "type": "array",
-              "description": "Recipient email addresses",
+              "description": "Recipient email addresses (validated as emails only when email is enabled)",
               "items": {
-                "type": "string",
-                "format": "email"
+                "type": "string"
               }
+            }
+          },
+          "if": {
+            "required": ["enabled"],
+            "properties": { "enabled": { "const": true } }
+          },
+          "then": {
+            "properties": {
+              "from": { "type": "string", "format": "email" },
+              "to": { "type": "array", "items": { "type": "string", "format": "email" } }
             }
           }
         },
         "telegram": {
           "type": "object",
+          "additionalProperties": false,
           "description": "Telegram bot settings for notifications and commands",
           "properties": {
             "enabled": {
@@ -430,21 +439,49 @@
             },
             "botToken": {
               "type": "string",
-              "description": "Telegram bot token from @BotFather",
-              "pattern": "^[0-9]+:[A-Za-z0-9_-]+$"
+              "description": "Telegram bot token from @BotFather. The 'digits:token' format is enforced only when telegram is enabled, so a disabled stub may hold a placeholder."
             },
             "chatId": {
               "type": "string",
               "description": "Chat ID (user ID, group ID, or channel username)"
+            },
+            "chatIds": {
+              "type": "array",
+              "description": "One or more chat IDs (alternative to chatId). The first entry is used for outbound notifications; the bot also accepts numeric IDs.",
+              "items": { "type": ["string", "number"] }
             },
             "notifyOnSuccess": {
               "type": "string",
               "description": "When to send sync notifications",
               "enum": ["always", "errors_only", "never"],
               "default": "errors_only"
+            },
+            "pollInterval": {
+              "type": "integer",
+              "description": "Polling interval in milliseconds for the interactive bot",
+              "minimum": 100,
+              "default": 2000
             }
           },
-          "required": ["botToken", "chatId"]
+          "if": {
+            "required": ["enabled"],
+            "properties": { "enabled": { "const": true } }
+          },
+          "then": {
+            "required": ["botToken"],
+            "properties": {
+              "botToken": { "type": "string", "pattern": "^[0-9]+:[A-Za-z0-9_-]+$" }
+            },
+            "anyOf": [
+              { "required": ["chatId"], "properties": { "chatId": { "type": "string", "minLength": 1 } } },
+              { "required": ["chatIds"], "properties": { "chatIds": { "type": "array", "minItems": 1 } } }
+            ]
+          }
+        },
+        "branding": {
+          "type": "boolean",
+          "description": "Stamp the Actual-sync project name and icon onto Slack/Discord/ntfy notifications. Set false to keep a webhook's own configured app identity, or to stop ntfy from fetching the project icon from GitHub on an air-gapped network.",
+          "default": true
         },
         "webhooks": {
           "type": "object",
@@ -559,7 +596,11 @@
             },
             "icon": {
               "type": "string",
-              "description": "URL of an icon shown in the ntfy notification (sent as the Icon header). Defaults to the Actual-sync project icon."
+              "anyOf": [
+                { "const": "" },
+                { "format": "uri" }
+              ],
+              "description": "URL of an icon shown in the ntfy notification (sent as the Icon header). Defaults to the Actual-sync project icon; set to an empty string to send no icon."
             }
           },
           "required": ["url"]

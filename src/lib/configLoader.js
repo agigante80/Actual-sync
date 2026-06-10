@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const Ajv = require('ajv');
+const addFormats = require('ajv-formats');
 const { resolveDefaultsDir } = require('./configBootstrap');
 
 /**
@@ -58,13 +59,34 @@ class ConfigLoader {
             );
         }
 
-        // Validate against schema if available
+        // Validate against schema if available. (#115)
         if (fs.existsSync(this.schemaPath)) {
+            let schema;
             try {
-                const schema = JSON.parse(fs.readFileSync(this.schemaPath, 'utf8'));
+                schema = JSON.parse(fs.readFileSync(this.schemaPath, 'utf8'));
+            } catch (error) {
+                // A corrupt/unreadable BUNDLED schema is a packaging defect the user
+                // cannot fix from their config — fail with a clear, distinct message
+                // rather than a raw SyntaxError that sends them hunting their config.
+                throw new Error(
+                    `Could not load bundled config schema (${this.schemaPath}): ${error.message}\n` +
+                    `This is an installation/build problem, not a problem with your config.json.`
+                );
+            }
+
+            try {
                 this.validateConfig(config, schema);
             } catch (error) {
-                console.warn(`Warning: Could not validate config against schema: ${error.message}`);
+                // Grace period: schema validation is ADVISORY for one release. The
+                // schema sat un-enforced for a long time and has drifted, so surface
+                // mismatches LOUDLY but don't crash-loop a previously-working deploy
+                // on a rule we only just turned on. Structural problems are still a
+                // hard failure via validateLogic() below. Promote this to a throw in
+                // a future release once configs have had time to be cleaned up. (#115)
+                console.warn(
+                    `⚠️  Configuration does not fully match the schema. This is advisory ` +
+                    `for now and will become a startup error in a future release — please fix:\n${error.message}`
+                );
             }
         }
 
@@ -85,16 +107,42 @@ class ConfigLoader {
      * @throws {Error} If configuration doesn't match schema
      */
     validateConfig(config, schema) {
-        const ajv = new Ajv({ allErrors: true });
+        // allowUnionTypes: the schema legitimately uses union item types (e.g.
+        // telegram.chatIds accepts string|number); without it ajv prints a strict
+        // warning on every compile. (#115)
+        const ajv = new Ajv({ allErrors: true, allowUnionTypes: true });
+        // Register the standard string formats (email, uri, ...). Without this,
+        // a `format` keyword in the schema makes ajv.compile() THROW, which used
+        // to be swallowed in load() — silently disabling ALL validation. (#115)
+        addFormats(ajv);
         const validate = ajv.compile(schema);
         const valid = validate(config);
 
         if (!valid) {
-            const errors = validate.errors
-                .map(err => `  - ${err.instancePath || 'root'}: ${err.message}`)
-                .join('\n');
+            const errors = validate.errors.map(err => this.formatSchemaError(err)).join('\n');
             throw new Error(`Configuration validation failed:\n${errors}`);
         }
+    }
+
+    /**
+     * Turn a raw ajv error into a line a human can act on. ajv's defaults are
+     * terse (e.g. "must match pattern ..."); add the offending property name,
+     * allowed values, or limit so the operator does not have to decode it. (#115)
+     * @param {Object} err - an ajv error object
+     * @returns {string} a single formatted bullet line
+     */
+    formatSchemaError(err) {
+        const where = err.instancePath || '(root)';
+        const p = err.params || {};
+        let detail = err.message;
+        if (p.missingProperty) {
+            detail = `missing required property '${p.missingProperty}'`;
+        } else if (p.additionalProperty) {
+            detail = `unknown property '${p.additionalProperty}' (check for a typo)`;
+        } else if (p.allowedValues) {
+            detail = `${err.message} (allowed: ${p.allowedValues.join(', ')})`;
+        }
+        return `  - ${where}: ${detail}`;
     }
 
     /**

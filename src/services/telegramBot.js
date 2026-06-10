@@ -23,12 +23,16 @@ class TelegramBotService {
    * @param {Object} loggerConfig - Logger configuration
    */
   constructor(config = {}, services = {}, loggerConfig = {}) {
+    // Spread first, then derive the computed fields LAST so they aren't clobbered
+    // back to the raw config values. Also accept chatIds[] (the schema and the
+    // notification path both support it) so a chatIds-only config still binds the
+    // interactive bot rather than silently failing to start. (#114)
     this.config = {
+      notifyOnSuccess: 'errors_only', // 'always', 'never', 'errors_only'
+      pollInterval: 2000, // Poll every 2 seconds
+      ...config,
       botToken: config.botToken || process.env.TELEGRAM_BOT_TOKEN || '',
-      chatId: config.chatId || process.env.TELEGRAM_CHAT_ID || '',
-      notifyOnSuccess: config.notifyOnSuccess || 'errors_only', // 'always', 'never', 'errors_only'
-      pollInterval: config.pollInterval || 2000, // Poll every 2 seconds
-      ...config
+      chatId: config.chatId || config.chatIds?.[0] || process.env.TELEGRAM_CHAT_ID || ''
     };
 
     this.services = services;
