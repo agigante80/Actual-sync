@@ -151,9 +151,20 @@
         },
         "format": {
           "type": "string",
-          "description": "Log output format",
+          "description": "Console log output format",
           "enum": ["pretty", "json"],
           "default": "pretty"
+        },
+        "fileFormat": {
+          "type": "string",
+          "description": "Log file output format. JSON (single line per entry) is recommended for production so logs are machine-parseable and shippable. Independent of the console 'format'. Global only: log files are a single shared stream, so this is not a per-server setting.",
+          "enum": ["pretty", "json"],
+          "default": "json"
+        },
+        "redact": {
+          "type": "array",
+          "description": "Additional metadata key names to mask as [REDACTED] in all log output. Secret keys (password, encryptionPassword, botToken, token, apiKey, secret, authorization, chatId) are always redacted by default.",
+          "items": { "type": "string" }
         },
         "logDir": {
           "type": ["string", "null"],
@@ -171,12 +182,17 @@
             },
             "maxSize": {
               "type": "string",
-              "description": "Maximum size per log file before rotation (e.g., '10M', '50M', '100M')",
+              "description": "Maximum size per log file before rotation (e.g., '10M', '50M', '100M'). Rotation fires on whichever trigger comes first: this size or the interval.",
               "default": "10M"
+            },
+            "interval": {
+              "type": "string",
+              "description": "Time-based rotation interval (e.g., '1d', '12h'). Ensures logs rotate even at low volume, so maxFiles behaves as documented (days of retention).",
+              "default": "1d"
             },
             "maxFiles": {
               "type": "integer",
-              "description": "Maximum number of log files to keep (days of retention)",
+              "description": "Maximum number of rotated log files to keep. With the default '1d' interval this is days of retention.",
               "minimum": 1,
               "default": 30
             },

@@ -64,6 +64,9 @@ function formatNextSync(nextInvocation) {
 // Export formatNextSync so healthCheck service can use it
 module.exports.formatNextSync = formatNextSync;
 
+// Log-level classifier for the global unhandledRejection handler (#105)
+const { classifyRejection } = require('./lib/rejectionClassifier');
+
 /**
  * Convert cron schedule to human-readable format
  * @param {string} cron - Cron expression (e.g., "0 5 * * 2")
@@ -1085,7 +1088,10 @@ process.on('unhandledRejection', (reason, promise) => {
         ? { ...reason, toString: String(reason) }
         : { value: reason, type: typeof reason };
     
-    logger.error('Unhandled promise rejection - service will continue', {
+    // Already-handled @actual-app/api rejections are logged at DEBUG to avoid
+    // double-counting them as errors; genuine ones stay at ERROR. (#105)
+    const level = classifyRejection(reason);
+    logger[level]('Unhandled promise rejection - service will continue', {
         reason: reasonInfo,
         promiseString: promise ? promise.toString() : 'no promise info'
     });

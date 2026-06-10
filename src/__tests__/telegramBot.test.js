@@ -728,4 +728,101 @@ describe('TelegramBotService', () => {
       expect(payload.text).toContain('Sync function not available');
     });
   });
+
+  describe('getUpdates error classification (#102)', () => {
+    function makeBot() {
+      const bot = new TelegramBotService({ botToken: '123:ABC', chatId: '456' }, {});
+      bot.logger = { debug: jest.fn(), error: jest.fn(), warn: jest.fn(), info: jest.fn() };
+      return bot;
+    }
+
+    test('logs a transient HTTP 429 at debug, not error, and returns []', async () => {
+      const bot = makeBot();
+      const err = new Error('HTTP 429: too many requests');
+      err.statusCode = 429;
+      bot.makeRequest = jest.fn().mockRejectedValue(err);
+
+      const result = await bot.getUpdates();
+
+      expect(result).toEqual([]);
+      expect(bot.logger.debug).toHaveBeenCalledWith('Failed to get updates', expect.any(Object));
+      expect(bot.logger.error).not.toHaveBeenCalled();
+    });
+
+    test('logs an HTTP 502 at debug', async () => {
+      const bot = makeBot();
+      const err = new Error('HTTP 502: bad gateway');
+      err.statusCode = 502;
+      bot.makeRequest = jest.fn().mockRejectedValue(err);
+
+      await bot.getUpdates();
+
+      expect(bot.logger.debug).toHaveBeenCalled();
+      expect(bot.logger.error).not.toHaveBeenCalled();
+    });
+
+    test('logs a network error (ECONNRESET) at debug', async () => {
+      const bot = makeBot();
+      const err = new Error('socket hang up');
+      err.code = 'ECONNRESET';
+      bot.makeRequest = jest.fn().mockRejectedValue(err);
+
+      await bot.getUpdates();
+
+      expect(bot.logger.debug).toHaveBeenCalled();
+      expect(bot.logger.error).not.toHaveBeenCalled();
+    });
+
+    test('logs a network error (ETIMEDOUT) at debug', async () => {
+      const bot = makeBot();
+      const err = new Error('connect ETIMEDOUT');
+      err.code = 'ETIMEDOUT';
+      bot.makeRequest = jest.fn().mockRejectedValue(err);
+
+      await bot.getUpdates();
+
+      expect(bot.logger.debug).toHaveBeenCalled();
+      expect(bot.logger.error).not.toHaveBeenCalled();
+    });
+
+    test('logs a genuine auth error (HTTP 401) at error', async () => {
+      const bot = makeBot();
+      const err = new Error('HTTP 401: unauthorized');
+      err.statusCode = 401;
+      bot.makeRequest = jest.fn().mockRejectedValue(err);
+
+      await bot.getUpdates();
+
+      expect(bot.logger.error).toHaveBeenCalledWith('Failed to get updates', expect.any(Object));
+      expect(bot.logger.debug).not.toHaveBeenCalled();
+    });
+
+    test('makeRequest attaches statusCode to HTTP error rejections', async () => {
+      const bot = makeBot();
+      mockResponse.statusCode = 429;
+      mockResponse.on = jest.fn((event, cb) => {
+        if (event === 'data') cb(JSON.stringify({ ok: false, error_code: 429, description: 'Too Many Requests' }));
+        if (event === 'end') cb();
+      });
+
+      await expect(bot.makeRequest('https://api.telegram.org/bot123:ABC/getUpdates'))
+        .rejects.toMatchObject({ statusCode: 429 });
+    });
+
+    test('poll() does not log an error when getUpdates handles a transient failure', async () => {
+      const bot = makeBot();
+      const err = new Error('HTTP 429');
+      err.statusCode = 429;
+      bot.makeRequest = jest.fn().mockRejectedValue(err);
+      bot.polling = true;
+      bot.config.pollInterval = 999999; // avoid rescheduling churn during the test
+
+      await bot.poll();
+
+      // getUpdates swallowed the transient error and returned []; the outer
+      // poll() catch ('Error polling for updates') must not be reached.
+      expect(bot.logger.error).not.toHaveBeenCalled();
+      if (bot.pollTimeout) clearTimeout(bot.pollTimeout);
+    });
+  });
 });
