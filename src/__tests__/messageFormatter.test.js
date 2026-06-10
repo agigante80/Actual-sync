@@ -421,4 +421,69 @@ describe('MessageFormatter', () => {
       expect(discordText(f)).not.toContain('Skipped');
     });
   });
+
+  describe('generic webhook payload (#111)', () => {
+    test('formatSyncNotification.generic has the documented shape', () => {
+      const f = MessageFormatter.formatSyncNotification({
+        status: 'partial', serverName: 'My Budget', duration: 1200,
+        accountsProcessed: 1, accountsFailed: 1,
+        succeededAccounts: ['Checking'],
+        failedAccounts: [{ name: 'Sabadell', error: 'boom' }],
+        skippedAccounts: [{ name: 'Loan', reason: 'not-linked' }]
+      });
+      const g = f.generic;
+      expect(g.event).toBe('sync');
+      expect(g.status).toBe('partial');
+      expect(g.server).toBe('My Budget');
+      expect(g.durationMs).toBe(1200);
+      expect(g.accounts).toEqual({ synced: 1, failed: 1, skipped: 1 });
+      expect(g.failedAccounts).toEqual([{ name: 'Sabadell', error: 'boom' }]);
+      expect(g.skippedAccounts[0].reason).toBe('not-linked');
+      expect(typeof g.timestamp).toBe('string');
+      // a clean success maps to status "success"
+      expect(MessageFormatter.formatSyncNotification({
+        status: 'success', serverName: 'X', duration: 100,
+        accountsProcessed: 2, accountsFailed: 0, succeededAccounts: ['A', 'B'], failedAccounts: [], skippedAccounts: []
+      }).generic.status).toBe('success');
+    });
+
+    test('error and startup notifications include a generic payload', () => {
+      const e = MessageFormatter.formatErrorNotification({
+        serverName: 'srv', errorMessage: 'down', errorCode: 'ECONN', timestamp: '2026-01-01T00:00:00Z'
+      });
+      expect(e.generic.event).toBe('error');
+      expect(e.generic.message).toBe('down');
+
+      const s = MessageFormatter.formatStartupNotification({
+        version: '1.5.0', serverNames: 'A, B', schedules: '...', nextSync: 'soon'
+      });
+      expect(s.generic.event).toBe('startup');
+      expect(s.generic.version).toBe('1.5.0');
+    });
+  });
+
+  describe('ntfy fields (#112)', () => {
+    test('sync ntfy has title/message/level/tags; level reflects outcome', () => {
+      const ok = MessageFormatter.formatSyncNotification({
+        status: 'success', serverName: 'B', duration: 100,
+        accountsProcessed: 1, accountsFailed: 0, succeededAccounts: ['A'], failedAccounts: [], skippedAccounts: []
+      }).ntfy;
+      expect(ok.title).toContain('Sync Successful: B');
+      expect(ok.level).toBe('success');
+      expect(ok.message).toContain('Accounts: 1 synced');
+
+      const fail = MessageFormatter.formatSyncNotification({
+        status: 'failure', serverName: 'B', duration: 100, error: 'nope',
+        accountsProcessed: 0, accountsFailed: 0, succeededAccounts: [], failedAccounts: [], skippedAccounts: []
+      }).ntfy;
+      expect(fail.level).toBe('failure');
+
+      // partial (has failures) is treated as failure-priority
+      const partial = MessageFormatter.formatSyncNotification({
+        status: 'partial', serverName: 'B', duration: 100,
+        accountsProcessed: 1, accountsFailed: 1, succeededAccounts: ['A'], failedAccounts: [{ name: 'F' }], skippedAccounts: []
+      }).ntfy;
+      expect(partial.level).toBe('failure');
+    });
+  });
 });

@@ -50,6 +50,7 @@ class MessageFormatter {
       statusText,
       serverName: result.serverName,
       duration,
+      durationMs: result.duration || 0,
       isSuccess,
       hasIssues,
       error: result.error,
@@ -61,12 +62,42 @@ class MessageFormatter {
       failedAccounts: result.failedAccounts || [],
       skippedAccounts: result.skippedAccounts || []
     };
-    
+
+    const text = this._formatPlainText(content);
+    const status = isSuccess ? (hasIssues ? 'partial' : 'success') : 'failure';
+
     return {
-      text: this._formatPlainText(content),
+      text,
       html: this._formatHtml(content),
       slack: this._formatSlack(content),
-      discord: this._formatDiscord(content)
+      discord: this._formatDiscord(content),
+      // Generic webhook JSON payload (#111) and ntfy fields (#112)
+      generic: {
+        event: 'sync',
+        status,
+        server: content.serverName,
+        durationMs: content.durationMs,
+        message: `Sync ${content.statusText}`,
+        accounts: {
+          synced: content.succeededAccounts.length,
+          failed: content.failedAccounts.length,
+          skipped: content.skippedAccounts.length
+        },
+        succeededAccounts: content.succeededAccounts,
+        failedAccounts: content.failedAccounts,
+        skippedAccounts: content.skippedAccounts,
+        timestamp: new Date().toISOString()
+      },
+      ntfy: {
+        // No emoji in the title: HTTP headers are Latin-1 only, so an emoji would
+        // be rejected by Node's http layer. ntfy renders the status emoji from the
+        // ASCII Tags shortcodes below. (sendNtfy also sanitizes the header.)
+        title: `Sync ${content.statusText}: ${content.serverName}`,
+        message: text,
+        // A partial sync has failures, so treat it as failure-priority for ntfy.
+        level: (isSuccess && !hasIssues) ? 'success' : 'failure',
+        tags: [isSuccess ? (hasIssues ? 'warning' : 'white_check_mark') : 'x']
+      }
     };
   }
   
@@ -99,11 +130,27 @@ class MessageFormatter {
       thresholds: error.thresholds
     };
     
+    const text = this._formatErrorPlainText(content);
     return {
-      text: this._formatErrorPlainText(content),
+      text,
       html: this._formatErrorHtml(content),
       slack: this._formatErrorSlack(content),
-      discord: this._formatErrorDiscord(content)
+      discord: this._formatErrorDiscord(content),
+      generic: {
+        event: 'error',
+        server: content.serverName,
+        message: content.errorMessage,
+        errorCode: content.errorCode,
+        correlationId: content.correlationId,
+        timestamp: content.timestamp || new Date().toISOString()
+      },
+      ntfy: {
+        // Emoji-free title (Latin-1 header); status conveyed via Tags.
+        title: `${content.isTest ? 'Test Notification' : 'Sync Error'}: ${content.serverName}`,
+        message: text,
+        level: content.isTest ? 'info' : 'failure',
+        tags: [content.isTest ? 'test_tube' : 'rotating_light']
+      }
     };
   }
   
@@ -125,11 +172,26 @@ class MessageFormatter {
       nextSync: info.nextSync
     };
     
+    const text = this._formatStartupPlainText(content);
     return {
-      text: this._formatStartupPlainText(content),
+      text,
       html: this._formatStartupHtml(content),
       slack: this._formatStartupSlack(content),
-      discord: this._formatStartupDiscord(content)
+      discord: this._formatStartupDiscord(content),
+      generic: {
+        event: 'startup',
+        message: 'Service Started',
+        version: content.version,
+        servers: content.serverNames,
+        nextSync: content.nextSync,
+        timestamp: new Date().toISOString()
+      },
+      ntfy: {
+        title: 'Service Started',
+        message: text,
+        level: 'info',
+        tags: ['rocket']
+      }
     };
   }
   

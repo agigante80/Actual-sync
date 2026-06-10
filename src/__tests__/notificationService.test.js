@@ -696,4 +696,149 @@ describe('NotificationService', () => {
       spy.mockRestore();
     });
   });
+
+  describe('sendGenericWebhooks (#111)', () => {
+    const payload = { event: 'sync', status: 'success', server: 'B' };
+
+    test('POSTs the payload to each configured URL with headers and content-type', async () => {
+      const service = new NotificationService({
+        webhooks: { generic: [
+          { name: 'a', url: 'https://example.com/a', headers: { Authorization: 'Bearer x' } },
+          { name: 'b', url: 'https://example.com/b', contentType: 'application/json' }
+        ] }
+      });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+
+      const results = await service.sendGenericWebhooks(payload);
+
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(spy).toHaveBeenCalledWith('https://example.com/a', payload, { headers: { Authorization: 'Bearer x' }, contentType: undefined });
+      expect(results).toEqual([{ name: 'a', success: true }, { name: 'b', success: true }]);
+      spy.mockRestore();
+    });
+
+    test('a failing URL is captured, not thrown, and does not block others', async () => {
+      const service = new NotificationService({
+        webhooks: { generic: [{ name: 'bad', url: 'https://x/1' }, { name: 'ok', url: 'https://x/2' }] }
+      });
+      const spy = jest.spyOn(service, 'sendWebhook')
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValueOnce({ statusCode: 200 });
+
+      const results = await service.sendGenericWebhooks(payload);
+      expect(results[0]).toEqual({ name: 'bad', success: false, error: 'boom' });
+      expect(results[1]).toEqual({ name: 'ok', success: true });
+      spy.mockRestore();
+    });
+
+    test('no-op when no generic webhooks configured', async () => {
+      const service = new NotificationService();
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({});
+      expect(await service.sendGenericWebhooks(payload)).toEqual([]);
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+  });
+
+  describe('sendNtfy (#112)', () => {
+    const ntfy = { title: 'T', message: 'body', level: 'failure', tags: ['x'] };
+
+    test('POSTs to the topic URL with Title/Priority/Tags and Bearer auth', async () => {
+      const service = new NotificationService({
+        ntfy: { enabled: true, url: 'https://ntfy.sh/topic', token: 'tk_123', tags: ['base'] }
+      });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+
+      const res = await service.sendNtfy(ntfy);
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      const [url, body, opts] = spy.mock.calls[0];
+      expect(url).toBe('https://ntfy.sh/topic');
+      expect(body).toBe('body');
+      expect(opts.contentType).toBe('text/plain');
+      expect(opts.headers.Title).toBe('T');
+      expect(opts.headers.Priority).toBe('high'); // failure -> priorityOnFailure default
+      expect(opts.headers.Tags).toBe('x,base');
+      expect(opts.headers.Authorization).toBe('Bearer tk_123');
+      expect(res).toEqual({ success: true });
+      spy.mockRestore();
+    });
+
+    test('success level uses priorityOnSuccess; no token means no Authorization header', async () => {
+      const service = new NotificationService({
+        ntfy: { enabled: true, url: 'https://ntfy.sh/topic', priorityOnSuccess: 'low' }
+      });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendNtfy({ title: 'T', message: 'm', level: 'success', tags: [] });
+      const opts = spy.mock.calls[0][2];
+      expect(opts.headers.Priority).toBe('low');
+      expect(opts.headers.Authorization).toBeUndefined();
+      spy.mockRestore();
+    });
+
+    test('no-op when ntfy disabled or no URL', async () => {
+      const disabled = new NotificationService({ ntfy: { enabled: false, url: 'https://ntfy.sh/t' } });
+      const spy = jest.spyOn(disabled, 'sendWebhook').mockResolvedValue({});
+      expect(await disabled.sendNtfy(ntfy)).toBeNull();
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+  });
+
+  // Real HTTP-layer integration tests (sendWebhook is NOT mocked here) so the
+  // header-encoding, Content-Length, and timeout behavior is actually exercised.
+  describe('webhook HTTP layer (integration, #111/#112)', () => {
+    const http = require('http');
+    let server, received, baseUrl;
+
+    beforeEach((done) => {
+      received = [];
+      server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', c => body += c);
+        req.on('end', () => { received.push({ headers: req.headers, body }); res.writeHead(200); res.end('ok'); });
+      });
+      server.listen(0, '127.0.0.1', () => { baseUrl = `http://127.0.0.1:${server.address().port}`; done(); });
+    });
+
+    afterEach((done) => { server.close(done); });
+
+    test('ntfy delivers with emoji/CJK in the title (Latin-1 header sanitized, no throw)', async () => {
+      const service = new NotificationService({ ntfy: { enabled: true, url: `${baseUrl}/topic`, tags: ['日本'] } });
+      const res = await service.sendNtfy({
+        title: 'Sync Successful: 預算 café ✅',
+        message: 'message body intact',
+        level: 'success',
+        tags: ['white_check_mark']
+      });
+      expect(res).toEqual({ success: true });
+      expect(received).toHaveLength(1);
+      // Header carries no character above Latin-1 (emoji/CJK stripped); never threw.
+      expect(/[^\x00-\xff]/.test(received[0].headers.title)).toBe(false);
+      expect(received[0].headers.title).toContain('Sync Successful:');
+      expect(received[0].body).toBe('message body intact');
+    });
+
+    test('generic webhook: a user Content-Length header cannot truncate the body', async () => {
+      const service = new NotificationService({
+        webhooks: { generic: [{ name: 'g', url: `${baseUrl}/g`, headers: { 'content-length': '5', 'X-Custom': 'v' } }] }
+      });
+      const payload = { event: 'sync', note: 'x'.repeat(40) };
+      const results = await service.sendGenericWebhooks(payload);
+      expect(results).toEqual([{ name: 'g', success: true }]);
+      // Full JSON body received, not truncated to 5 bytes; custom header passed through.
+      expect(received[0].body).toBe(JSON.stringify(payload));
+      expect(received[0].headers['x-custom']).toBe('v');
+    });
+
+    test('sendWebhook rejects on timeout when the endpoint never responds', async () => {
+      const blackhole = http.createServer(() => { /* never responds */ });
+      await new Promise(r => blackhole.listen(0, '127.0.0.1', r));
+      const url = `http://127.0.0.1:${blackhole.address().port}/`;
+      const service = new NotificationService();
+      await expect(service.sendWebhook(url, { a: 1 }, { timeout: 150 }))
+        .rejects.toThrow(/timed out/);
+      blackhole.close();
+    });
+  });
 });

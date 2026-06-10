@@ -62,7 +62,17 @@ class NotificationService {
         slack: [],
         discord: [],
         telegram: [],
+        generic: [],
         ...config.webhooks
+      },
+      ntfy: {
+        enabled: false,
+        url: '',
+        token: '',
+        priorityOnFailure: 'high',
+        priorityOnSuccess: 'default',
+        tags: [],
+        ...config.ntfy
       },
       thresholds: {
         consecutiveFailures: 3,
@@ -358,7 +368,9 @@ class NotificationService {
       // Send webhooks using unified payloads
       results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
       results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
-      
+      results.generic = await this.sendGenericWebhooks(formatted.generic);
+      results.ntfy = await this.sendNtfy(formatted.ntfy);
+
       // Send Telegram
       if (this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) {
         const success = await this.sendTelegramMessage(formatted.text);
@@ -476,6 +488,8 @@ class NotificationService {
       // Send webhooks using unified payloads
       results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
       results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
+      results.generic = await this.sendGenericWebhooks(formatted.generic);
+      results.ntfy = await this.sendNtfy(formatted.ntfy);
       results.telegram = await this.sendTelegramWebhooks(notification);
 
       // Update rate limiting
@@ -618,7 +632,74 @@ class NotificationService {
     return results;
   }
 
+  /**
+   * Send generic webhooks: POST the documented JSON payload to each configured
+   * URL with optional custom headers. Works with ntfy (JSON publish), Gotify,
+   * Home Assistant, n8n, and any custom endpoint. (#111)
+   * @param {Object} payload - The generic JSON payload (formatted.generic)
+   * @returns {Promise<Array>} Per-URL send results
+   */
+  async sendGenericWebhooks(payload) {
+    const results = [];
+    const webhooks = this.config.webhooks.generic || [];
 
+    for (const webhook of webhooks) {
+      if (!webhook.url || webhook.enabled === false) continue;
+
+      try {
+        await this.sendWebhook(webhook.url, payload, {
+          headers: webhook.headers,
+          contentType: webhook.contentType
+        });
+        results.push({ name: webhook.name, success: true });
+      } catch (error) {
+        this.logger.error('Failed to send generic webhook', {
+          name: webhook.name,
+          error: error.message
+        });
+        results.push({ name: webhook.name, success: false, error: error.message });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Send an ntfy notification (#112). ntfy's API is a plain-text POST to the
+   * topic URL with Title / Priority / Tags headers (and Bearer auth when a token
+   * is set). Priority is mapped from the notification level via config.
+   * @param {Object} ntfy - formatted.ntfy: { title, message, level, tags }
+   * @returns {Promise<Object|null>} Send result, or null when disabled
+   */
+  async sendNtfy(ntfy) {
+    const cfg = this.config.ntfy;
+    if (!cfg?.enabled || !cfg.url || !ntfy) return null;
+
+    const priority = ntfy.level === 'failure'
+      ? (cfg.priorityOnFailure || 'high')
+      : (cfg.priorityOnSuccess || 'default');
+    // HTTP headers are Latin-1 only: strip anything outside printable Latin-1
+    // (drops emoji/CJK from a server name or custom tag, and prevents CR/LF
+    // header injection) so a non-ASCII value can never break the request.
+    const headerSafe = (s) => String(s).replace(/[^\x20-\x7E\xA0-\xFF]/g, '').trim();
+    const tags = [...(ntfy.tags || []), ...(cfg.tags || [])]
+      .map(headerSafe).filter(Boolean).join(',');
+
+    const headers = {
+      'Title': headerSafe(ntfy.title) || 'Actual-sync',
+      'Priority': String(priority)
+    };
+    if (tags) headers['Tags'] = tags;
+    if (cfg.token) headers['Authorization'] = `Bearer ${cfg.token}`;
+
+    try {
+      await this.sendWebhook(cfg.url, ntfy.message, { headers, contentType: 'text/plain' });
+      return { success: true };
+    } catch (error) {
+      this.logger.error('Failed to send ntfy notification', { error: error.message });
+      return { success: false, error: error.message };
+    }
+  }
 
   /**
    * Send email notification (backward compatibility)
@@ -963,21 +1044,33 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
    * @param {Object} payload - JSON payload
    * @returns {Promise<Object>} Response
    */
-  sendWebhook(url, payload) {
+  sendWebhook(url, payload, opts = {}) {
     return new Promise((resolve, reject) => {
       const urlObj = new URL(url);
       const protocol = urlObj.protocol === 'https:' ? https : http;
-      const body = JSON.stringify(payload);
+      // A string payload is sent verbatim (e.g. ntfy's plain-text body); an object
+      // is JSON-encoded (Slack/Discord/generic). Extra headers and a custom
+      // content-type can be supplied for the generic webhook and ntfy channels.
+      const isString = typeof payload === 'string';
+      const body = isString ? payload : JSON.stringify(payload);
+      const contentType = opts.contentType || (isString ? 'text/plain' : 'application/json');
 
       const options = {
         hostname: urlObj.hostname,
         port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
         path: urlObj.pathname + urlObj.search,
         method: 'POST',
+        // Spread caller headers FIRST so the framework's Content-Type/Length
+        // always win — a user header (any casing) must not override and corrupt
+        // request framing (e.g. a wrong Content-Length truncating the body).
         headers: {
-          'Content-Type': 'application/json',
+          ...(opts.headers || {}),
+          'Content-Type': contentType,
           'Content-Length': Buffer.byteLength(body)
-        }
+        },
+        // Bound the request so a flaky/black-holed endpoint can't hang the whole
+        // notification dispatch (generic webhooks point at arbitrary user URLs).
+        timeout: opts.timeout || 15000
       };
 
       const req = protocol.request(options, (res) => {
@@ -992,6 +1085,7 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
         });
       });
 
+      req.on('timeout', () => req.destroy(new Error('Webhook request timed out')));
       req.on('error', reject);
       req.write(body);
       req.end();
@@ -1073,7 +1167,9 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
       // Send webhooks using unified payloads
       results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
       results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
-      
+      results.generic = await this.sendGenericWebhooks(formatted.generic);
+      results.ntfy = await this.sendNtfy(formatted.ntfy);
+
       // Send Telegram
       if (this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) {
         const success = await this.sendTelegramMessage(formatted.text);

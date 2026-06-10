@@ -18,7 +18,7 @@ The Notification System provides automated alerts and interactive commands to mo
 ## Features
 
 - **Interactive Telegram Bot**: Real-time commands for status, history, and configuration
-- **Multiple Notification Channels**: Email, Slack, Discord, Telegram webhooks
+- **Multiple Notification Channels**: Email, Slack, Discord, Telegram, ntfy, and generic webhooks (ntfy/Gotify/Home Assistant/n8n/custom)
 - **Smart Thresholds**: Trigger notifications based on consecutive failures or failure rates
 - **Rate Limiting**: Prevent notification spam with configurable intervals and limits
 - **Rich Context**: Includes error details, correlation IDs, and sync statistics
@@ -141,6 +141,47 @@ Each webhook type (Slack, Discord, Telegram) accepts an array of webhook configu
 | `chatId` | string | Yes | Chat ID (user, group, or channel) |
 
 **Note**: The legacy Telegram webhook configuration is deprecated. Use the new `telegram` object for interactive bot features.
+
+**Generic webhooks** (`webhooks.generic`): POST a documented JSON payload to any URL, so notifications work out of the box with ntfy (JSON publishing), Gotify, Home Assistant, n8n, and custom endpoints.
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `name` | string | No | Descriptive name for logs |
+| `url` | string | Yes | Destination the JSON payload is POSTed to |
+| `enabled` | boolean | No | Set `false` to disable without removing (default `true`) |
+| `headers` | object | No | Extra HTTP headers (e.g. `Authorization`, `Priority`). Secrets are redacted in logs. |
+| `contentType` | string | No | Override request Content-Type (default `application/json`) |
+
+The JSON payload:
+```json
+{
+  "event": "sync",
+  "status": "success",
+  "server": "My Budget",
+  "durationMs": 1200,
+  "message": "Sync Successful",
+  "accounts": { "synced": 9, "failed": 0, "skipped": 3 },
+  "succeededAccounts": ["..."],
+  "failedAccounts": [{ "name": "...", "error": "..." }],
+  "skippedAccounts": [{ "name": "...", "reason": "not-linked" }],
+  "timestamp": "<ISO8601>"
+}
+```
+
+#### ntfy Settings
+
+`notifications.ntfy` sends push notifications to an [ntfy](https://ntfy.sh) topic (header-based API: `Title` / `Priority` / `Tags`).
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `enabled` | boolean | No | Enable ntfy (default `false`) |
+| `url` | string | Yes | Full topic URL, e.g. `https://ntfy.sh/my-topic` |
+| `token` | string | No | Access token sent as `Authorization: Bearer <token>` (redacted in logs) |
+| `priorityOnFailure` | string | No | Priority for failures (default `high`) |
+| `priorityOnSuccess` | string | No | Priority for success/info (default `default`) |
+| `tags` | array | No | Base tags/emoji added to every notification |
+
+Tip: ntfy users can also just point a `webhooks.generic` entry at their topic for JSON publishing; the dedicated `ntfy` block adds zero-config priority/tags mapping.
 
 #### Telegram Bot Settings
 
