@@ -841,4 +841,45 @@ describe('NotificationService', () => {
       blackhole.close();
     });
   });
+
+  describe('notification icon branding (#114)', () => {
+    const LOGO = 'actual-sync-icon.png';
+
+    test('Slack payload carries username + icon_url', async () => {
+      const service = new NotificationService({ webhooks: { slack: [{ name: 's', url: 'https://hooks.slack.com/x' }] } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendSlackFormattedWebhooks({ text: 'hi', blocks: [] });
+      const payload = spy.mock.calls[0][1];
+      expect(payload.username).toBe('Actual-sync');
+      expect(payload.icon_url).toContain(LOGO);
+      spy.mockRestore();
+    });
+
+    test('Discord payload carries username + avatar_url', async () => {
+      const service = new NotificationService({ webhooks: { discord: [{ name: 'd', url: 'https://discord.com/api/webhooks/x' }] } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendDiscordFormattedWebhooks({ embeds: [] });
+      const payload = spy.mock.calls[0][1];
+      expect(payload.username).toBe('Actual-sync');
+      expect(payload.avatar_url).toContain(LOGO);
+      spy.mockRestore();
+    });
+
+    test('ntfy sends an Icon header (default project icon)', async () => {
+      const service = new NotificationService({ ntfy: { enabled: true, url: 'https://ntfy.sh/t' } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendNtfy({ title: 'T', message: 'm', level: 'success', tags: [] });
+      const headers = spy.mock.calls[0][2].headers;
+      expect(headers.Icon).toContain(LOGO);
+      spy.mockRestore();
+    });
+
+    test('ntfy Icon header honors a config override', async () => {
+      const service = new NotificationService({ ntfy: { enabled: true, url: 'https://ntfy.sh/t', icon: 'https://example.com/custom.png' } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendNtfy({ title: 'T', message: 'm', level: 'success', tags: [] });
+      expect(spy.mock.calls[0][2].headers.Icon).toBe('https://example.com/custom.png');
+      spy.mockRestore();
+    });
+  });
 });

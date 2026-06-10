@@ -116,7 +116,8 @@
       "token": "",
       "priorityOnFailure": "high",
       "priorityOnSuccess": "default",
-      "tags": ["money_with_wings"]
+      "tags": ["money_with_wings"],
+      "icon": "https://raw.githubusercontent.com/agigante80/Actual-sync/main/unraid/actual-sync-icon.png"
     },
     "thresholds": {
       "consecutiveFailures": 3,

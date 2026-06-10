@@ -248,6 +248,13 @@ class HealthCheckService {
       res.sendFile(path.join(__dirname, 'favicon.svg'));
     });
 
+    // Project icon, served locally so the dashboard works offline (no external
+    // GitHub fetch). Used as the favicon and the dashboard header logo. (#113)
+    this.app.get('/icon.png', (req, res) => {
+      res.setHeader('Content-Type', 'image/png');
+      res.sendFile(path.join(__dirname, 'icon.png'));
+    });
+
     // Dashboard API: Get status (with authentication)
     this.app.get('/api/dashboard/status', this.dashboardAuth(), (req, res) => {
       const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);

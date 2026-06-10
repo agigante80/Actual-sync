@@ -27,17 +27,17 @@ function httpGet(url) {
 describe('HealthCheckService', () => {
   let healthCheck;
   let testPort = 3456; // Use non-standard port for testing
+  let portCounter = 0; // monotonic within this worker process
 
   beforeEach(() => {
-    // Each Jest worker gets its own 1000-port band, so parallel worker processes
-    // can never pick the same real port and collide with EADDRINUSE. Bands are
-    // wrapped into a fixed set kept BELOW the OS ephemeral range (32768+), so they
-    // never overflow the valid port space or clash with OS-assigned (:0) ports,
-    // even on high-core machines. Within a worker, tests run sequentially and
-    // afterEach awaits stop(), so the band is reused safely. (#95)
+    // Each Jest worker gets its own 1000-port band kept BELOW the OS ephemeral
+    // range (32768+), so parallel workers never collide and we never overflow the
+    // port space. Within a worker, ports are assigned MONOTONICALLY (not random),
+    // so no port is ever bound twice in a run — immune to EADDRINUSE even if a
+    // test leaks a server or the OS is slow to release a closed socket. (#95)
     const workerId = Number(process.env.JEST_WORKER_ID) || 1;
     const band = (workerId - 1) % 28; // bands 4000-4899 .. 31000-31899
-    testPort = 4000 + band * 1000 + Math.floor(Math.random() * 900);
+    testPort = 4000 + band * 1000 + (portCounter++ % 900);
     healthCheck = new HealthCheckService({
       port: testPort,
       host: '127.0.0.1',
@@ -188,6 +188,23 @@ describe('HealthCheckService', () => {
       } finally {
         restore();
       }
+    });
+  });
+
+  describe('/icon.png endpoint (#113)', () => {
+    beforeEach(async () => {
+      await healthCheck.start();
+    });
+
+    test('serves the project icon locally as image/png', async () => {
+      const result = await new Promise((resolve, reject) => {
+        http.get(`http://127.0.0.1:${testPort}/icon.png`, (res) => {
+          res.resume(); // drain the body
+          resolve({ statusCode: res.statusCode, contentType: res.headers['content-type'] });
+        }).on('error', reject);
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.contentType).toContain('image/png');
     });
   });
 

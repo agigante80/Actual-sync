@@ -556,6 +556,10 @@
               "type": "array",
               "description": "Base ntfy tags/emoji added to every notification",
               "items": { "type": "string" }
+            },
+            "icon": {
+              "type": "string",
+              "description": "URL of an icon shown in the ntfy notification (sent as the Icon header). Defaults to the Actual-sync project icon."
             }
           },
           "required": ["url"]
