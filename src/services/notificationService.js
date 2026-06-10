@@ -44,7 +44,13 @@ class NotificationService {
    * @param {Object} loggerConfig - Logger configuration
    */
   constructor(config = {}, loggerConfig = {}) {
+    // Branding (project name + logo on Slack/Discord/ntfy) is on by default but
+    // can be turned off with `notifications.branding: false` — e.g. to keep a
+    // Slack/Discord webhook's own configured app identity, or to stop ntfy from
+    // fetching the project icon from GitHub on an air-gapped network. (#114)
+    const brandingEnabled = config.branding !== false;
     this.config = {
+      branding: brandingEnabled,
       email: {
         enabled: false,
         host: 'smtp.gmail.com',
@@ -78,7 +84,7 @@ class NotificationService {
         priorityOnFailure: 'high',
         priorityOnSuccess: 'default',
         tags: [],
-        icon: LOGO_URL,
+        icon: brandingEnabled ? LOGO_URL : '',
         ...config.ntfy
       },
       thresholds: {
@@ -579,7 +585,9 @@ class NotificationService {
    * @param {string} imageField - 'icon_url' (Slack) or 'avatar_url' (Discord)
    */
   _brandPayload(payload, imageField) {
-    if (!payload) return;
+    // Skip when branding is off so the webhook keeps its own configured
+    // app name/avatar, or when there is no payload to stamp. (#114)
+    if (!payload || !this.config.branding) return;
     payload.username = payload.username || BRAND_NAME;
     payload[imageField] = payload[imageField] || LOGO_URL;
   }
@@ -708,15 +716,27 @@ class NotificationService {
       .map(headerSafe).filter(Boolean).join(',');
 
     const headers = {
-      'Title': headerSafe(ntfy.title) || 'Actual-sync',
+      'Title': headerSafe(ntfy.title) || BRAND_NAME,
       'Priority': String(priority)
     };
     if (tags) headers['Tags'] = tags;
     // Sanitize the Icon URL like Title/Tags: a user-supplied override could
     // contain a non-Latin-1 char that would make the whole request throw
     // ERR_INVALID_CHAR. An empty result means "no icon header". (#114)
-    const icon = headerSafe(cfg.icon || '');
-    if (icon) headers['Icon'] = icon; // ntfy shows this icon in the notification (#114)
+    const rawIcon = String(cfg.icon || '').trim();
+    const icon = headerSafe(rawIcon);
+    if (icon) {
+      // Stripping changed the URL: it had characters invalid in an HTTP header,
+      // so the icon ntfy fetches is now a different (likely broken) URL. Warn
+      // rather than silently shipping a corrupted link. (#114)
+      if (icon !== rawIcon) {
+        this.logger.warn('ntfy icon URL contained characters invalid in an HTTP header and was altered', {
+          configured: rawIcon,
+          sent: icon
+        });
+      }
+      headers['Icon'] = icon; // ntfy shows this icon in the notification (#114)
+    }
     if (cfg.token) headers['Authorization'] = `Bearer ${cfg.token}`;
 
     try {
@@ -932,6 +952,10 @@ Please investigate and resolve the issue.
       });
     }
 
+    // Brand the same way as the formatted path, so the dashboard "test
+    // notification" looks identical to a real alert. (#114)
+    this._brandPayload(payload, 'icon_url');
+
     const results = [];
     for (const webhook of this.config.webhooks.slack) {
       try {
@@ -989,6 +1013,10 @@ Please investigate and resolve the issue.
         inline: false
       });
     }
+
+    // Brand the same way as the formatted path, so the dashboard "test
+    // notification" looks identical to a real alert. (#114)
+    this._brandPayload(payload, 'avatar_url');
 
     const results = [];
     for (const webhook of this.config.webhooks.discord) {

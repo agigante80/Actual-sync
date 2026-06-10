@@ -55,14 +55,20 @@ describe('HealthCheckService', () => {
 
   beforeEach(async () => {
     // Each Jest worker gets its own 1000-port band kept BELOW the OS ephemeral
-    // range (32768+), so parallel workers never collide and we never overflow the
-    // port space. Within a worker, ports are walked MONOTONICALLY and each
-    // candidate is probed for freeness, skipping any port an unrelated local
-    // process holds (e.g. a dev server inside the band). Combined with the
-    // afterEach that stops every created service, the suite is immune to
-    // EADDRINUSE both on CI and on a busy dev machine. (#95)
+    // range (32768+), so parallel workers get disjoint bands and we never
+    // overflow the port space. Within a worker, ports are walked MONOTONICALLY
+    // and each candidate is probed for freeness, skipping any port an unrelated
+    // local process holds (e.g. a dev server inside the band). Combined with the
+    // afterEach that stops every created service, this drives EADDRINUSE to
+    // negligible on CI and on a busy dev machine. (#95)
+    //
+    // There are only 28 disjoint bands (4000-4899 .. 31000-31899). With >28
+    // parallel workers the band wraps (worker 29 shares worker 1's band); those
+    // overflow workers then rely solely on the per-candidate freeness probe,
+    // which still avoids collisions in practice but is no longer collision-proof
+    // by construction. Typical CI runs far fewer than 28 workers.
     const workerId = Number(process.env.JEST_WORKER_ID) || 1;
-    const band = (workerId - 1) % 28; // bands 4000-4899 .. 31000-31899
+    const band = (workerId - 1) % 28; // bands 4000-4899 .. 31000-31899 (wraps past 28)
     const base = 4000 + band * 1000;
     testPort = base; // fallback if every candidate is busy (let start() surface it)
     for (let i = 0; i < 900; i++) {
