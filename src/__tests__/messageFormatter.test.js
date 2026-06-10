@@ -284,6 +284,74 @@ describe('MessageFormatter', () => {
     });
   });
 
+  describe('failed-account error parity on Slack and Discord (#108)', () => {
+    const slackText = (f) => JSON.stringify(f.slack);
+    const discordText = (f) => JSON.stringify(f.discord);
+    const base = {
+      status: 'partial',
+      serverName: 'My Budget',
+      duration: 1200,
+      accountsProcessed: 1,
+      accountsFailed: 1,
+      succeededAccounts: ['Checking'],
+      failedAccounts: [{ name: 'Sabadell *5650', error: 'Failed syncing account' }],
+      skippedAccounts: []
+    };
+
+    test('Slack failed section includes the per-account error message', () => {
+      const s = slackText(MessageFormatter.formatSyncNotification(base));
+      expect(s).toContain('Sabadell *5650');
+      expect(s).toContain('Failed syncing account');
+    });
+
+    test('Discord failed section includes the per-account error message', () => {
+      const d = discordText(MessageFormatter.formatSyncNotification(base));
+      expect(d).toContain('Sabadell *5650');
+      expect(d).toContain('Failed syncing account');
+    });
+
+    test('long errors are truncated with ellipsis in Slack and Discord', () => {
+      const longErr = 'x'.repeat(120);
+      const f = MessageFormatter.formatSyncNotification({
+        ...base,
+        failedAccounts: [{ name: 'Acc', error: longErr }]
+      });
+      expect(slackText(f)).toContain('...');
+      expect(discordText(f)).toContain('...');
+      expect(slackText(f)).not.toContain('x'.repeat(120));
+    });
+
+    test('a failed account with no error still renders the name', () => {
+      const f = MessageFormatter.formatSyncNotification({
+        ...base,
+        failedAccounts: [{ name: 'NoErr' }]
+      });
+      expect(slackText(f)).toContain('NoErr');
+      expect(discordText(f)).toContain('NoErr');
+    });
+
+    test('caps the Discord failed field within the 1024-char limit on a large batch', () => {
+      const failed = Array.from({ length: 30 }, (_, i) => ({
+        name: `Account ${i}`,
+        error: 'Failed syncing account: a fairly long error message goes here'
+      }));
+      const f = MessageFormatter.formatSyncNotification({
+        ...base, accountsFailed: 30, succeededAccounts: [], failedAccounts: failed
+      });
+      const field = f.discord.embeds[0].fields.find(x => x.name.includes('Failed'));
+      expect(field.value.length).toBeLessThanOrEqual(1024);
+      expect(field.value).toMatch(/…and \d+ more/);
+    });
+
+    test('_joinCapped: empty, fits, and overflow cases', () => {
+      expect(MessageFormatter._joinCapped([], 100)).toBe('');
+      expect(MessageFormatter._joinCapped(['a', 'b'], 100)).toBe('a\nb');
+      const capped = MessageFormatter._joinCapped(['line1', 'line2', 'line3', 'line4'], 12);
+      expect(capped.length).toBeLessThanOrEqual(12);
+      expect(capped).toMatch(/…and \d+ more/);
+    });
+  });
+
   describe('notification clarity (#100)', () => {
     const slackText = (f) => JSON.stringify(f.slack);
     const discordText = (f) => JSON.stringify(f.discord);

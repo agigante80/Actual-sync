@@ -9,6 +9,7 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
+const { MessageFormatter } = require('../lib/messageFormatter');
 
 class HealthCheckService {
   /**
@@ -697,23 +698,20 @@ This test verifies that notifications are configured correctly and can reach the
             }
             const os = require('os');
             const packageJson = require('../../package.json');
-            await this.telegramBot.notifySync({
-              status: 'failure',
+            // Build a representative sync notification via the unified formatter so
+            // the test matches what real notifications look like (incl. the skipped
+            // section), instead of a divergent old-format message. (#110)
+            const testNotification = MessageFormatter.formatSyncNotification({
+              status: 'success',
               serverName: '🧪 Test Notification',
               duration: 1234,
-              accountsProcessed: 0,
+              accountsProcessed: 2,
               accountsFailed: 0,
-              error: `This is a test notification from Actual-sync service.
-
-Server Info:
-• Version: ${packageJson.version}
-• Hostname: ${os.hostname()}
-• Platform: ${os.platform()} ${os.arch()}
-• Node.js: ${process.version}
-• Uptime: ${Math.floor(process.uptime() / 60)} minutes
-
-This test verifies that Telegram notifications are working correctly.`
+              succeededAccounts: ['Checking', 'Savings'],
+              skippedAccounts: [{ name: 'Old Loan', reason: 'closed' }]
             });
+            const testFooter = `\n\nThis is a test from Actual-sync (v${packageJson.version} on ${os.hostname()}, ${os.platform()} ${os.arch()}, Node.js ${process.version}). It verifies that Telegram notifications are working.`;
+            await this.telegramBot.sendMessage(testNotification.text + testFooter);
             result = { success: true, message: 'Test Telegram message sent successfully' };
             break;
 

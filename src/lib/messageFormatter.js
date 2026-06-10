@@ -134,7 +134,49 @@ class MessageFormatter {
   }
   
   // ========== SYNC NOTIFICATION FORMATTERS ==========
-  
+
+  // Truncate a per-account error to keep notifications compact (shared across channels). (#108)
+  static _truncateError(error) {
+    if (!error) return '';
+    return error.length > 80 ? error.substring(0, 77) + '...' : error;
+  }
+
+  // Render a failed-account line "• name: error" (error omitted when absent). (#108)
+  static _failedAccountLine(account) {
+    const err = this._truncateError(account.error);
+    return err ? `• ${account.name}: ${err}` : `• ${account.name}`;
+  }
+
+  // Join account lines, capping the result at maxChars so it cannot exceed a
+  // platform field/section limit (Discord field = 1024, Slack section = 3000).
+  // When it would overflow, keep as many whole lines as fit and append
+  // "…and N more", so a large failure batch still delivers instead of being
+  // rejected by the platform with HTTP 400. (#108)
+  static _joinCapped(lines, maxChars) {
+    if (lines.length === 0) return '';
+    const kept = [];
+    let used = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const sep = kept.length ? 1 : 0;
+      if (used + sep + line.length > maxChars) {
+        let remaining = lines.length - kept.length;
+        let suffix = `…and ${remaining} more`;
+        while (kept.length && used + 1 + suffix.length > maxChars) {
+          const popped = kept.pop();
+          used -= popped.length + (kept.length ? 1 : 0);
+          remaining = lines.length - kept.length;
+          suffix = `…and ${remaining} more`;
+        }
+        kept.push(suffix);
+        return kept.join('\n');
+      }
+      kept.push(line);
+      used += sep + line.length;
+    }
+    return kept.join('\n');
+  }
+
   static _formatPlainText(content) {
     let text = `${content.emoji} Sync ${content.statusText}\n\n`;
     text += `Server: ${content.serverName}\n`;
@@ -168,10 +210,7 @@ class MessageFormatter {
         content.failedAccounts.forEach(account => {
           text += `  • ${account.name}\n`;
           if (account.error) {
-            const errorMsg = account.error.length > 80
-              ? account.error.substring(0, 77) + '...'
-              : account.error;
-            text += `    ${errorMsg}\n`;
+            text += `    ${this._truncateError(account.error)}\n`;
           }
         });
       }
@@ -343,15 +382,15 @@ class MessageFormatter {
       });
       let accountsText = '';
       if (synced > 0) {
-        accountsText += `*✅ Synced:*\n${content.succeededAccounts.map(n => `• ${n}`).join('\n')}`;
+        accountsText += `*✅ Synced:*\n${this._joinCapped(content.succeededAccounts.map(n => `• ${n}`), 900)}`;
       }
       if (failed > 0) {
         if (accountsText) accountsText += '\n\n';
-        accountsText += `*❌ Failed:*\n${content.failedAccounts.map(a => `• ${a.name}`).join('\n')}`;
+        accountsText += `*❌ Failed:*\n${this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a)), 900)}`;
       }
       if (skipped > 0) {
         if (accountsText) accountsText += '\n\n';
-        accountsText += `*⏭️ Skipped (not bank-linked / closed):*\n${content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`).join('\n')}`;
+        accountsText += `*⏭️ Skipped (not bank-linked / closed):*\n${this._joinCapped(content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`), 900)}`;
       }
       if (accountsText) {
         payload.blocks.push({ type: 'section', text: { type: 'mrkdwn', text: accountsText } });
@@ -383,13 +422,13 @@ class MessageFormatter {
     if (synced || failed || skipped) {
       fields.push({ name: 'Accounts', value: `${synced} synced, ${failed} failed, ${skipped} skipped` });
       if (synced > 0) {
-        fields.push({ name: '✅ Synced Accounts', value: content.succeededAccounts.map(n => `• ${n}`).join('\n') });
+        fields.push({ name: '✅ Synced Accounts', value: this._joinCapped(content.succeededAccounts.map(n => `• ${n}`), 1000) });
       }
       if (failed > 0) {
-        fields.push({ name: '❌ Failed Accounts', value: content.failedAccounts.map(a => `• ${a.name}`).join('\n') });
+        fields.push({ name: '❌ Failed Accounts', value: this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a)), 1000) });
       }
       if (skipped > 0) {
-        fields.push({ name: '⏭️ Skipped (not bank-linked / closed)', value: content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`).join('\n') });
+        fields.push({ name: '⏭️ Skipped (not bank-linked / closed)', value: this._joinCapped(content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`), 1000) });
       }
     }
     

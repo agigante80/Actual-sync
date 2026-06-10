@@ -612,8 +612,9 @@ class TelegramBotService {
 
       await syncBank(server, { isAutomated: false, retryAttempt: 0 });
 
-      // Success message will be sent by notifySync if configured
-      // Send confirmation if notifications are disabled
+      // The full sync notification is sent by the sync service (notificationService)
+      // when notifications are enabled. If they are disabled, send a minimal
+      // confirmation here so the /sync user still gets feedback.
       if (this.config.notifyOnSuccess === 'never') {
         await this.sendMessage(`✅ Sync completed for ${serverName}`);
       }
@@ -708,89 +709,6 @@ class TelegramBotService {
     });
   }
 
-  /**
-   * Send sync notification if configured
-   */
-  async notifySync(result) {
-    if (this.config.notifyOnSuccess === 'never') {
-      return;
-    }
-
-    if (this.config.notifyOnSuccess === 'errors_only' && result.status === 'success' && !result.accountsFailed) {
-      return;
-    }
-
-    // Determine status based on results
-    let emoji, statusText;
-    if (result.status === 'success') {
-      if (result.accountsFailed > 0) {
-        emoji = '⚠️';
-        statusText = 'Completed with Issues';
-      } else {
-        emoji = '✅';
-        statusText = 'Successful';
-      }
-    } else {
-      emoji = '❌';
-      statusText = 'Failed';
-    }
-
-    let message = `${emoji} Sync ${statusText}\n\n`;
-    message += `Server: ${result.serverName}\n`;
-    
-    // Format duration (convert to seconds if > 1000ms)
-    const duration = result.duration >= 1000 
-      ? `${(result.duration / 1000).toFixed(1)}s`
-      : `${result.duration}ms`;
-    message += `Duration: ${duration}\n`;
-
-    if (result.status === 'success') {
-      const totalAccounts = (result.accountsProcessed || 0) + (result.accountsFailed || 0);
-      message += `Result: ${result.accountsProcessed || 0}/${totalAccounts} synced`;
-      
-      if (result.accountsFailed > 0) {
-        message += `, ${result.accountsFailed} failed ❌`;
-      }
-      message += `\n`;
-
-      // Show successful accounts
-      if (result.succeededAccounts && result.succeededAccounts.length > 0) {
-        message += `\n✅ Synced:\n`;
-        for (const accountName of result.succeededAccounts) {
-          message += `  • ${accountName}\n`;
-        }
-      }
-
-      // Show failed accounts with errors
-      if (result.failedAccounts && result.failedAccounts.length > 0) {
-        message += `\n❌ Failed:\n`;
-        for (const account of result.failedAccounts) {
-          message += `  • ${account.name}\n`;
-          if (account.error) {
-            // Truncate long error messages
-            const errorMsg = account.error.length > 80 
-              ? account.error.substring(0, 77) + '...'
-              : account.error;
-            message += `    ${errorMsg}\n`;
-          }
-        }
-      }
-    } else {
-      message += `Error: ${result.error}\n`;
-      if (result.errorCode) {
-        message += `Code: ${result.errorCode}\n`;
-      }
-    }
-
-    await this.sendMessage(message);
-  }
-
-  /**
-   * Get current notification mode
-   */
-  getNotificationMode() {
-    return this.config.notifyOnSuccess;
-  }
 }
 
 module.exports = { TelegramBotService };
