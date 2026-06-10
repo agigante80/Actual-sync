@@ -9,7 +9,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/agigante80/Actual-sync/issues</Support>
   <Project>https://github.com/agigante80/Actual-sync</Project>
-  <Overview>Automated bank transaction synchronization for Actual Budget. Runs scheduled syncs across multiple budget instances (including encrypted budgets), with a web dashboard, Prometheus metrics, multi-channel notifications (Email/Telegram/Slack/Discord), retry logic, and health monitoring. Provide a config.json in the Config path before starting. See the project README for the schema.</Overview>
+  <Overview>Automated bank transaction synchronization for Actual Budget. Runs scheduled syncs across multiple budget instances (including encrypted budgets), with a web dashboard, Prometheus metrics, multi-channel notifications (Email/Telegram/Slack/Discord), retry logic, and health monitoring. On first start it seeds a config.example.json template into the Config path and exits; fill it in, rename it to config.json, and restart. See the project README for the schema.</Overview>
   <Category>Productivity: Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:3000]/dashboard</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/agigante80/Actual-sync/main/unraid/actual-sync.xml</TemplateURL>
