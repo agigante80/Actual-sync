@@ -7,10 +7,12 @@ on:
   push:
     paths:
       - 'unraid/**.xml'
+      - 'ca_profile.xml'
       - '.github/workflows/unraid-xmllint.yml'
   pull_request:
     paths:
       - 'unraid/**.xml'
+      - 'ca_profile.xml'
       - '.github/workflows/unraid-xmllint.yml'
   workflow_dispatch:
 
@@ -24,5 +26,5 @@ jobs:
       - name: Install xmllint
         run: sudo apt-get update && sudo apt-get install -y libxml2-utils
 
-      - name: Validate Unraid template XML well-formedness
-        run: xmllint --noout unraid/*.xml
+      - name: Validate Unraid template + CA profile XML well-formedness
+        run: xmllint --noout unraid/*.xml ca_profile.xml
