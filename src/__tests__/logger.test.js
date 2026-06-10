@@ -291,7 +291,10 @@ describe('Logger', () => {
             const logFile = files[0];
             const content = fs.readFileSync(path.join(tempDir, logFile), 'utf8');
             expect(content).toContain('Test log message');
-            expect(content).toContain('[INFO]');
+            // File output is single-line JSON by default (#104)
+            const parsed = JSON.parse(content.trim());
+            expect(parsed.level).toBe('INFO');
+            expect(parsed.message).toBe('Test log message');
         });
 
         test('should not write to file when logDir is null', () => {
@@ -420,6 +423,278 @@ describe('Logger', () => {
             expect(callback).toHaveBeenNthCalledWith(2, 'WARN', 'Warn message', {});
             expect(callback).toHaveBeenNthCalledWith(3, 'INFO', 'Info message', {});
             expect(callback).toHaveBeenNthCalledWith(4, 'DEBUG', 'Debug message', {});
+        });
+    });
+
+    describe('Secret Redaction (#103)', () => {
+        beforeEach(() => { consoleSuppress = suppressConsole(); });
+        afterEach(() => { consoleSuppress.restore(); });
+
+        test('masks a top-level secret key in JSON format', () => {
+            const logger = new Logger({ format: 'json', logDir: null });
+            const line = logger.formatLog('INFO', 'auth', { password: 'hunter2', user: 'bob' }, 'json');
+            const parsed = JSON.parse(line);
+            expect(parsed.password).toBe('[REDACTED]');
+            expect(parsed.user).toBe('bob');
+            expect(line).not.toContain('hunter2');
+        });
+
+        test('masks a secret key in pretty format', () => {
+            const logger = new Logger({ format: 'pretty', logDir: null });
+            const line = logger.formatLog('INFO', 'auth', { password: 'hunter2' }, 'pretty');
+            expect(line).toContain('"password": "[REDACTED]"');
+            expect(line).not.toContain('hunter2');
+        });
+
+        test('masks nested secrets without mutating the input object', () => {
+            const logger = new Logger({ logDir: null });
+            const meta = { server: { name: 'A', encryptionPassword: 'e2e-secret' } };
+            const line = logger.formatLog('INFO', 'x', meta, 'json');
+            expect(line).not.toContain('e2e-secret');
+            expect(line).toContain('[REDACTED]');
+            expect(meta.server.encryptionPassword).toBe('e2e-secret'); // original untouched
+        });
+
+        test('masks bot-token URLs embedded in string values', () => {
+            const logger = new Logger({ logDir: null });
+            const line = logger.formatLog('INFO', 'x', {
+                url: 'https://api.telegram.org/bot123456:ABC-def_77/getUpdates'
+            }, 'json');
+            expect(JSON.parse(line).url).toBe('https://api.telegram.org/bot[REDACTED]/getUpdates');
+        });
+
+        test('honors custom logging.redact keys while keeping the defaults', () => {
+            const logger = new Logger({ logDir: null, redact: ['ssn'] });
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { ssn: '123-45', password: 'p' }, 'json'));
+            expect(parsed.ssn).toBe('[REDACTED]');
+            expect(parsed.password).toBe('[REDACTED]');
+        });
+
+        test('does not throw on circular metadata', () => {
+            const logger = new Logger({ logDir: null });
+            const meta = { a: 1 };
+            meta.self = meta;
+            expect(() => logger.info('x', meta)).not.toThrow();
+        });
+
+        test('preserves Date values instead of flattening them to {}', () => {
+            const logger = new Logger({ logDir: null });
+            const when = new Date('2026-06-10T00:00:00.000Z');
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { when }, 'json'));
+            expect(parsed.when).toBe('2026-06-10T00:00:00.000Z');
+        });
+
+        test('does not mark a shared (non-circular) reference as [Circular]', () => {
+            const logger = new Logger({ logDir: null });
+            const shared = { v: 1 };
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { a: shared, b: shared }, 'json'));
+            expect(parsed.a).toEqual({ v: 1 });
+            expect(parsed.b).toEqual({ v: 1 });
+        });
+
+        test('redacts the metadata passed to the broadcast callback', () => {
+            const callback = jest.fn();
+            const logger = new Logger({ level: 'INFO', logDir: null, broadcastCallback: callback });
+            logger.info('x', { password: 'hunter2', ok: 1 });
+            expect(callback).toHaveBeenCalledWith('INFO', 'x', { password: '[REDACTED]', ok: 1 });
+        });
+
+        test('redacts secrets in the syslog payload', () => {
+            const logger = new Logger({ logDir: null });
+            const sendSpy = jest.fn();
+            logger.syslog = { enabled: true, host: 'localhost', port: 514, protocol: 'udp', facility: 16 };
+            logger.syslogClient = { send: sendSpy };
+            logger.info('x', { botToken: 'abc123secret' });
+            const sent = sendSpy.mock.calls[0][0].toString();
+            expect(sent).not.toContain('abc123secret');
+            expect(sent).toContain('REDACTED');
+        });
+
+        test('a throwing getter in metadata never crashes the log call (C1)', () => {
+            const logger = new Logger({ logDir: null });
+            const meta = { get boom() { throw new Error('getter exploded'); } };
+            expect(() => logger.info('x', meta)).not.toThrow();
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', meta, 'json'));
+            expect(parsed.boom).toBe('[unreadable]');
+        });
+
+        test('a BigInt in metadata does not crash and serializes as a string', () => {
+            const logger = new Logger({ logDir: null });
+            expect(() => logger.info('x', { big: 10n })).not.toThrow();
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { big: 42n }, 'json'));
+            expect(parsed.big).toBe('42');
+        });
+
+        test('a value with a throwing toJSON never crashes the log call', () => {
+            const logger = new Logger({ logDir: null });
+            const meta = { obj: { toJSON() { throw new Error('toJSON exploded'); } } };
+            expect(() => logger.info('x', meta)).not.toThrow();
+        });
+
+        test('masks Authorization Bearer tokens in string values (H3)', () => {
+            const logger = new Logger({ logDir: null });
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { h: 'Authorization: Bearer abc.def.ghi' }, 'json'));
+            expect(parsed.h).toBe('Authorization: Bearer [REDACTED]');
+        });
+
+        test('masks credentials embedded in URL userinfo (H3)', () => {
+            const logger = new Logger({ logDir: null });
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { u: 'https://admin:S3cr3t@host:5006/budget' }, 'json'));
+            expect(parsed.u).toBe('https://admin:[REDACTED]@host:5006/budget');
+        });
+
+        test('masks a bare password= even without a query-string prefix (H3)', () => {
+            const logger = new Logger({ logDir: null });
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { b: 'user=bob password=hunter2 done' }, 'json'));
+            expect(parsed.b).toBe('user=bob password=[REDACTED] done');
+        });
+
+        test('redacts token/secret key variants (refreshToken, accessToken, clientSecret) (H3)', () => {
+            const logger = new Logger({ logDir: null });
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', {
+                refreshToken: 'rt', accessToken: 'at', clientSecret: 's'
+            }, 'json'));
+            expect(parsed.refreshToken).toBe('[REDACTED]');
+            expect(parsed.accessToken).toBe('[REDACTED]');
+            expect(parsed.clientSecret).toBe('[REDACTED]');
+        });
+
+        test('preserves an Error value in metadata (name/message/stack) (M4)', () => {
+            const logger = new Logger({ logDir: null });
+            const err = Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' });
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { cause: err }, 'json'));
+            expect(parsed.cause.name).toBe('Error');
+            expect(parsed.cause.message).toBe('connection refused');
+            expect(parsed.cause.code).toBe('ECONNREFUSED');
+            expect(typeof parsed.cause.stack).toBe('string');
+        });
+
+        test('syslog encodes nested objects instead of [object Object] (M5)', () => {
+            const logger = new Logger({ logDir: null });
+            const sendSpy = jest.fn();
+            logger.syslog = { enabled: true, host: 'localhost', port: 514, protocol: 'udp', facility: 16 };
+            logger.syslogClient = { send: sendSpy };
+            logger.info('x', { detail: { a: 1, b: 2 } });
+            const sent = sendSpy.mock.calls[0][0].toString();
+            expect(sent).not.toContain('[object Object]');
+            // RFC 5424 escaping backslash-escapes the JSON quotes
+            expect(sent).toContain('\\"a\\":1');
+        });
+
+        test('escapes RFC 5424 structured-data chars in syslog values (quotes/brackets)', () => {
+            const logger = new Logger({ logDir: null });
+            const sendSpy = jest.fn();
+            logger.syslog = { enabled: true, host: 'localhost', port: 514, protocol: 'udp', facility: 16 };
+            logger.syslogClient = { send: sendSpy };
+            logger.info('x', { nested: { a: 'has"quote' } });
+            const sent = sendSpy.mock.calls[0][0].toString();
+            // The JSON quote inside the value must be backslash-escaped so it cannot
+            // terminate the SD-PARAM early.
+            expect(sent).toContain('\\"');
+        });
+
+        test('preserves Error custom fields (statusCode/errno) and cause; masks code (M4+)', () => {
+            const logger = new Logger({ logDir: null });
+            const err = Object.assign(new Error('connection refused'), {
+                statusCode: 429, errno: -111, syscall: 'connect'
+            });
+            err.cause = Object.assign(new Error('root'), { code: 'EROOT' });
+            const e = JSON.parse(logger.formatLog('INFO', 'x', { err }, 'json')).err;
+            expect(e.statusCode).toBe(429);
+            expect(e.errno).toBe(-111);
+            expect(e.syscall).toBe('connect');
+            expect(e.cause.message).toBe('root');
+
+            const masked = JSON.parse(logger.formatLog('INFO', 'x', {
+                err: Object.assign(new Error('x'), { code: 'token=leak123' })
+            }, 'json')).err;
+            expect(masked.code).toBe('token=[REDACTED]');
+        });
+
+        test('does not infinitely recurse / crash on a circular error cause chain', () => {
+            const logger = new Logger({ logDir: null });
+            const a = new Error('a');
+            const b = new Error('b');
+            a.cause = b;
+            b.cause = a;
+            expect(() => logger.info('x', { a })).not.toThrow();
+        });
+
+        test('masks quoted key="value" secrets in strings (M-H3+)', () => {
+            const logger = new Logger({ logDir: null });
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { s: 'password="hunter2" ok' }, 'json'));
+            expect(parsed.s).toBe('password=[REDACTED] ok');
+        });
+
+        test('masks JSON-style "key":"value" secrets in stringified blobs (M-H3+)', () => {
+            const logger = new Logger({ logDir: null });
+            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { s: '{"refreshToken":"rt123","keep":1}' }, 'json'));
+            expect(parsed.s).toBe('{"refreshToken":"[REDACTED]","keep":1}');
+        });
+
+        test('does not crash on a circular reference inside a class instance', () => {
+            const logger = new Logger({ logDir: null });
+            class Node { constructor() { this.name = 'n'; } }
+            const n = new Node();
+            n.self = n;
+            expect(() => logger.info('x', { n })).not.toThrow();
+        });
+    });
+
+    describe('File Format (#104)', () => {
+        beforeEach(() => { consoleSuppress = suppressConsole(); });
+        afterEach(() => { consoleSuppress.restore(); });
+
+        test('file output is single-line valid JSON even when console format is pretty', () => {
+            const logger = new Logger({ format: 'pretty', logDir: tempDir, rotation: { enabled: false } });
+            logger.info('hello', { a: 1, nested: { b: 2 } });
+            const files = fs.readdirSync(tempDir);
+            const content = fs.readFileSync(path.join(tempDir, files[0]), 'utf8');
+            const lines = content.trim().split('\n');
+            expect(lines).toHaveLength(1);
+            const parsed = JSON.parse(lines[0]);
+            expect(parsed.message).toBe('hello');
+            expect(parsed.a).toBe(1);
+        });
+
+        test('defaults fileFormat to json when omitted', () => {
+            const logger = new Logger({ format: 'pretty', logDir: null });
+            expect(logger.fileFormat).toBe('json');
+        });
+
+        test('multi-key metadata still produces exactly one file line', () => {
+            const logger = new Logger({ logDir: tempDir, rotation: { enabled: false } });
+            logger.info('m', { one: 1, two: 2, three: 3 });
+            const files = fs.readdirSync(tempDir);
+            const content = fs.readFileSync(path.join(tempDir, files[0]), 'utf8');
+            expect(content.trim().split('\n')).toHaveLength(1);
+        });
+
+        test('child logger inherits fileFormat from the parent', () => {
+            const parent = new Logger({ fileFormat: 'json', logDir: null });
+            expect(parent.child({ scope: 'x' }).fileFormat).toBe('json');
+        });
+
+        test('createLogger forwards fileFormat to file output', () => {
+            const logger = createLogger({ fileFormat: 'json', logDir: tempDir, rotation: { enabled: false } });
+            logger.info('viaFactory');
+            const files = fs.readdirSync(tempDir);
+            const content = fs.readFileSync(path.join(tempDir, files[0]), 'utf8');
+            expect(() => JSON.parse(content.trim())).not.toThrow();
+        });
+
+        test('a file-write failure does not propagate', () => {
+            const logger = new Logger({ logDir: tempDir, rotation: { enabled: false } });
+            const spy = jest.spyOn(fs, 'appendFileSync').mockImplementation(() => { throw new Error('disk full'); });
+            expect(() => logger.info('x')).not.toThrow();
+            spy.mockRestore();
+        });
+
+        test('broadcast is unaffected when fileFormat is json', () => {
+            const callback = jest.fn();
+            const logger = new Logger({ level: 'INFO', fileFormat: 'json', logDir: null, broadcastCallback: callback });
+            logger.info('x', { k: 'v' });
+            expect(callback).toHaveBeenCalledWith('INFO', 'x', { k: 'v' });
         });
     });
 

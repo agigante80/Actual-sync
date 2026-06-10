@@ -37,10 +37,12 @@
   "logging": {
     "level": "INFO",
     "format": "pretty",
+    "fileFormat": "json",
     "logDir": "./logs",
     "rotation": {
       "enabled": true,
       "maxSize": "10M",
+      "interval": "1d",
       "maxFiles": 30,
       "compress": "gzip"
     },

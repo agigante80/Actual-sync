@@ -218,9 +218,27 @@ class TelegramBotService {
       const response = await this.makeRequest(`${url}?${params.toString()}`);
       return response.result || [];
     } catch (error) {
-      this.logger.error('Failed to get updates', { error: error.message });
+      // Transient polling failures (rate limits, gateway errors, network blips)
+      // are expected when long-polling a public API. Log them at DEBUG so the
+      // error log stays honest; genuine auth/config errors stay at ERROR. (#102)
+      const level = this.isTransientPollError(error) ? 'debug' : 'error';
+      this.logger[level]('Failed to get updates', { error: error.message });
       return [];
     }
+  }
+
+  /**
+   * Whether a getUpdates failure is a transient, expected polling error
+   * (rate limit, gateway/server error, or network blip) rather than an
+   * actionable problem such as an invalid token (401) or bad bot (404). (#102)
+   */
+  isTransientPollError(error) {
+    const TRANSIENT_NET_CODES = ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED'];
+    if (error && TRANSIENT_NET_CODES.includes(error.code)) {
+      return true;
+    }
+    const status = error && error.statusCode;
+    return status === 429 || (typeof status === 'number' && status >= 500);
   }
 
   /**
@@ -668,7 +686,9 @@ class TelegramBotService {
             if (res.statusCode >= 200 && res.statusCode < 300) {
               resolve(parsed);
             } else {
-              reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+              const httpError = new Error(`HTTP ${res.statusCode}: ${data}`);
+              httpError.statusCode = res.statusCode;
+              reject(httpError);
             }
           } catch (error) {
             reject(new Error(`Failed to parse response: ${error.message}`));
