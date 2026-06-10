@@ -1,22 +1,30 @@
 name: Auto Release
 
 # -----------------------------------------------------------------------------
-# Creates a GitHub Release on every SUCCESSFUL CI run on main.
+# Creates a GitHub Release after every SUCCESSFUL CI run on main.
 #
 # Trigger: workflow_run (NOT push). It fires only after the "CI/CD Pipeline"
 # workflow completes on main, and the success guard below stops it cold if CI
-# failed — so a release is never created for broken code. This replaces the old
-# `release` job in ci-cd.yml, which was keyed off an unbumped static version and
-# therefore never produced a new release (issue #86).
+# failed — so a release is never created for broken code.
 #
-# On each successful run it patch-bumps the version (package.json + VERSION +
-# package-lock.json), commits, tags, and releases.
+# Version decision (vs the latest released tag), instead of always patch-bumping:
+#   - V_main  > V_tag  → the version was already bumped deliberately on
+#                        development (minor/major, or an intentional patch).
+#                        Release it AS-IS — tag + release, no extra bump commit.
+#   - V_main == V_tag  → nobody bumped; this is a routine merge. Patch-bump,
+#                        commit, tag, release (the auto-patch default).
+#   - V_main  < V_tag  → main is BEHIND the latest release (a stale development
+#                        merged without back-merging main first, or a bad revert).
+#                        Abort and flag — never publish a regression.
+# This is why merging an already-bumped 1.5.0 publishes 1.5.0 (not 1.5.1).
 #
-# Recursion guard: the bump commit it pushes to main re-triggers CI, which would
-# re-trigger this workflow. The guard skips when the validated head commit is the
-# bump commit itself (message prefix `chore(release): bump version`), so the loop
-# terminates after one extra CI run (which usefully builds the version-tagged
-# Docker image).
+# Recursion guard: the patch-bump path pushes a `chore(release): bump version`
+# commit to main, which re-triggers CI and would re-trigger this workflow with
+# V_main == V_tag again (an infinite bump loop). The guard skips when the
+# validated head commit is that bump commit, so the loop terminates after one
+# extra CI run (which usefully builds the version-tagged Docker image).
+# IMPORTANT: a MANUAL bump must NOT use the `chore(release): bump version`
+# prefix (use e.g. `chore: bump version to X`), or the guard would skip it.
 #
 # Auth: uses a GitHub App token (APP_ID / APP_PRIVATE_KEY secrets). The default
 # GITHUB_TOKEN cannot be used because commits/tags it pushes do NOT trigger
@@ -37,7 +45,7 @@ permissions:
 
 jobs:
   auto-release:
-    name: Patch Bump & Release
+    name: Release (auto-patch or as-is)
     runs-on: ubuntu-latest
     # Primary safeguard: never release unless the CI pipeline succeeded.
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
@@ -55,7 +63,7 @@ jobs:
         with:
           # Check out the exact commit CI validated, not current HEAD.
           ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0          # full history + tags for the freshness check
+          fetch-depth: 0          # full history + tags for the version checks
           token: ${{ steps.token.outputs.token }}
 
       - name: Recursion guard — skip our own bump commit
@@ -76,34 +84,75 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Patch-bump version
+      - name: Decide and apply version
         if: steps.guard.outputs.skip != 'true'
-        id: bump
+        id: decide
         run: |
-          npm run version:bump -- patch
-          NEW_VERSION=$(node -p "require('./package.json').version")
-          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Bumped to $NEW_VERSION"
+          set -euo pipefail
 
-      - name: Commit, tag, and push
-        if: steps.guard.outputs.skip != 'true'
-        run: |
+          V_MAIN=$(node -p "require('./package.json').version")
+          V_FILE=$(tr -d '[:space:]' < VERSION)
+          V_LOCK=$(node -p "require('./package-lock.json').version")
+          echo "package.json=$V_MAIN  VERSION=$V_FILE  lockfile=$V_LOCK"
+
+          # Consistency guard: the three version sources must agree.
+          if [ "$V_MAIN" != "$V_FILE" ] || [ "$V_MAIN" != "$V_LOCK" ]; then
+            echo "::error::Version files out of sync (package.json=$V_MAIN VERSION=$V_FILE lockfile=$V_LOCK). Run 'npm run version:bump' so all three match. Aborting."
+            exit 1
+          fi
+
+          V_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1 | sed 's/^v//')
+          echo "latest released tag: ${V_TAG:-<none>}"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add VERSION package.json package-lock.json
-          git commit -m "chore(release): bump version to ${{ steps.bump.outputs.new_version }}"
-          git tag -a "v${{ steps.bump.outputs.new_version }}" -m "Release v${{ steps.bump.outputs.new_version }}"
-          # workflow_run runs on a detached HEAD; push the commit to the remote
-          # main ref explicitly, then the tag.
-          git push origin HEAD:main
-          git push origin "v${{ steps.bump.outputs.new_version }}"
+
+          if [ -z "$V_TAG" ]; then
+            echo "No prior tag — releasing $V_MAIN as-is (first release)."
+            echo "version=$V_MAIN" >> "$GITHUB_OUTPUT"
+            echo "mode=as-is" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$V_MAIN" = "$V_TAG" ]; then
+            echo "Version unchanged ($V_MAIN == $V_TAG) — patch-bumping."
+            npm run version:bump -- patch
+            NEW_VERSION=$(node -p "require('./package.json').version")
+            git add VERSION package.json package-lock.json
+            git commit -m "chore(release): bump version to $NEW_VERSION"
+            git push origin HEAD:main
+            echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+            echo "mode=patch-bump" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          HIGHEST=$(printf '%s\n%s\n' "$V_MAIN" "$V_TAG" | sort -V | tail -1)
+          if [ "$HIGHEST" = "$V_MAIN" ]; then
+            echo "Version already bumped to $V_MAIN (> $V_TAG) — releasing as-is."
+            echo "version=$V_MAIN" >> "$GITHUB_OUTPUT"
+            echo "mode=as-is" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::error::main is at $V_MAIN but the latest release is $V_TAG — refusing to publish a regression. Back-merge main into development (and resolve the version) before merging to main."
+          exit 1
+
+      - name: Tag and push
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.decide.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
 
       - name: Create GitHub Release
         if: steps.guard.outputs.skip != 'true'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ steps.bump.outputs.new_version }}
-          name: v${{ steps.bump.outputs.new_version }}
+          tag_name: v${{ steps.decide.outputs.version }}
+          name: v${{ steps.decide.outputs.version }}
           generate_release_notes: true
           draft: false
           prerelease: false
@@ -117,7 +166,7 @@ jobs:
             echo "### ⏭️ Auto-Release Skipped" >> "$GITHUB_STEP_SUMMARY"
             echo "Head commit is a version bump; no release created (recursion guard)." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### 🎉 Auto-Release Complete" >> "$GITHUB_STEP_SUMMARY"
-            echo "- **Version:** v${{ steps.bump.outputs.new_version }}" >> "$GITHUB_STEP_SUMMARY"
-            echo "- **Release:** [v${{ steps.bump.outputs.new_version }}](https://github.com/${{ github.repository }}/releases/tag/v${{ steps.bump.outputs.new_version }})" >> "$GITHUB_STEP_SUMMARY"
+            echo "### 🎉 Release Complete (${{ steps.decide.outputs.mode }})" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Version:** v${{ steps.decide.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Release:** [v${{ steps.decide.outputs.version }}](https://github.com/${{ github.repository }}/releases/tag/v${{ steps.decide.outputs.version }})" >> "$GITHUB_STEP_SUMMARY"
           fi

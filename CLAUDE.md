@@ -47,9 +47,11 @@ npm run list-accounts
 npm run history
 
 # Bump version (updates VERSION + package.json + package-lock.json in sync;
-# aborts if local version is behind the latest released tag). Rarely needed
-# manually — releases auto-bump (see Git Workflow).
-npm run version:bump -- patch   # or: release:patch / release:minor / release:major
+# aborts if local version is behind the latest released tag). For a patch
+# release you do not need this (the auto-release patch-bumps). Run it on
+# `development` only to cut a MINOR or MAJOR release, which the auto-release
+# then publishes as-is (see Git Workflow).
+npm run version:bump -- minor   # or: patch / major
 ```
 
 No build step — this is plain JavaScript (no TypeScript, no bundler).
@@ -195,10 +197,15 @@ Note: `src/syncService.js` and `index.js` are excluded from coverage collection 
 
 **Branch model:** `development` is the active integration branch; `main` holds production-ready releases. Feature work lands on `development`.
 
-**Auto-release:** every successful CI run on `main` triggers `.github/workflows/auto-release.yml`, which **patch-bumps the version, tags `vX.Y.Z`, and publishes a GitHub Release automatically**. So:
-- **Do not bump the version manually** for a normal release — merging `development` → `main` is what cuts the release (1.4.4 → 1.4.5, etc.). A manual bump on top of this double-bumps or trips the recursion guard.
-- The auto-release commits the bump to `main` only, so **after each release, back-merge `main` → `development`** (fast-forward) to avoid version drift.
-- Auth uses a GitHub App token (`APP_ID` / `APP_PRIVATE_KEY` secrets), not `GITHUB_TOKEN` — otherwise the new tag wouldn't trigger the tag-based Docker publish.
+**Auto-release:** every successful CI run on `main` triggers `.github/workflows/auto-release.yml`, which tags `vX.Y.Z` and publishes a GitHub Release. It decides the version by comparing the version on `main` (after the merge) against the latest released tag:
+- **Version unchanged** (no manual bump): it **patch-bumps** (1.4.7 to 1.4.8), commits, tags, releases. This is the routine path, so for a normal patch release you just merge `development` to `main` and let it bump.
+- **Version already higher** (you bumped on `development`): it **releases that version as-is**, no extra bump. This is how you cut a **minor or major** release: run `npm run version:bump -- minor` (or `major`) on `development` first, then merge. It also means an intentional manual patch bump is respected (no double-bump).
+- **Version lower than the latest tag**: it **aborts and flags** a regression (a stale `development` was merged without back-merging `main` first).
+
+Notes:
+- A **manual** bump commit must NOT use the `chore(release): bump version` prefix (that prefix is the recursion guard's marker for the bot's own bump). Use `chore: bump version to X`.
+- The patch-bump path commits to `main` only, so **after a routine (auto-patch) release, back-merge `main` → `development`** (fast-forward) to avoid version drift. A minor/major release bumped on `development` does not drift.
+- Auth uses a GitHub App token (`APP_ID` / `APP_PRIVATE_KEY` secrets), not `GITHUB_TOKEN`, otherwise the new tag would not trigger the tag-based Docker publish.
 
 **Rules:**
 - **Never push to `main` directly.** Merging `development` → `main` happens ONLY when the user explicitly asks (e.g. "merge to main").
@@ -223,7 +230,7 @@ Note: `src/syncService.js` and `index.js` are excluded from coverage collection 
 - Accessing `server.sync.*` directly instead of using `getSyncConfig(server)`
 - Skipping documentation updates when changing observable behavior
 - Forcing transitive versions via `overrides`/`resolutions` (see Dependency Policy)
-- Manually bumping the version for a release (the auto-release does it — see Git Workflow)
+- Manually patch-bumping for a routine release (the auto-release patch-bumps; only bump manually on `development` for a minor/major, see Git Workflow)
 
 ## Documentation
 
