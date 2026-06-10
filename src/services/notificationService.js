@@ -12,6 +12,10 @@ const { URL } = require('url');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 
+// Public icon used to brand notifications. Recipient services (Slack/Discord/
+// ntfy) fetch it, so it must be a public URL — not the dashboard's local copy. (#114)
+const LOGO_URL = 'https://raw.githubusercontent.com/agigante80/Actual-sync/main/unraid/actual-sync-icon.png';
+
 class NotificationService {
   /**
    * Create a NotificationService instance
@@ -72,6 +76,7 @@ class NotificationService {
         priorityOnFailure: 'high',
         priorityOnSuccess: 'default',
         tags: [],
+        icon: LOGO_URL,
         ...config.ntfy
       },
       thresholds: {
@@ -572,6 +577,11 @@ class NotificationService {
   async sendSlackFormattedWebhooks(payload) {
     const results = [];
     const webhooks = this.config.webhooks.slack || [];
+    // Brand the message (classic incoming webhooks honor these; harmless otherwise). (#114)
+    if (payload) {
+      payload.username = payload.username || 'Actual-sync';
+      payload.icon_url = payload.icon_url || LOGO_URL;
+    }
 
     for (const webhook of webhooks) {
       if (webhook.enabled === false) continue;
@@ -606,6 +616,11 @@ class NotificationService {
   async sendDiscordFormattedWebhooks(payload) {
     const results = [];
     const webhooks = this.config.webhooks.discord || [];
+    // Brand the message with the project name + avatar. (#114)
+    if (payload) {
+      payload.username = payload.username || 'Actual-sync';
+      payload.avatar_url = payload.avatar_url || LOGO_URL;
+    }
 
     for (const webhook of webhooks) {
       if (webhook.enabled === false) continue;
@@ -690,6 +705,7 @@ class NotificationService {
       'Priority': String(priority)
     };
     if (tags) headers['Tags'] = tags;
+    if (cfg.icon) headers['Icon'] = cfg.icon; // ntfy shows this icon in the notification (#114)
     if (cfg.token) headers['Authorization'] = `Bearer ${cfg.token}`;
 
     try {

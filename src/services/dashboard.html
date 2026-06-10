@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Actual-sync Dashboard</title>
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="icon" type="image/png" href="/icon.png">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * {
@@ -38,6 +38,14 @@
             color: #60a5fa;
             font-size: 2rem;
             margin-bottom: 5px;
+        }
+
+        .header-logo {
+            height: 2.2rem;
+            width: 2.2rem;
+            vertical-align: middle;
+            margin-right: 0.4rem;
+            border-radius: 6px;
         }
 
         .subtitle {
@@ -377,7 +385,7 @@
     <div class="container">
         <header>
             <h1>
-                🏦 Actual-sync Dashboard
+                <img src="/icon.png" alt="" class="header-logo"> Actual-sync Dashboard
                 <span id="status-badge" class="status-badge status-pending">Loading...</span>
             </h1>
             <div class="subtitle">
