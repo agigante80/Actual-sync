@@ -101,7 +101,22 @@
     "webhooks": {
       "slack": [],
       "discord": [],
-      "telegram": []
+      "telegram": [],
+      "generic": [
+        {
+          "name": "example-ntfy-json",
+          "url": "https://ntfy.sh/your-topic",
+          "headers": { "Authorization": "Bearer YOUR_NTFY_TOKEN" }
+        }
+      ]
+    },
+    "ntfy": {
+      "enabled": false,
+      "url": "https://ntfy.sh/your-topic",
+      "token": "",
+      "priorityOnFailure": "high",
+      "priorityOnSuccess": "default",
+      "tags": ["money_with_wings"]
     },
     "thresholds": {
       "consecutiveFailures": 3,

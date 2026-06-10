@@ -487,8 +487,78 @@
                 },
                 "required": ["url"]
               }
+            },
+            "generic": {
+              "type": "array",
+              "description": "Generic webhook configurations. Each receives a documented JSON payload (status, server, account counts and lists) via HTTP POST. Works with ntfy (JSON publishing), Gotify, Home Assistant, n8n, and custom endpoints.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Webhook name for identification"
+                  },
+                  "url": {
+                    "type": "string",
+                    "description": "Destination URL the JSON payload is POSTed to"
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "description": "Set false to disable this webhook without removing it",
+                    "default": true
+                  },
+                  "headers": {
+                    "type": "object",
+                    "description": "Extra HTTP headers to send (e.g. Authorization, Priority). Secrets are redacted in logs.",
+                    "additionalProperties": { "type": "string" }
+                  },
+                  "contentType": {
+                    "type": "string",
+                    "description": "Override the request Content-Type",
+                    "default": "application/json"
+                  }
+                },
+                "required": ["url"]
+              }
             }
           }
+        },
+        "ntfy": {
+          "type": "object",
+          "description": "ntfy push notifications (https://ntfy.sh). Posts to a topic URL with Title/Priority/Tags headers.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable ntfy notifications",
+              "default": false
+            },
+            "url": {
+              "type": "string",
+              "description": "Full topic URL, e.g. https://ntfy.sh/my-topic or https://ntfy.example.com/my-topic"
+            },
+            "token": {
+              "type": "string",
+              "description": "Optional access token sent as 'Authorization: Bearer <token>'. Redacted in logs."
+            },
+            "priorityOnFailure": {
+              "type": "string",
+              "description": "ntfy priority for failure notifications",
+              "enum": ["max", "urgent", "high", "default", "low", "min"],
+              "default": "high"
+            },
+            "priorityOnSuccess": {
+              "type": "string",
+              "description": "ntfy priority for success/info notifications",
+              "enum": ["max", "urgent", "high", "default", "low", "min"],
+              "default": "default"
+            },
+            "tags": {
+              "type": "array",
+              "description": "Base ntfy tags/emoji added to every notification",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["url"]
         },
         "thresholds": {
           "type": "object",
