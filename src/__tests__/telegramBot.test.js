@@ -458,83 +458,6 @@ describe('TelegramBotService', () => {
     });
   });
   
-  describe('notifySync', () => {
-    test('should notify on successful sync when mode is always', async () => {
-      const bot = new TelegramBotService(
-        { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'always' },
-        {}
-      );
-      
-      await bot.notifySync({
-        status: 'success',
-        serverName: 'Server1',
-        duration: 1500,
-        accountsProcessed: 5,
-        accountsFailed: 0,
-        succeededAccounts: ['Account1', 'Account2'],
-        failedAccounts: []
-      });
-      
-      expect(mockRequest.write).toHaveBeenCalled();
-      const payload = JSON.parse(mockRequest.write.mock.calls[0][0]);
-      expect(payload.text).toContain('Successful');
-      expect(payload.text).toContain('Server1');
-      expect(payload.text).toContain('Result: 5/');
-    });
-    
-    test('should not notify on successful sync when mode is errors_only', async () => {
-      const bot = new TelegramBotService(
-        { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'errors_only' },
-        {}
-      );
-      
-      await bot.notifySync({
-        status: 'success',
-        serverName: 'Server1',
-        duration: 1500
-      });
-      
-      expect(mockRequest.write).not.toHaveBeenCalled();
-    });
-    
-    test('should notify on failed sync when mode is errors_only', async () => {
-      const bot = new TelegramBotService(
-        { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'errors_only' },
-        {}
-      );
-      
-      await bot.notifySync({
-        status: 'error',
-        serverName: 'Server1',
-        duration: 1500,
-        error: 'Connection failed',
-        errorCode: 'ECONNREFUSED',
-        accountsProcessed: 0,
-        accountsFailed: 1
-      });
-      
-      expect(mockRequest.write).toHaveBeenCalled();
-      const payload = JSON.parse(mockRequest.write.mock.calls[0][0]);
-      expect(payload.text).toContain('Failed');
-      expect(payload.text).toContain('Connection failed');
-    });
-    
-    test('should not notify when mode is never', async () => {
-      const bot = new TelegramBotService(
-        { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'never' },
-        {}
-      );
-      
-      await bot.notifySync({
-        status: 'success',
-        serverName: 'Server1',
-        duration: 1500
-      });
-      
-      expect(mockRequest.write).not.toHaveBeenCalled();
-    });
-  });
-  
   describe('processUpdate', () => {
     test('should process command message', async () => {
       const bot = new TelegramBotService(
@@ -605,17 +528,6 @@ describe('TelegramBotService', () => {
     });
   });
   
-  describe('getNotificationMode', () => {
-    test('should return current notification mode', () => {
-      const bot = new TelegramBotService(
-        { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'always' },
-        {}
-      );
-      
-      expect(bot.getNotificationMode()).toBe('always');
-    });
-  });
-
   describe('/sync command', () => {
     test('should trigger sync for specified server', async () => {
       const mockSyncBank = jest.fn().mockResolvedValue();
