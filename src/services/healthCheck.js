@@ -140,7 +140,11 @@ class HealthCheckService {
       max: 60, // 60 requests per minute per IP
       standardHeaders: true,
       legacyHeaders: false,
-      message: 'Too many requests, please try again later.'
+      message: 'Too many requests, please try again later.',
+      // The dashboard fetches /icon.png as its favicon + header logo on every
+      // load; exempt this cacheable static asset so it never competes with the
+      // dashboard API calls for the per-IP abuse budget. (#113)
+      skip: (req) => req.path === '/icon.png'
     });
 
     // Apply rate limiting to all routes
@@ -244,14 +248,16 @@ class HealthCheckService {
 
     // Project icon, served locally so the dashboard works offline (no external
     // GitHub fetch). Used as the favicon and the dashboard header logo. Cached
-    // for a day (it rarely changes); Content-Type is applied only on success and
-    // a missing file yields a clean 404 instead of an image/png-labeled error
-    // body. No authentication needed. (#113)
+    // for an hour — long enough to avoid re-reads on every load, short enough
+    // that a new release's icon propagates to returning users within the hour
+    // (the asset has no cache-busting in its URL). Content-Type is applied only
+    // on success; a missing file yields a clean 404 and any other error its real
+    // status (500 when the sender did not classify it). No auth needed. (#113)
     this.app.get('/icon.png', (req, res) => {
       res.sendFile(path.join(__dirname, 'icon.png'), {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' }
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' }
       }, (err) => {
-        if (err && !res.headersSent) res.status(err.statusCode || 404).end();
+        if (err && !res.headersSent) res.status(err.statusCode || 500).end();
       });
     });
 

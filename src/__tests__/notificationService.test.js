@@ -900,5 +900,80 @@ describe('NotificationService', () => {
       expect(icon).toBe('https://x/icon-.png');
       spy.mockRestore();
     });
+
+    test('ntfy warns when an icon URL is altered by sanitization', async () => {
+      // Stripping a char silently changes the fetched URL — warn rather than
+      // ship a corrupted link with no diagnostic. (#114)
+      const service = new NotificationService({ ntfy: { enabled: true, url: 'https://ntfy.sh/t', icon: 'https://x/icon-😀.png' } });
+      jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      const warn = jest.spyOn(service.logger, 'warn').mockImplementation(() => {});
+      await service.sendNtfy({ title: 'T', message: 'm', level: 'success', tags: [] });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('invalid in an HTTP header'),
+        expect.objectContaining({ configured: 'https://x/icon-😀.png', sent: 'https://x/icon-.png' })
+      );
+      warn.mockRestore();
+    });
+
+    test('legacy sendSlackWebhooks brands the payload (dashboard test path)', async () => {
+      // The dashboard "test notification" button calls the legacy method; it must
+      // brand identically to the formatted production path. (#114)
+      const service = new NotificationService({ webhooks: { slack: [{ name: 's', url: 'https://hooks.slack.com/x' }] } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendSlackWebhooks({ serverName: 'S', timestamp: 't', errorMessage: 'e', consecutiveFailures: 1, thresholds: { failureRate: 0, consecutiveExceeded: false, rateExceeded: false } });
+      const payload = spy.mock.calls[0][1];
+      expect(payload.username).toBe('Actual-sync');
+      expect(payload.icon_url).toContain(LOGO);
+      spy.mockRestore();
+    });
+
+    test('legacy sendDiscordWebhooks brands the payload (dashboard test path)', async () => {
+      const service = new NotificationService({ webhooks: { discord: [{ name: 'd', url: 'https://discord.com/api/webhooks/x' }] } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendDiscordWebhooks({ serverName: 'S', timestamp: 't', errorMessage: 'e', consecutiveFailures: 1, thresholds: { failureRate: 0, consecutiveExceeded: false, rateExceeded: false } });
+      const payload = spy.mock.calls[0][1];
+      expect(payload.username).toBe('Actual-sync');
+      expect(payload.avatar_url).toContain(LOGO);
+      spy.mockRestore();
+    });
+  });
+
+  describe('notification branding opt-out (#114)', () => {
+    test('branding:false leaves Slack payload identity untouched', async () => {
+      const service = new NotificationService({ branding: false, webhooks: { slack: [{ name: 's', url: 'https://hooks.slack.com/x' }] } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendSlackFormattedWebhooks({ text: 'hi', blocks: [] });
+      const payload = spy.mock.calls[0][1];
+      expect(payload).not.toHaveProperty('username');
+      expect(payload).not.toHaveProperty('icon_url');
+      spy.mockRestore();
+    });
+
+    test('branding:false leaves Discord payload identity untouched', async () => {
+      const service = new NotificationService({ branding: false, webhooks: { discord: [{ name: 'd', url: 'https://discord.com/api/webhooks/x' }] } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendDiscordFormattedWebhooks({ embeds: [] });
+      const payload = spy.mock.calls[0][1];
+      expect(payload).not.toHaveProperty('username');
+      expect(payload).not.toHaveProperty('avatar_url');
+      spy.mockRestore();
+    });
+
+    test('branding:false makes ntfy omit the Icon header by default', async () => {
+      // No default project icon => no external GitHub fetch on air-gapped ntfy.
+      const service = new NotificationService({ branding: false, ntfy: { enabled: true, url: 'https://ntfy.sh/t' } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendNtfy({ title: 'T', message: 'm', level: 'success', tags: [] });
+      expect(spy.mock.calls[0][2].headers).not.toHaveProperty('Icon');
+      spy.mockRestore();
+    });
+
+    test('branding:false still honors an explicit ntfy icon override', async () => {
+      const service = new NotificationService({ branding: false, ntfy: { enabled: true, url: 'https://ntfy.sh/t', icon: 'https://example.com/custom.png' } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendNtfy({ title: 'T', message: 'm', level: 'success', tags: [] });
+      expect(spy.mock.calls[0][2].headers.Icon).toBe('https://example.com/custom.png');
+      spy.mockRestore();
+    });
   });
 });
