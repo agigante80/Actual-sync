@@ -90,11 +90,14 @@ const SCHEDULE_CRON = '03 03 */2 * *'; // Every other day at 03:03 AM
 1. Create/verify data directory
 2. Initialize Actual API connection
 3. Download budget file using sync ID
-4. Fetch all accounts
-5. Trigger file sync
-6. For each account, trigger bank sync
-7. Perform final file sync
-8. Shutdown API connection
+4. Fetch all accounts; partition into syncable / manual / closed (`lib/accountFilter.js`)
+5. Persist the account snapshot to SQLite for the dashboard (best-effort; a write failure is logged but never aborts the sync — see Account Metadata below)
+6. Trigger file sync
+7. For each syncable account, trigger bank sync
+8. Perform final file sync
+9. Shutdown API connection
+
+**Account Metadata (dashboard syncability)**: After partitioning, each account is classified `syncable` (bank-linked + open), `manual` (not bank-linked), or `closed` and written to the `account_metadata` table via `SyncHistoryService.replaceAccountMetadata()` (the server's previous snapshot is replaced in one transaction). The dashboard reads it at `GET /api/dashboard/accounts`, so it can show per-account badges **without a live Actual connection**. The data is as fresh as the last sync.
 
 ---
 

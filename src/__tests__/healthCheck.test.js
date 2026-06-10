@@ -621,7 +621,8 @@ describe('HealthCheckService', () => {
       const routes = [
         '/dashboard',
         '/api/dashboard/status',
-        '/api/dashboard/history'
+        '/api/dashboard/history',
+        '/api/dashboard/accounts'
       ];
       
       for (const route of routes) {
@@ -629,6 +630,86 @@ describe('HealthCheckService', () => {
         expect(response.statusCode).toBe(401);
       }
       
+      await hc.stop();
+    });
+  });
+
+  describe('Dashboard Accounts API (#99)', () => {
+    test('returns the persisted account snapshot grouped by server (200)', async () => {
+      const mockSyncHistory = {
+        getAllAccountMetadata: jest.fn().mockReturnValue([
+          { server: 'Main', accounts: [
+            { id: 'a1', name: 'Checking', classification: 'syncable', updatedAt: 't' },
+            { id: 'a2', name: 'Old', classification: 'closed', updatedAt: 't' }
+          ] }
+        ])
+      };
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        syncHistory: mockSyncHistory,
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/accounts`);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual([
+        { server: 'Main', accounts: [
+          { id: 'a1', name: 'Checking', classification: 'syncable', updatedAt: 't' },
+          { id: 'a2', name: 'Old', classification: 'closed', updatedAt: 't' }
+        ] }
+      ]);
+      expect(mockSyncHistory.getAllAccountMetadata).toHaveBeenCalled();
+      await hc.stop();
+    });
+
+    test('returns an empty array (200) when nothing has been synced yet', async () => {
+      const mockSyncHistory = { getAllAccountMetadata: jest.fn().mockReturnValue([]) };
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        syncHistory: mockSyncHistory,
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/accounts`);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual([]);
+      await hc.stop();
+    });
+
+    test('returns 503 when sync history is unavailable', async () => {
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/accounts`);
+      expect(res.statusCode).toBe(503);
+      await hc.stop();
+    });
+
+    test('returns 500 (no stack leak) when the metadata read throws', async () => {
+      const mockSyncHistory = { getAllAccountMetadata: jest.fn(() => { throw new Error('db read failed'); }) };
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        syncHistory: mockSyncHistory,
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/accounts`);
+      expect(res.statusCode).toBe(500);
+      expect(JSON.stringify(res.body)).not.toContain('db read failed'); // no internal leak
       await hc.stop();
     });
   });

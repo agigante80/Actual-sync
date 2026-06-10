@@ -847,6 +847,22 @@ This test verifies that notifications are configured correctly and can reach the
       }
     });
 
+    // Per-server account snapshot (syncable / manual / closed) persisted on each
+    // sync. Lets the dashboard show which accounts actually bank-sync without a
+    // live Actual connection. Returns [] (200) when nothing has been synced yet. (#99)
+    this.app.get('/api/dashboard/accounts', this.dashboardAuth(), (req, res) => {
+      if (!this.syncHistory) {
+        return res.status(503).json({ error: 'Sync history not available' });
+      }
+
+      try {
+        res.json(this.syncHistory.getAllAccountMetadata());
+      } catch (error) {
+        this.logger.error('Failed to get account metadata', { error: error.message });
+        res.status(500).json({ error: 'Failed to retrieve account metadata' });
+      }
+    });
+
     // 404 handler
     this.app.use((req, res) => {
       this.logger.warn('Unknown endpoint requested', { 
