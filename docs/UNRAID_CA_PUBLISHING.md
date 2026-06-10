@@ -63,23 +63,24 @@ what matters is that `<TemplateURL>` points at its real raw path.
 
 ### 4a. `ca_profile.xml` (repo root)
 
-Maintainer metadata. **The root element is `<Maintainer>`, and `<Profile>` is a child
-of it.** This trips people up because the requirement is phrased as "a non-empty
-`<Profile>` section."
+Repository overview / author metadata. **The root element is `<CommunityApplications>`,
+with `<Profile>` (non-empty) as a child.** This is the root the official submission
+portal and the starter repo use. (Note: some long-established repos like binhex use a
+`<Maintainer>` root, which the legacy CA still accepts, but new submissions should
+follow the documented `<CommunityApplications>` root to pass the scan cleanly.)
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
-<Maintainer>
+<CommunityApplications>
+  <Profile>Describe the repo: what apps/plugins you maintain and where to get support. Markdown supported.</Profile>
   <Icon>https://raw.githubusercontent.com/USER/REPO/main/path/to/icon.png</Icon>
-  <Profile>One or two sentences describing you or the project as a maintainer.</Profile>
   <WebPage>https://github.com/USER/REPO</WebPage>
-  <Forum>https://github.com/USER/REPO/issues</Forum>
-  <!-- Optional: <DonateLink> and <DonateText> -->
-</Maintainer>
+  <Forum>https://forums.unraid.net/topic/YOUR_SUPPORT_TOPIC</Forum>
+  <!-- Optional: <Discord>, <DonateLink>, <DonateText>, <Photo>, <Video> -->
+</CommunityApplications>
 ```
 
-Verified against live profiles from established maintainers (binhex, rommapp) which
-use exactly this `<Maintainer>` root.
+Source of truth: the starter repo's `ca_profile.xml` (https://github.com/unraid/unraid-community-apps-starter) and https://ca.unraid.net/submit/help/repository-info-xml.
 
 ### 4b. The container template, e.g. `unraid/PROJECT.xml`
 
@@ -193,8 +194,10 @@ maintainer's account. Prepare the repo, then hand the human the four steps above
 
 These caused real time loss. Front-loading them saves the next attempt.
 
-1. **`ca_profile.xml` root is `<Maintainer>`, not `<Profile>`.** `<Profile>` is a child.
-   The phrasing "non-empty Profile section" misleads.
+1. **`ca_profile.xml` root is `<CommunityApplications>`** (per the official portal and
+   starter), with `<Profile>` as a non-empty child. The phrasing "non-empty Profile
+   section" misleads into thinking `<Profile>` is the root. (The legacy `<Maintainer>`
+   root that some old repos use also parses, but follow the documented root.)
 2. **Default-branch requirement.** Files on `development` are invisible to the scanner.
    Get them onto `main`, and make `<TemplateURL>` point at the branch that actually
    holds the file.
@@ -235,7 +238,7 @@ These caused real time loss. Front-loading them saves the next attempt.
 [ ] OSI LICENSE at repo root
 [ ] Image published with a :latest tag on a public registry
 [ ] Square icon committed and reachable via raw URL
-[ ] ca_profile.xml at repo root (<Maintainer> root, non-empty <Profile>)
+[ ] ca_profile.xml at repo root (<CommunityApplications> root, non-empty <Profile>)
 [ ] Template XML present, well-formed, with Name + Repository
 [ ] <TemplateURL> filled with the real raw /main/ path (not empty)
 [ ] <Category> valid (space-separated, colon-terminated)

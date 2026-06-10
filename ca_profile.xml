@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Maintainer>
+<CommunityApplications>
   <Icon>https://raw.githubusercontent.com/agigante80/Actual-sync/main/unraid/actual-sync-icon.png</Icon>
-  <Profile>Self-hosted automation for Actual Budget. Scheduled bank transaction syncs across multiple budgets (including encrypted ones), with a web dashboard, Prometheus metrics, multi-channel notifications (Email/Telegram/Slack/Discord), retry logic, and health monitoring.</Profile>
+  <Profile>Self-hosted automation for Actual Budget. Scheduled bank transaction syncs across multiple budgets (including encrypted ones), with a web dashboard, Prometheus metrics, multi-channel notifications (Email/Telegram/Slack/Discord), retry logic, and health monitoring. Support via the GitHub issues link below.</Profile>
   <WebPage>https://github.com/agigante80/Actual-sync</WebPage>
   <Forum>https://github.com/agigante80/Actual-sync/issues</Forum>
-</Maintainer>
+</CommunityApplications>
