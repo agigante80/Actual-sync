@@ -9,7 +9,7 @@
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Node](https://img.shields.io/badge/node-%3E%3D14.0.0-brightgreen)
+![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-84.77%25-brightgreen)
 ![Tests](https://img.shields.io/badge/tests-309%20passing-success)
 ![Docker](https://img.shields.io/badge/docker-ready-blue)
@@ -235,7 +235,7 @@ The Unraid template lives in [`unraid/actual-sync.xml`](unraid/actual-sync.xml).
 
 ### Prerequisites
 
-- **Node.js 14+** (Node.js 20+ recommended)
+- **Node.js 20+**
 - **Actual Budget Server** - Self-hosted instance with configured bank connections
 - **GoCardless/Nordigen** - Open banking API credentials configured in Actual Budget
 - **Docker** (optional) - For containerized deployment
