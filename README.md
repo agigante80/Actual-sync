@@ -216,9 +216,11 @@ npm start
 
 ### Option 3: Unraid (Community Applications)
 
-[![Unraid](https://img.shields.io/badge/Unraid-Community%20Applications-orange)](https://unraid.net/community/apps)
+[![Unraid Community Applications](https://img.shields.io/badge/Unraid-Install%20from%20CA-f15a2c?logo=unraid&logoColor=white)](https://ca.unraid.net/apps/actual-sync-13q9rt00idnw48)
 
-Unraid users can install actual-sync from the **Apps** tab (Community Applications):
+actual-sync is published in the Unraid **Community Applications** store: **[ca.unraid.net/apps/actual-sync](https://ca.unraid.net/apps/actual-sync-13q9rt00idnw48)**.
+
+Install it from the **Apps** tab (Community Applications):
 
 1. Open the **Apps** tab and search for **`actual-sync`**.
 2. Click **Install** and set the **Config** path.

@@ -6,6 +6,18 @@
 
 const { HealthCheckService } = require('../services/healthCheck');
 const http = require('http');
+const net = require('net');
+
+// Is this port bindable on 127.0.0.1 right now? Used to skip ports an unrelated
+// local process is already holding (a dev machine can run e.g. Storybook on 6006,
+// which falls inside our test bands), so the suite is robust off CI too.
+function portFree(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.listen(port, '127.0.0.1', () => probe.close(() => resolve(true)));
+  });
+}
 
 // Helper to make HTTP requests
 function httpGet(url) {
@@ -15,9 +27,9 @@ function httpGet(url) {
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
         try {
-          resolve({ statusCode: res.statusCode, body: JSON.parse(data) });
+          resolve({ statusCode: res.statusCode, headers: res.headers, body: JSON.parse(data) });
         } catch (error) {
-          resolve({ statusCode: res.statusCode, body: data });
+          resolve({ statusCode: res.statusCode, headers: res.headers, body: data });
         }
       });
     }).on('error', reject);
@@ -29,16 +41,35 @@ describe('HealthCheckService', () => {
   let testPort = 3456; // Use non-standard port for testing
   let portCounter = 0; // monotonic within this worker process
 
-  beforeEach(() => {
+  // Every HealthCheckService built in a test is registered here and stopped in
+  // afterEach — even instances created locally inside a test. This is the real
+  // teardown guarantee: if an assertion throws before a test's own stop(), the
+  // server is still closed and never leaks a bound port or an open handle. (#95)
+  const HC = HealthCheckService; // alias so makeService isn't self-rewritten
+  const activeServices = [];
+  const makeService = (opts) => {
+    const svc = new HC(opts);
+    activeServices.push(svc);
+    return svc;
+  };
+
+  beforeEach(async () => {
     // Each Jest worker gets its own 1000-port band kept BELOW the OS ephemeral
     // range (32768+), so parallel workers never collide and we never overflow the
-    // port space. Within a worker, ports are assigned MONOTONICALLY (not random),
-    // so no port is ever bound twice in a run — immune to EADDRINUSE even if a
-    // test leaks a server or the OS is slow to release a closed socket. (#95)
+    // port space. Within a worker, ports are walked MONOTONICALLY and each
+    // candidate is probed for freeness, skipping any port an unrelated local
+    // process holds (e.g. a dev server inside the band). Combined with the
+    // afterEach that stops every created service, the suite is immune to
+    // EADDRINUSE both on CI and on a busy dev machine. (#95)
     const workerId = Number(process.env.JEST_WORKER_ID) || 1;
     const band = (workerId - 1) % 28; // bands 4000-4899 .. 31000-31899
-    testPort = 4000 + band * 1000 + (portCounter++ % 900);
-    healthCheck = new HealthCheckService({
+    const base = 4000 + band * 1000;
+    testPort = base; // fallback if every candidate is busy (let start() surface it)
+    for (let i = 0; i < 900; i++) {
+      const candidate = base + (portCounter++ % 900);
+      if (await portFree(candidate)) { testPort = candidate; break; }
+    }
+    healthCheck = makeService({
       port: testPort,
       host: '127.0.0.1',
       loggerConfig: { level: 'ERROR' } // Quiet during tests
@@ -46,14 +77,16 @@ describe('HealthCheckService', () => {
   });
 
   afterEach(async () => {
-    if (healthCheck) {
-      await healthCheck.stop();
+    // stop() is idempotent and safe on a never-started service.
+    for (const svc of activeServices.splice(0)) {
+      try { await svc.stop(); } catch { /* already stopped / never started */ }
     }
+    healthCheck = null;
   });
 
   describe('Constructor', () => {
     test('should initialize with default values', () => {
-      const hc = new HealthCheckService();
+      const hc = makeService();
       expect(hc.port).toBe(3000);
       expect(hc.host).toBe('0.0.0.0');
       expect(hc.status).toBeDefined();
@@ -95,7 +128,7 @@ describe('HealthCheckService', () => {
     test('should reject start if port is in use', async () => {
       await healthCheck.start();
       
-      const healthCheck2 = new HealthCheckService({
+      const healthCheck2 = makeService({
         port: testPort,
         host: '127.0.0.1',
         loggerConfig: { level: 'ERROR' }
@@ -135,7 +168,7 @@ describe('HealthCheckService', () => {
     }
 
     test('falls back to 0.0.0.0 when the configured host is unbindable (EADDRNOTAVAIL)', async () => {
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort, host: '192.168.50.224', loggerConfig: { level: 'ERROR' }
       });
       const warnSpy = jest.spyOn(hc.logger, 'warn');
@@ -174,7 +207,7 @@ describe('HealthCheckService', () => {
     });
 
     test('rejects on a non-EADDRNOTAVAIL listen error (EADDRINUSE) and cleans up', async () => {
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' }
       });
       const { restore } = mockServers((srv) => {
@@ -196,15 +229,11 @@ describe('HealthCheckService', () => {
       await healthCheck.start();
     });
 
-    test('serves the project icon locally as image/png', async () => {
-      const result = await new Promise((resolve, reject) => {
-        http.get(`http://127.0.0.1:${testPort}/icon.png`, (res) => {
-          res.resume(); // drain the body
-          resolve({ statusCode: res.statusCode, contentType: res.headers['content-type'] });
-        }).on('error', reject);
-      });
+    test('serves the project icon locally as image/png, cached', async () => {
+      const result = await httpGet(`http://127.0.0.1:${testPort}/icon.png`);
       expect(result.statusCode).toBe(200);
-      expect(result.contentType).toContain('image/png');
+      expect(result.headers['content-type']).toContain('image/png');
+      expect(result.headers['cache-control']).toContain('max-age'); // not re-read every request (#113)
     });
   });
 
@@ -432,7 +461,7 @@ describe('HealthCheckService', () => {
 
   describe('Dashboard Authentication', () => {
     test('should allow access with auth type none', async () => {
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         dashboardConfig: { enabled: true, auth: { type: 'none' } },
@@ -446,7 +475,7 @@ describe('HealthCheckService', () => {
     });
 
     test('should reject dashboard access when disabled', async () => {
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         dashboardConfig: { enabled: false },
@@ -461,7 +490,7 @@ describe('HealthCheckService', () => {
     });
 
     test('should require basic authentication', async () => {
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         dashboardConfig: { 
@@ -517,7 +546,7 @@ describe('HealthCheckService', () => {
     });
 
     test('should require token authentication', async () => {
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         dashboardConfig: { 
@@ -571,7 +600,7 @@ describe('HealthCheckService', () => {
     });
 
     test('should protect all dashboard routes', async () => {
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         dashboardConfig: { 
@@ -621,7 +650,7 @@ describe('HealthCheckService', () => {
         getMetrics: jest.fn().mockResolvedValue('mock metrics')
       };
 
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         syncHistory: mockSyncHistory,
@@ -644,7 +673,7 @@ describe('HealthCheckService', () => {
     });
 
     test('should return 503 when prometheus service not available', async () => {
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         loggerConfig: { level: 'ERROR' }
@@ -668,7 +697,7 @@ describe('HealthCheckService', () => {
         getMetrics: jest.fn().mockResolvedValue('mock metrics')
       };
 
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         syncHistory: mockSyncHistory,
@@ -715,7 +744,7 @@ describe('HealthCheckService', () => {
         { name: 'Work Budget' } // No encryption password
       ];
 
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         getServers: () => mockServers,
@@ -737,7 +766,7 @@ describe('HealthCheckService', () => {
     });
 
     test('should return 503 when getServers not available', async () => {
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         dashboardConfig: { enabled: true, auth: { type: 'none' } },
@@ -758,7 +787,7 @@ describe('HealthCheckService', () => {
         { name: 'Main Budget', encryptionPassword: 'secret123' }
       ];
 
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         getServers: () => mockServers,
@@ -799,7 +828,7 @@ describe('HealthCheckService', () => {
     });
 
     test('should handle getServers errors gracefully', async () => {
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         getServers: () => { throw new Error('Database connection failed'); },
@@ -821,7 +850,7 @@ describe('HealthCheckService', () => {
     test('should respond to ping with pong', async () => {
       const WebSocket = require('ws');
       
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         loggerConfig: { level: 'ERROR' }
@@ -857,7 +886,7 @@ describe('HealthCheckService', () => {
     test('should handle multiple WebSocket clients', async () => {
       const WebSocket = require('ws');
       
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         loggerConfig: { level: 'ERROR' }
@@ -894,7 +923,7 @@ describe('HealthCheckService', () => {
     test('should broadcast logs to all connected clients', async () => {
       const WebSocket = require('ws');
       
-      const hc = new HealthCheckService({
+      const hc = makeService({
         port: testPort,
         host: '127.0.0.1',
         loggerConfig: { level: 'ERROR' }

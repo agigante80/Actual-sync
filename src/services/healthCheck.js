@@ -242,17 +242,17 @@ class HealthCheckService {
       res.sendFile(path.join(__dirname, 'dashboard.html'));
     });
 
-    // Favicon (no authentication needed)
-    this.app.get('/favicon.svg', (req, res) => {
-      res.setHeader('Content-Type', 'image/svg+xml');
-      res.sendFile(path.join(__dirname, 'favicon.svg'));
-    });
-
     // Project icon, served locally so the dashboard works offline (no external
-    // GitHub fetch). Used as the favicon and the dashboard header logo. (#113)
+    // GitHub fetch). Used as the favicon and the dashboard header logo. Cached
+    // for a day (it rarely changes); Content-Type is applied only on success and
+    // a missing file yields a clean 404 instead of an image/png-labeled error
+    // body. No authentication needed. (#113)
     this.app.get('/icon.png', (req, res) => {
-      res.setHeader('Content-Type', 'image/png');
-      res.sendFile(path.join(__dirname, 'icon.png'));
+      res.sendFile(path.join(__dirname, 'icon.png'), {
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' }
+      }, (err) => {
+        if (err && !res.headersSent) res.status(err.statusCode || 404).end();
+      });
     });
 
     // Dashboard API: Get status (with authentication)
