@@ -12,8 +12,10 @@ const { URL } = require('url');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 
-// Public icon used to brand notifications. Recipient services (Slack/Discord/
-// ntfy) fetch it, so it must be a public URL — not the dashboard's local copy. (#114)
+// Public icon + name used to brand notifications. Recipient services (Slack/
+// Discord/ntfy) fetch the icon, so it must be a public URL — not the dashboard's
+// local /icon.png copy (which is not reachable from those services). (#114)
+const BRAND_NAME = 'Actual-sync';
 const LOGO_URL = 'https://raw.githubusercontent.com/agigante80/Actual-sync/main/unraid/actual-sync-icon.png';
 
 class NotificationService {
@@ -570,6 +572,19 @@ class NotificationService {
   }
 
   /**
+   * Stamp the project name + logo onto a webhook payload so Slack/Discord show
+   * branded sender info. The image field differs per platform (Slack uses
+   * icon_url, Discord uses avatar_url). No-op when there is no payload. (#114)
+   * @param {Object} payload - Formatted webhook payload (mutated in place)
+   * @param {string} imageField - 'icon_url' (Slack) or 'avatar_url' (Discord)
+   */
+  _brandPayload(payload, imageField) {
+    if (!payload) return;
+    payload.username = payload.username || BRAND_NAME;
+    payload[imageField] = payload[imageField] || LOGO_URL;
+  }
+
+  /**
    * Send Slack webhooks with formatted payload
    * @param {Object} payload - Formatted Slack payload
    * @returns {Promise<Array>} Send results
@@ -577,11 +592,7 @@ class NotificationService {
   async sendSlackFormattedWebhooks(payload) {
     const results = [];
     const webhooks = this.config.webhooks.slack || [];
-    // Brand the message (classic incoming webhooks honor these; harmless otherwise). (#114)
-    if (payload) {
-      payload.username = payload.username || 'Actual-sync';
-      payload.icon_url = payload.icon_url || LOGO_URL;
-    }
+    this._brandPayload(payload, 'icon_url'); // Slack honors username + icon_url (#114)
 
     for (const webhook of webhooks) {
       if (webhook.enabled === false) continue;
@@ -616,11 +627,7 @@ class NotificationService {
   async sendDiscordFormattedWebhooks(payload) {
     const results = [];
     const webhooks = this.config.webhooks.discord || [];
-    // Brand the message with the project name + avatar. (#114)
-    if (payload) {
-      payload.username = payload.username || 'Actual-sync';
-      payload.avatar_url = payload.avatar_url || LOGO_URL;
-    }
+    this._brandPayload(payload, 'avatar_url'); // Discord honors username + avatar_url (#114)
 
     for (const webhook of webhooks) {
       if (webhook.enabled === false) continue;
@@ -705,7 +712,11 @@ class NotificationService {
       'Priority': String(priority)
     };
     if (tags) headers['Tags'] = tags;
-    if (cfg.icon) headers['Icon'] = cfg.icon; // ntfy shows this icon in the notification (#114)
+    // Sanitize the Icon URL like Title/Tags: a user-supplied override could
+    // contain a non-Latin-1 char that would make the whole request throw
+    // ERR_INVALID_CHAR. An empty result means "no icon header". (#114)
+    const icon = headerSafe(cfg.icon || '');
+    if (icon) headers['Icon'] = icon; // ntfy shows this icon in the notification (#114)
     if (cfg.token) headers['Authorization'] = `Bearer ${cfg.token}`;
 
     try {

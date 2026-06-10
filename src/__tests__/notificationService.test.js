@@ -881,5 +881,24 @@ describe('NotificationService', () => {
       expect(spy.mock.calls[0][2].headers.Icon).toBe('https://example.com/custom.png');
       spy.mockRestore();
     });
+
+    test('ntfy omits the Icon header when icon is explicitly empty', async () => {
+      const service = new NotificationService({ ntfy: { enabled: true, url: 'https://ntfy.sh/t', icon: '' } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendNtfy({ title: 'T', message: 'm', level: 'success', tags: [] });
+      expect(spy.mock.calls[0][2].headers).not.toHaveProperty('Icon');
+      spy.mockRestore();
+    });
+
+    test('ntfy Icon header is sanitized to Latin-1 (no ERR_INVALID_CHAR)', async () => {
+      // A non-Latin-1 char in a custom icon URL must be stripped, not thrown on. (#1)
+      const service = new NotificationService({ ntfy: { enabled: true, url: 'https://ntfy.sh/t', icon: 'https://x/icon-😀.png' } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendNtfy({ title: 'T', message: 'm', level: 'success', tags: [] });
+      const icon = spy.mock.calls[0][2].headers.Icon;
+      expect(icon).not.toContain('😀');
+      expect(icon).toBe('https://x/icon-.png');
+      spy.mockRestore();
+    });
   });
 });
