@@ -143,6 +143,16 @@ try {
 
 **Health status states**: `HealthCheckService` tracks `HEALTHY`, `DEGRADED`, `UNHEALTHY`, and `PENDING`. The `/ready` endpoint returns 503 when `UNHEALTHY`.
 
+### Helper Modules in `src/lib/`
+
+Beyond `configLoader.js` and `logger.js`, small single-purpose modules encode non-obvious sync behavior. Prefer extending these over inlining logic in `syncService.js`:
+
+- `accountFilter.js` — `partitionSyncableAccounts()` splits accounts into `syncable` vs `skipped`. Only accounts with `account_sync_source` set and not `closed` are synced; running `runBankSync` on manual/closed accounts is a silent no-op that would otherwise be miscounted as success (#98).
+- `rejectionClassifier.js` — `classifyRejection()` decides the log level for unhandled promise rejections. Rejections originating inside `@actual-app/api` are downgraded to `debug` (already surfaced via the normal sync error path); genuine rejections from our own code stay at `error`. Keys off the originating stack frame so a real bug passing through an api callback isn't hidden. Reinforces the "keep the error log honest" rule.
+- `actualApiError.js` — `enhanceActualApiError()` wraps opaque `@actual-app/api` errors (often empty `PostError`s) with human-readable context and `.phase`/`.code`/`.errorCode`/`.originalError` fields, branching on phase (`download`/`sync`) and E2EE.
+- `messageFormatter.js` — `MessageFormatter.formatSyncNotification()` produces one unified notification payload formatted per channel; notification channels consume this rather than building their own strings.
+- `configBootstrap.js` — On first run seeds an example config into an empty (bind-mounted) config dir from the image-baked `config-defaults/`, so a fresh container gets a fillable template instead of a cryptic "not found" (#96).
+
 ### Logging Convention
 
 Always use the custom logger from `src/lib/logger.js` — never add Winston, Pino, or other logging libraries.
