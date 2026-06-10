@@ -139,14 +139,24 @@ Global synchronization behavior configuration. These settings apply to all serve
 
 ### logging (optional)
 
-Logging configuration.
+Logging configuration. See **[docs/LOGGING.md](LOGGING.md)** for the full reference.
 
 **Properties:**
 
-- **level** (optional, string, default: "info")
-  - Log verbosity level
-  - Options: `"debug"`, `"info"`, `"warn"`, `"error"`
-  - Example: `"info"`
+- **level** (string, default: `"INFO"`) — verbosity: `"DEBUG"`, `"INFO"`, `"WARN"`, `"ERROR"`.
+- **format** (string, default: `"pretty"`) — console format: `"pretty"` or `"json"`.
+- **fileFormat** (string, default: `"json"`) — log-file format; single-line JSON is recommended for shipping. Independent of `format`.
+- **redact** (array) — extra metadata key names to mask. Secrets (password, token, secret, apiKey, authorization, credential, chatId) are always redacted automatically across console/file/syslog/dashboard.
+- **logDir** (string|null, default: `"./logs"`) — log directory; `null` disables file logging.
+- **rotation** (object) — `enabled`, `maxSize` (`"10M"`), `interval` (`"1d"`, daily), `maxFiles` (retention), `compress` (`"gzip"`).
+- **syslog** (object) — optional RFC 5424 syslog forwarding.
+- **performance** (object) — operation timing thresholds.
+
+### notifications (optional)
+
+Multi-channel alerts on sync results. See **[docs/NOTIFICATIONS.md](NOTIFICATIONS.md)** for the full reference and examples.
+
+**Channels:** `email` (SMTP), `telegram` (interactive bot), `webhooks.slack`, `webhooks.discord`, `webhooks.generic` (POST a documented JSON payload to any URL: ntfy/Gotify/Home Assistant/n8n/custom), and `ntfy` (push to an ntfy topic). Plus `thresholds` (when to alert) and `rateLimit` (anti-spam).
 
 ---
 

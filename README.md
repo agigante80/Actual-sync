@@ -31,7 +31,6 @@
 - [Security](#-security)
 - [Troubleshooting](#-troubleshooting)
 - [Documentation](#-documentation)
-- [Roadmap](#%EF%B8%8F-roadmap)
 - [Contributing](#-contributing)
 - [License](#-license)
 - [Acknowledgments](#-acknowledgments)
@@ -48,7 +47,7 @@
 - **Manages** multiple Actual Budget servers from a single service
 - **Handles** network failures, rate limits, and API errors gracefully
 - **Monitors** sync health with HTTP endpoints and Prometheus metrics
-- **Notifies** you of failures via Telegram, email, Slack, Discord
+- **Notifies** you of failures via Telegram, email, Slack, Discord, ntfy, or generic webhooks
 - **Tracks** complete sync history in SQLite with CLI query tools
 
 ### Why Actual-sync?
@@ -116,7 +115,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Orphaned Server Cleanup** - Identify and remove historical data for decommissioned budgets
 - ✅ **Health Check Endpoints** - HTTP endpoints for monitoring (`/health`, `/metrics`, `/ready`)
 - ✅ **Prometheus Metrics** - Comprehensive metrics export for Prometheus/Grafana dashboards
-- ✅ **Structured Logging** - JSON and pretty formats with correlation IDs and file output
+- ✅ **Structured Logging** - Pretty console + single-line JSON log files, correlation IDs, and automatic secret redaction (passwords/tokens never written to logs)
 - ✅ **Enhanced Logging System** - Log rotation with compression, syslog support, performance tracking, per-server log levels
 - ✅ **Sync History Database** - SQLite persistence with query interface and CLI tool (`npm run history`)
 - ✅ **Status Tracking** - Real-time health status (HEALTHY/DEGRADED/UNHEALTHY/READY)
@@ -125,13 +124,14 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 ### 🔔 Notifications & Alerts
 
 - ✅ **Interactive Telegram Bot** - Real-time commands (`/status`, `/history`, `/errors`, `/sync`) with notifications
-- ✅ **Multi-Channel Alerts** - Email (SMTP), webhooks (Slack, Discord)
+- ✅ **Multi-Channel Alerts** - Email (SMTP), Telegram, ntfy, and webhooks (Slack, Discord, and a generic JSON webhook for Gotify/Home Assistant/n8n/custom)
+- ✅ **Honest Account Reporting** - Every notification shows which accounts synced, failed (with the error), or were skipped and why (closed / not bank-linked)
 - ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate)
 - ✅ **Rate Limiting** - Notification spam prevention with configurable intervals
 
 ### 🛡️ Reliability & Security
 
-- ✅ **Comprehensive Testing** - 84.77% code coverage with 309 passing tests
+- ✅ **Comprehensive Testing** - 433 passing tests with enforced coverage thresholds (~78% statements, 70% branches)
 - ✅ **Docker Support** - Production-ready containerization (229MB Alpine-based image)
 - ✅ **Security Best Practices** - Non-root user, credential warnings, HTTPS enforcement
 - ✅ **Graceful Shutdown** - Proper cleanup handlers (SIGTERM/SIGINT)
@@ -140,7 +140,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 ### 🚀 Developer Experience
 
 - ✅ **Zero External Dependencies** - Custom structured logger, no bloated libraries
-- ✅ **Extensive Documentation** - 17 comprehensive guides covering all aspects
+- ✅ **Extensive Documentation** - 19 comprehensive guides covering all aspects
 - ✅ **Example Configurations** - Docker Compose, Kubernetes, Prometheus, alerting
 - ✅ **Migration Guides** - Step-by-step upgrade paths from previous versions
 
@@ -369,7 +369,7 @@ node -e "require('./src/lib/configLoader'); new (require('./src/lib/configLoader
 See **[docs/CONFIG.md](docs/CONFIG.md)** for complete configuration reference including:
 - Advanced multi-server configurations
 - Per-server schedule overrides
-- Notification setup (Email, Telegram, Slack, Discord)
+- Notification setup (Email, Telegram, Slack, Discord, ntfy, generic webhooks)
 - Retry logic customization
 - Timezone configuration
 - Environment variable alternatives
@@ -741,6 +741,8 @@ Actual-sync can send notifications on sync failures via multiple channels:
 - **Telegram** - Interactive bot with commands
 - **Slack** - Webhook integration
 - **Discord** - Webhook integration
+- **ntfy** - Push notifications to an ntfy topic (priority + tags)
+- **Generic webhook** - POSTs a documented JSON payload to any URL (works with Gotify, Home Assistant, n8n, Apprise, or custom endpoints)
 
 ### Smart Thresholds
 
@@ -945,7 +947,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[docs/SYNC_HISTORY.md](docs/SYNC_HISTORY.md)** - Sync history database and CLI tool
 
 ### Features & Configuration
-- **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** - Notification setup (Email, Telegram, Slack, Discord)
+- **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** - Notification setup (Email, Telegram, Slack, Discord, ntfy, generic webhooks)
 - **[docs/TESTING.md](docs/TESTING.md)** - Testing guide and coverage
 - **[docs/VERSIONING.md](docs/VERSIONING.md)** - Semantic versioning and release process
 
@@ -959,41 +961,6 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[docs/REFACTORING_PLAN.md](docs/REFACTORING_PLAN.md)** - Technical roadmap
 - **[docs/IMPROVEMENT_AREAS.md](docs/IMPROVEMENT_AREAS.md)** - Known limitations and gaps
 - **[docs/ROADMAP.md](docs/ROADMAP.md)** - Feature roadmap
-
----
-
-## 🗺️ Roadmap
-
-### ✅ Completed (v1.4.0 - December 2025)
-
-- ✅ Multi-server support with independent configurations
-- ✅ Comprehensive test suite (98.73% coverage, 255 tests)
-- ✅ Health check HTTP endpoints (`/health`, `/metrics`, `/ready`)
-- ✅ Structured logging with correlation IDs
-- ✅ Sync history database with CLI tool
-- ✅ Multi-channel notifications (Email, Telegram, Slack, Discord)
-- ✅ Prometheus metrics export
-- ✅ Docker production deployment
-- ✅ Security audit (86/100 score, 0 critical vulnerabilities)
-- ✅ Comprehensive documentation (17 guides)
-
-### 🚧 In Progress (v1.5.0 - Q1 2026)
-
-- �� Security enhancements (helmet, secret scanning, ESLint security)
-- 🚧 Parallel server synchronization (reduce total runtime)
-- 🚧 Web UI for configuration and monitoring
-- 🚧 Advanced alerting rules and escalation policies
-
-### 🎯 Planned (v2.0.0 - Q2 2026)
-
-- 📅 GraphQL API for programmatic access
-- 📅 Multi-user support with role-based access control (RBAC)
-- 📅 Advanced scheduling (custom calendars, blackout windows)
-- 📅 Cloud deployment templates (AWS, GCP, Azure)
-- 📅 Mobile app (iOS/Android) for monitoring
-- 📅 Performance optimizations (caching, connection pooling)
-
-See **[docs/ROADMAP.md](docs/ROADMAP.md)** for detailed roadmap and **[docs/IMPROVEMENT_AREAS.md](docs/IMPROVEMENT_AREAS.md)** for known limitations.
 
 ---
 
@@ -1074,7 +1041,7 @@ git push origin feature/amazing-feature
 ### Contribution Guidelines
 
 - **Code Style** - Follow existing patterns, use ESLint
-- **Tests Required** - All new features must have tests (maintain >95% coverage)
+- **Tests Required** - All new features must have tests (keep the enforced coverage thresholds: 70% statements/functions/lines, 61% branches)
 - **Documentation** - Update relevant docs in `docs/` directory
 - **Commit Messages** - Use conventional commits (feat, fix, docs, chore, etc.)
 - **Pull Requests** - Include description, tests, and documentation updates
