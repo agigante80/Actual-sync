@@ -157,6 +157,71 @@ describe('config schema reconciliation (#116)', () => {
     });
 });
 
+describe('config schema hardening (#116 P3)', () => {
+    describe('server url requires a non-empty host', () => {
+        test('rejects "http://" with no host', () => {
+            const config = baseConfig();
+            config.servers[0].url = 'http://';
+            expect(validates(config)).toBe(false);
+        });
+
+        test('accepts a real url', () => {
+            const config = baseConfig();
+            config.servers[0].url = 'https://actual.example.com';
+            expect(validates(config)).toBe(true);
+        });
+    });
+
+    describe('log rotation size/interval formats', () => {
+        test('rejects an unparseable maxSize', () => {
+            expect(validates(baseConfig({ logging: { rotation: { maxSize: '10MB' } } }))).toBe(false);
+        });
+
+        test('rejects an unparseable interval', () => {
+            expect(validates(baseConfig({ logging: { rotation: { interval: '1day' } } }))).toBe(false);
+        });
+
+        test('accepts rfs-style maxSize and interval', () => {
+            expect(validates(baseConfig({ logging: { rotation: { maxSize: '50M', interval: '12h' } } }))).toBe(true);
+        });
+    });
+
+    describe('numeric maxima', () => {
+        test('rejects an absurd rotation.maxFiles', () => {
+            expect(validates(baseConfig({ logging: { rotation: { maxFiles: 100000 } } }))).toBe(false);
+        });
+
+        test('rejects an absurd performance threshold', () => {
+            expect(validates(baseConfig({ logging: { performance: { thresholds: { slow: 999999999 } } } }))).toBe(false);
+        });
+
+        test('rejects an absurd telegram pollInterval', () => {
+            expect(validates(baseConfig({ notifications: { telegram: { pollInterval: 999999999 } } }))).toBe(false);
+        });
+    });
+
+    describe('meaningful strings reject empty values', () => {
+        test.each([
+            ['syncHistory.dbPath', { syncHistory: { dbPath: '' } }],
+            ['healthCheck.host', { healthCheck: { host: '' } }],
+            ['logging.syslog.host', { logging: { syslog: { host: '' } } }],
+            ['email.host', { notifications: { email: { host: '' } } }]
+        ])('rejects empty %s', (_label, overrides) => {
+            expect(validates(baseConfig(overrides))).toBe(false);
+        });
+    });
+
+    describe('array items reject empty strings', () => {
+        test('rejects an empty logging.redact item', () => {
+            expect(validates(baseConfig({ logging: { redact: [''] } }))).toBe(false);
+        });
+
+        test('rejects an empty ntfy.tags item', () => {
+            expect(validates(baseConfig({ notifications: { ntfy: { enabled: false, tags: [''] } } }))).toBe(false);
+        });
+    });
+});
+
 describe('config deliverables (#116)', () => {
     test('config.example.json validates clean against the schema (as shipped)', () => {
         const example = JSON.parse(fs.readFileSync(EXAMPLE_PATH, 'utf8'));
