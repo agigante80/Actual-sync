@@ -5,6 +5,7 @@ const moment = require('moment-timezone');
 const cronstrue = require('cronstrue');
 const ConfigLoader = require('./lib/configLoader');
 const { createLogger } = require('./lib/logger');
+const { buildLoggerConfig } = require('./lib/loggerConfig');
 const { HealthCheckService } = require('./services/healthCheck');
 const { SyncHistoryService } = require('./services/syncHistory');
 const { NotificationService } = require('./services/notificationService');
@@ -89,16 +90,11 @@ try {
     const configLoader = new ConfigLoader();
     config = configLoader.load();
     
-    // Initialize logger with config
-    // Initialize logger with config (filter out undefined values to use defaults)
-    const loggerConfig = {};
-    if (config.logging?.level !== undefined) loggerConfig.level = config.logging.level;
-    if (config.logging?.format !== undefined) loggerConfig.format = config.logging.format;
-    if (config.logging?.logDir !== undefined) loggerConfig.logDir = config.logging.logDir;
-    if (config.logging?.rotation !== undefined) loggerConfig.rotation = config.logging.rotation;
-    if (config.logging?.syslog !== undefined) loggerConfig.syslog = config.logging.syslog;
-    if (config.logging?.performance !== undefined) loggerConfig.performance = config.logging.performance;
-    
+    // Initialize logger with config. buildLoggerConfig forwards every
+    // logger-consumed logging.* key (dropping undefined ones so defaults apply),
+    // so options like redact/fileFormat can't be silently lost. (#116)
+    const loggerConfig = buildLoggerConfig(config.logging);
+
     logger = createLogger(loggerConfig);
     
     logger.info('Configuration loaded successfully', { 
