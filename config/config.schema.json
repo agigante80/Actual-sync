@@ -25,7 +25,7 @@
           "url": {
             "type": "string",
             "description": "Actual Budget server URL",
-            "pattern": "^https?://.*",
+            "pattern": "^https?://.+",
             "examples": ["http://localhost:5006", "https://actual.example.com"]
           },
           "password": {
@@ -190,7 +190,7 @@
         "redact": {
           "type": "array",
           "description": "Additional metadata key names to mask as [REDACTED] in all log output, on top of the always-on defaults. The defaults are matched as case-insensitive substrings: password, passwd, token, secret, apikey, api_key, authorization, credential, chatid (so encryptionPassword, botToken, etc. are covered).",
-          "items": { "type": "string" }
+          "items": { "type": "string", "minLength": 1 }
         },
         "logDir": {
           "type": ["string", "null"],
@@ -208,18 +208,21 @@
             },
             "maxSize": {
               "type": "string",
-              "description": "Maximum size per log file before rotation (e.g., '10M', '50M', '100M'). Rotation fires on whichever trigger comes first: this size or the interval.",
+              "description": "Maximum size per log file before rotation, as a number plus a unit B/K/M/G (e.g., '10M', '50M', '100M'). Rotation fires on whichever trigger comes first: this size or the interval.",
+              "pattern": "^[0-9]+[BKMG]$",
               "default": "10M"
             },
             "interval": {
               "type": "string",
-              "description": "Time-based rotation interval (e.g., '1d', '12h'). Ensures logs rotate even at low volume, so maxFiles behaves as documented (days of retention).",
+              "description": "Time-based rotation interval, as a number plus a unit s/m/h/d (e.g., '1d', '12h'). Ensures logs rotate even at low volume, so maxFiles behaves as documented (days of retention).",
+              "pattern": "^[0-9]+[smhd]$",
               "default": "1d"
             },
             "maxFiles": {
               "type": "integer",
               "description": "Maximum number of rotated log files to keep. With the default '1d' interval this is days of retention.",
               "minimum": 1,
+              "maximum": 1000,
               "default": 30
             },
             "compress": {
@@ -242,6 +245,7 @@
             "host": {
               "type": "string",
               "description": "Syslog server hostname",
+              "minLength": 1,
               "default": "localhost"
             },
             "port": {
@@ -283,12 +287,14 @@
                   "type": "integer",
                   "description": "Threshold for slow operations (ms)",
                   "minimum": 100,
+                  "maximum": 3600000,
                   "default": 1000
                 },
                 "verySlow": {
                   "type": "integer",
                   "description": "Threshold for very slow operations (ms)",
                   "minimum": 100,
+                  "maximum": 3600000,
                   "default": 5000
                 }
               }
@@ -311,6 +317,7 @@
         "host": {
           "type": "string",
           "description": "Host to bind health check server",
+          "minLength": 1,
           "default": "0.0.0.0",
           "examples": ["0.0.0.0", "127.0.0.1", "localhost"]
         },
@@ -377,6 +384,7 @@
         "dbPath": {
           "type": "string",
           "description": "Path to SQLite database file for sync history",
+          "minLength": 1,
           "default": "data/sync-history.db"
         },
         "retentionDays": {
@@ -420,6 +428,7 @@
             "host": {
               "type": "string",
               "description": "SMTP server host",
+              "minLength": 1,
               "default": "smtp.gmail.com",
               "examples": ["smtp.gmail.com", "smtp.sendgrid.net"]
             },
@@ -457,7 +466,8 @@
               "type": "array",
               "description": "Recipient email addresses (validated as emails only when email is enabled)",
               "items": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               }
             }
           },
@@ -493,7 +503,7 @@
             "chatIds": {
               "type": "array",
               "description": "One or more chat IDs (alternative to chatId). The first entry is used for outbound notifications; the bot also accepts numeric IDs.",
-              "items": { "type": ["string", "number"] }
+              "items": { "type": ["string", "number"], "minLength": 1 }
             },
             "notifyOnSuccess": {
               "type": "string",
@@ -505,6 +515,7 @@
               "type": "integer",
               "description": "Polling interval in milliseconds for the interactive bot",
               "minimum": 100,
+              "maximum": 3600000,
               "default": 2000
             }
           },
@@ -652,7 +663,7 @@
             "tags": {
               "type": "array",
               "description": "Base ntfy tags/emoji added to every notification",
-              "items": { "type": "string" }
+              "items": { "type": "string", "minLength": 1 }
             },
             "icon": {
               "type": "string",
