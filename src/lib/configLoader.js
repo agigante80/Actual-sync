@@ -389,12 +389,15 @@ class ConfigLoader {
             );
         }
 
-        // Basic cron validation (5 fields)
-        const cronParts = config.sync.schedule.split(/\s+/);
-        if (cronParts.length !== 5) {
+        // Basic cron field-count validation. node-schedule accepts the standard
+        // 5-field form and a 6-field form with a leading seconds field, so allow
+        // both (kept in sync with the schema pattern). Authoritative per-field
+        // validation is deferred to #121. (#116)
+        const cronParts = config.sync.schedule.trim().split(/\s+/);
+        if (cronParts.length < 5 || cronParts.length > 6) {
             throw new Error(
                 `Invalid cron schedule: "${config.sync.schedule}"\n` +
-                `Expected 5 fields: minute hour day month dayOfWeek`
+                `Expected 5 fields (minute hour day month dayOfWeek) or 6 with a leading seconds field`
             );
         }
     }

@@ -172,6 +172,40 @@ describe('config schema reconciliation (#116)', () => {
             config.servers[0].sync = { schedule: '0 0 2 * * *' };
             expect(validates(config)).toBe(true);
         });
+
+        // Schema (validateConfig) is advisory; validateLogic is the hard-fail layer.
+        // A 6-field cron must pass BOTH or load() throws despite the schema allowing it.
+        test('load() accepts a 6-field cron (schema and validateLogic agree)', () => {
+            const tempDir = createTempDir();
+            const suppress = suppressConsole();
+            try {
+                const config = baseConfig({ sync: { schedule: '15 30 * * * *' } });
+                config.servers[0].dataDir = path.join(tempDir, 'd');
+                const configPath = path.join(tempDir, 'config.json');
+                fs.writeFileSync(configPath, JSON.stringify(config));
+                const loader = new ConfigLoader(configPath, SCHEMA_PATH);
+                expect(() => loader.load()).not.toThrow();
+            } finally {
+                suppress.restore();
+                cleanupTempDir(tempDir);
+            }
+        });
+
+        test('load() still rejects a 4-field (too-short) cron', () => {
+            const tempDir = createTempDir();
+            const suppress = suppressConsole();
+            try {
+                const config = baseConfig({ sync: { schedule: '0 2 * *' } });
+                config.servers[0].dataDir = path.join(tempDir, 'd');
+                const configPath = path.join(tempDir, 'config.json');
+                fs.writeFileSync(configPath, JSON.stringify(config));
+                const loader = new ConfigLoader(configPath, SCHEMA_PATH);
+                expect(() => loader.load()).toThrow(/cron/i);
+            } finally {
+                suppress.restore();
+                cleanupTempDir(tempDir);
+            }
+        });
     });
 });
 

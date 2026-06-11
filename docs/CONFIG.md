@@ -131,7 +131,7 @@ Global synchronization behavior configuration. These settings apply to all serve
 
 - **schedule** (optional, string, default: "03 03 */2 * *")
   - Cron expression for sync schedule
-  - Format: `minute hour day month dayOfWeek`
+  - Format: `minute hour day month dayOfWeek` (5 fields), or 6 fields with a leading `seconds` field
   - Can be overridden per server
   - See [Cron Examples](#cron-examples) below
 
@@ -221,7 +221,7 @@ For **multiple** budgets, use `config.json` (the env-var path is single-server o
 | Every 30 minutes | `*/30 * * * *` | 48 times daily |
 | Twice daily (6 AM and 6 PM) | `0 6,18 * * *` | Morning and evening |
 
-**Cron Format:** `minute (0-59) hour (0-23) day (1-31) month (1-12) dayOfWeek (0-6, Sunday=0)`
+**Cron Format:** `minute (0-59) hour (0-23) day (1-31) month (1-12) dayOfWeek (0-6, Sunday=0)`. A 6-field form with a leading `seconds (0-59)` field is also accepted.
 
 ---
 
@@ -394,7 +394,7 @@ These stop startup today:
 - Required server fields present (`name`, `url`, `password`, `syncId`, `dataDir`)
 - Unique server names
 - Retry settings in range (`maxRetries` 0-10, `baseRetryDelayMs` >= 1000)
-- A 5-field cron schedule
+- A 5- or 6-field cron schedule (6 = leading seconds)
 
 It also **warns** (without stopping) about duplicate budgets (same `url` +
 `syncId`), shared `dataDir`s, and a non-bindable `healthCheck.host`.
