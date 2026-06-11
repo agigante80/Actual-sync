@@ -333,6 +333,28 @@ describe('conditional + pattern rule guards (#116)', () => {
     });
 });
 
+// Schema-derived coverage of EVERY numeric minimum/maximum, so a wrong or missing
+// bound on any field (current or future) is caught — not just the spot-checked
+// ones. Derives bounds from the schema itself, so it never drifts. (#116)
+const NUMERIC_BOUNDS = collectNumericBounds(schema, '', []);
+
+describe('numeric bounds are enforced for every schema field (#116)', () => {
+    test('schema declares a meaningful number of numeric bounds (sanity)', () => {
+        expect(NUMERIC_BOUNDS.length).toBeGreaterThan(15);
+    });
+
+    test.each(NUMERIC_BOUNDS)('$path enforces [$minimum, $maximum]', ({ path, minimum, maximum }) => {
+        if (minimum !== undefined) {
+            expect(validates(withPath(baseConfig(), path, minimum - 1))).toBe(false); // below min
+            expect(validates(withPath(baseConfig(), path, minimum))).toBe(true);       // at min
+        }
+        if (maximum !== undefined) {
+            expect(validates(withPath(baseConfig(), path, maximum + 1))).toBe(false); // above max
+            expect(validates(withPath(baseConfig(), path, maximum))).toBe(true);       // at max
+        }
+    });
+});
+
 describe('config deliverables (#116)', () => {
     test('config.example.json validates clean against the schema (as shipped)', () => {
         const example = JSON.parse(fs.readFileSync(EXAMPLE_PATH, 'utf8'));
@@ -395,6 +417,40 @@ describe('config deliverables (#116)', () => {
         expect(missing).toEqual([]);
     });
 });
+
+/**
+ * Collect every numeric (integer/number) leaf with a minimum and/or maximum,
+ * keyed by a dot-path (array items use index 0, e.g. servers.0.sync.maxRetries).
+ * Only walks properties + items, so conditional (if/then) blocks aren't double-counted.
+ */
+function collectNumericBounds(node, path, acc) {
+    if (!node || typeof node !== 'object') return acc;
+    if (node.properties) {
+        for (const [key, sub] of Object.entries(node.properties)) {
+            const p = path ? `${path}.${key}` : key;
+            if ((sub.type === 'integer' || sub.type === 'number') &&
+                (sub.minimum !== undefined || sub.maximum !== undefined)) {
+                acc.push({ path: p, minimum: sub.minimum, maximum: sub.maximum });
+            }
+            collectNumericBounds(sub, p, acc);
+        }
+    }
+    if (node.items) collectNumericBounds(node.items, `${path}.0`, acc);
+    return acc;
+}
+
+/** Set a dot-path (numeric segments create arrays) on a config object; returns it. */
+function withPath(obj, dotPath, value) {
+    const parts = dotPath.split('.');
+    let cur = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+        const key = parts[i];
+        if (cur[key] === undefined) cur[key] = /^\d+$/.test(parts[i + 1]) ? [] : {};
+        cur = cur[key];
+    }
+    cur[parts[parts.length - 1]] = value;
+    return obj;
+}
 
 /** Recursively collect every declared property name in a JSON schema. */
 function collectPropertyNames(node, acc = new Set()) {
