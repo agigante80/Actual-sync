@@ -66,8 +66,8 @@
               },
               "schedule": {
                 "type": "string",
-                "description": "Cron expression for sync schedule for this server",
-                "pattern": "^[0-9A-Za-z*,/?#-]+\\s+[0-9A-Za-z*,/?#-]+\\s+[0-9A-Za-z*,/?#-]+\\s+[0-9A-Za-z*,/?#-]+\\s+[0-9A-Za-z*,/?#-]+$",
+                "description": "Cron expression for sync schedule for this server (5 fields, or 6 with a leading seconds field)",
+                "pattern": "^[0-9A-Za-z*,/?#-]+(\\s+[0-9A-Za-z*,/?#-]+){4,5}$",
                 "examples": ["0 2 * * *", "*/30 * * * *", "0 2 * * MON"]
               },
               "autoRetry": {
@@ -133,8 +133,8 @@
         },
         "schedule": {
           "type": "string",
-          "description": "Cron expression for sync schedule",
-          "pattern": "^[0-9A-Za-z*,/?#-]+\\s+[0-9A-Za-z*,/?#-]+\\s+[0-9A-Za-z*,/?#-]+\\s+[0-9A-Za-z*,/?#-]+\\s+[0-9A-Za-z*,/?#-]+$",
+          "description": "Cron expression for sync schedule (5 fields, or 6 with a leading seconds field)",
+          "pattern": "^[0-9A-Za-z*,/?#-]+(\\s+[0-9A-Za-z*,/?#-]+){4,5}$",
           "default": "03 03 */2 * *",
           "examples": ["0 2 * * *", "*/30 * * * *", "0 2 * * MON"]
         },
@@ -208,14 +208,14 @@
             },
             "maxSize": {
               "type": "string",
-              "description": "Maximum size per log file before rotation, as a number plus a unit B/K/M/G (e.g., '10M', '50M', '100M'). Rotation fires on whichever trigger comes first: this size or the interval.",
-              "pattern": "^[0-9]+[BKMG]$",
+              "description": "Maximum size per log file before rotation: a positive integer plus a unit B/K/M/G, optionally suffixed with B (e.g., '10M', '10MB', '512B', '1GB'). Rotation fires on whichever trigger comes first: this size or the interval.",
+              "pattern": "^[1-9][0-9]*(B|[KMG]B?)$",
               "default": "10M"
             },
             "interval": {
               "type": "string",
-              "description": "Time-based rotation interval, as a number plus a unit: s/m/h/d or M for months (e.g., '1d', '12h', '1M'). Note m = minutes, M = months. Ensures logs rotate even at low volume, so maxFiles behaves as documented (days of retention).",
-              "pattern": "^[0-9]+[smhdM]$",
+              "description": "Time-based rotation interval, as a positive integer plus a unit: s/m/h/d or M for months (e.g., '1d', '12h', '1M'). Note m = minutes, M = months. Ensures logs rotate even at low volume, so maxFiles behaves as documented (days of retention).",
+              "pattern": "^[1-9][0-9]*[smhdM]$",
               "default": "1d"
             },
             "maxFiles": {

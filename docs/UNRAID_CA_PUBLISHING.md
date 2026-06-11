@@ -312,4 +312,4 @@ cannot expose "add as many as you want" in the Unraid UI. The idiomatic pattern:
   (which would corrupt the same cache). This is implemented in
   `src/lib/configLoader.js`.
 - **Advisory for now.** Duplicate-budget and shared-dataDir detection currently
-  *warns*; turning it into a hard startup failure is tracked by #116.
+  *warns*; turning it into a hard startup failure is tracked by #121.

@@ -336,7 +336,7 @@ class ConfigLoader {
         // rate limits, duplicate notifications/history, and duplicate dashboard
         // groups. The budget identity is (url, syncId); deduping by name alone
         // misses this. Same syncId on a DIFFERENT url is allowed (distinct
-        // instances). Advisory for now; see #116 for promotion to hard-fail. (#119)
+        // instances). Advisory for now; see #121 for promotion to hard-fail. (#119)
         const budgetKeys = config.servers.map(s => `${normalizeServerUrl(s.url)}|${s.syncId}`);
         const dupBudgetKeys = [...new Set(budgetKeys.filter((k, i) => budgetKeys.indexOf(k) !== i))];
         if (dupBudgetKeys.length > 0) {
