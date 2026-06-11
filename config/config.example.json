@@ -17,10 +17,12 @@
       "dataDir": "/app/dataDir_Secondary_temp",
       "sync": {
         "schedule": "0 4 * * *",
-        "maxRetries": 3
+        "maxRetries": 3,
+        "baseRetryDelayMs": 5000
       },
       "logging": {
-        "level": "DEBUG"
+        "level": "DEBUG",
+        "format": "json"
       }
     }
   ],
@@ -97,7 +99,8 @@
       "enabled": false,
       "botToken": "YOUR_BOT_TOKEN",
       "chatId": "YOUR_CHAT_ID",
-      "notifyOnSuccess": "errors_only"
+      "notifyOnSuccess": "errors_only",
+      "pollInterval": 2000
     },
     "webhooks": {
       "slack": [],
