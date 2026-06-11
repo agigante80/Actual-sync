@@ -6,13 +6,15 @@
 
 > Automated bank synchronization service for Actual Budget with multi-server support, health monitoring, and comprehensive error handling
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-84.77%25-brightgreen)
-![Tests](https://img.shields.io/badge/tests-309%20passing-success)
-![Docker](https://img.shields.io/badge/docker-ready-blue)
+<p align="center">
+  <a href="https://github.com/agigante80/Actual-sync/releases"><img src="https://img.shields.io/github/v/release/agigante80/Actual-sync?sort=semver" alt="Latest release"></a>
+  <a href="https://github.com/agigante80/Actual-sync/actions/workflows/ci-cd.yml"><img src="https://github.com/agigante80/Actual-sync/actions/workflows/ci-cd.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="https://github.com/agigante80/Actual-sync/blob/main/LICENSE"><img src="https://img.shields.io/github/license/agigante80/Actual-sync" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen" alt="Node >= 20">
+  <a href="https://github.com/agigante80/Actual-sync/pkgs/container/actual-sync"><img src="https://img.shields.io/badge/ghcr.io-actual--sync-2496ED?logo=docker&logoColor=white" alt="Container image on GHCR"></a>
+  <a href="https://ca.unraid.net/apps/actual-sync-13q9rt00idnw48"><img src="https://img.shields.io/badge/Unraid-Community%20Apps-f15a2c" alt="Available on Unraid Community Apps"></a>
+  <a href="https://github.com/agigante80/Actual-sync/stargazers"><img src="https://img.shields.io/github/stars/agigante80/Actual-sync?style=social" alt="GitHub stars"></a>
+</p>
 
 ---
 
