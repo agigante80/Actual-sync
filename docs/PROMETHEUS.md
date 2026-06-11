@@ -485,10 +485,10 @@ volumes:
 
 ### 3. Import Dashboard
 
-We provide a pre-built dashboard in `grafana-dashboard.json`:
+We provide a pre-built dashboard in `monitoring/grafana-dashboard.json`:
 
 1. Go to Dashboards → Import
-2. Upload `grafana-dashboard.json`
+2. Upload `monitoring/grafana-dashboard.json`
 3. Select Prometheus data source
 4. Click "Import"
 
@@ -839,7 +839,7 @@ Example: Alert when no sync in 2 hours
 - [HEALTH_CHECK.md](./HEALTH_CHECK.md) - Health check endpoint documentation
 - [SYNC_HISTORY.md](./SYNC_HISTORY.md) - Sync history persistence
 - [NOTIFICATIONS.md](./NOTIFICATIONS.md) - Error notification system
-- [DOCKER.md](./DOCKER.md) - Docker deployment guide
+- [DOCKER_DEPLOYMENT.md](./DOCKER_DEPLOYMENT.md) - Docker deployment guide
 
 ## References
 

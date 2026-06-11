@@ -42,27 +42,27 @@ The base version is stored in the `VERSION` file at the repository root:
 
 ### 2. Version Generation
 
-The `get_version.sh` script generates versions based on Git state:
+The `scripts/get_version.sh` script generates versions based on Git state:
 
 #### Stable Release (Tagged)
 ```bash
 # On commit with tag v1.4.0
-$ ./get_version.sh
+$ ./scripts/get_version.sh
 1.4.0
 ```
 
 #### Development Build (Any Branch)
 ```bash
 # On main branch (no tag)
-$ ./get_version.sh
+$ ./scripts/get_version.sh
 1.4.1-dev+71f02b6
 
 # On development branch
-$ ./get_version.sh
+$ ./scripts/get_version.sh
 1.4.1-dev+a3b8f21
 
 # On feature branch
-$ ./get_version.sh
+$ ./scripts/get_version.sh
 1.4.1-dev+9cd4e12
 ```
 
@@ -104,8 +104,8 @@ The GitHub Actions workflow automatically handles versioning:
 - name: Generate dynamic version
   id: version
   run: |
-    chmod +x ./get_version.sh
-    VERSION=$(./get_version.sh)
+    chmod +x ./scripts/get_version.sh
+    VERSION=$(./scripts/get_version.sh)
     echo "version=$VERSION" >> $GITHUB_OUTPUT
 ```
 
@@ -345,7 +345,7 @@ agigante80/actual-sync:1.5.0-rc.1
 
 ```bash
 # From script
-./get_version.sh
+./scripts/get_version.sh
 
 # From package.json
 node -p "require('./package.json').version"
@@ -390,7 +390,7 @@ git commit -m "chore: add VERSION file"
 **Debug**:
 ```bash
 # Run with verbose logging
-VERBOSE=true ./get_version.sh
+VERBOSE=true ./scripts/get_version.sh
 
 # Check git state
 git status
@@ -496,7 +496,7 @@ spec:
 
 | Action | Command |
 |--------|---------|
-| Get current version | `./get_version.sh` |
+| Get current version | `./scripts/get_version.sh` |
 | Update base version | `echo "1.5.0" > VERSION` |
 | Create release tag | `git tag v1.5.0 && git push origin v1.5.0` |
 | Create RC tag | `git tag v1.5.0-rc.1 && git push origin v1.5.0-rc.1` |

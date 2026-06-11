@@ -522,4 +522,4 @@ docker compose up -d
 - **Documentation**: [README.md](../README.md)
 - **Configuration**: [config/config.example.json](../config/config.example.json)
 - **Issues**: [GitHub Issues](https://github.com/agigante80/Actual-sync/issues)
-- **Security**: [SECURITY.md](../SECURITY.md)
+- **Security**: [SECURITY_AND_PRIVACY.md](./SECURITY_AND_PRIVACY.md)

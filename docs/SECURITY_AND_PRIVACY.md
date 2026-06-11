@@ -296,7 +296,7 @@ A security incident includes:
 
 ### AI Agent Security Rules
 
-When AI agents interact with this codebase (see AI_INTERACTION_GUIDE.md):
+When AI agents interact with this codebase (see CLAUDE.md):
 
 **MUST**:
 - Validate that `.env` is in `.gitignore`
@@ -452,7 +452,7 @@ Before deploying to production:
 
 ### Remediation Plan
 
-See `SECURITY_REMEDIATION_PLAN.md` for detailed implementation steps.
+Security remediation work is tracked via [GitHub issues](https://github.com/agigante80/Actual-sync/issues).
 
 **Immediate Actions** (3 hours):
 - Add security headers with helmet package (1h)
@@ -745,7 +745,7 @@ git push
 4. Monitor for exploit activity
 
 **Documentation**:
-- Add to `SECURITY_REMEDIATION_PLAN.md`
+- Track in a GitHub issue
 - Link GitHub Security alert
 - Estimate fix effort
 
@@ -941,7 +941,7 @@ Before each release:
 - [ ] Update dependencies to latest patch versions
 - [ ] Run full test suite
 - [ ] Scan Docker image with Trivy locally
-- [ ] Review SECURITY_REMEDIATION_PLAN.md progress
+- [ ] Review open security issues on GitHub
 - [ ] Update security documentation if needed
 
 #### 4. Incident Response
@@ -982,8 +982,7 @@ For complete CI/CD documentation including security scanning setup, see:
 
 ### Documentation
 
-- **Project Security Audit**: `SECURITY_AUDIT_REPORT.md`
-- **Remediation Plan**: `SECURITY_REMEDIATION_PLAN.md`
+- **Security issues & remediation tracking**: [GitHub issues](https://github.com/agigante80/Actual-sync/issues)
 - **Security Policy**: `SECURITY.md` (planned)
 - Actual Budget Security: https://actualbudget.org/docs/security
 - OWASP Top 10: https://owasp.org/www-project-top-ten/

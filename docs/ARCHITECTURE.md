@@ -288,15 +288,6 @@ Actual-sync/
 │   ├── MIGRATION.md            # Migration guide
 │   └── ...                     # Additional documentation
 └── node_modules/               # Installed npm packages
-    ├── README.md
-    ├── PROJECT_OVERVIEW.md
-    ├── ARCHITECTURE.md         # This document
-    ├── AI_INTERACTION_GUIDE.md
-    ├── REFACTORING_PLAN.md
-    ├── TESTING_AND_RELIABILITY.md
-    ├── IMPROVEMENT_AREAS.md
-    ├── SECURITY_AND_PRIVACY.md
-    └── ROADMAP.md
 ```
 
 ---
@@ -523,7 +514,7 @@ Actual-sync uses a comprehensive GitHub Actions-based CI/CD pipeline for automat
 
 ### Dynamic Versioning
 
-The pipeline uses `get_version.sh` to generate context-aware version strings:
+The pipeline uses `scripts/get_version.sh` to generate context-aware version strings:
 
 | Branch/Tag | Generated Version | Docker Tags |
 |------------|------------------|-------------|

@@ -677,10 +677,10 @@ ajv validate -s config.schema.json -d config.json
 
 ## Support
 
-- **Documentation:** See [/docs/README.md](./docs/README.md)
+- **Documentation:** See [docs/README.md](./README.md)
 - **Migration Guide:** [MIGRATION.md](./MIGRATION.md)
-- **Architecture:** [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
-- **Security:** [docs/SECURITY_AND_PRIVACY.md](./docs/SECURITY_AND_PRIVACY.md)
+- **Architecture:** [docs/ARCHITECTURE.md](./ARCHITECTURE.md)
+- **Security:** [docs/SECURITY_AND_PRIVACY.md](./SECURITY_AND_PRIVACY.md)
 
 ---
 
