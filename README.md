@@ -12,6 +12,7 @@
   <a href="https://github.com/agigante80/Actual-sync/blob/main/LICENSE"><img src="https://img.shields.io/github/license/agigante80/Actual-sync" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen" alt="Node >= 20">
   <a href="https://hub.docker.com/r/agigante80/actual-sync"><img src="https://img.shields.io/docker/pulls/agigante80/actual-sync?logo=docker&logoColor=white" alt="Docker Hub pulls"></a>
+  <a href="https://hub.docker.com/r/agigante80/actual-sync/tags"><img src="https://img.shields.io/docker/image-size/agigante80/actual-sync/latest?logo=docker&logoColor=white" alt="Docker image size"></a>
   <a href="https://github.com/agigante80/Actual-sync/pkgs/container/actual-sync"><img src="https://img.shields.io/badge/ghcr.io-actual--sync-2496ED?logo=docker&logoColor=white" alt="Container image on GHCR"></a>
   <a href="https://ca.unraid.net/apps/actual-sync-13q9rt00idnw48"><img src="https://img.shields.io/badge/Unraid-Community%20Apps-f15a2c" alt="Available on Unraid Community Apps"></a>
   <a href="https://github.com/agigante80/Actual-sync/stargazers"><img src="https://img.shields.io/github/stars/agigante80/Actual-sync?style=social" alt="GitHub stars"></a>
@@ -197,8 +198,8 @@ For development or manual setup:
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/agigante80/actual-sync.git
-cd actual-sync
+git clone https://github.com/agigante80/Actual-sync.git
+cd Actual-sync
 npm install
 
 # 2. Create configuration
@@ -297,8 +298,8 @@ See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for advanced Dock
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/actual-sync.git
-cd actual-sync
+git clone https://github.com/agigante80/Actual-sync.git
+cd Actual-sync
 
 # Install dependencies
 npm install
@@ -1025,8 +1026,8 @@ We welcome contributions! Here's how to get started:
 
 ```bash
 # 1. Fork and clone
-git clone https://github.com/yourusername/actual-sync.git
-cd actual-sync
+git clone https://github.com/agigante80/Actual-sync.git
+cd Actual-sync
 
 # 2. Install dependencies
 npm install
@@ -1103,11 +1104,17 @@ You are free to use, modify, and distribute this software for any purpose, inclu
 
 ## 📊 Project Stats
 
-![GitHub Stars](https://img.shields.io/github/stars/yourusername/actual-sync?style=social)
-![GitHub Forks](https://img.shields.io/github/forks/yourusername/actual-sync?style=social)
-![GitHub Issues](https://img.shields.io/github/issues/yourusername/actual-sync)
-![GitHub Pull Requests](https://img.shields.io/github/issues-pr/yourusername/actual-sync)
-![Last Commit](https://img.shields.io/github/last-commit/yourusername/actual-sync)
+<p align="center">
+  <a href="https://github.com/agigante80/Actual-sync/network/members"><img src="https://img.shields.io/github/forks/agigante80/Actual-sync" alt="GitHub forks"></a>
+  <a href="https://github.com/agigante80/Actual-sync/graphs/contributors"><img src="https://img.shields.io/github/contributors/agigante80/Actual-sync" alt="Contributors"></a>
+  <a href="https://github.com/agigante80/Actual-sync/issues"><img src="https://img.shields.io/github/issues/agigante80/Actual-sync" alt="Open issues"></a>
+  <a href="https://github.com/agigante80/Actual-sync/issues?q=is%3Aissue+is%3Aclosed"><img src="https://img.shields.io/github/issues-closed/agigante80/Actual-sync" alt="Closed issues"></a>
+  <a href="https://github.com/agigante80/Actual-sync/pulls"><img src="https://img.shields.io/github/issues-pr/agigante80/Actual-sync" alt="Open pull requests"></a>
+  <a href="https://github.com/agigante80/Actual-sync/graphs/commit-activity"><img src="https://img.shields.io/github/commit-activity/m/agigante80/Actual-sync" alt="Commit activity"></a>
+  <a href="https://github.com/agigante80/Actual-sync/commits/main"><img src="https://img.shields.io/github/last-commit/agigante80/Actual-sync" alt="Last commit"></a>
+</p>
+
+> Stars and the project's release/CI/license/Docker badges are in the badge row at the top of this README.
 
 ---
 
