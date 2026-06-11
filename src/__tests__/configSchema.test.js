@@ -89,8 +89,16 @@ describe('config schema reconciliation (#116)', () => {
         });
 
         test('a telegram webhook entry missing botToken is rejected', () => {
+            // chatId present so botToken is the ONLY missing field — isolates the rule.
             const config = baseConfig({
-                notifications: { webhooks: { telegram: [{ name: 'no-token' }] } }
+                notifications: { webhooks: { telegram: [{ name: 'no-token', chatId: '42' }] } }
+            });
+            expect(validates(config)).toBe(false);
+        });
+
+        test('a telegram webhook entry missing chatId is rejected', () => {
+            const config = baseConfig({
+                notifications: { webhooks: { telegram: [{ name: 'no-chat', botToken: '123456:ABC-def' }] } }
             });
             expect(validates(config)).toBe(false);
         });
@@ -150,10 +158,16 @@ describe('config schema reconciliation (#116)', () => {
 });
 
 describe('config deliverables (#116)', () => {
-    test('config.example.json validates clean against the schema', () => {
+    test('config.example.json validates clean against the schema (as shipped)', () => {
         const example = JSON.parse(fs.readFileSync(EXAMPLE_PATH, 'utf8'));
-        delete example.$schema; // editor hint, not part of the config surface
         expect(validates(example)).toBe(true);
+    });
+
+    test('the root schema declares $schema so the example survives additionalProperties:false (#121)', () => {
+        // The example carries a "$schema" editor hint. It is allowed today only
+        // because the root has no additionalProperties:false; once #121 tightens
+        // that, an undeclared $schema would be wrongly rejected. Declare it now.
+        expect(schema.properties.$schema).toBeDefined();
     });
 
     test('config.example.json load()s with zero advisory schema warnings', () => {
@@ -161,7 +175,6 @@ describe('config deliverables (#116)', () => {
         const suppress = suppressConsole();
         try {
             const example = JSON.parse(fs.readFileSync(EXAMPLE_PATH, 'utf8'));
-            delete example.$schema;
             // Make the weak/default-password warning irrelevant to this assertion.
             example.servers.forEach((s, i) => {
                 s.password = `strong-password-${i}`;
@@ -187,8 +200,12 @@ describe('config deliverables (#116)', () => {
     test('every schema-declared property is consumed by code (no dead schema)', () => {
         // Guard against schema drift: a property nobody reads is either dead or a
         // typo. Anything legitimately not grep-able from src/ must be justified here.
+        // NOTE: this is a substring smoke test — short generic names (e.g. "to",
+        // "host") match trivially and aren't truly proven; it reliably catches
+        // distinctive names (the ones that drift via typo). Don't read it as proof
+        // that every property is wired up.
         const RESERVED = new Set([
-            // none today
+            '$schema' // editor-only hint; intentionally not read at runtime
         ]);
 
         const srcDir = path.join(PROJECT_ROOT, 'src');
@@ -211,11 +228,20 @@ function collectPropertyNames(node, acc = new Set()) {
         }
     }
     if (node.items) collectPropertyNames(node.items, acc);
-    for (const kw of ['if', 'then', 'else']) {
+    for (const kw of ['if', 'then', 'else', 'not']) {
         if (node[kw]) collectPropertyNames(node[kw], acc);
     }
     for (const kw of ['allOf', 'anyOf', 'oneOf']) {
         if (Array.isArray(node[kw])) node[kw].forEach(sub => collectPropertyNames(sub, acc));
+    }
+    // Subschemas that can also declare named properties as the schema grows.
+    for (const kw of ['additionalProperties', 'propertyNames', 'contains']) {
+        if (node[kw] && typeof node[kw] === 'object') collectPropertyNames(node[kw], acc);
+    }
+    for (const kw of ['patternProperties', '$defs', 'definitions', 'dependentSchemas']) {
+        if (node[kw] && typeof node[kw] === 'object') {
+            Object.values(node[kw]).forEach(sub => collectPropertyNames(sub, acc));
+        }
     }
     return acc;
 }
