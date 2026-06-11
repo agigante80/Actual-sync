@@ -180,8 +180,17 @@ The JSON payload:
 | `priorityOnFailure` | string | No | Priority for failures (default `high`) |
 | `priorityOnSuccess` | string | No | Priority for success/info (default `default`) |
 | `tags` | array | No | Base tags/emoji added to every notification |
+| `icon` | string | No | Icon URL shown in the notification (sent as the `Icon` header). Defaults to the Actual-sync project icon; set to an empty string `""` to send no icon (e.g. on an air-gapped network, or set `notifications.branding: false`). |
 
 Tip: ntfy users can also just point a `webhooks.generic` entry at their topic for JSON publishing; the dedicated `ntfy` block adds zero-config priority/tags mapping.
+
+#### Branding
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `branding` | boolean | `true` | Stamp the Actual-sync project name and icon onto Slack/Discord/ntfy notifications. Set `false` to keep a webhook's own configured app identity, or to stop ntfy from fetching the project icon over the network (air-gapped setups). |
+
+`notifications.branding` is a top-level flag (sibling of the channel blocks), e.g. `"notifications": { "branding": false, ... }`.
 
 #### Telegram Bot Settings
 
@@ -189,10 +198,14 @@ Tip: ntfy users can also just point a `webhooks.generic` entry at their topic fo
 |----------|------|----------|---------|-------------|
 | `enabled` | boolean | No | `false` | Enable Telegram bot |
 | `botToken` | string | Yes* | - | Bot token from @BotFather |
-| `chatId` | string | Yes* | - | Chat ID (user, group, or channel) |
+| `chatId` | string | Yes** | - | Chat ID (user, group, or channel) |
+| `chatIds` | array | No** | - | One or more chat IDs (alternative to `chatId`). The first entry is used for outbound notifications; the bot also accepts numeric IDs. |
 | `notifyOnSuccess` | string | No | `errors_only` | Notification mode: `always`, `errors_only`, or `never` |
+| `pollInterval` | integer | No | `2000` | Polling interval in milliseconds for the interactive bot (minimum 100) |
 
-*Required when Telegram bot is enabled
+*Required when Telegram bot is enabled. **Provide either `chatId` or `chatIds` (at least one).
+
+`botToken` and `chatId` can also be supplied via the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment variables as a fallback when not set in config.
 
 #### Threshold Settings
 
