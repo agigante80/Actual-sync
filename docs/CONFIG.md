@@ -146,17 +146,41 @@ Logging configuration. See **[docs/LOGGING.md](LOGGING.md)** for the full refere
 - **level** (string, default: `"INFO"`) — verbosity: `"DEBUG"`, `"INFO"`, `"WARN"`, `"ERROR"`.
 - **format** (string, default: `"pretty"`) — console format: `"pretty"` or `"json"`.
 - **fileFormat** (string, default: `"json"`) — log-file format; single-line JSON is recommended for shipping. Independent of `format`.
-- **redact** (array) — extra metadata key names to mask. Secrets (password, token, secret, apiKey, authorization, credential, chatId) are always redacted automatically across console/file/syslog/dashboard.
+- **redact** (array) — extra metadata key names to mask, on top of the always-on defaults. The default indicators are matched as case-insensitive substrings: `password`, `passwd`, `token`, `secret`, `apikey`, `api_key`, `authorization`, `credential`, `chatid` — so keys like `encryptionPassword` and `botToken` are covered too. Redaction applies across console/file/syslog/dashboard.
 - **logDir** (string|null, default: `"./logs"`) — log directory; `null` disables file logging.
 - **rotation** (object) — `enabled`, `maxSize` (`"10M"`), `interval` (`"1d"`, daily), `maxFiles` (retention), `compress` (`"gzip"`).
 - **syslog** (object) — optional RFC 5424 syslog forwarding.
 - **performance** (object) — operation timing thresholds.
+
+> **Scope:** `rotation`, `syslog`, `performance`, `fileFormat`, and the extra `redact` keys apply to the main application logger (log files are a single shared stream). Per-component loggers inherit `level`/`format`/`logDir`; the always-on secret redaction defaults still apply everywhere.
 
 ### notifications (optional)
 
 Multi-channel alerts on sync results. See **[docs/NOTIFICATIONS.md](NOTIFICATIONS.md)** for the full reference and examples.
 
 **Channels:** `email` (SMTP), `telegram` (interactive bot), `webhooks.slack`, `webhooks.discord`, `webhooks.generic` (POST a documented JSON payload to any URL: ntfy/Gotify/Home Assistant/n8n/custom), and `ntfy` (push to an ntfy topic). Plus `thresholds` (when to alert) and `rateLimit` (anti-spam).
+
+### healthCheck (optional)
+
+HTTP server for health probes, Prometheus metrics, and the web dashboard.
+
+**Properties:**
+
+- **port** (integer, default: `3000`, range 1024-65535) — port for `/health`, `/ready`, `/metrics`, `/metrics/prometheus`, and `/dashboard`.
+- **host** (string, default: `"0.0.0.0"`) — bind address. **Keep `0.0.0.0` in containers.** Setting it to the host's LAN IP is not bindable in bridge mode (`EADDRNOTAVAIL`) and makes the dashboard unreachable; startup warns if it is set to anything other than `0.0.0.0`/`::`/`::1`/`127.0.0.1`/`localhost`.
+- **dashboard.enabled** (boolean, default: `true`) — serve the web dashboard.
+- **dashboard.auth.type** (string, default: `"none"`) — `"none"`, `"basic"`, or `"token"`.
+  - `"basic"` requires **username** and **password**.
+  - `"token"` requires **token** (sent as `Authorization: Bearer <token>`).
+  - A blank credential locks the dashboard out (every request is rejected), so set the credentials when you enable auth.
+
+```json
+"healthCheck": {
+  "port": 3000,
+  "host": "0.0.0.0",
+  "dashboard": { "enabled": true, "auth": { "type": "basic", "username": "admin", "password": "change-me" } }
+}
+```
 
 ---
 
@@ -353,19 +377,27 @@ The configuration system performs multiple validation checks:
 - No trailing commas
 - Proper quotation marks
 
-### Schema Validation
+### Schema Validation (advisory)
 
-- All required fields present
-- Correct data types
-- Valid URL formats
-- Valid cron expressions
+Checks the config against `config.schema.json` (required fields, data types, URL
+patterns, enums, ranges). **This is currently advisory:** a mismatch prints a
+warning and startup continues, so a schema that drifted is surfaced without
+crash-looping a previously-working deploy. It will become a hard startup error
+in a future release (tracked in #121) — treat the warnings as errors-in-waiting
+and fix them.
 
-### Business Logic Validation
+### Business Logic Validation (hard-fail)
+
+These stop startup today:
 
 - At least one server configured
+- Required server fields present (`name`, `url`, `password`, `syncId`, `dataDir`)
 - Unique server names
-- No duplicate configurations
-- Reasonable retry settings
+- Retry settings in range (`maxRetries` 0-10, `baseRetryDelayMs` >= 1000)
+- A 5-field cron schedule
+
+It also **warns** (without stopping) about duplicate budgets (same `url` +
+`syncId`), shared `dataDir`s, and a non-bindable `healthCheck.host`.
 
 ### Security Warnings
 
@@ -447,19 +479,22 @@ Invalid JSON in configuration file: Unexpected token...
 
 ---
 
-### Schema Validation Failed
+### Schema does not fully match (advisory warning)
 
-**Error:**
+**Warning:**
 ```
-Configuration validation failed:
+⚠️  Configuration does not fully match the schema. This is advisory for now and
+will become a startup error in a future release — please fix:
   - /servers/0/password: must be string
 ```
 
-**Solution:**
-Fix the specific field mentioned. Common issues:
+This is currently a **warning, not a crash** — the service still starts. Fix the
+field mentioned so it stays working once schema validation becomes a hard error
+(#121). Common issues:
 - Missing quotes around strings
 - Wrong data type
 - Missing required fields
+- A typo'd property name
 
 ---
 
@@ -582,26 +617,36 @@ Actual Budget supports end-to-end encryption (E2EE) for budget files. If your bu
 
 ### Example with Docker
 
+`config.json` does **not** expand `${VAR}` placeholders — values are used
+verbatim. There are two supported ways to keep the encryption password out of a
+committed file:
+
+**Single budget — configure the whole server from the environment** (no
+`config.json` needed; see "Single-server configuration via environment
+variables" above):
+
 ```yaml
 services:
   actual-sync:
     image: actual-sync:latest
-    volumes:
-      - ./config:/app/config:ro
     environment:
-      - BUDGET_ENCRYPTION_PASSWORD=${BUDGET_ENCRYPTION_PASSWORD}
+      - ACTUAL_SYNC_SERVER_URL=https://actual.example.com
+      - ACTUAL_SYNC_SERVER_PASSWORD=...
+      - ACTUAL_SYNC_SERVER_SYNC_ID=...
+      - ACTUAL_SYNC_SERVER_ENCRYPTION_PASSWORD=...
 ```
 
-Then reference in config:
+**Multiple budgets — keep `config.json` out of version control** and put the
+literal `encryptionPassword` in it (the file already holds the server password),
+then protect it with file permissions (see Security Best Practices):
+
 ```json
 {
   "servers": [{
-    "encryptionPassword": "${BUDGET_ENCRYPTION_PASSWORD}"
+    "encryptionPassword": "your-actual-e2ee-password"
   }]
 }
 ```
-
-**Note**: Environment variable substitution requires additional tooling (not built-in).
 
 ---
 

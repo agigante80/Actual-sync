@@ -189,7 +189,7 @@
         },
         "redact": {
           "type": "array",
-          "description": "Additional metadata key names to mask as [REDACTED] in all log output. Secret keys (password, encryptionPassword, botToken, token, apiKey, secret, authorization, chatId) are always redacted by default.",
+          "description": "Additional metadata key names to mask as [REDACTED] in all log output, on top of the always-on defaults. The defaults are matched as case-insensitive substrings: password, passwd, token, secret, apikey, api_key, authorization, credential, chatid (so encryptionPassword, botToken, etc. are covered).",
           "items": { "type": "string" }
         },
         "logDir": {
