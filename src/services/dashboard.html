@@ -816,25 +816,36 @@
         let accountsData = [];
 
         let accountsUnavailable = false;
+        // Monotonic request id: poll() runs on an interval, so a slow response
+        // could otherwise land after a newer one and overwrite fresh data. Only
+        // the latest in-flight request is allowed to commit/render. (#99)
+        let accountsRequestSeq = 0;
 
         async function loadAccounts() {
+            const seq = ++accountsRequestSeq;
             try {
                 const response = await fetch('/api/dashboard/accounts', getFetchOptions());
                 if (!response.ok) {
                     // Don't leave the card stuck on "Loading…" forever: show an
                     // explicit unavailable state (e.g. 503 before any sync). (#99)
-                    accountsUnavailable = true;
-                    accountsData = [];
-                    renderAccounts();
+                    if (seq === accountsRequestSeq) {
+                        accountsUnavailable = true;
+                        accountsData = [];
+                        renderAccounts();
+                    }
                     return;
                 }
+                const data = await response.json();
+                if (seq !== accountsRequestSeq) return; // superseded by a newer poll
                 accountsUnavailable = false;
-                accountsData = await response.json();
+                accountsData = data;
                 renderAccounts();
             } catch (error) {
-                // Network/transient error. Re-render: if we already have data this
-                // keeps it; on the very first load (no data yet) it replaces the
-                // "Loading…" placeholder with the empty state rather than hanging.
+                if (seq !== accountsRequestSeq) return;
+                // Network/transient error (not a definitive 503): clear the
+                // unavailable flag and re-render — keeps existing data, or shows the
+                // empty state on first load instead of hanging on "Loading…".
+                accountsUnavailable = false;
                 renderAccounts();
             }
         }
