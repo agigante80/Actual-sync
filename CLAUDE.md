@@ -105,7 +105,7 @@ Scheduler (node-schedule) or manual trigger
 - `lib/configLoader.js` — AJV schema validation against `config/config.schema.json`
 - `lib/logger.js` — Custom structured logger (no Winston/Pino); supports file rotation and correlation IDs
 - `services/syncHistory.js` — SQLite-backed sync history via `better-sqlite3`
-- `services/healthCheck.js` — Express HTTP server (`/health`, `/ready`, `/metrics`, `/prometheus`, `/dashboard`, `/ws`)
+- `services/healthCheck.js` — Express HTTP server. Public (no auth): `/health`, `/ready`, `/metrics`, `/metrics/prometheus`, `/icon.png`, and a WebSocket log stream at `/ws/logs`. Behind `dashboardAuth()`: `/dashboard` and the `/api/dashboard/*` REST API (`status`, `servers`, `orphaned-servers`, `schedules`, `metrics`, `history`, `accounts`, plus POST `sync`, `dismiss-error`, `reset-history`, `test-notification`)
 - `services/prometheusService.js` — Prometheus metrics via `prom-client`
 - `services/notificationService.js` — Routes alerts to Email/Telegram/Slack/Discord
 - `services/telegramBot.js` — Interactive Telegram bot (8 commands)
