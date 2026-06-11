@@ -228,6 +228,13 @@ These caused real time loss. Front-loading them saves the next attempt.
 11. **Moderation expectations.** As maintainer you are expected to respond in your
     support thread, keep the listing working across new Unraid versions, and clearly
     label beta or experimental builds.
+12. **No repeatable config groups.** An Unraid template is a fixed flat list of
+    `<Config>` elements (Variable / Path / Port / Label / Device) — there is **no
+    array or repeatable-group construct**, so you cannot offer a clean "+ add another
+    X" in the UI for a multi-field group (e.g. N servers each with url+password+id).
+    A user can hand-add individual entries via Advanced → "Add another Path, Port,
+    Variable or Label", but that is undiscoverable and per-field. See the pattern in
+    Section 11. (Sources: selfhosters.net/docker/templating, wiki.unraid.net/DockerTemplateSchema.)
 
 ---
 
@@ -261,3 +268,29 @@ These caused real time loss. Front-loading them saves the next attempt.
 - `.github/workflows/unraid-xmllint.yml` (well-formedness gate).
 
 See those files in this repo for a concrete, working reference.
+
+---
+
+## 11. Config UX: single instance via UI, many via a file
+
+Because the template has no repeatable groups (Section 8, point 12), an app that
+supports an arbitrary **number** of configured instances (N servers, N targets, …)
+cannot expose "add as many as you want" in the Unraid UI. The idiomatic pattern:
+
+- **One instance via env-var template fields.** Predefine `<Config Type="Variable">`
+  entries for a single instance (e.g. URL / password / id). A user with one of the
+  thing fills the fields and runs — no config file, no pre-created config folder.
+  This is how config-light apps (e.g. the Actual *server* template) avoid first-run
+  friction entirely; an app that genuinely needs config can offer it for the common
+  single-instance case.
+- **Many via a mounted config file.** Keep the JSON/YAML config as the canonical
+  multi-instance source, mounted at a Path the user provides.
+- **Merge the two sources, deduped by a STABLE IDENTITY, not the display name.**
+  If the same instance is configured in both the env vars and the file, dedup on a
+  real identity key (for actual-sync: `url` + `syncId`, plus `dataDir`) and drop the
+  duplicate with a warning — otherwise you double-process it (double bank-sync,
+  duplicate notifications, state collisions). Deduping on the user-facing *name*
+  alone is not enough; two entries can name the same underlying resource differently.
+
+For actual-sync this is tracked by #120 (single-server env-var config) built on #119
+(duplicate-budget detection). Mask secret Variable fields (`Mask="true"`).
