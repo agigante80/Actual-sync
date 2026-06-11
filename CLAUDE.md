@@ -250,4 +250,3 @@ Comprehensive guides live in `docs/`. Key references:
 - `docs/ARCHITECTURE.md` — deeper architectural detail
 - `docs/TESTING.md` — testing patterns and conventions
 - `docs/CONFIG.md` — full configuration reference
-- `.github/copilot-instructions.md` — additional AI-specific coding patterns

@@ -83,7 +83,7 @@ The pipeline runs automatically on:
 
 ## Dynamic Versioning
 
-The pipeline uses a dynamic versioning system via `get_version.sh` that generates context-aware version strings.
+The pipeline uses a dynamic versioning system via `scripts/get_version.sh` that generates context-aware version strings.
 
 ### Version Format
 
@@ -140,10 +140,10 @@ curl http://localhost:3000/metrics
 
 ```bash
 # Test locally
-./get_version.sh
+./scripts/get_version.sh
 
 # Verbose output with logs
-./get_version.sh --verbose
+./scripts/get_version.sh --verbose
 
 # Expected output format
 1.0.0-main-abc1234
@@ -505,10 +505,10 @@ GHCR is automatically configured and uses `GITHUB_TOKEN`. No additional setup re
    cd actual-sync
    ```
 
-2. **Verify get_version.sh works**:
+2. **Verify scripts/get_version.sh works**:
    ```bash
-   chmod +x get_version.sh
-   ./get_version.sh --verbose
+   chmod +x scripts/get_version.sh
+   ./scripts/get_version.sh --verbose
    ```
 
 3. **Add Docker Hub secrets to GitHub**:
@@ -1002,22 +1002,22 @@ git push origin main
 
 #### Issue 3: Version Script Fails
 
-**Symptoms**: Error: `get_version.sh: command not found` or permission denied
+**Symptoms**: Error: `scripts/get_version.sh: command not found` or permission denied
 
 **Cause**: Script not executable or missing
 
 **Solutions**:
 ```bash
 # Make script executable
-chmod +x get_version.sh
+chmod +x scripts/get_version.sh
 
 # Commit permission change
-git add get_version.sh
+git add scripts/get_version.sh
 git commit -m "Make version script executable"
 git push
 
 # Verify locally
-./get_version.sh --verbose
+./scripts/get_version.sh --verbose
 ```
 
 ---

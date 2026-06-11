@@ -387,4 +387,4 @@ If you encounter issues during migration:
 
 ---
 
-**Migration completed?** Update `REFACTORING_PLAN.md` Task #2 status to completed!
+**Migration completed?** You're all set — your budgets now sync from `config.json`.

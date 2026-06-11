@@ -529,7 +529,7 @@ docker-compose ps
 curl http://localhost:3000/health
 ```
 
-See **[docs/DOCKER.md](docs/DOCKER.md)** for Kubernetes deployment and advanced configurations.
+See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for Kubernetes deployment and advanced configurations.
 
 ---
 
@@ -638,7 +638,7 @@ Access the interactive dashboard at `http://localhost:3000/dashboard`:
 
 **Healthy System - Main Dashboard View**
 
-![Dashboard Overview](docs/screenshots/dashboard-overview.png)
+![Dashboard Overview](docs/screenshots/dashboard-overview-healthy.png)
 
 *Real-time monitoring with success metrics, interactive charts, and live log streaming*
 
@@ -646,7 +646,7 @@ Access the interactive dashboard at `http://localhost:3000/dashboard`:
 
 **Degraded System - Multiple Servers with Errors**
 
-![Dashboard Degraded](docs/screenshots/dashboard-degraded.png)
+![Dashboard Degraded](docs/screenshots/dashboard-overview-degraded.png)
 
 *Dashboard showing failure detection across multiple budget servers with detailed error tracking*
 
@@ -654,7 +654,7 @@ Access the interactive dashboard at `http://localhost:3000/dashboard`:
 
 **Multi-Server Setup - 6 Budget Instances**
 
-![Dashboard Multi-Server](docs/screenshots/dashboard-multi-server.png)
+![Dashboard Multi-Server](docs/screenshots/dashboard-overview-multi-server.png)
 
 *Managing multiple budget instances with per-server status and consolidated metrics*
 
@@ -846,7 +846,7 @@ See **[docs/TESTING.md](docs/TESTING.md)** for complete testing guide including:
 - ✅ Container security best practices
 - ✅ OWASP Top 10: 90% compliant
 
-See **[docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md)** and **[SECURITY_AUDIT_REPORT.md](SECURITY_AUDIT_REPORT.md)** for details.
+See **[docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md)** for details.
 
 ### Vulnerability Reporting
 
@@ -945,30 +945,29 @@ Comprehensive documentation is available in the `docs/` directory:
 
 ### Architecture & Design
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System design and components
-- **[docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md)** - Project mission and objectives
+- **[docs/CONFIG.md](docs/CONFIG.md)** - Full configuration reference
 
 ### Operations & Monitoring
-- **[docs/DOCKER.md](docs/DOCKER.md)** - Docker deployment guide
+- **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** - Docker deployment guide
 - **[docs/HEALTH_CHECK.md](docs/HEALTH_CHECK.md)** - Health check endpoints and monitoring
+- **[docs/DASHBOARD.md](docs/DASHBOARD.md)** - Web dashboard
 - **[docs/PROMETHEUS.md](docs/PROMETHEUS.md)** - Prometheus metrics and Grafana dashboards
 - **[docs/LOGGING.md](docs/LOGGING.md)** - Structured logging guide
 - **[docs/SYNC_HISTORY.md](docs/SYNC_HISTORY.md)** - Sync history database and CLI tool
 
 ### Features & Configuration
 - **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** - Notification setup (Email, Telegram, Slack, Discord, ntfy, generic webhooks)
+- **[docs/MIGRATION.md](docs/MIGRATION.md)** - Env-var to config.json migration
 - **[docs/TESTING.md](docs/TESTING.md)** - Testing guide and coverage
 - **[docs/VERSIONING.md](docs/VERSIONING.md)** - Semantic versioning and release process
 
 ### Security & Compliance
 - **[docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md)** - Security best practices
-- **[SECURITY_AUDIT_REPORT.md](SECURITY_AUDIT_REPORT.md)** - Security audit findings
-- **[SECURITY_REMEDIATION_PLAN.md](SECURITY_REMEDIATION_PLAN.md)** - Security improvement plan
 
 ### Development & Contributing
-- **[docs/AI_INTERACTION_GUIDE.md](docs/AI_INTERACTION_GUIDE.md)** - Contributing guidelines
-- **[docs/REFACTORING_PLAN.md](docs/REFACTORING_PLAN.md)** - Technical roadmap
-- **[docs/IMPROVEMENT_AREAS.md](docs/IMPROVEMENT_AREAS.md)** - Known limitations and gaps
-- **[docs/ROADMAP.md](docs/ROADMAP.md)** - Feature roadmap
+- **[CLAUDE.md](CLAUDE.md)** - Developer & AI-agent guide (commands, architecture, conventions)
+- **[docs/CI_CD.md](docs/CI_CD.md)** - CI/CD pipeline and release process
+- **[docs/UNRAID_CA_PUBLISHING.md](docs/UNRAID_CA_PUBLISHING.md)** - Publishing to Unraid Community Apps
 
 ---
 
@@ -1054,7 +1053,7 @@ git push origin feature/amazing-feature
 - **Commit Messages** - Use conventional commits (feat, fix, docs, chore, etc.)
 - **Pull Requests** - Include description, tests, and documentation updates
 
-See **[docs/AI_INTERACTION_GUIDE.md](docs/AI_INTERACTION_GUIDE.md)** for detailed contribution guidelines.
+See **[CLAUDE.md](CLAUDE.md)** for developer and AI-agent guidelines (commands, architecture, conventions).
 
 ---
 

@@ -141,8 +141,7 @@ npm run list-accounts
 | [SECURITY_AND_PRIVACY.md](./SECURITY_AND_PRIVACY.md) | Security policies and best practices |
 | [MIGRATION.md](./MIGRATION.md) | Upgrade guide from environment variables |
 | [VERSIONING.md](./VERSIONING.md) | Semantic versioning and release process |
-| [AI_INTERACTION_GUIDE.md](./AI_INTERACTION_GUIDE.md) | AI agent rules and automation boundaries |
-| [ROADMAP.md](./ROADMAP.md) | Future development priorities |
+| [UNRAID_CA_PUBLISHING.md](./UNRAID_CA_PUBLISHING.md) | Publishing the template to Unraid Community Apps |
 
 ---
 
@@ -193,7 +192,7 @@ Modify the cron expression in `config/config.json`:
 - Every 6 hours: `"0 */6 * * *"`
 - Hourly: `"0 * * * *"`
 
-See [MIGRATION.md](../MIGRATION.md) for complete configuration reference.
+See [MIGRATION.md](./MIGRATION.md) for complete configuration reference.
 
 ---
 
@@ -232,7 +231,7 @@ The system automatically retries on:
 
 ## 🤝 Contributing
 
-See [AI_INTERACTION_GUIDE.md](./AI_INTERACTION_GUIDE.md) for contribution guidelines and development workflows.
+See [../CLAUDE.md](../CLAUDE.md) for contribution guidelines and development workflows.
 
 ---
 
