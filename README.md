@@ -224,10 +224,12 @@ Install it from the **Apps** tab (Community Applications):
 
 1. Open the **Apps** tab and search for **`actual-sync`**.
 2. Click **Install** and set the **Config** path.
-3. On first start (empty config dir), the container drops a **`config.example.json`** in that folder and exits. Fill in each server's `url` / `password` / `syncId` (Sync ID: Actual Budget → the budget → **Settings → Advanced → "Sync ID"**), rename it to **`config.json`**, and start the container again (see [Configuration](#%EF%B8%8F-configuration)).
+3. **Single budget (simplest):** fill in the **Actual server URL / password / Sync ID** template variables and start — no config file needed (Sync ID: Actual Budget → the budget → **Settings → Advanced → "Sync ID"**). **Multiple budgets:** leave those blank; on first start the container drops a **`config.example.json`** in the Config folder and exits — fill it in, rename it to **`config.json`**, and restart (see [Configuration](#%EF%B8%8F-configuration)).
 4. Open the dashboard via the container's **WebUI** link (port `3000`).
 
 The Unraid template lives in [`unraid/actual-sync.xml`](unraid/actual-sync.xml).
+
+> **Single-server via environment variables** (any Docker host, not just Unraid): set `ACTUAL_SYNC_SERVER_URL`, `ACTUAL_SYNC_SERVER_PASSWORD`, and `ACTUAL_SYNC_SERVER_SYNC_ID` to run one budget with no `config.json`. See [Configuration](docs/CONFIG.md#single-server-configuration-via-environment-variables).
 
 ---
 
