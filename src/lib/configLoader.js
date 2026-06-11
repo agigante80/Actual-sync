@@ -5,6 +5,27 @@ const addFormats = require('ajv-formats');
 const { resolveDefaultsDir } = require('./configBootstrap');
 
 /**
+ * Normalize an Actual server URL for identity comparison: lowercase
+ * protocol+host+path and drop any trailing slash, so `https://X/` and
+ * `https://x` compare equal. Falls back to a trimmed lowercase string for
+ * anything URL() can't parse. Used to detect duplicate budgets. (#119)
+ * @param {string} url
+ * @returns {string}
+ */
+function normalizeServerUrl(url) {
+    const raw = String(url == null ? '' : url).trim();
+    try {
+        const u = new URL(raw);
+        // Scheme + host are case-insensitive (lowercase them); the path is NOT
+        // (leave its case alone), and query/fragment aren't part of the server
+        // identity. Drop a trailing slash so `https://x/` == `https://x`.
+        return `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${u.pathname.replace(/\/+$/, '')}`;
+    } catch {
+        return raw.replace(/\/+$/, '').toLowerCase();
+    }
+}
+
+/**
  * Configuration loader with validation
  * Loads configuration from config/config.json and validates against schema
  */
@@ -32,31 +53,70 @@ class ConfigLoader {
      * @throws {Error} If configuration is invalid or missing
      */
     load() {
-        // Check if config file exists
-        if (!fs.existsSync(this.configPath)) {
+        const envServer = ConfigLoader.buildServerFromEnv();
+        const fileExists = fs.existsSync(this.configPath);
+
+        // A single server can be configured entirely via ACTUAL_SYNC_SERVER_* env
+        // vars (Unraid/Docker-friendly), so config.json is only required when no
+        // env server is provided. (#120)
+        if (!fileExists && !envServer) {
             throw new Error(
                 `Configuration file not found: ${this.configPath}\n` +
-                `Please create a config/config.json file. See config/config.example.json for reference.`
+                `Please create a config/config.json file (see config/config.example.json), ` +
+                `or configure a single server with the ACTUAL_SYNC_SERVER_* environment variables.`
             );
         }
 
-        // Load configuration file
-        let configContent;
-        try {
-            configContent = fs.readFileSync(this.configPath, 'utf8');
-        } catch (error) {
-            throw new Error(`Failed to read configuration file: ${error.message}`);
-        }
-
-        // Parse JSON
         let config;
-        try {
-            config = JSON.parse(configContent);
-        } catch (error) {
-            throw new Error(
-                `Invalid JSON in configuration file: ${error.message}\n` +
-                `Please check your config.json for syntax errors.`
-            );
+        if (fileExists) {
+            // Load configuration file
+            let configContent;
+            try {
+                configContent = fs.readFileSync(this.configPath, 'utf8');
+            } catch (error) {
+                throw new Error(`Failed to read configuration file: ${error.message}`);
+            }
+
+            // Parse JSON
+            try {
+                config = JSON.parse(configContent);
+            } catch (error) {
+                throw new Error(
+                    `Invalid JSON in configuration file: ${error.message}\n` +
+                    `Please check your config.json for syntax errors.`
+                );
+            }
+        } else {
+            // Env-only: no file on disk, build the config around the env server.
+            config = { servers: [] };
+        }
+
+        // Merge the env-var single server into the server list, deduped by budget
+        // identity (url + syncId). The config.json entry wins on a collision so a
+        // server present in both sources is never synced twice. (#120, #119)
+        if (envServer) {
+            config.servers = Array.isArray(config.servers) ? config.servers : [];
+            const fileKeys = new Set(config.servers.map(s => `${normalizeServerUrl(s.url)}|${s.syncId}`));
+            const envKey = `${normalizeServerUrl(envServer.url)}|${envServer.syncId}`;
+            if (fileKeys.has(envKey)) {
+                console.warn(
+                    `⚠️  The ACTUAL_SYNC_SERVER_* environment variables describe a budget already ` +
+                    `present in config.json (same url + syncId); using the config.json entry and ignoring the env vars.`
+                );
+            } else {
+                // Ensure a unique name so merging the env server alongside a file
+                // server that happens to share its name (e.g. both "Default", but
+                // DIFFERENT budgets) doesn't trip validateLogic's duplicate-name
+                // hard-fail. Auto-rename the env entry instead of crashing. (#120)
+                const names = new Set(config.servers.map(s => s.name));
+                if (names.has(envServer.name)) {
+                    const base = envServer.name;
+                    let n = 2;
+                    while (names.has(`${base} (${n})`)) n++;
+                    envServer.name = `${base} (${n})`;
+                }
+                config.servers.push(envServer);
+            }
         }
 
         // Validate against schema if available. (#115)
@@ -98,6 +158,48 @@ class ConfigLoader {
 
         this.config = config;
         return config;
+    }
+
+    /**
+     * Build a single server object from ACTUAL_SYNC_SERVER_* environment
+     * variables, for a config-file-free single-budget setup (Unraid/Docker). The
+     * three core vars are required to activate it; everything else is optional
+     * with sensible defaults. Returns null when not configured. (#120)
+     * @param {object} [env] environment to read (defaults to process.env)
+     * @returns {object|null} a server object, or null if the env path isn't used
+     */
+    static buildServerFromEnv(env = process.env) {
+        const url = env.ACTUAL_SYNC_SERVER_URL;
+        const password = env.ACTUAL_SYNC_SERVER_PASSWORD;
+        const syncId = env.ACTUAL_SYNC_SERVER_SYNC_ID;
+        if (!url || !password || !syncId) return null; // env path not activated
+
+        const name = env.ACTUAL_SYNC_SERVER_NAME || 'Default';
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'default';
+        const server = {
+            name,
+            url,
+            password,
+            syncId,
+            dataDir: env.ACTUAL_SYNC_SERVER_DATA_DIR || `data/${slug}`
+        };
+        if (env.ACTUAL_SYNC_SERVER_ENCRYPTION_PASSWORD) {
+            server.encryptionPassword = env.ACTUAL_SYNC_SERVER_ENCRYPTION_PASSWORD;
+        }
+        if (env.ACTUAL_SYNC_SERVER_SCHEDULE) {
+            server.sync = { schedule: env.ACTUAL_SYNC_SERVER_SCHEDULE };
+        }
+        return server;
+    }
+
+    /**
+     * Whether a single server is configured via ACTUAL_SYNC_SERVER_* env vars.
+     * Lets startup skip the "config.json not found" error/seed-and-exit. (#120)
+     * @param {object} [env]
+     * @returns {boolean}
+     */
+    static hasEnvServerConfig(env = process.env) {
+        return ConfigLoader.buildServerFromEnv(env) !== null;
     }
 
     /**
@@ -226,6 +328,36 @@ class ConfigLoader {
             throw new Error(
                 `Duplicate server names found: ${[...new Set(duplicates)].join(', ')}\n` +
                 `Each server must have a unique name.`
+            );
+        }
+
+        // Warn on duplicate BUDGETS: two servers pointing at the same budget
+        // (same normalized url + syncId) double-sync the same accounts — provider
+        // rate limits, duplicate notifications/history, and duplicate dashboard
+        // groups. The budget identity is (url, syncId); deduping by name alone
+        // misses this. Same syncId on a DIFFERENT url is allowed (distinct
+        // instances). Advisory for now; see #116 for promotion to hard-fail. (#119)
+        const budgetKeys = config.servers.map(s => `${normalizeServerUrl(s.url)}|${s.syncId}`);
+        const dupBudgetKeys = [...new Set(budgetKeys.filter((k, i) => budgetKeys.indexOf(k) !== i))];
+        if (dupBudgetKeys.length > 0) {
+            const groups = dupBudgetKeys.map(k =>
+                config.servers.filter((_, i) => budgetKeys[i] === k).map(s => `"${s.name}"`).join(' + ')
+            );
+            console.warn(
+                `⚠️  Warning: the same budget (url + syncId) is configured more than once: ${groups.join('; ')}.\n` +
+                `   It will be synced multiple times (duplicate bank-syncs, notifications and dashboard entries). Remove the duplicate entry.`
+            );
+        }
+
+        // Warn on shared data directories: multi-server isolation requires a
+        // distinct dataDir per server, or two syncs corrupt the same budget
+        // cache. Compare resolved paths so './data' and 'data' match. (#119)
+        const dataDirs = config.servers.map(s => path.resolve(s.dataDir));
+        const dupDirs = [...new Set(dataDirs.filter((d, i) => dataDirs.indexOf(d) !== i))];
+        if (dupDirs.length > 0) {
+            console.warn(
+                `⚠️  Warning: multiple servers share the same data directory: ${dupDirs.join(', ')}.\n` +
+                `   Each server needs its own dataDir to avoid budget-cache collisions.`
             );
         }
 

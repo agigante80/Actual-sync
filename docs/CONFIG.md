@@ -160,6 +160,31 @@ Multi-channel alerts on sync results. See **[docs/NOTIFICATIONS.md](NOTIFICATION
 
 ---
 
+## Single-server configuration via environment variables
+
+For the common case of **one budget**, you can skip `config.json` entirely and configure the single server with environment variables. This is the simplest path for Docker/Unraid: set the variables and start, no config file or config folder to prepare.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ACTUAL_SYNC_SERVER_URL` | yes | Actual Budget server URL (e.g. `https://actual.example.com`) |
+| `ACTUAL_SYNC_SERVER_PASSWORD` | yes | Server password |
+| `ACTUAL_SYNC_SERVER_SYNC_ID` | yes | Budget Sync ID (Actual Budget → open budget → Settings → Advanced → "Sync ID") |
+| `ACTUAL_SYNC_SERVER_NAME` | no | Display name (default `Default`) |
+| `ACTUAL_SYNC_SERVER_ENCRYPTION_PASSWORD` | no | End-to-end encryption password (only for E2EE budgets) |
+| `ACTUAL_SYNC_SERVER_DATA_DIR` | no | Data directory (default `data/<name-slug>`) |
+| `ACTUAL_SYNC_SERVER_SCHEDULE` | no | Per-server cron schedule (defaults to the global schedule) |
+
+The three core variables (`URL`, `PASSWORD`, `SYNC_ID`) must all be set to activate this path.
+
+**Precedence / merge rules:**
+- **No `config.json`, env vars set** → runs that single server (no file or first-run seeding needed).
+- **`config.json` present, env vars set for a *different* budget** → both are synced (the env server is merged into the list; if its name collides with a file server it is auto-renamed, e.g. `Default (2)`).
+- **Both set for the *same* budget** (same `url` + `syncId`) → the `config.json` entry wins and the env vars are ignored, with a warning. A budget is never synced twice.
+
+For **multiple** budgets, use `config.json` (the env-var path is single-server only). The env-built server is schema- and logic-validated exactly like a file-defined one.
+
+---
+
 ## Cron Examples
 
 | Schedule | Cron Expression | Description |

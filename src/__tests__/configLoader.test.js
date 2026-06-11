@@ -551,5 +551,154 @@ describe('ConfigLoader', () => {
             expect(() => loader.load()).not.toThrow();
         });
     });
+
+    describe('validateLogic — duplicate budget / dataDir (#119)', () => {
+        const loader = new ConfigLoader('x', 'y');
+        const srv = (over) => ({ name: 'S', url: 'https://a.example.com', password: 'password123', syncId: 'sync-1', dataDir: '/tmp/a', ...over });
+        const run = (servers) => {
+            const cfg = createMockConfig({ servers });
+            loader.applyDefaults(cfg);
+            loader.validateLogic(cfg);
+        };
+        const warned = (re) => console.warn.mock.calls.some(c => re.test(String(c[0])));
+
+        test('warns when two servers share the same (url, syncId)', () => {
+            run([srv({ name: 'One' }), srv({ name: 'Two', dataDir: '/tmp/b' })]);
+            expect(warned(/same budget \(url \+ syncId\) is configured more than once/)).toBe(true);
+        });
+
+        test('a trailing-slash url difference is still detected as the same budget', () => {
+            run([srv({ name: 'One', url: 'https://a.example.com' }), srv({ name: 'Two', url: 'https://a.example.com/', dataDir: '/tmp/b' })]);
+            expect(warned(/same budget/)).toBe(true);
+        });
+
+        test('host case is normalized (same budget), path case is preserved (distinct)', () => {
+            // Uppercase host = same budget (host is case-insensitive)
+            run([srv({ name: 'One', url: 'https://Host.Example.com', syncId: 'sx' }), srv({ name: 'Two', url: 'https://host.example.com', syncId: 'sx', dataDir: '/tmp/b' })]);
+            expect(warned(/same budget/)).toBe(true);
+            console.warn.mockClear();
+            // Different-case PATHS are treated as distinct (paths can be case-sensitive)
+            run([srv({ name: 'A', url: 'https://h.example.com/Budget', syncId: 'sy' }), srv({ name: 'B', url: 'https://h.example.com/budget', syncId: 'sy', dataDir: '/tmp/b' })]);
+            expect(warned(/same budget/)).toBe(false);
+        });
+
+        test('the same syncId on a DIFFERENT url is not flagged', () => {
+            run([srv({ name: 'One', url: 'https://a.example.com' }), srv({ name: 'Two', url: 'https://b.example.com', dataDir: '/tmp/b' })]);
+            expect(warned(/same budget/)).toBe(false);
+        });
+
+        test('warns when two servers share the same dataDir', () => {
+            run([srv({ name: 'One', url: 'https://a.example.com', syncId: 's1' }), srv({ name: 'Two', url: 'https://b.example.com', syncId: 's2', dataDir: '/tmp/a' })]);
+            expect(warned(/share the same data directory/)).toBe(true);
+        });
+
+        test('resolves dataDir paths so "./data" and "data" collide', () => {
+            run([srv({ name: 'One', url: 'https://a.example.com', syncId: 's1', dataDir: './data' }), srv({ name: 'Two', url: 'https://b.example.com', syncId: 's2', dataDir: 'data' })]);
+            expect(warned(/share the same data directory/)).toBe(true);
+        });
+
+        test('a clean multi-server config emits no budget/dataDir warning', () => {
+            run([
+                srv({ name: 'One', url: 'https://a.example.com', syncId: 's1', dataDir: '/tmp/a' }),
+                srv({ name: 'Two', url: 'https://b.example.com', syncId: 's2', dataDir: '/tmp/b' })
+            ]);
+            expect(warned(/same budget|share the same data directory/)).toBe(false);
+        });
+    });
+
+    describe('env-var single-server config (#120)', () => {
+        const ENV_KEYS = [
+            'ACTUAL_SYNC_SERVER_URL', 'ACTUAL_SYNC_SERVER_PASSWORD', 'ACTUAL_SYNC_SERVER_SYNC_ID',
+            'ACTUAL_SYNC_SERVER_NAME', 'ACTUAL_SYNC_SERVER_DATA_DIR', 'ACTUAL_SYNC_SERVER_ENCRYPTION_PASSWORD',
+            'ACTUAL_SYNC_SERVER_SCHEDULE'
+        ];
+        const saved = {};
+        beforeEach(() => { ENV_KEYS.forEach(k => { saved[k] = process.env[k]; delete process.env[k]; }); });
+        afterEach(() => { ENV_KEYS.forEach(k => { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }); });
+
+        const NO_SCHEMA = () => path.join(tempDir, 'no-schema.json'); // skips schema validation
+
+        test('buildServerFromEnv returns null when required vars are missing', () => {
+            expect(ConfigLoader.buildServerFromEnv({})).toBeNull();
+            expect(ConfigLoader.buildServerFromEnv({ ACTUAL_SYNC_SERVER_URL: 'https://x' })).toBeNull();
+        });
+
+        test('buildServerFromEnv builds a server with sensible defaults', () => {
+            const s = ConfigLoader.buildServerFromEnv({
+                ACTUAL_SYNC_SERVER_URL: 'https://x', ACTUAL_SYNC_SERVER_PASSWORD: 'pw', ACTUAL_SYNC_SERVER_SYNC_ID: 'sid'
+            });
+            expect(s).toMatchObject({ name: 'Default', url: 'https://x', password: 'pw', syncId: 'sid', dataDir: 'data/default' });
+            expect(s.encryptionPassword).toBeUndefined();
+            expect(s.sync).toBeUndefined();
+        });
+
+        test('buildServerFromEnv honors optional name/dataDir/encryption/schedule', () => {
+            const s = ConfigLoader.buildServerFromEnv({
+                ACTUAL_SYNC_SERVER_URL: 'https://x', ACTUAL_SYNC_SERVER_PASSWORD: 'pw', ACTUAL_SYNC_SERVER_SYNC_ID: 'sid',
+                ACTUAL_SYNC_SERVER_NAME: 'My Budget', ACTUAL_SYNC_SERVER_DATA_DIR: '/d',
+                ACTUAL_SYNC_SERVER_ENCRYPTION_PASSWORD: 'e2e', ACTUAL_SYNC_SERVER_SCHEDULE: '0 2 * * *'
+            });
+            expect(s).toMatchObject({ name: 'My Budget', dataDir: '/d', encryptionPassword: 'e2e', sync: { schedule: '0 2 * * *' } });
+        });
+
+        test('hasEnvServerConfig reflects presence of the required vars', () => {
+            expect(ConfigLoader.hasEnvServerConfig({})).toBe(false);
+            expect(ConfigLoader.hasEnvServerConfig({ ACTUAL_SYNC_SERVER_URL: 'u', ACTUAL_SYNC_SERVER_PASSWORD: 'p', ACTUAL_SYNC_SERVER_SYNC_ID: 's' })).toBe(true);
+        });
+
+        test('load() runs with env-only config when no config.json exists', () => {
+            process.env.ACTUAL_SYNC_SERVER_URL = 'https://env.example.com';
+            process.env.ACTUAL_SYNC_SERVER_PASSWORD = 'password123';
+            process.env.ACTUAL_SYNC_SERVER_SYNC_ID = 'env-sync';
+            const loader = new ConfigLoader(path.join(tempDir, 'does-not-exist.json'), NO_SCHEMA());
+            const cfg = loader.load();
+            expect(cfg.servers).toHaveLength(1);
+            expect(cfg.servers[0]).toMatchObject({ url: 'https://env.example.com', syncId: 'env-sync', name: 'Default' });
+        });
+
+        test('load() with neither a file nor env vars still throws not-found', () => {
+            const loader = new ConfigLoader(path.join(tempDir, 'does-not-exist.json'), NO_SCHEMA());
+            expect(() => loader.load()).toThrow(/Configuration file not found/);
+        });
+
+        test('load() merges the env server alongside a distinct config.json server', () => {
+            process.env.ACTUAL_SYNC_SERVER_URL = 'https://env.example.com';
+            process.env.ACTUAL_SYNC_SERVER_PASSWORD = 'password123';
+            process.env.ACTUAL_SYNC_SERVER_SYNC_ID = 'env-sync';
+            const fileCfg = createMockConfig({ servers: [{ name: 'File', url: 'https://file.example.com', password: 'password123', syncId: 'file-sync', dataDir: '/tmp/file' }] });
+            const loader = new ConfigLoader(createTestConfigFile(tempDir, fileCfg), NO_SCHEMA());
+            const cfg = loader.load();
+            expect(cfg.servers.map(s => s.syncId).sort()).toEqual(['env-sync', 'file-sync']);
+        });
+
+        test('load() auto-renames the env server when its name collides with a different file budget', () => {
+            // Env server defaults to name "Default"; file also has "Default" but a
+            // DIFFERENT budget. Both must sync — the env entry is renamed, not a crash.
+            process.env.ACTUAL_SYNC_SERVER_URL = 'https://env.example.com';
+            process.env.ACTUAL_SYNC_SERVER_PASSWORD = 'password123';
+            process.env.ACTUAL_SYNC_SERVER_SYNC_ID = 'env-sync';
+            const fileCfg = createMockConfig({ servers: [{ name: 'Default', url: 'https://file.example.com', password: 'password123', syncId: 'file-sync', dataDir: '/tmp/file' }] });
+            const loader = new ConfigLoader(createTestConfigFile(tempDir, fileCfg), NO_SCHEMA());
+            const cfg = loader.load();
+            expect(cfg.servers).toHaveLength(2);
+            const names = cfg.servers.map(s => s.name);
+            expect(new Set(names).size).toBe(2); // unique → validateLogic won't throw
+            expect(names).toContain('Default');
+            expect(names).toContain('Default (2)');
+        });
+
+        test('load() drops the env server when it duplicates a config.json budget (file wins)', () => {
+            process.env.ACTUAL_SYNC_SERVER_URL = 'https://dup.example.com';
+            process.env.ACTUAL_SYNC_SERVER_PASSWORD = 'password123';
+            process.env.ACTUAL_SYNC_SERVER_SYNC_ID = 'dup-sync';
+            // file entry has a trailing slash + different name but the same budget
+            const fileCfg = createMockConfig({ servers: [{ name: 'File', url: 'https://dup.example.com/', password: 'password123', syncId: 'dup-sync', dataDir: '/tmp/file' }] });
+            const loader = new ConfigLoader(createTestConfigFile(tempDir, fileCfg), NO_SCHEMA());
+            const cfg = loader.load();
+            expect(cfg.servers).toHaveLength(1);
+            expect(cfg.servers[0].name).toBe('File');
+            expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('already present in config.json'));
+        });
+    });
 });
 
