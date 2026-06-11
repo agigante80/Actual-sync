@@ -11,6 +11,7 @@
   <a href="https://github.com/agigante80/Actual-sync/actions/workflows/ci-cd.yml"><img src="https://github.com/agigante80/Actual-sync/actions/workflows/ci-cd.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/agigante80/Actual-sync/blob/main/LICENSE"><img src="https://img.shields.io/github/license/agigante80/Actual-sync" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen" alt="Node >= 20">
+  <a href="https://hub.docker.com/r/agigante80/actual-sync"><img src="https://img.shields.io/docker/pulls/agigante80/actual-sync?logo=docker&logoColor=white" alt="Docker Hub pulls"></a>
   <a href="https://github.com/agigante80/Actual-sync/pkgs/container/actual-sync"><img src="https://img.shields.io/badge/ghcr.io-actual--sync-2496ED?logo=docker&logoColor=white" alt="Container image on GHCR"></a>
   <a href="https://ca.unraid.net/apps/actual-sync-13q9rt00idnw48"><img src="https://img.shields.io/badge/Unraid-Community%20Apps-f15a2c" alt="Available on Unraid Community Apps"></a>
   <a href="https://github.com/agigante80/Actual-sync/stargazers"><img src="https://img.shields.io/github/stars/agigante80/Actual-sync?style=social" alt="GitHub stars"></a>
