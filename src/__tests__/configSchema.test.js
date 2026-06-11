@@ -184,6 +184,10 @@ describe('config schema hardening (#116 P3)', () => {
         test('accepts rfs-style maxSize and interval', () => {
             expect(validates(baseConfig({ logging: { rotation: { maxSize: '50M', interval: '12h' } } }))).toBe(true);
         });
+
+        test('accepts the rfs monthly interval unit (M)', () => {
+            expect(validates(baseConfig({ logging: { rotation: { interval: '1M' } } }))).toBe(true);
+        });
     });
 
     describe('numeric maxima', () => {
@@ -218,6 +222,10 @@ describe('config schema hardening (#116 P3)', () => {
 
         test('rejects an empty ntfy.tags item', () => {
             expect(validates(baseConfig({ notifications: { ntfy: { enabled: false, tags: [''] } } }))).toBe(false);
+        });
+
+        test('numeric telegram chatIds still validate (minLength applies only to strings)', () => {
+            expect(validates(baseConfig({ notifications: { telegram: { chatIds: [123456] } } }))).toBe(true);
         });
     });
 });

@@ -214,8 +214,8 @@
             },
             "interval": {
               "type": "string",
-              "description": "Time-based rotation interval, as a number plus a unit s/m/h/d (e.g., '1d', '12h'). Ensures logs rotate even at low volume, so maxFiles behaves as documented (days of retention).",
-              "pattern": "^[0-9]+[smhd]$",
+              "description": "Time-based rotation interval, as a number plus a unit: s/m/h/d or M for months (e.g., '1d', '12h', '1M'). Note m = minutes, M = months. Ensures logs rotate even at low volume, so maxFiles behaves as documented (days of retention).",
+              "pattern": "^[0-9]+[smhdM]$",
               "default": "1d"
             },
             "maxFiles": {
