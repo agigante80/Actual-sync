@@ -103,7 +103,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Intelligent Retry Logic** - Exponential backoff with rate limit detection and handling
 - ✅ **Account Discovery** - List all accessible bank accounts across servers
 - ✅ **Manual Sync Trigger** - On-demand synchronization via CLI or Telegram bot
-- ✅ **JSON Schema Validation** - Configuration validated at startup with clear error messages
+- ✅ **Configuration Validation** - Business rules (required fields, ranges, unique servers) enforced at startup; JSON-schema checks run alongside (advisory today, becoming a hard startup error in a future release) with clear messages
 
 ### 📊 Monitoring & Observability
 
@@ -828,7 +828,7 @@ See **[docs/TESTING.md](docs/TESTING.md)** for complete testing guide including:
 - **HTTPS Enforcement** - Warnings for HTTP connections in production
 - **Rate Limiting** - HTTP endpoints protected (60 req/min per IP)
 - **SQL Injection Protection** - Parameterized queries throughout
-- **Input Validation** - JSON schema validation for all config
+- **Input Validation** - Startup business-logic validation, plus JSON-schema checks (advisory now, hard-fail in a future release), for all config
 
 ### Security Audit Results
 

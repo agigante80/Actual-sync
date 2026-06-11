@@ -142,6 +142,13 @@ describe('config schema reconciliation (#116)', () => {
             });
             expect(validates(config)).toBe(true);
         });
+
+        test('a non-http(s) generic webhook url is rejected', () => {
+            const config = baseConfig({
+                notifications: { webhooks: { generic: [{ name: 'x', url: 'ftp://example.com/hook' }] } }
+            });
+            expect(validates(config)).toBe(false);
+        });
     });
 
     describe('cron schedule accepts valid named/extended syntax', () => {
@@ -276,7 +283,9 @@ describe('config deliverables (#116)', () => {
         // NOTE: this is a substring smoke test — short generic names (e.g. "to",
         // "host") match trivially and aren't truly proven; it reliably catches
         // distinctive names (the ones that drift via typo). Don't read it as proof
-        // that every property is wired up.
+        // that every property is wired up. It scans src/ only (every config
+        // consumer lives there today); a key read solely from scripts/ or index.js
+        // would not be covered.
         const RESERVED = new Set([
             '$schema' // editor-only hint; intentionally not read at runtime
         ]);

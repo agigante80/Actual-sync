@@ -124,7 +124,7 @@ Global synchronization behavior configuration. These settings apply to all serve
 
 - **baseRetryDelayMs** (optional, integer, default: 3000)
   - Base delay in milliseconds for exponential backoff
-  - Minimum: 1000ms (1 second)
+  - Range: 1000-10000ms (1-10 seconds)
   - Delay doubles with each retry attempt
   - Can be overridden per server
   - Example: `3000` (3 seconds)
