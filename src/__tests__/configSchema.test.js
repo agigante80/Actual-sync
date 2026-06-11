@@ -355,6 +355,53 @@ describe('numeric bounds are enforced for every schema field (#116)', () => {
     });
 });
 
+describe('unknown keys are flagged but advisory-only (#123)', () => {
+    // additionalProperties:false makes AJV flag unknown keys; while schema
+    // validation is advisory (#115) this surfaces as a WARNING, not a throw.
+    // #121 will later promote it (decision: warn-forever vs hard-fail).
+
+    test('schema rejects an unknown top-level key (would warn now, hard-fail under #121)', () => {
+        expect(validates(baseConfig({ notifcations: {} }))).toBe(false); // typo of "notifications"
+    });
+
+    test('schema rejects an unknown nested key', () => {
+        expect(validates(baseConfig({ sync: { maxRetires: 3 } }))).toBe(false); // typo of "maxRetries"
+    });
+
+    test('schema rejects a JSON "_comment" key', () => {
+        expect(validates(baseConfig({ _comment: 'note to self' }))).toBe(false);
+    });
+
+    test('an unknown key WARNS but still load()s (advisory, not a hard fail)', () => {
+        const tempDir = createTempDir();
+        const suppress = suppressConsole();
+        try {
+            const config = baseConfig({ notifcations: {}, _comment: 'hand-edited note' });
+            config.servers[0].dataDir = path.join(tempDir, 'd');
+            const configPath = path.join(tempDir, 'config.json');
+            fs.writeFileSync(configPath, JSON.stringify(config));
+
+            const loader = new ConfigLoader(configPath, SCHEMA_PATH);
+            expect(() => loader.load()).not.toThrow();
+
+            const warned = console.warn.mock.calls
+                .map(args => String(args[0]))
+                .some(msg => msg.includes('does not fully match the schema'));
+            expect(warned).toBe(true);
+        } finally {
+            suppress.restore();
+            cleanupTempDir(tempDir);
+        }
+    });
+
+    test('webhooks.generic[*].headers stays open (arbitrary header names allowed)', () => {
+        const config = baseConfig({
+            notifications: { webhooks: { generic: [{ url: 'https://example.com/h', headers: { 'X-Anything': 'v', Authorization: 'Bearer x' } }] } }
+        });
+        expect(validates(config)).toBe(true);
+    });
+});
+
 describe('config deliverables (#116)', () => {
     test('config.example.json validates clean against the schema (as shipped)', () => {
         const example = JSON.parse(fs.readFileSync(EXAMPLE_PATH, 'utf8'));

@@ -380,11 +380,19 @@ The configuration system performs multiple validation checks:
 ### Schema Validation (advisory)
 
 Checks the config against `config.schema.json` (required fields, data types, URL
-patterns, enums, ranges). **This is currently advisory:** a mismatch prints a
-warning and startup continues, so a schema that drifted is surfaced without
-crash-looping a previously-working deploy. It will become a hard startup error
-in a future release (tracked in #121) — treat the warnings as errors-in-waiting
-and fix them.
+patterns, enums, ranges, **and unknown/typo'd keys**). **This is currently
+advisory:** a mismatch prints a warning and startup continues, so a schema that
+drifted is surfaced without crash-looping a previously-working deploy. It will
+become a hard startup error in a future release (tracked in #121) — treat the
+warnings as errors-in-waiting and fix them.
+
+**Unknown keys are now flagged.** Every config block rejects keys it does not
+recognise, so a typo (`maxRetires` instead of `maxRetries`, `notifcations`
+instead of `notifications`) or a leftover/legacy key produces a warning instead
+of being silently ignored. Note that JSON has no comments, so a `"_comment"` /
+`"//"` key will also be flagged — move notes out of `config.json`. The one
+exception is `notifications.webhooks.generic[*].headers`, which is an open map of
+arbitrary HTTP header names. Run `npm run validate-config` to see all warnings.
 
 ### Business Logic Validation (hard-fail)
 
