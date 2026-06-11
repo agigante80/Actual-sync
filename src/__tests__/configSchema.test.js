@@ -161,6 +161,17 @@ describe('config schema reconciliation (#116)', () => {
             const config = baseConfig({ sync: { schedule: '*/30 * * * *' } });
             expect(validates(config)).toBe(true);
         });
+
+        test('a 6-field (with-seconds) cron validates', () => {
+            // node-schedule accepts an optional leading seconds field.
+            expect(validates(baseConfig({ sync: { schedule: '15 30 * * * *' } }))).toBe(true);
+        });
+
+        test('a per-server 6-field cron validates', () => {
+            const config = baseConfig();
+            config.servers[0].sync = { schedule: '0 0 2 * * *' };
+            expect(validates(config)).toBe(true);
+        });
     });
 });
 
@@ -181,19 +192,29 @@ describe('config schema hardening (#116 P3)', () => {
 
     describe('log rotation size/interval formats', () => {
         test('rejects an unparseable maxSize', () => {
-            expect(validates(baseConfig({ logging: { rotation: { maxSize: '10MB' } } }))).toBe(false);
+            // rotating-file-stream rejects this; '10MB' is actually VALID (see below).
+            expect(validates(baseConfig({ logging: { rotation: { maxSize: 'tenmegs' } } }))).toBe(false);
+        });
+
+        test('rejects a zero-magnitude maxSize', () => {
+            expect(validates(baseConfig({ logging: { rotation: { maxSize: '0M' } } }))).toBe(false);
         });
 
         test('rejects an unparseable interval', () => {
             expect(validates(baseConfig({ logging: { rotation: { interval: '1day' } } }))).toBe(false);
         });
 
-        test('accepts rfs-style maxSize and interval', () => {
-            expect(validates(baseConfig({ logging: { rotation: { maxSize: '50M', interval: '12h' } } }))).toBe(true);
+        test('accepts single- and two-letter rfs size units', () => {
+            // rfs accepts both '10M' and '10MB' / '10KB' / '10GB' / '512B'.
+            for (const maxSize of ['10M', '10MB', '512B', '1GB']) {
+                expect(validates(baseConfig({ logging: { rotation: { maxSize } } }))).toBe(true);
+            }
         });
 
-        test('accepts the rfs monthly interval unit (M)', () => {
-            expect(validates(baseConfig({ logging: { rotation: { interval: '1M' } } }))).toBe(true);
+        test('accepts rfs-style interval, including monthly (M)', () => {
+            for (const interval of ['1d', '12h', '30m', '1M']) {
+                expect(validates(baseConfig({ logging: { rotation: { interval } } }))).toBe(true);
+            }
         });
     });
 

@@ -103,8 +103,8 @@ Use cases:
 | `logDir` | string/null | `./logs` | Directory for log files (`null` = console only) |
 | **Rotation** |
 | `rotation.enabled` | boolean | `true` | Enable log rotation (recommended) |
-| `rotation.maxSize` | string | `10M` | Max file size before rotation (K, M, G) |
-| `rotation.interval` | string | `1d` | Time-based rotation (e.g. `1d`, `12h`). Rotation fires on whichever comes first, size or interval. |
+| `rotation.maxSize` | string | `10M` | Max file size before rotation: positive integer + unit B/K/M/G, optional `B` suffix (e.g. `10M`, `10MB`, `512B`) |
+| `rotation.interval` | string | `1d` | Time-based rotation: positive integer + unit s/m/h/d or `M` for months (e.g. `1d`, `12h`, `1M`; m = minutes). Rotation fires on whichever comes first, size or interval. |
 | `rotation.maxFiles` | integer | `30` | Rotated files to keep. With the `1d` interval, this is days of retention. |
 | `rotation.compress` | string | `gzip` | Compression: `gzip` or `none` |
 | **Syslog** |
