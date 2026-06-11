@@ -210,8 +210,8 @@ describe('config schema reconciliation (#116)', () => {
 });
 
 describe('config schema hardening (#116 P3)', () => {
-    describe('server url requires a non-empty host', () => {
-        test('rejects "http://" with no host', () => {
+    describe('server url rejects an empty authority', () => {
+        test('rejects "http://" (nothing after the scheme)', () => {
             const config = baseConfig();
             config.servers[0].url = 'http://';
             expect(validates(config)).toBe(false);
@@ -289,6 +289,47 @@ describe('config schema hardening (#116 P3)', () => {
         test('numeric telegram chatIds still validate (minLength applies only to strings)', () => {
             expect(validates(baseConfig({ notifications: { telegram: { chatIds: [123456] } } }))).toBe(true);
         });
+    });
+});
+
+describe('conditional + pattern rule guards (#116)', () => {
+    test('enabled telegram rejects a malformed botToken', () => {
+        expect(validates(baseConfig({ notifications: { telegram: { enabled: true, botToken: 'not-a-token', chatId: '42' } } }))).toBe(false);
+    });
+
+    test('enabled telegram with a valid botToken + chatId validates', () => {
+        expect(validates(baseConfig({ notifications: { telegram: { enabled: true, botToken: '123456:ABC-def', chatId: '42' } } }))).toBe(true);
+    });
+
+    test('enabled telegram requires chatId or chatIds', () => {
+        expect(validates(baseConfig({ notifications: { telegram: { enabled: true, botToken: '123456:ABC-def' } } }))).toBe(false);
+    });
+
+    test('telegram rejects unknown keys (additionalProperties:false)', () => {
+        expect(validates(baseConfig({ notifications: { telegram: { enabled: false, botTokn: 'typo' } } }))).toBe(false);
+    });
+
+    test('slack webhook url must be a hooks.slack.com url', () => {
+        expect(validates(baseConfig({ notifications: { webhooks: { slack: [{ url: 'https://example.com/x' }] } } }))).toBe(false);
+        expect(validates(baseConfig({ notifications: { webhooks: { slack: [{ url: 'https://hooks.slack.com/services/T/B/x' }] } } }))).toBe(true);
+    });
+
+    test('discord webhook url must be a discord.com webhook url', () => {
+        expect(validates(baseConfig({ notifications: { webhooks: { discord: [{ url: 'https://example.com/x' }] } } }))).toBe(false);
+        expect(validates(baseConfig({ notifications: { webhooks: { discord: [{ url: 'https://discord.com/api/webhooks/1/x' }] } } }))).toBe(true);
+    });
+
+    test('ntfy.icon accepts empty-string opt-out and a uri, rejects garbage', () => {
+        expect(validates(baseConfig({ notifications: { ntfy: { enabled: false, icon: '' } } }))).toBe(true);
+        expect(validates(baseConfig({ notifications: { ntfy: { enabled: false, icon: 'https://example.com/i.png' } } }))).toBe(true);
+        expect(validates(baseConfig({ notifications: { ntfy: { enabled: false, icon: 'not a uri' } } }))).toBe(false);
+    });
+
+    test('email validates from/to as emails only when enabled', () => {
+        const enabledBad = { notifications: { email: { enabled: true, host: 'smtp.example.com', auth: { user: 'u', pass: 'p' }, from: 'not-an-email', to: ['a@b.com'] } } };
+        const disabledBad = { notifications: { email: { enabled: false, from: 'not-an-email', to: ['placeholder'] } } };
+        expect(validates(baseConfig(enabledBad))).toBe(false);
+        expect(validates(baseConfig(disabledBad))).toBe(true);
     });
 });
 
