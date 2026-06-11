@@ -263,7 +263,10 @@ These caused real time loss. Front-loading them saves the next attempt.
 
 `actual-sync` shipped:
 - `ca_profile.xml` at repo root.
-- `unraid/actual-sync.xml` (template, `:latest`, filled `<TemplateURL>`).
+- `unraid/actual-sync.xml` (template, `:latest`, filled `<TemplateURL>`). As of 1.8.0
+  it also carries the single-budget `ACTUAL_SYNC_SERVER_*` Variable fields (the
+  "single instance via UI, many via a file" pattern from Section 11), with the two
+  password fields `Mask="true"`.
 - `unraid/actual-sync-icon.png` (icon).
 - `.github/workflows/unraid-xmllint.yml` (well-formedness gate).
 
@@ -287,10 +290,26 @@ cannot expose "add as many as you want" in the Unraid UI. The idiomatic pattern:
   multi-instance source, mounted at a Path the user provides.
 - **Merge the two sources, deduped by a STABLE IDENTITY, not the display name.**
   If the same instance is configured in both the env vars and the file, dedup on a
-  real identity key (for actual-sync: `url` + `syncId`, plus `dataDir`) and drop the
-  duplicate with a warning — otherwise you double-process it (double bank-sync,
-  duplicate notifications, state collisions). Deduping on the user-facing *name*
-  alone is not enough; two entries can name the same underlying resource differently.
+  real identity key and drop the duplicate with a warning — otherwise you
+  double-process it (double bank-sync, duplicate notifications, state collisions).
+  Deduping on the user-facing *name* alone is not enough; two entries can name the
+  same underlying resource differently.
 
-For actual-sync this is tracked by #120 (single-server env-var config) built on #119
-(duplicate-budget detection). Mask secret Variable fields (`Mask="true"`).
+**Shipped in actual-sync 1.8.0 (#119 + #120).** Concrete behavior, for reference:
+
+- **Env-var server (#120).** A single budget is configured entirely via
+  `ACTUAL_SYNC_SERVER_*` env vars: `URL`, `PASSWORD`, `SYNC_ID` (required), plus
+  optional `NAME`, `ENCRYPTION_PASSWORD`, `DATA_DIR`, `SCHEDULE`. With these set, an
+  Unraid/Docker user needs no `config.json` and no pre-created config folder. The
+  template exposes the matching `<Config Type="Variable">` fields, with `PASSWORD`
+  and `ENCRYPTION_PASSWORD` set `Mask="true"`.
+- **Precedence.** The file stays the canonical multi-server source. The env-var
+  server is merged into the file's list; if its `NAME` collides with a file server it
+  is auto-renamed rather than overwriting. A budget is never synced twice.
+- **Budget identity for dedup (#119).** Two servers are the same BUDGET when their
+  normalized `url` + `syncId` match (host compared case-insensitively, path
+  case-sensitively). `validateLogic()` also warns when two servers share a `dataDir`
+  (which would corrupt the same cache). This is implemented in
+  `src/lib/configLoader.js`.
+- **Advisory for now.** Duplicate-budget and shared-dataDir detection currently
+  *warns*; turning it into a hard startup failure is tracked by #116.
