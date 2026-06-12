@@ -19,6 +19,7 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const pkg = require('../package.json'); // sample data shows the current version, not a stale literal
 
 const SCREENSHOTS_DIR = path.join(__dirname, '../docs/screenshots');
 const DASHBOARD_URL = 'http://localhost:3000/dashboard';
@@ -72,7 +73,7 @@ async function injectFakeData(page, scenario) {
         healthy: {
             status: {
                 status: 'HEALTHY',
-                version: '1.4.0',
+                version: pkg.version,
                 uptime: 86400, // 1 day
                 sync: {
                     lastSyncTime: new Date(Date.now() - 300000).toISOString(), // 5 min ago
@@ -83,9 +84,9 @@ async function injectFakeData(page, scenario) {
                     successRate: '96.67%'
                 },
                 servers: {
-                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 300000).toISOString(), lastSyncStatus: 'success' },
-                    'Personal Budget': { status: 'success', lastSync: new Date(Date.now() - 600000).toISOString(), lastSyncStatus: 'success' },
-                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 900000).toISOString(), lastSyncStatus: 'success' }
+                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 300000).toISOString(), lastSyncStatus: 'success', lastSyncCounts: { succeeded: 3, failed: 0, skipped: 1 } },
+                    'Personal Budget': { status: 'success', lastSync: new Date(Date.now() - 600000).toISOString(), lastSyncStatus: 'success', lastSyncCounts: { succeeded: 2, failed: 0, skipped: 2 } },
+                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 900000).toISOString(), lastSyncStatus: 'success', lastSyncCounts: { succeeded: 4, failed: 0, skipped: 0 } }
                 }
             },
             metrics: {
@@ -122,11 +123,12 @@ async function injectFakeData(page, scenario) {
             },
             history: Array.from({length: 10}, (_, i) => ({
                 timestamp: new Date(Date.now() - i * 3600000).toISOString(),
-                serverName: ['Main Budget', 'Personal Budget', 'Family Budget'][i % 3],
+                server_name: ['Main Budget', 'Personal Budget', 'Family Budget'][i % 3],
                 status: (i === 2 || i === 7) ? 'error' : 'success',
-                duration: 3000 + (i * 400), // Deterministic duration
-                accountsProcessed: (i % 5) + 1, // Deterministic account count
-                accountsFailed: (i === 2 || i === 7) ? 1 : 0
+                duration_ms: 3000 + (i * 400), // Deterministic duration
+                accounts_succeeded: (i % 5) + 1, // Deterministic account count
+                accounts_failed: (i === 2 || i === 7) ? 1 : 0,
+                accounts_skipped: i % 3
             })),
             logs: [
                 { level: 'INFO', message: 'Starting sync for server: Main Budget', metadata: { server: 'Main Budget' } },
@@ -138,7 +140,7 @@ async function injectFakeData(page, scenario) {
         degraded: {
             status: {
                 status: 'DEGRADED',
-                version: '1.4.0',
+                version: pkg.version,
                 uptime: 172800, // 2 days
                 sync: {
                     lastSyncTime: new Date(Date.now() - 1800000).toISOString(), // 30 min ago
@@ -149,10 +151,10 @@ async function injectFakeData(page, scenario) {
                     successRate: '85.00%'
                 },
                 servers: {
-                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 1800000).toISOString(), lastSyncStatus: 'success' },
-                    'Personal Budget': { status: 'error', lastSync: new Date(Date.now() - 3600000).toISOString(), lastSyncStatus: 'failure', error: 'Connection timeout after 3 retries' },
-                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 2400000).toISOString(), lastSyncStatus: 'partial' },
-                    'Business Budget': { status: 'error', lastSync: new Date(Date.now() - 5400000).toISOString(), lastSyncStatus: 'failure', error: 'Rate limit exceeded' }
+                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 1800000).toISOString(), lastSyncStatus: 'success', lastSyncCounts: { succeeded: 3, failed: 0, skipped: 1 } },
+                    'Personal Budget': { status: 'error', lastSync: new Date(Date.now() - 3600000).toISOString(), lastSyncStatus: 'failure', error: 'Connection timeout after 3 retries', lastSyncCounts: { succeeded: 0, failed: 2, skipped: 1 } },
+                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 2400000).toISOString(), lastSyncStatus: 'partial', lastSyncCounts: { succeeded: 2, failed: 1, skipped: 2 } },
+                    'Business Budget': { status: 'error', lastSync: new Date(Date.now() - 5400000).toISOString(), lastSyncStatus: 'failure', error: 'Rate limit exceeded', lastSyncCounts: { succeeded: 0, failed: 3, skipped: 0 } }
                 }
             },
             metrics: {
@@ -196,11 +198,12 @@ async function injectFakeData(page, scenario) {
             },
             history: Array.from({length: 10}, (_, i) => ({
                 timestamp: new Date(Date.now() - i * 3600000).toISOString(),
-                serverName: ['Main Budget', 'Personal Budget', 'Family Budget', 'Business Budget'][i % 4],
+                server_name: ['Main Budget', 'Personal Budget', 'Family Budget', 'Business Budget'][i % 4],
                 status: (i === 1 || i === 4 || i === 7) ? 'error' : 'success',
-                duration: 3000 + (i * 500), // Deterministic duration
-                accountsProcessed: (i === 1 || i === 4 || i === 7) ? 0 : (i % 5) + 1, // Deterministic account count
-                accountsFailed: (i === 1 || i === 4 || i === 7) ? ((i % 3) + 1) : 0 // Deterministic failures
+                duration_ms: 3000 + (i * 500), // Deterministic duration
+                accounts_succeeded: (i === 1 || i === 4 || i === 7) ? 0 : (i % 5) + 1, // Deterministic account count
+                accounts_failed: (i === 1 || i === 4 || i === 7) ? ((i % 3) + 1) : 0, // Deterministic failures
+                accounts_skipped: i % 2
             })),
             logs: [
                 { level: 'ERROR', message: 'Sync failed for server: Personal Budget', metadata: { server: 'Personal Budget', error: 'Connection timeout' } },
@@ -212,7 +215,7 @@ async function injectFakeData(page, scenario) {
         multiServer: {
             status: {
                 status: 'HEALTHY',
-                version: '1.4.0',
+                version: pkg.version,
                 uptime: 259200, // 3 days
                 sync: {
                     lastSyncTime: new Date(Date.now() - 180000).toISOString(), // 3 min ago
@@ -223,12 +226,12 @@ async function injectFakeData(page, scenario) {
                     successRate: '97.00%'
                 },
                 servers: {
-                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 180000).toISOString(), lastSyncStatus: 'success' },
-                    'Personal Budget': { status: 'success', lastSync: new Date(Date.now() - 240000).toISOString(), lastSyncStatus: 'success' },
-                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 360000).toISOString(), lastSyncStatus: 'success' },
-                    'Business Budget': { status: 'success', lastSync: new Date(Date.now() - 480000).toISOString(), lastSyncStatus: 'success' },
-                    'Investments': { status: 'success', lastSync: new Date(Date.now() - 600000).toISOString(), lastSyncStatus: 'success' },
-                    'Emergency Fund': { status: 'success', lastSync: new Date(Date.now() - 720000).toISOString(), lastSyncStatus: 'success' }
+                    'Main Budget': { status: 'success', lastSync: new Date(Date.now() - 180000).toISOString(), lastSyncStatus: 'success', lastSyncCounts: { succeeded: 4, failed: 0, skipped: 1 } },
+                    'Personal Budget': { status: 'success', lastSync: new Date(Date.now() - 240000).toISOString(), lastSyncStatus: 'success', lastSyncCounts: { succeeded: 3, failed: 0, skipped: 0 } },
+                    'Family Budget': { status: 'success', lastSync: new Date(Date.now() - 360000).toISOString(), lastSyncStatus: 'success', lastSyncCounts: { succeeded: 5, failed: 0, skipped: 2 } },
+                    'Business Budget': { status: 'success', lastSync: new Date(Date.now() - 480000).toISOString(), lastSyncStatus: 'success', lastSyncCounts: { succeeded: 2, failed: 0, skipped: 1 } },
+                    'Investments': { status: 'success', lastSync: new Date(Date.now() - 600000).toISOString(), lastSyncStatus: 'success', lastSyncCounts: { succeeded: 6, failed: 0, skipped: 0 } },
+                    'Emergency Fund': { status: 'success', lastSync: new Date(Date.now() - 720000).toISOString(), lastSyncStatus: 'success', lastSyncCounts: { succeeded: 3, failed: 0, skipped: 3 } }
                 }
             },
             serverEncryption: {
@@ -296,11 +299,12 @@ async function injectFakeData(page, scenario) {
             },
             history: Array.from({length: 10}, (_, i) => ({
                 timestamp: new Date(Date.now() - i * 1800000).toISOString(),
-                serverName: ['Main Budget', 'Personal Budget', 'Family Budget', 'Business Budget', 'Investments', 'Emergency Fund'][i % 6],
+                server_name: ['Main Budget', 'Personal Budget', 'Family Budget', 'Business Budget', 'Investments', 'Emergency Fund'][i % 6],
                 status: (i === 3 || i === 8) ? 'error' : 'success',
-                duration: 3000 + (i * 450), // Deterministic duration
-                accountsProcessed: (i === 3 || i === 8) ? 0 : ((i % 6) + 2), // Deterministic account count
-                accountsFailed: (i === 3 || i === 8) ? ((i % 2) + 1) : 0 // Deterministic failures
+                duration_ms: 3000 + (i * 450), // Deterministic duration
+                accounts_succeeded: (i === 3 || i === 8) ? 0 : ((i % 6) + 2), // Deterministic account count
+                accounts_failed: (i === 3 || i === 8) ? ((i % 2) + 1) : 0, // Deterministic failures
+                accounts_skipped: i % 3
             })),
             logs: [
                 { level: 'INFO', message: 'Starting sync for server: Main Budget', metadata: { server: 'Main Budget' } },
