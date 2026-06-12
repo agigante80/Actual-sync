@@ -1,0 +1,27 @@
+{
+  "lastAudit": "2026-06-12",
+  "notes": "Seeded by #130. Baseline is clean: `npm run dead:check` reports no unused files/exports. The three entries below were the knip baseline findings, all removed in #130 (the symbols stay; only the needless exports were dropped). Cache is keyed `kind:path:symbol`; status is filed|allowlisted|wontfix|fixed.",
+  "findings": {
+    "unused-export:src/lib/configBootstrap.js:PROJECT_ROOT": {
+      "firstSeen": "2026-06-12",
+      "lastSeen": "2026-06-12",
+      "status": "fixed",
+      "ticket": null,
+      "notes": "Export removed in #130; internal const kept, test keeps its own copy."
+    },
+    "unused-export:src/lib/loggerConfig.js:LOGGER_CONFIG_KEYS": {
+      "firstSeen": "2026-06-12",
+      "lastSeen": "2026-06-12",
+      "status": "fixed",
+      "ticket": null,
+      "notes": "Export removed in #130; used only in-file."
+    },
+    "unused-export:src/syncService.js:formatNextSync": {
+      "firstSeen": "2026-06-12",
+      "lastSeen": "2026-06-12",
+      "status": "fixed",
+      "ticket": null,
+      "notes": "Export removed in #130; the 'healthCheck uses it' comment was stale, nothing imported it."
+    }
+  }
+}
