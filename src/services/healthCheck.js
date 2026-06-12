@@ -10,6 +10,7 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
+const { resolveVersion } = require('../lib/version');
 
 class HealthCheckService {
   /**
@@ -159,7 +160,7 @@ class HealthCheckService {
         timestamp: new Date().toISOString(),
         uptime: uptime,
         service: 'actual-sync',
-        version: global.APP_VERSION || process.env.VERSION || 'unknown'
+        version: global.APP_VERSION || resolveVersion()
       };
 
       this.logger.debug('Health check requested', { uptime, remoteAddress: req.ip });
@@ -175,7 +176,7 @@ class HealthCheckService {
         timestamp: new Date().toISOString(),
         uptime: uptime,
         service: 'actual-sync',
-        version: global.APP_VERSION || process.env.VERSION || 'unknown',
+        version: global.APP_VERSION || resolveVersion(),
         sync: {
           lastSyncTime: this.status.lastSyncTime,
           lastSyncStatus: this.status.lastSyncStatus,
@@ -313,7 +314,7 @@ class HealthCheckService {
       
       res.json({
         status: this.getOverallStatus(),
-        version: global.APP_VERSION || process.env.VERSION || 'unknown',
+        version: global.APP_VERSION || resolveVersion(),
         uptime: uptime,
         sync: {
           lastSyncTime: this.status.lastSyncTime,
