@@ -17,7 +17,7 @@ The project uses **Jest** as the testing framework with comprehensive unit and i
 - Telegram bot commands
 - Sync history tracking
 
-**Current Test Coverage**: 83.44% statements, 75.04% branches, 91.53% functions, 83.54% lines
+**Current test count and coverage**: see the live **Tests** and **Coverage** badges at the top of the [README](../README.md) (regenerated each release from the Jest run). Enforced thresholds: 70% lines/functions/statements, 61% branches.
 
 ---
 
@@ -39,10 +39,10 @@ npm run test:coverage
 ### Test Output
 
 ```
-Test Suites: 11 passed, 11 total
-Tests:       255 passed, 255 total
+Test Suites: all passing
+Tests:       all passing      # live count + coverage are on the README badges
 Snapshots:   0 total
-Coverage:    83.44% statements, 75.04% branches, 91.53% functions, 83.54% lines
+Time:        ~8 s
 ```
 
 ---
@@ -67,9 +67,6 @@ src/
 ## 🧪 Test Suites
 
 ### 1. ConfigLoader Tests (`configLoader.test.js`)
-
-**Coverage**: 98.73%  
-**Tests**: 20
 
 Tests configuration loading, validation, and error handling:
 
@@ -98,8 +95,6 @@ test('should throw error for duplicate server names', () => {
 ```
 
 ### 2. Retry Logic Tests (`retryLogic.test.js`)
-
-**Tests**: 18
 
 Tests exponential backoff and retry behavior:
 
@@ -133,8 +128,6 @@ test('should retry with exponential backoff on rate limit', async () => {
 
 ### 3. Sync Service Integration Tests (`syncService.test.js`)
 
-**Tests**: 11
-
 Tests end-to-end sync workflow with mocked Actual API:
 
 - **Full workflow**: Init → Download → Sync → Bank Sync → Shutdown
@@ -165,8 +158,6 @@ test('should complete full sync workflow successfully', async () => {
 ```
 
 ### 4. Startup Validation Tests (`startupValidation.test.js`)
-
-**Tests**: 13
 
 Tests startup environment validation:
 
@@ -283,11 +274,10 @@ Configured in `package.json`:
 }
 ```
 
-**Current Coverage** (excluding integration files):
-- Statements: 98.73%
-- Branches: 98.43%
-- Functions: 100%
-- Lines: 98.68%
+**Current coverage**: run `npm run test:coverage` for the authoritative per-file
+report, or see the live **Coverage** badge on the [README](../README.md). The
+enforced minimums are the thresholds shown above (70% lines/functions/statements,
+61% branches).
 
 ### Excluded from Coverage
 

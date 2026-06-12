@@ -124,6 +124,39 @@ Readiness probe endpoint for Kubernetes and container orchestration.
 
 **Use Case:** Kubernetes readiness probes, startup checks.
 
+### GET /metrics/prometheus
+
+Prometheus-format metrics (text exposition). This is the endpoint to scrape with
+Prometheus — `/metrics` returns JSON for humans/uptime checks, `/metrics/prometheus`
+returns the Prometheus text format. No authentication. See
+[docs/PROMETHEUS.md](PROMETHEUS.md) for the full metric reference and scrape config.
+
+### Other public endpoints
+
+- `GET /icon.png` — the project icon (served locally; used by the dashboard and notifications).
+- `GET /ws/logs` — WebSocket log stream consumed by the dashboard's Live Logs panel.
+
+### Internal dashboard API (`/api/dashboard/*`)
+
+These endpoints back the web dashboard UI and are **internal** — all are behind
+`dashboardAuth()` and return shapes tailored to the dashboard's JavaScript, not a
+stable public API (no compatibility guarantees). They are listed here so the docs
+match the code, not as an integration surface:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET  | `/api/dashboard/status` | Overall status + per-server summary |
+| GET  | `/api/dashboard/servers` | Configured servers |
+| GET  | `/api/dashboard/orphaned-servers` | History for servers no longer in config |
+| GET  | `/api/dashboard/schedules` | Per-server schedules / next run |
+| GET  | `/api/dashboard/metrics` | Aggregated metrics for the Analytics tab |
+| GET  | `/api/dashboard/history` | Sync history records |
+| GET  | `/api/dashboard/accounts` | Discovered bank accounts |
+| POST | `/api/dashboard/sync` | Trigger a manual sync |
+| POST | `/api/dashboard/dismiss-error` | Clear a server's last error |
+| POST | `/api/dashboard/reset-history` | Reset stored sync history |
+| POST | `/api/dashboard/test-notification` | Send a test notification |
+
 ## Integration Examples
 
 ### Docker Healthcheck
@@ -173,14 +206,15 @@ spec:
 
 ### Prometheus Monitoring
 
-The `/metrics` endpoint can be scraped by Prometheus. Example scrape config:
+The `/metrics/prometheus` endpoint exposes Prometheus-format metrics for scraping
+(`/metrics` returns JSON, not the Prometheus text format). Example scrape config:
 
 ```yaml
 scrape_configs:
   - job_name: 'actual-sync'
     static_configs:
       - targets: ['actual-sync:3000']
-    metrics_path: '/metrics'
+    metrics_path: '/metrics/prometheus'
     scrape_interval: 30s
 ```
 
