@@ -140,6 +140,13 @@ jobs:
           find src -name "*.js" -type f -exec node --check {} \;
           echo "✅ All JavaScript files have valid syntax"
 
+      - name: Check for dead code (knip, report-only)
+        # Advisory for now: `knip --no-exit-code` always exits 0 so it never
+        # blocks while a baseline is being cleaned up. Flip to blocking by
+        # switching to `npm run dead:check` in a dedicated cleanup PR once the
+        # baseline is green (see #130). (#130)
+        run: npm run knip
+
       - name: Lint summary
         if: always()
         run: |

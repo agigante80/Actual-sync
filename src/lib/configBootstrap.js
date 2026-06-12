@@ -64,4 +64,4 @@ function ensureConfig({ configDir, defaultsDir = resolveDefaultsDir() }) {
     return { configExists: false, seeded: false };
 }
 
-module.exports = { resolveDefaultsDir, ensureConfig, PROJECT_ROOT };
+module.exports = { resolveDefaultsDir, ensureConfig };

@@ -35,4 +35,4 @@ function buildLoggerConfig(logging = {}) {
     return cfg;
 }
 
-module.exports = { buildLoggerConfig, LOGGER_CONFIG_KEYS };
+module.exports = { buildLoggerConfig };
