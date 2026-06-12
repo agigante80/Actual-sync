@@ -1,0 +1,55 @@
+name: Metrics Badges
+
+# Refreshes the live README metric badges (.github/badges/{coverage,tests}.json)
+# once per release. Runs on v* tags, AFTER the auto-release has bumped + tagged
+# main, so there is no race with the release push. The commit carries [skip ci]
+# and is made with GITHUB_TOKEN (whose pushes don't trigger workflows), so it
+# cannot re-trigger CI/CD or the auto-release. (#131)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: metrics-badges
+  cancel-in-progress: false
+
+jobs:
+  badges:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Regenerate metric badges
+        run: npm run badges:generate
+
+      - name: Commit badge updates (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- .github/badges; then
+            echo "Badges unchanged — nothing to commit."
+            exit 0
+          fi
+          git add .github/badges
+          git commit -m "chore(badges): refresh coverage + test-count metrics [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main
