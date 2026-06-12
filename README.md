@@ -138,7 +138,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 ### 🛡️ Reliability & Security
 
 - ✅ **Comprehensive Testing** - extensive Jest suite with enforced coverage thresholds (70% lines/functions/statements, 61% branches); live counts on the badges above
-- ✅ **Docker Support** - Production-ready containerization (229MB Alpine-based image)
+- ✅ **Docker Support** - Production-ready containerization (Alpine-based; live image size on the badge above)
 - ✅ **Security Best Practices** - Non-root user, credential warnings, HTTPS enforcement
 - ✅ **Graceful Shutdown** - Proper cleanup handlers (SIGTERM/SIGINT)
 - ✅ **Error Recovery** - Automatic retry with exponential backoff and jitter
@@ -722,7 +722,7 @@ curl http://localhost:3000/health
 Actual-sync exports Prometheus metrics on port 3000:
 
 ```bash
-curl http://localhost:3000/prometheus
+curl http://localhost:3000/metrics/prometheus
 ```
 
 **Prometheus Configuration:**
@@ -734,7 +734,7 @@ scrape_configs:
     static_configs:
       - targets: ['actual-sync:3000']
     scrape_interval: 30s
-    metrics_path: /prometheus
+    metrics_path: /metrics/prometheus
 ```
 
 See **[docs/PROMETHEUS.md](docs/PROMETHEUS.md)** and **[docs/HEALTH_CHECK.md](docs/HEALTH_CHECK.md)** for complete monitoring setup including Grafana dashboards.
@@ -836,23 +836,26 @@ See **[docs/TESTING.md](docs/TESTING.md)** for complete testing guide including:
 - **SQL Injection Protection** - Parameterized queries throughout
 - **Input Validation** - Startup business-logic validation, plus JSON-schema checks (advisory now, hard-fail in a future release), for all config
 
-### Security Audit Results
+### Security Status
 
-**Last Audit:** December 7, 2025  
-**Security Score:** 86/100 (🟢 GOOD)  
-**Vulnerabilities:** 0 critical, 0 high, 2 medium, 5 low
+Dependency vulnerabilities are tracked live on the repository's
+**[Security tab](https://github.com/agigante80/Actual-sync/security/dependabot)**
+(Dependabot alerts), so this README carries no static security score that could
+go stale. The codebase's standing practices:
 
 - ✅ No hardcoded credentials
-- ✅ Zero dependency vulnerabilities (npm audit clean)
-- ✅ SQL injection protection
-- ✅ Container security best practices
-- ✅ OWASP Top 10: 90% compliant
+- ✅ SQL injection protection (parameterized queries throughout)
+- ✅ Container security best practices (non-root user, read-only config)
+- ✅ Startup config validation and automatic secret redaction in logs
 
 See **[docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md)** for details.
 
 ### Vulnerability Reporting
 
-If you discover a security vulnerability, please email **security@example.com** directly. Do not create public GitHub issues for security vulnerabilities.
+Please report security vulnerabilities privately via GitHub's
+**[Report a vulnerability](https://github.com/agigante80/Actual-sync/security/advisories/new)**
+form (Security tab → Report a vulnerability). Do not open public GitHub issues
+for security vulnerabilities.
 
 ---
 
