@@ -77,12 +77,6 @@ Add the `notifications` section to your `config/config.json`:
           "url": "https://discord.com/api/webhooks/YOUR/WEBHOOK"
         }
       ],
-      "teams": [
-        {
-          "name": "DevOps Team",
-          "url": "https://outlook.webhook.office.com/YOUR/WEBHOOK"
-        }
-      ],
       "telegram": [
         {
           "name": "Production Alerts",
@@ -142,7 +136,7 @@ Each webhook type (Slack, Discord, Telegram) accepts an array of webhook configu
 
 **Note**: The legacy Telegram webhook configuration is deprecated. Use the new `telegram` object for interactive bot features.
 
-**Generic webhooks** (`webhooks.generic`): POST a documented JSON payload to any URL, so notifications work out of the box with ntfy (JSON publishing), Gotify, Home Assistant, n8n, and custom endpoints.
+**Generic webhooks** (`webhooks.generic`): POST a documented JSON payload to any URL, so notifications work out of the box with ntfy (JSON publishing), Gotify, Home Assistant, n8n, and custom endpoints. **Microsoft Teams**: point a `generic` webhook at your Teams incoming-webhook URL — there is no dedicated `teams` channel.
 
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
@@ -751,17 +745,17 @@ Notification emails include:
    - Structured fields for easy reading
    - Timestamp and correlation ID
 
-### Microsoft Teams Webhooks
+### Microsoft Teams
 
-1. **Create Incoming Webhook**:
-   - Go to your Teams channel → Connectors
-   - Configure "Incoming Webhook" → Name it → Copy URL
+There is no dedicated `teams` channel. Reach Microsoft Teams through the
+**generic webhook**: create an Incoming Webhook in your Teams channel
+(channel → Connectors → "Incoming Webhook" → copy URL) and point a
+`webhooks.generic` entry at that URL.
 
-2. **Configure**:
 ```json
 {
   "webhooks": {
-    "teams": [
+    "generic": [
       {
         "name": "DevOps Alerts",
         "url": "https://outlook.webhook.office.com/webhookb2/xxx@yyy/IncomingWebhook/zzz"
@@ -771,10 +765,7 @@ Notification emails include:
 }
 ```
 
-3. **Notification Format**:
-   - MessageCard format with color theme
-   - Fact-based information display
-   - Summary and detailed sections
+See [Generic webhooks](#webhook-settings) for the payload shape and options.
 
 ### Telegram Bot Notifications
 
@@ -976,12 +967,6 @@ Route notifications to appropriate teams:
         "url": "https://hooks.slack.com/services/ops-channel"
       }
     ],
-    "teams": [
-      {
-        "name": "DevOps",
-        "url": "https://outlook.webhook.office.com/devops"
-      }
-    ],
     "telegram": [
       {
         "name": "Mobile Alerts",
@@ -1006,7 +991,6 @@ Disable notifications for maintenance or testing:
     "webhooks": {
       "slack": [],
       "discord": [],
-      "teams": [],
       "telegram": []
     }
   }
@@ -1058,7 +1042,7 @@ Disable notifications for maintenance or testing:
 2. **Check webhook URL format**:
    - Slack: `https://hooks.slack.com/services/...`
    - Discord: `https://discord.com/api/webhooks/...`
-   - Teams: `https://outlook.webhook.office.com/...`
+   - Teams (via `generic`): `https://outlook.webhook.office.com/...`
 
 3. **Verify webhook is active**: Recreate if deleted/expired
 
@@ -1139,7 +1123,7 @@ Begin with higher thresholds and stricter rate limits, then adjust based on expe
 ### 2. Use Multiple Channels
 
 - **Email**: On-call teams, important alerts
-- **Slack/Teams**: Real-time team collaboration
+- **Slack** (or Teams via a generic webhook): Real-time team collaboration
 - **Discord**: Community or informal monitoring
 
 ### 3. Correlate with Sync History
