@@ -29,8 +29,8 @@ npm run test:watch -- syncService.test.js
 npm run test:coverage
 
 # Check for dead code (unused files/exports) with knip
-npm run dead:check     # blocking (exit 1 on findings)
-npm run knip           # report-only (always exit 0; what CI runs)
+npm run dead:check     # blocking (exit 1 on findings); CI runs this in the lint job
+npm run knip           # report-only (always exit 0); for local diffing
 
 # Start the scheduled sync service
 npm start
@@ -205,9 +205,8 @@ Note: `src/syncService.js` and `index.js` are excluded from coverage collection 
 
 - **Dead code**: `knip` is configured in `knip.json` (explicit `entry` points, no
   blanket `ignore` — suppress legitimate exceptions at the source). `npm run dead:check`
-  is blocking; CI runs the report-only `npm run knip` in the lint job (flip to blocking
-  via a dedicated cleanup PR once a baseline is clean). `knipConfig.test.js` guards the
-  config's entry roots.
+  is blocking and **CI runs it in the lint job** (a `npm run knip` report-only variant
+  remains for local diffing). `knipConfig.test.js` guards the config's entry roots.
 - **Doc↔code drift guards** (`src/__tests__/docDriftGuards.test.js`, wired into `npm test`):
   forward-direction checks that lock known invariants — README endpoints exist as Express
   routes, advertised notification channels have implementations (the #128/Teams class),
