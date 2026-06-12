@@ -9,6 +9,8 @@
 <p align="center">
   <a href="https://github.com/agigante80/Actual-sync/releases"><img src="https://img.shields.io/github/v/release/agigante80/Actual-sync?sort=semver" alt="Latest release"></a>
   <a href="https://github.com/agigante80/Actual-sync/actions/workflows/ci-cd.yml"><img src="https://github.com/agigante80/Actual-sync/actions/workflows/ci-cd.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="https://github.com/agigante80/Actual-sync/blob/main/docs/TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/agigante80/Actual-sync/main/.github/badges/tests.json" alt="Tests"></a>
+  <a href="https://github.com/agigante80/Actual-sync/blob/main/docs/TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/agigante80/Actual-sync/main/.github/badges/coverage.json" alt="Coverage"></a>
   <a href="https://github.com/agigante80/Actual-sync/blob/main/LICENSE"><img src="https://img.shields.io/github/license/agigante80/Actual-sync" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen" alt="Node >= 20">
   <a href="https://hub.docker.com/r/agigante80/actual-sync"><img src="https://img.shields.io/docker/pulls/agigante80/actual-sync?logo=docker&logoColor=white" alt="Docker Hub pulls"></a>
@@ -58,7 +60,7 @@
 
 Manually syncing bank transactions is tedious and error-prone. Actual-sync runs unattended in Docker or as a system service, keeping your budgets up-to-date with zero intervention. Perfect for personal finance enthusiasts, multi-user households, and anyone running self-hosted Actual Budget instances.
 
-**Built for production** with 84.77% test coverage (309 tests), comprehensive error handling, structured logging, and enterprise-grade monitoring capabilities.
+**Built for production** with enforced test coverage (see the live tests and coverage badges above), comprehensive error handling, structured logging, and enterprise-grade monitoring capabilities.
 
 ### 📸 Dashboard Preview
 
@@ -135,7 +137,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 
 ### 🛡️ Reliability & Security
 
-- ✅ **Comprehensive Testing** - 433 passing tests with enforced coverage thresholds (~78% statements, 70% branches)
+- ✅ **Comprehensive Testing** - extensive Jest suite with enforced coverage thresholds (70% lines/functions/statements, 61% branches); live counts on the badges above
 - ✅ **Docker Support** - Production-ready containerization (229MB Alpine-based image)
 - ✅ **Security Best Practices** - Non-root user, credential warnings, HTTPS enforcement
 - ✅ **Graceful Shutdown** - Proper cleanup handlers (SIGTERM/SIGINT)
@@ -793,12 +795,12 @@ npm run test:coverage
 --------------------|---------|----------|---------|---------|-------------------
 File                | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
 --------------------|---------|----------|---------|---------|-------------------
-All files           |   98.73 |    95.83 |     100 |   98.67 |                   
+All files           |   ...   |   ...    |   ...   |   ...   |                   
 --------------------|---------|----------|---------|---------|-------------------
 
-Test Suites: 7 passed, 7 total
-Tests:       255 passed, 255 total
-Time:        8.234 s
+Test Suites: all passing
+Tests:       all passing      # live count + coverage are on the badges at the top
+Time:        ~8 s
 ```
 
 See **[docs/TESTING.md](docs/TESTING.md)** for complete testing guide including:
