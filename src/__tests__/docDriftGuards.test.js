@@ -18,12 +18,19 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 const README = read('README.md');
+// User-facing surfaces that advertise endpoints and must not drift. The Docker
+// Hub / GHCR descriptions are published docs too — a /prometheus typo there 404s
+// for every image user, so the endpoint guard scans them alongside the README.
+const PUBLISHED_DOCS = ['README.md', 'docker/description/long.md', 'docker/description/short.md']
+    .filter((rel) => fs.existsSync(path.join(ROOT, rel)))
+    .map((rel) => `\n# ${rel}\n${read(rel)}`)
+    .join('\n');
 const HEALTHCHECK = read('src/services/healthCheck.js');
 const NOTIFIER = read('src/services/notificationService.js');
 const TELEGRAM = read('src/services/telegramBot.js');
 const TESTING = read('docs/TESTING.md');
 
-describe('README endpoint guard (#130)', () => {
+describe('published-docs endpoint guard (#130)', () => {
     // Every HTTP route the app actually registers.
     const routes = new Set(
         [...HEALTHCHECK.matchAll(/this\.app\.(?:get|post|use)\(\s*['"](\/[^'"]+)['"]/g)].map(
@@ -31,22 +38,23 @@ describe('README endpoint guard (#130)', () => {
         )
     );
 
-    // Every endpoint path the README references, via a service URL or a
-    // Prometheus metrics_path. (Would have caught the `/prometheus` drift.)
+    // Every endpoint path the published docs reference, via a service URL or a
+    // Prometheus metrics_path. (Would have caught the `/prometheus` drift in both
+    // the README and the Docker Hub description.)
     const referenced = new Set();
-    for (const m of README.matchAll(/localhost:3000(\/[A-Za-z0-9/_-]*)/g)) {
+    for (const m of PUBLISHED_DOCS.matchAll(/localhost:3000(\/[A-Za-z0-9/_-]*)/g)) {
         if (m[1] && m[1] !== '/') referenced.add(m[1]);
     }
-    for (const m of README.matchAll(/metrics_path:\s*['"]?(\/[A-Za-z0-9/_-]+)/g)) {
+    for (const m of PUBLISHED_DOCS.matchAll(/metrics_path:\s*['"]?(\/[A-Za-z0-9/_-]+)/g)) {
         referenced.add(m[1]);
     }
 
-    it('finds routes in the app and references in the README', () => {
+    it('finds routes in the app and references in the docs', () => {
         expect(routes.size).toBeGreaterThan(0);
         expect(referenced.size).toBeGreaterThan(0);
     });
 
-    it.each([...referenced])('README endpoint %s is registered in the Express app', (p) => {
+    it.each([...referenced])('documented endpoint %s is registered in the Express app', (p) => {
         expect([...routes]).toContain(p);
     });
 });
@@ -55,8 +63,11 @@ describe('advertised notification channels guard (#130, generalizes #128)', () =
     // Each known channel -> a source file and a symbol that must exist if the
     // channel is advertised. An advertised channel with NO mapping fails the
     // test (that is the #128/Teams class: docs promise what code never built).
+    // Match the actual send symbol, not just a mention of the word — otherwise a
+    // channel whose send path was deleted (leaving comments/config keys behind)
+    // would still read as "implemented", the exact drift this guards against.
     const IMPL = {
-        telegram: () => /telegram/i.test(NOTIFIER) || /sendMessage|bot/i.test(TELEGRAM),
+        telegram: () => /sendTelegram/.test(NOTIFIER) || /sendMessage/.test(TELEGRAM),
         email: () => /sendFormattedEmail|emailTransporter/.test(NOTIFIER),
         slack: () => /sendSlack/i.test(NOTIFIER),
         discord: () => /sendDiscord/i.test(NOTIFIER),
@@ -112,8 +123,7 @@ describe('no hardcoded / rotting metrics guard (#130)', () => {
     for (const [file, content] of Object.entries(docs)) {
         for (const [re, what] of FORBIDDEN) {
             it(`${file} has no ${what}`, () => {
-                const hit = content.match(re);
-                expect(hit ? `${file}: "${hit[0]}"` : null).toBeNull();
+                expect(content).not.toMatch(re);
             });
         }
     }

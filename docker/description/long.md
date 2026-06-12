@@ -110,7 +110,7 @@ Access the modern web dashboard at `http://localhost:3000/dashboard`:
 - **Web Dashboard**: `http://localhost:3000/dashboard` (interactive UI)
 - **Health Check**: `curl http://localhost:3000/health`
 - **Metrics**: `curl http://localhost:3000/metrics`
-- **Prometheus**: `curl http://localhost:3000/prometheus`
+- **Prometheus**: `curl http://localhost:3000/metrics/prometheus`
 - **View History**: `docker exec actual-sync npm run history`
 
 ## Docker Compose Example
