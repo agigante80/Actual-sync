@@ -10,14 +10,9 @@ const path = require('path');
 const { ensureConfig, resolveDefaultsDir } = require('./src/lib/configBootstrap');
 const ConfigLoader = require('./src/lib/configLoader');
 
-// Get version from environment or package.json
-const VERSION = process.env.VERSION || (() => {
-    try {
-        return require('./package.json').version;
-    } catch (error) {
-        return 'unknown';
-    }
-})();
+// Get version from environment (CI build-arg) or package.json (#132)
+const { resolveVersion } = require('./src/lib/version');
+const VERSION = resolveVersion();
 
 console.log(`\n🏦 Starting Actual-sync v${VERSION}\n`);
 

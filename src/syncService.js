@@ -14,14 +14,9 @@ const PrometheusService = require('./services/prometheusService');
 const { enhanceActualApiError } = require('./lib/actualApiError');
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 
-// Get version
-const VERSION = process.env.VERSION || (() => {
-    try {
-        return require('../package.json').version;
-    } catch (error) {
-        return 'unknown';
-    }
-})();
+// Get version from environment (CI build-arg) or package.json (#132)
+const { resolveVersion } = require('./lib/version');
+const VERSION = resolveVersion();
 
 /**
  * Format next sync time in human-readable format
