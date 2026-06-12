@@ -12,7 +12,7 @@
   <a href="https://github.com/agigante80/Actual-sync/blob/main/docs/TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/agigante80/Actual-sync/main/.github/badges/tests.json" alt="Tests"></a>
   <a href="https://github.com/agigante80/Actual-sync/blob/main/docs/TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/agigante80/Actual-sync/main/.github/badges/coverage.json" alt="Coverage"></a>
   <a href="https://github.com/agigante80/Actual-sync/blob/main/LICENSE"><img src="https://img.shields.io/github/license/agigante80/Actual-sync" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen" alt="Node >= 20">
+  <img src="https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen" alt="Node >= 22">
   <a href="https://hub.docker.com/r/agigante80/actual-sync"><img src="https://img.shields.io/docker/pulls/agigante80/actual-sync?logo=docker&logoColor=white" alt="Docker Hub pulls"></a>
   <a href="https://hub.docker.com/r/agigante80/actual-sync/tags"><img src="https://img.shields.io/docker/image-size/agigante80/actual-sync/latest?logo=docker&logoColor=white" alt="Docker image size"></a>
   <a href="https://github.com/agigante80/Actual-sync/pkgs/container/actual-sync"><img src="https://img.shields.io/badge/ghcr.io-actual--sync-2496ED?logo=docker&logoColor=white" alt="Container image on GHCR"></a>
@@ -243,7 +243,7 @@ The Unraid template lives in [`unraid/actual-sync.xml`](unraid/actual-sync.xml).
 
 ### Prerequisites
 
-- **Node.js 20+**
+- **Node.js 22+**
 - **Actual Budget Server** - Self-hosted instance with configured bank connections
 - **GoCardless/Nordigen** - Open banking API credentials configured in Actual Budget
 - **Docker** (optional) - For containerized deployment

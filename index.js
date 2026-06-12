@@ -29,8 +29,8 @@ function validateStartup() {
     // Check Node.js version
     const nodeVersion = process.version;
     const majorVersion = parseInt(nodeVersion.split('.')[0].substring(1));
-    if (majorVersion < 20) {
-        errors.push(`Node.js version ${nodeVersion} is not supported. Please use Node.js 20 or higher.`);
+    if (majorVersion < 22) {
+        errors.push(`Node.js version ${nodeVersion} is not supported. Please use Node.js 22 or higher.`);
     }
 
     // A single server can be configured via ACTUAL_SYNC_SERVER_* env vars, in
