@@ -34,6 +34,18 @@ a report, and create GitHub issues for every finding.
 
 ---
 
+## Scope boundary (read first)
+
+This agent owns **dependencies only**: vulnerabilities, unmaintained / low-adoption
+libraries, version drift, and Dependabot PRs. Dead code (unused files, exports, local
+symbols) and doc↔code drift belong to the **`code-health-auditor`** agent
+(`/code-health-auditor`), which runs the committed `knip` config (`npm run dead:check`).
+Do not file dead-code or doc-drift tickets here; if you notice them, point the user at
+`code-health-auditor`. The two agents share conventions (cache-first, dedup-before-file,
+gate-ready tickets) but never overlap scope.
+
+---
+
 ## Audit cache
 
 Before running checks, read `.claude/dep-audit-cache.json`. This file tracks the last
