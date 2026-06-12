@@ -56,6 +56,10 @@ describe('knip.json config (#130)', () => {
         const baseAbs = path.join(ROOT, baseRel);
         expect(fs.existsSync(baseAbs)).toBe(true);
 
+        // A wildcard-free pattern (literal file entry, e.g. "index.js") has the
+        // file itself as its base — don't readdir it (that throws ENOTDIR).
+        if (fs.statSync(baseAbs).isFile()) return;
+
         const ext = globExt(pattern);
         const matches = walk(baseAbs).filter((f) => (ext ? f.endsWith(ext) : true));
         expect(matches.length).toBeGreaterThan(0);

@@ -1097,7 +1097,7 @@ You are free to use, modify, and distribute this software for any purpose, inclu
 - 💬 **GitHub Discussions** - Ask questions
 - 🐛 **Bug Reports** - Create issue
 - 💡 **Feature Requests** - Create issue
-- 🔐 **Security Issues** - Email security@example.com
+- 🔐 **Security Issues** - [Report a vulnerability](https://github.com/agigante80/Actual-sync/security/advisories/new) (private)
 
 ### Community
 
