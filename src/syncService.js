@@ -62,9 +62,6 @@ function formatNextSync(nextInvocation) {
     }
 }
 
-// Export formatNextSync so healthCheck service can use it
-module.exports.formatNextSync = formatNextSync;
-
 // Log-level classifier for the global unhandledRejection handler (#105)
 const { classifyRejection } = require('./lib/rejectionClassifier');
 

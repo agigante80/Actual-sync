@@ -18,6 +18,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
+    "dead:check": "knip",
+    "knip": "knip --no-exit-code",
     "prepare": "git config core.hooksPath .githooks || true"
   },
   "jest": {
@@ -83,6 +85,7 @@
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "jest": "^30.4.2",
+    "knip": "^6.16.1",
     "puppeteer": "^24.41.0"
   }
 }
