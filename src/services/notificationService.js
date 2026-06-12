@@ -1208,7 +1208,6 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
       email: null,
       slack: [],
       discord: [],
-      teams: [],
       telegram: null
     };
 
