@@ -1,18 +1,25 @@
-# Review GitHub ticket readiness
+# Gate a GitHub ticket for readiness
 
 Run the ticket readiness gate on a GitHub issue before implementation begins.
+
+> Formerly `/review-ticket` — renamed to `/gate-ticket` to match the forge-kit
+> convention used across the other projects. Update any muscle memory; the old
+> name no longer resolves.
 
 ## Usage
 
 ```
-/review-ticket <issue-number>
+/gate-ticket <issue-number>
 ```
 
-**Argument**: GitHub issue number (required). Example: `/review-ticket 44`
+**Argument**: GitHub issue number (required). Example: `/gate-ticket 44`
 
 ## What this does
 
-Invokes the `ticket-gate` agent, which validates the issue through 3 sequential specialist agents:
+Invokes the `ticket-gate` agent, which validates the issue through 3 sequential
+domain specialist agents. (This project runs a deliberately lean 3-agent panel
+rather than forge-kit's 5 core agents — see the agent file's "Scope" section for
+why, and for what manual review to add when a ticket touches security/privacy.)
 
 1. **actual-api** — verifies correct `@actual-app/api` lifecycle, method names, field names, and known quirks
 2. **qa** — verifies test cases are specific and cover error paths, shutdown assertions, and coverage thresholds
