@@ -38,10 +38,10 @@ a report, and create GitHub issues for every finding.
 
 This agent owns **dependencies only**: vulnerabilities, unmaintained / low-adoption
 libraries, version drift, and Dependabot PRs. Dead code (unused files, exports, local
-symbols) and doc↔code drift belong to the **`code-health-auditor`** agent
-(`/code-health-auditor`), which runs the committed `knip` config (`npm run dead:check`).
+symbols) and doc↔code drift belong to the **`/code-health-auditor`** skill, which runs the
+committed `knip` config (`npm run knip` for the report, `npm run dead:check` for the gate).
 Do not file dead-code or doc-drift tickets here; if you notice them, point the user at
-`code-health-auditor`. The two agents share conventions (cache-first, dedup-before-file,
+`/code-health-auditor`. The two share conventions (cache-first, dedup-before-file,
 gate-ready tickets) but never overlap scope.
 
 ---
