@@ -112,7 +112,7 @@ Scheduler (node-schedule) or manual trigger
 - `services/healthCheck.js` — Express HTTP server. Public (no auth): `/health`, `/ready`, `/metrics`, `/metrics/prometheus`, `/icon.png`, and a WebSocket log stream at `/ws/logs`. Behind `dashboardAuth()`: `/dashboard` and the `/api/dashboard/*` REST API (`status`, `servers`, `orphaned-servers`, `schedules`, `metrics`, `history`, `accounts`, plus POST `sync`, `dismiss-error`, `reset-history`, `test-notification`)
 - `services/prometheusService.js` — Prometheus metrics via `prom-client`
 - `services/notificationService.js` — Routes alerts to Email/Telegram/Slack/Discord
-- `services/telegramBot.js` — Interactive Telegram bot (8 commands)
+- `services/telegramBot.js` — Interactive Telegram bot (9 commands)
 
 Each service receives options and a logging config object:
 
