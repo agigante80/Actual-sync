@@ -377,22 +377,28 @@ The configuration system performs multiple validation checks:
 - No trailing commas
 - Proper quotation marks
 
-### Schema Validation (advisory)
+### Schema Validation (hard-fail)
 
 Checks the config against `config.schema.json` (required fields, data types, URL
-patterns, enums, ranges, **and unknown/typo'd keys**). **This is currently
-advisory:** a mismatch prints a warning and startup continues, so a schema that
-drifted is surfaced without crash-looping a previously-working deploy. It will
-become a hard startup error in a future release (tracked in #121) — treat the
-warnings as errors-in-waiting and fix them.
+patterns, enums, ranges). **Since #121 these rules hard-fail at startup:** an
+invalid `config.json` stops the service from starting with a single aggregated,
+actionable message (in a container that surfaces as the container failing to
+start / `CrashLoopBackOff`). Run **`npm run validate-config` before starting** to
+catch problems without a restart loop.
 
-**Unknown keys are now flagged.** Every config block rejects keys it does not
-recognise, so a typo (`maxRetires` instead of `maxRetries`, `notifcations`
-instead of `notifications`) or a leftover/legacy key produces a warning instead
-of being silently ignored. Note that JSON has no comments, so a `"_comment"` /
-`"//"` key will also be flagged — move notes out of `config.json`. The one
-exception is `notifications.webhooks.generic[*].headers`, which is an open map of
-arbitrary HTTP header names. Run `npm run validate-config` to see all warnings.
+**Escape hatch:** set `CONFIG_STRICT=false` to temporarily downgrade these
+hard-fails to warnings during a migration. Remove it once the config is fixed;
+it exists only to unblock an upgrade, not as a permanent mode.
+
+**Unknown keys stay advisory (warn, never fatal).** Every config block flags keys
+it does not recognise, so a typo (`maxRetires` instead of `maxRetries`,
+`notifcations` instead of `notifications`) or a leftover/legacy key produces a
+warning — but unknown keys are ignored at runtime and do **not** stop startup
+(deliberate: a stray `"_comment"`/`"//"` key, a legacy key, or a forward/backward
+-compatible field must not crash-loop a deploy). The one block that accepts
+arbitrary keys by design is `notifications.webhooks.generic[*].headers` (an open
+map of HTTP header names). Run `npm run validate-config` to see every warning and
+error together.
 
 ### Business Logic Validation (hard-fail)
 
@@ -487,22 +493,29 @@ Invalid JSON in configuration file: Unexpected token...
 
 ---
 
-### Schema does not fully match (advisory warning)
+### Configuration is invalid — does not match the schema (startup error)
 
-**Warning:**
+**Error (startup is blocked, #121):**
 ```
-⚠️  Configuration does not fully match the schema. This is advisory for now and
-will become a startup error in a future release — please fix:
+Configuration is invalid — it does not match the schema:
   - /servers/0/password: must be string
+
+Fix config.json and restart. Run `npm run validate-config` to check it before
+starting. Set CONFIG_STRICT=false to temporarily downgrade these to warnings
+during migration.
 ```
 
-This is currently a **warning, not a crash** — the service still starts. Fix the
-field mentioned so it stays working once schema validation becomes a hard error
-(#121). Common issues:
+Since #121 a schema rule violation **stops startup** (in a container, it fails to
+start / `CrashLoopBackOff`). Fix the field(s) listed, or set `CONFIG_STRICT=false`
+to start anyway while you migrate. Common issues:
 - Missing quotes around strings
 - Wrong data type
 - Missing required fields
-- A typo'd property name
+- An out-of-range or wrongly-formatted value
+
+A **typo'd / unknown property** is the exception: it only **warns** (`unknown
+property ...`) and does not block startup, since unknown keys are ignored at
+runtime.
 
 ---
 
