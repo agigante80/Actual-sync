@@ -13,9 +13,10 @@ try {
   }
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
-  // Strict on purpose: unlike startup (where schema validation is advisory during
-  // the grace period), an explicit `validate-config` run treats any schema
-  // mismatch as a failure so problems are caught before they ship. (#115)
+  // Strict on purpose: startup hard-fails on the schema RULES but only warns on
+  // unknown keys (#121); an explicit `validate-config` run is stricter still,
+  // treating ANY schema mismatch — including unknown/typo'd keys — as a failure,
+  // so a pre-ship check surfaces everything at once. (#115, #121)
   if (fs.existsSync(schemaPath)) {
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
     loader.validateConfig(config, schema);

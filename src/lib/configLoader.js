@@ -4,6 +4,25 @@ const Ajv = require('ajv');
 const addFormats = require('ajv-formats');
 const { resolveDefaultsDir } = require('./configBootstrap');
 
+// AJV combinator keywords whose failures are pure structural noise: when an
+// allOf/if-then/anyOf branch fails, AJV (allErrors:true) ALSO emits the concrete
+// leaf errors (the actual missing/invalid fields), so the combinator line adds
+// nothing actionable to the human-facing message. The schema uses none of `not`
+// /`oneOf`/`else`, so filtering these never removes a sole signal. (#121)
+const NOISE_SCHEMA_KEYWORDS = new Set(['if', 'then', 'else', 'allOf', 'anyOf', 'oneOf']);
+
+/**
+ * Whether strict config validation is on (the default). Set CONFIG_STRICT to a
+ * falsy spelling (`false`/`0`/`no`/`off`, case-insensitive, whitespace-trimmed)
+ * to downgrade schema hard-fails to warnings during a migration. (#121)
+ * @param {object} [env] environment to read (defaults to process.env)
+ * @returns {boolean}
+ */
+function isConfigStrict(env = process.env) {
+    const v = String(env.CONFIG_STRICT ?? '').trim().toLowerCase();
+    return !['false', '0', 'no', 'off'].includes(v);
+}
+
 /**
  * Normalize an Actual server URL for identity comparison: lowercase
  * protocol+host+path and drop any trailing slash, so `https://X/` and
@@ -144,10 +163,11 @@ class ConfigLoader {
             if (hard.length) {
                 const message =
                     `Configuration is invalid — it does not match the schema:\n${hard.join('\n')}`;
-                if (String(process.env.CONFIG_STRICT).toLowerCase() === 'false') {
+                if (!isConfigStrict()) {
                     console.warn(
                         `⚠️  ${message}\n` +
-                        `CONFIG_STRICT=false: downgraded to a warning — fix these; they hard-fail once the escape hatch is removed.`
+                        `CONFIG_STRICT is off: downgraded to a warning — fix these; they hard-fail once the escape hatch is removed. ` +
+                        `(CONFIG_STRICT only affects schema validation, not the business-logic checks below.)`
                     );
                 } else {
                     throw new Error(
@@ -264,9 +284,17 @@ class ConfigLoader {
         const hard = [];
         const unknownKeys = [];
         for (const err of validate.errors) {
-            const line = this.formatSchemaError(err);
-            if (err.keyword === 'additionalProperties') unknownKeys.push(line);
-            else hard.push(line);
+            if (err.keyword === 'additionalProperties') {
+                unknownKeys.push(this.formatSchemaError(err));
+            } else if (!NOISE_SCHEMA_KEYWORDS.has(err.keyword)) {
+                hard.push(this.formatSchemaError(err));
+            }
+        }
+        // Safety net: if every error was a combinator (no concrete leaf survived
+        // — impossible with the current schema, but never let noise-filtering make
+        // an invalid config look valid), fall back to the unfiltered errors.
+        if (!hard.length && !unknownKeys.length && validate.errors.length) {
+            return { hard: validate.errors.map(e => this.formatSchemaError(e)), unknownKeys: [] };
         }
         return { hard, unknownKeys };
     }
