@@ -200,7 +200,9 @@ describe('config schema reconciliation (#116)', () => {
                 const configPath = path.join(tempDir, 'config.json');
                 fs.writeFileSync(configPath, JSON.stringify(config));
                 const loader = new ConfigLoader(configPath, SCHEMA_PATH);
-                expect(() => loader.load()).toThrow(/cron/i);
+                // Since #121 the schema's cron pattern hard-fails the load first
+                // (ahead of validateLogic's cron-specific message).
+                expect(() => loader.load()).toThrow(/does not match the schema|cron/i);
             } finally {
                 suppress.restore();
                 cleanupTempDir(tempDir);
@@ -355,12 +357,13 @@ describe('numeric bounds are enforced for every schema field (#116)', () => {
     });
 });
 
-describe('unknown keys are flagged but advisory-only (#123)', () => {
-    // additionalProperties:false makes AJV flag unknown keys; while schema
-    // validation is advisory (#115) this surfaces as a WARNING, not a throw.
-    // #121 will later promote it (decision: warn-forever vs hard-fail).
+describe('unknown keys are flagged but advisory-only (#123, kept warn-forever by #121)', () => {
+    // additionalProperties:false makes AJV flag unknown keys. #121 hard-fails the
+    // type/range/required/format/pattern rules but DELIBERATELY keeps unknown keys
+    // advisory (warn-forever): load() warns, never throws, on a stray/legacy/typo
+    // key. (`validates()` below is the strict AJV check, which still reports them.)
 
-    test('schema rejects an unknown top-level key (would warn now, hard-fail under #121)', () => {
+    test('schema flags an unknown top-level key (advisory at load(); strict check rejects it)', () => {
         expect(validates(baseConfig({ notifcations: {} }))).toBe(false); // typo of "notifications"
     });
 
@@ -372,10 +375,12 @@ describe('unknown keys are flagged but advisory-only (#123)', () => {
         expect(validates(baseConfig({ _comment: 'note to self' }))).toBe(false);
     });
 
-    test('an unknown key WARNS but still load()s (advisory, not a hard fail)', () => {
+    test('an unknown key WARNS but still load()s (advisory, not a hard fail) (#121)', () => {
         const tempDir = createTempDir();
         const suppress = suppressConsole();
         try {
+            // notifcations (typo) + _comment are unknown keys only — no hard rule
+            // is violated, so load() must WARN (advisory) and NOT throw under #121.
             const config = baseConfig({ notifcations: {}, _comment: 'hand-edited note' });
             config.servers[0].dataDir = path.join(tempDir, 'd');
             const configPath = path.join(tempDir, 'config.json');
@@ -386,7 +391,7 @@ describe('unknown keys are flagged but advisory-only (#123)', () => {
 
             const warned = console.warn.mock.calls
                 .map(args => String(args[0]))
-                .some(msg => msg.includes('does not fully match the schema'));
+                .some(msg => msg.includes('unknown propert') && msg.includes('advisory'));
             expect(warned).toBe(true);
         } finally {
             suppress.restore();
@@ -429,12 +434,13 @@ describe('config deliverables (#116)', () => {
             fs.writeFileSync(configPath, JSON.stringify(example));
 
             const loader = new ConfigLoader(configPath, SCHEMA_PATH);
-            loader.load();
+            expect(() => loader.load()).not.toThrow();
 
-            // console.warn is a jest.fn() while suppressed.
+            // console.warn is a jest.fn() while suppressed. The clean example must
+            // emit neither a hard-schema warning nor an unknown-property advisory.
             const schemaWarnings = console.warn.mock.calls
                 .map(args => String(args[0]))
-                .filter(msg => msg.includes('does not fully match the schema'));
+                .filter(msg => msg.includes('does not match the schema') || msg.includes('unknown propert'));
             expect(schemaWarnings).toEqual([]);
         } finally {
             suppress.restore();

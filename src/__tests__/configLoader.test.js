@@ -108,30 +108,42 @@ describe('ConfigLoader', () => {
 
             const loader = new ConfigLoader(configPath, schemaPath);
             // The schema (found in the SEPARATE dir) is applied: its `servers`
-            // minItems:1 rejects the empty array. During the grace period that is
-            // surfaced as an advisory WARNING (proving the schema from the separate
-            // dir was read and run), while validateLogic still HARD-FAILS on the
-            // empty servers array. (#96, #115)
-            expect(() => loader.load()).toThrow(/at least one server/);
-            expect(console.warn).toHaveBeenCalledWith(
-                expect.stringContaining('does not fully match the schema')
-            );
+            // minItems:1 rejects the empty array. Since #121 a hard schema rule
+            // hard-fails the load with a schema message (proving the schema from the
+            // separate dir was read and run) — the throw now comes from the schema
+            // layer, ahead of validateLogic. (#96, #115, #121)
+            expect(() => loader.load()).toThrow(/does not match the schema/);
 
             cleanupTempDir(cfgDir);
             cleanupTempDir(schemaDir);
         });
 
-        test('schema validation is ADVISORY at startup: warns but does not block a logic-valid config (#115)', () => {
+        test('schema validation HARD-FAILS on an invalid type at startup (#121)', () => {
             // Structurally fine (passes validateLogic) but schema-invalid: branding
-            // must be a boolean. During the grace period this must WARN, not crash.
+            // must be a boolean. Since #121 a hard schema rule stops startup.
             const config = createMockConfig({ notifications: { branding: 'not-a-boolean' } });
             const configPath = createTestConfigFile(tempDir, config);
             const realSchemaPath = path.join(__dirname, '..', '..', 'config', 'config.schema.json');
             const loader = new ConfigLoader(configPath, realSchemaPath);
-            expect(() => loader.load()).not.toThrow();
-            expect(console.warn).toHaveBeenCalledWith(
-                expect.stringContaining('does not fully match the schema')
-            );
+            expect(() => loader.load()).toThrow(/does not match the schema/);
+        });
+
+        test('CONFIG_STRICT=false downgrades a schema hard-fail to a warning (#121 escape hatch)', () => {
+            const config = createMockConfig({ notifications: { branding: 'not-a-boolean' } });
+            const configPath = createTestConfigFile(tempDir, config);
+            const realSchemaPath = path.join(__dirname, '..', '..', 'config', 'config.schema.json');
+            const loader = new ConfigLoader(configPath, realSchemaPath);
+            const prev = process.env.CONFIG_STRICT;
+            process.env.CONFIG_STRICT = 'false';
+            try {
+                expect(() => loader.load()).not.toThrow();
+                expect(console.warn).toHaveBeenCalledWith(
+                    expect.stringContaining('CONFIG_STRICT=false')
+                );
+            } finally {
+                if (prev === undefined) delete process.env.CONFIG_STRICT;
+                else process.env.CONFIG_STRICT = prev;
+            }
         });
 
         test('a corrupt bundled schema fails with a clear, distinct message (#115)', () => {

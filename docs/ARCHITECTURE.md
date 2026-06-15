@@ -151,7 +151,7 @@ retryDelay = BASE_RETRY_DELAY_MS * (2 ** attemptNumber)
 - Independent authentication
 - Sequential processing (no parallel syncs)
 - External configuration file (not hardcoded)
-- Startup validation: business-logic checks hard-fail; JSON-schema checks are advisory (warn) today, becoming a hard error in a future release
+- Startup validation: business-logic checks and JSON-schema rules (type/range/required/format/pattern) both hard-fail at startup (#121); unknown/typo'd keys only warn. `CONFIG_STRICT=false` downgrades the schema hard-fails to warnings for migration
 
 **Location**: Loaded from `config/config.json` via `src/lib/configLoader.js`
 
@@ -163,7 +163,7 @@ retryDelay = BASE_RETRY_DELAY_MS * (2 ** attemptNumber)
 
 **Key Features**:
 - Load configuration from `config.json`
-- Validate against JSON schema (`config.schema.json`) — advisory (warn) today; business-logic validation (`validateLogic()`) is the hard failure
+- Validate against JSON schema (`config.schema.json`) — hard-fails on type/range/required/format/pattern (#121, `CONFIG_STRICT=false` to downgrade), warns on unknown keys; business-logic validation (`validateLogic()`) is the other hard-failure layer
 - Apply default values for optional settings
 - Security warnings (weak passwords, HTTP usage)
 - Duplicate server name detection

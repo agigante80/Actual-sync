@@ -134,18 +134,38 @@ class ConfigLoader {
                 );
             }
 
-            try {
-                this.validateConfig(config, schema);
-            } catch (error) {
-                // Grace period: schema validation is ADVISORY for one release. The
-                // schema sat un-enforced for a long time and has drifted, so surface
-                // mismatches LOUDLY but don't crash-loop a previously-working deploy
-                // on a rule we only just turned on. Structural problems are still a
-                // hard failure via validateLogic() below. Promote this to a throw in
-                // a future release once configs have had time to be cleaned up. (#115)
+            const { hard, unknownKeys } = this.collectSchemaErrors(config, schema);
+
+            // Hard schema rules (type, range, required, format, pattern) had their
+            // advisory cycle in #115/#116 and now HARD-FAIL the load (#121): an
+            // invalid config.json stops startup with an aggregated, actionable
+            // message instead of syncing with bad settings. CONFIG_STRICT=false is a
+            // temporary migration escape hatch that downgrades these to a warning.
+            if (hard.length) {
+                const message =
+                    `Configuration is invalid — it does not match the schema:\n${hard.join('\n')}`;
+                if (String(process.env.CONFIG_STRICT).toLowerCase() === 'false') {
+                    console.warn(
+                        `⚠️  ${message}\n` +
+                        `CONFIG_STRICT=false: downgraded to a warning — fix these; they hard-fail once the escape hatch is removed.`
+                    );
+                } else {
+                    throw new Error(
+                        `${message}\n\n` +
+                        `Fix config.json and restart. Run \`npm run validate-config\` to check it before starting. ` +
+                        `Set CONFIG_STRICT=false to temporarily downgrade these to warnings during migration.`
+                    );
+                }
+            }
+
+            // Unknown keys stay ADVISORY (warn-forever, #121 decision): they keep the
+            // typo signal without crash-looping on a stray "_comment", a legacy key,
+            // or a forward/backward-compatible field. AJV reports them via
+            // additionalProperties:false (#123); unknown keys are ignored at runtime.
+            if (unknownKeys.length) {
                 console.warn(
-                    `⚠️  Configuration does not fully match the schema. This is advisory ` +
-                    `for now and will become a startup error in a future release — please fix:\n${error.message}`
+                    `⚠️  Configuration has ${unknownKeys.length === 1 ? 'an unknown property' : 'unknown properties'} ` +
+                    `(advisory — likely a typo; unknown keys are ignored, not fatal):\n${unknownKeys.join('\n')}`
                 );
             }
         }
@@ -209,6 +229,27 @@ class ConfigLoader {
      * @throws {Error} If configuration doesn't match schema
      */
     validateConfig(config, schema) {
+        const { hard, unknownKeys } = this.collectSchemaErrors(config, schema);
+        const all = [...hard, ...unknownKeys];
+        if (all.length) {
+            throw new Error(`Configuration validation failed:\n${all.join('\n')}`);
+        }
+    }
+
+    /**
+     * Compile the schema and partition AJV errors by how load() treats them:
+     *  - `hard`: type / range / required / format / pattern / enum rules — these
+     *    had their advisory cycle in #115/#116 and now hard-fail load() (#121).
+     *  - `unknownKeys`: `additionalProperties` violations — kept advisory
+     *    (warn-forever) so a stray "_comment", legacy, or forward-compat key never
+     *    crash-loops a deploy (#121 decision; flagged via #123).
+     * `validateConfig()` (and `npm run validate-config`) throw on ANY of these;
+     * load() applies the softer per-class policy above.
+     * @param {Object} config - Configuration object
+     * @param {Object} schema - JSON schema
+     * @returns {{hard: string[], unknownKeys: string[]}} formatted error lines
+     */
+    collectSchemaErrors(config, schema) {
         // allowUnionTypes: the schema legitimately uses union item types (e.g.
         // telegram.chatIds accepts string|number); without it ajv prints a strict
         // warning on every compile. (#115)
@@ -218,12 +259,16 @@ class ConfigLoader {
         // to be swallowed in load() — silently disabling ALL validation. (#115)
         addFormats(ajv);
         const validate = ajv.compile(schema);
-        const valid = validate(config);
+        if (validate(config)) return { hard: [], unknownKeys: [] };
 
-        if (!valid) {
-            const errors = validate.errors.map(err => this.formatSchemaError(err)).join('\n');
-            throw new Error(`Configuration validation failed:\n${errors}`);
+        const hard = [];
+        const unknownKeys = [];
+        for (const err of validate.errors) {
+            const line = this.formatSchemaError(err);
+            if (err.keyword === 'additionalProperties') unknownKeys.push(line);
+            else hard.push(line);
         }
+        return { hard, unknownKeys };
     }
 
     /**
