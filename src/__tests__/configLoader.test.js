@@ -138,12 +138,43 @@ describe('ConfigLoader', () => {
             try {
                 expect(() => loader.load()).not.toThrow();
                 expect(console.warn).toHaveBeenCalledWith(
-                    expect.stringContaining('CONFIG_STRICT=false')
+                    expect.stringContaining('CONFIG_STRICT is off')
                 );
             } finally {
                 if (prev === undefined) delete process.env.CONFIG_STRICT;
                 else process.env.CONFIG_STRICT = prev;
             }
+        });
+
+        test.each(['off', '0', 'No', ' false '])(
+            'CONFIG_STRICT=%j also downgrades a schema hard-fail (#121 escape hatch is forgiving)',
+            (value) => {
+                const config = createMockConfig({ notifications: { branding: 'not-a-boolean' } });
+                const configPath = createTestConfigFile(tempDir, config);
+                const realSchemaPath = path.join(__dirname, '..', '..', 'config', 'config.schema.json');
+                const loader = new ConfigLoader(configPath, realSchemaPath);
+                const prev = process.env.CONFIG_STRICT;
+                process.env.CONFIG_STRICT = value;
+                try {
+                    expect(() => loader.load()).not.toThrow();
+                } finally {
+                    if (prev === undefined) delete process.env.CONFIG_STRICT;
+                    else process.env.CONFIG_STRICT = prev;
+                }
+            }
+        );
+
+        test('the hard-fail message omits AJV combinator noise (anyOf / if-then) (#121)', () => {
+            // telegram enabled but missing botToken/chatId triggers if-then + anyOf
+            // meta-errors alongside the real "missing required property" leaves.
+            const realSchemaPath = path.join(__dirname, '..', '..', 'config', 'config.schema.json');
+            const schema = JSON.parse(fs.readFileSync(realSchemaPath, 'utf8'));
+            const loader = new ConfigLoader('x', realSchemaPath);
+            const config = createMockConfig({ notifications: { telegram: { enabled: true } } });
+            const { hard } = loader.collectSchemaErrors(config, schema);
+            const joined = hard.join('\n');
+            expect(joined).toMatch(/missing required property 'botToken'/);
+            expect(joined).not.toMatch(/anyOf|must match "then" schema/);
         });
 
         test('a corrupt bundled schema fails with a clear, distinct message (#115)', () => {

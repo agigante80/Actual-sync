@@ -109,7 +109,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Intelligent Retry Logic** - Exponential backoff with rate limit detection and handling
 - ✅ **Account Discovery** - List all accessible bank accounts across servers
 - ✅ **Manual Sync Trigger** - On-demand synchronization via CLI or Telegram bot
-- ✅ **Configuration Validation** - Business rules (required fields, ranges, unique servers) and JSON-schema rules (types, ranges, formats, patterns) both hard-fail at startup with clear, aggregated messages; unknown/typo'd keys warn. `CONFIG_STRICT=false` downgrades the schema hard-fails to warnings during a migration
+- ✅ **Configuration Validation** - Business rules (required fields, ranges, unique servers) and JSON-schema rules (types, ranges, formats, patterns, enums) both hard-fail at startup with clear, aggregated messages; unknown/typo'd keys warn. `CONFIG_STRICT=false` downgrades the schema hard-fails to warnings during a migration
 
 ### 📊 Monitoring & Observability
 
@@ -834,7 +834,7 @@ See **[docs/TESTING.md](docs/TESTING.md)** for complete testing guide including:
 - **HTTPS Enforcement** - Warnings for HTTP connections in production
 - **Rate Limiting** - HTTP endpoints protected (60 req/min per IP)
 - **SQL Injection Protection** - Parameterized queries throughout
-- **Input Validation** - Startup business-logic validation, plus hard-fail JSON-schema validation (type/range/required/format/pattern; unknown keys warn) for all config
+- **Input Validation** - Startup business-logic validation, plus hard-fail JSON-schema validation (type/range/required/format/pattern/enum; unknown keys warn) for all config
 
 ### Security Status
 
