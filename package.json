@@ -67,7 +67,7 @@
     "@actual-app/api": "^26.6.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^12.11.1",
     "cronstrue": "^3.14.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
