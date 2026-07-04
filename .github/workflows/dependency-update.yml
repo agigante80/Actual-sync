@@ -15,11 +15,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Pushes made with the default GITHUB_TOKEN do not trigger workflow runs
+      # on the same repo, so ci-cd.yml would never fire on the auto-merged bump
+      # commit (no CI validation, no dev Docker image). Route all pushes through
+      # the GitHub App token instead — same pattern as auto-release.yml.
+      - name: Generate GitHub App token
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Checkout development branch
         uses: actions/checkout@v6
         with:
           ref: development
           fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -90,7 +102,9 @@ jobs:
           git checkout development
           git merge --no-ff deps/actual-api-$LATEST -m "chore(deps): merge @actual-app/api bump to $LATEST into development"
           git push origin development
-          git push origin --delete deps/actual-api-$LATEST
+          # The working branch only ever existed locally on this path (it is
+          # pushed to origin only when tests fail) — nothing to delete remotely.
+          git branch -d deps/actual-api-$LATEST
           echo "### ✅ Merged @actual-app/api $LATEST into development" >> $GITHUB_STEP_SUMMARY
 
       - name: Push branch for inspection (tests failed)
