@@ -13,25 +13,22 @@ jobs:
   check-updates:
     name: Check for Actual API Updates
     runs-on: ubuntu-latest
+    # Bound the job well under the 60-minute GitHub App installation-token
+    # lifetime, so the token minted before the push steps can never expire
+    # mid-run (a hung test phase is masked by continue-on-error on the test step).
+    timeout-minutes: 30
 
     steps:
-      # Pushes made with the default GITHUB_TOKEN do not trigger workflow runs
-      # on the same repo, so ci-cd.yml would never fire on the auto-merged bump
-      # commit (no CI validation, no dev Docker image). Route all pushes through
-      # the GitHub App token instead — same pattern as auto-release.yml.
-      - name: Generate GitHub App token
-        id: token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-
       - name: Checkout development branch
         uses: actions/checkout@v6
         with:
           ref: development
           fetch-depth: 0
-          token: ${{ steps.token.outputs.token }}
+          # Do NOT persist credentials: npm ci + npm test below execute the
+          # freshly-bumped @actual-app/api code, and we don't want a write-scoped
+          # token sitting in .git/config while untrusted package code runs. The
+          # App token is minted later and used only for the push steps.
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -54,15 +51,36 @@ jobs:
 
       - name: Compare versions
         id: compare
+        env:
+          CURRENT: ${{ steps.current.outputs.version }}
+          LATEST: ${{ steps.latest.outputs.version }}
         run: |
-          CURRENT="${{ steps.current.outputs.version }}"
-          LATEST="${{ steps.latest.outputs.version }}"
-          if [ "$CURRENT" != "$LATEST" ]; then
-            echo "update_needed=true" >> $GITHUB_OUTPUT
-            echo "Update available: $CURRENT → $LATEST"
-          else
+          CURRENT_MAJOR="${CURRENT%%.*}"
+          LATEST_MAJOR="${LATEST%%.*}"
+          if [ "$CURRENT" = "$LATEST" ]; then
             echo "update_needed=false" >> $GITHUB_OUTPUT
+            echo "major_available=false" >> $GITHUB_OUTPUT
             echo "Already on latest: $CURRENT"
+          elif [ "$LATEST_MAJOR" -gt "$CURRENT_MAJOR" ]; then
+            # A new MAJOR is owned by the Dependabot PR flow (dependabot.yml
+            # ignores only patch/minor for @actual-app/api, so it opens a PR for
+            # majors). This workflow auto-merges same-major updates only, so the
+            # two mechanisms never collide on a major release.
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+            echo "major_available=true" >> $GITHUB_OUTPUT
+            echo "Major release available: $CURRENT → $LATEST — left to Dependabot / manual review"
+          elif [ "$LATEST_MAJOR" -lt "$CURRENT_MAJOR" ]; then
+            # Latest dist-tag is behind the installed version (a rare upstream
+            # regression, or package.json set ahead). Never auto-downgrade.
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+            echo "major_available=false" >> $GITHUB_OUTPUT
+            echo "::warning::Latest published $LATEST is behind installed $CURRENT — no action"
+          else
+            # Same major, different version. Only proceed for a forward move;
+            # a same-major downgrade would be a no-op under the ^ range anyway.
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+            echo "major_available=false" >> $GITHUB_OUTPUT
+            echo "Same-major update available: $CURRENT → $LATEST"
           fi
 
       - name: Configure git identity
@@ -73,17 +91,20 @@ jobs:
 
       - name: Create update branch
         if: steps.compare.outputs.update_needed == 'true'
+        env:
+          LATEST: ${{ steps.latest.outputs.version }}
         run: |
-          LATEST="${{ steps.latest.outputs.version }}"
           git checkout -b deps/actual-api-$LATEST
 
       - name: Update package.json
         if: steps.compare.outputs.update_needed == 'true'
+        env:
+          CURRENT: ${{ steps.current.outputs.version }}
+          LATEST: ${{ steps.latest.outputs.version }}
         run: |
-          LATEST="${{ steps.latest.outputs.version }}"
           npm install --package-lock-only @actual-app/api@^$LATEST
           git add package.json package-lock.json
-          git commit -m "chore(deps): bump @actual-app/api from ${{ steps.current.outputs.version }} to $LATEST"
+          git commit -m "chore(deps): bump @actual-app/api from $CURRENT to $LATEST"
 
       - name: Install dependencies for test run
         if: steps.compare.outputs.update_needed == 'true'
@@ -95,10 +116,26 @@ jobs:
         run: npm test -- --ci
         continue-on-error: true
 
+      # Mint the write-scoped App token only now — after the untrusted package
+      # code has finished running (npm ci/npm test) and immediately before the
+      # push steps that need it. Pushes made with the default GITHUB_TOKEN do not
+      # trigger workflow runs on the same repo, so ci-cd.yml would never fire on
+      # the auto-merged bump commit; the App token makes downstream CI trigger.
+      - name: Generate GitHub App token
+        id: token
+        if: steps.compare.outputs.update_needed == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Merge to development (tests passed)
         if: steps.compare.outputs.update_needed == 'true' && steps.tests.outcome == 'success'
+        env:
+          LATEST: ${{ steps.latest.outputs.version }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          LATEST="${{ steps.latest.outputs.version }}"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git checkout development
           git merge --no-ff deps/actual-api-$LATEST -m "chore(deps): merge @actual-app/api bump to $LATEST into development"
           git push origin development
@@ -111,8 +148,11 @@ jobs:
 
       - name: Push branch for inspection (tests failed)
         if: steps.compare.outputs.update_needed == 'true' && steps.tests.outcome != 'success'
+        env:
+          LATEST: ${{ steps.latest.outputs.version }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          LATEST="${{ steps.latest.outputs.version }}"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           # Force-push: a prior failed run of this same version may have left a
           # remote branch, and this run recreates it from a newer development tip
           # (different SHA, not a fast-forward). Force keeps the inspection branch
@@ -121,8 +161,20 @@ jobs:
           echo "### ⚠️ Tests failed — branch deps/actual-api-$LATEST pushed for manual inspection" >> $GITHUB_STEP_SUMMARY
           exit 1
 
+      - name: Major update available (left to Dependabot)
+        if: steps.compare.outputs.major_available == 'true'
+        env:
+          CURRENT: ${{ steps.current.outputs.version }}
+          LATEST: ${{ steps.latest.outputs.version }}
+        run: |
+          echo "### ⏭️ Major @actual-app/api update available" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`$CURRENT\` → \`$LATEST\` crosses a major version. This workflow auto-merges only same-major (patch/minor) updates; the major bump is left to the Dependabot PR for manual review (see docs/CI_CD.md)." >> $GITHUB_STEP_SUMMARY
+
       - name: No update needed
-        if: steps.compare.outputs.update_needed == 'false'
+        if: steps.compare.outputs.update_needed == 'false' && steps.compare.outputs.major_available == 'false'
+        env:
+          CURRENT: ${{ steps.current.outputs.version }}
         run: |
           echo "### ✅ Already Up to Date" >> $GITHUB_STEP_SUMMARY
-          echo "Current version ${{ steps.current.outputs.version }} is the latest." >> $GITHUB_STEP_SUMMARY
+          echo "Current version $CURRENT is the latest." >> $GITHUB_STEP_SUMMARY

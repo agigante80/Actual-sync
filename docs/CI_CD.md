@@ -422,6 +422,36 @@ See [VERSIONING.md](VERSIONING.md#automated-releases) for the full flow.
 
 ---
 
+### Automated @actual-app/api updates (separate workflow)
+
+`.github/workflows/dependency-update.yml` runs daily (and on demand) to keep
+`@actual-app/api` current. It checks the latest published version, and on a
+**same-major** update creates a `deps/actual-api-<version>` branch, installs the
+new version, runs the test suite, and — only if tests pass — merges the bump into
+`development` (which then flows through the normal CI/CD + auto-release path). On
+test failure it force-pushes the branch for inspection and fails the run.
+
+**Ownership split with Dependabot (avoids a double-bump on majors):**
+
+| Update type | Owned by | Mechanism |
+|---|---|---|
+| `@actual-app/api` **patch / minor** (same major) | `dependency-update.yml` | auto-merge to `development` after tests pass |
+| `@actual-app/api` **major** | Dependabot | opens a PR for manual review |
+
+This split is enforced on both sides: `dependabot.yml` **ignores** patch/minor for
+`@actual-app/api` (so Dependabot only PRs majors), and `dependency-update.yml`
+**skips** cross-major bumps (it compares the major component and leaves majors to
+the Dependabot PR). A major release therefore produces exactly one artifact — a
+Dependabot PR — not a competing auto-merge.
+
+**Token handling:** the write-scoped GitHub App token is minted *after* the test
+run (so untrusted freshly-bumped package code never executes alongside a persisted
+write token) and used only for the push steps; checkout runs with
+`persist-credentials: false`. The job has a 30-minute timeout, well under the App
+token's 60-minute lifetime.
+
+---
+
 ### 10. Deployment Test
 
 **Purpose**: Verify published Docker images work correctly
