@@ -11,8 +11,9 @@ const { SyncHistoryService } = require('./services/syncHistory');
 const { NotificationService } = require('./services/notificationService');
 const { TelegramBotService } = require('./services/telegramBot');
 const PrometheusService = require('./services/prometheusService');
-const { enhanceActualApiError } = require('./lib/actualApiError');
+const { enhanceActualApiError, explainBudgetNotOpen } = require('./lib/actualApiError');
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
+const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -357,6 +358,11 @@ async function syncBank(server, options = {}) {
     const succeededAccounts = [];
     const failedAccounts = [];
     let skippedAccounts = []; // accounts skipped (manual / closed) — see partitionSyncableAccounts (#98)
+    // Version compatibility (#154): populated at connect time, reused by the error
+    // path (#155) to explain a server-ahead "No budget file is open" failure.
+    let serverVersion = null;
+    let versionVerdict = 'unknown';
+    const clientVersion = getClientVersion();
     
     try {
         const syncType = isAutomated ? (retryAttempt > 0 ? `automated (retry ${retryAttempt})` : 'automated') : 'manual';
@@ -382,7 +388,27 @@ async function syncBank(server, options = {}) {
         });
         serverLogger.info('Connected to Actual server');
 
-        serverLogger.info(`Loading budget file`, { 
+        // Version compatibility check (#154). Non-fatal: a failed /info fetch just
+        // logs "unknown" and the sync proceeds. Logged per server; server-ahead is
+        // a WARN recommending an Actual-sync update (the #142 failure mode).
+        serverVersion = await fetchServerVersion(url);
+        const compat = describeCompatibility({ serverName: name, serverVersion, clientVersion });
+        versionVerdict = compat.verdict;
+        serverLogger[compat.level]('Version compatibility', {
+            testedUpTo: compat.testedUpTo,
+            serverVersion: compat.serverVersion,
+            verdict: compat.verdict,
+            message: compat.message,
+        });
+        if (healthCheck && typeof healthCheck.updateServerVersion === 'function') {
+            healthCheck.updateServerVersion(name, {
+                testedUpTo: compat.testedUpTo,
+                serverVersion: compat.serverVersion,
+                verdict: compat.verdict,
+            });
+        }
+
+        serverLogger.info(`Loading budget file`, {
             syncId: syncIdLog,
             encrypted: !!encryptionPassword
         });
@@ -398,7 +424,11 @@ async function syncBank(server, options = {}) {
         let downloadError;
         try {
             await actual.downloadBudget(syncId, downloadOptions);
-            serverLogger.info('Budget file loaded successfully', {
+            // Honest logging (#156): the download completing does NOT guarantee the
+            // budget can actually be opened (e.g. a server/client version mismatch
+            // downloads fine then fails to open). Report the download step here; the
+            // operable confirmation is "Accounts fetched successfully" below.
+            serverLogger.info('Budget file downloaded', {
                 encrypted: !!encryptionPassword
             });
         } catch (error) {
@@ -413,7 +443,7 @@ async function syncBank(server, options = {}) {
             try {
                 await new Promise(r => setTimeout(r, 5000));
                 await actual.downloadBudget(syncId, downloadOptions);
-                serverLogger.info('Budget file loaded successfully on retry', {
+                serverLogger.info('Budget file downloaded on retry', {
                     encrypted: !!encryptionPassword
                 });
                 downloadError = null; // retry succeeded — fall through to loadBudget workaround
@@ -768,9 +798,19 @@ async function syncBank(server, options = {}) {
                 }
             }
         }
-        const errorCode = error?.code || error?.errorCode || 'UNKNOWN';
+        let errorCode = error?.code || error?.errorCode || 'UNKNOWN';
         const errorStack = error?.stack || 'No stack trace available';
-        
+
+        // "No budget file is open" is opaque and usually a server/client version
+        // mismatch — explain it and set a stable errorCode using the versions
+        // captured at connect (#155). Applies wherever the error was thrown
+        // (e.g. the bare aqlQuery), not just the enhanceActualApiError paths.
+        if (typeof errorMessage === 'string' && errorMessage.includes('No budget file is open')) {
+            const explained = explainBudgetNotOpen({ serverVersion, clientVersion, verdict: versionVerdict });
+            errorMessage = explained.message;
+            errorCode = explained.errorCode;
+        }
+
         serverLogger.error(`Error syncing bank for server`, {
             error: errorMessage,
             errorCode: errorCode,

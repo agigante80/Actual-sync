@@ -1,6 +1,6 @@
 'use strict';
 
-const { enhanceActualApiError } = require('../lib/actualApiError');
+const { enhanceActualApiError, explainBudgetNotOpen } = require('../lib/actualApiError');
 
 const makeLogger = () => ({ warn: jest.fn(), debug: jest.fn() });
 
@@ -156,6 +156,36 @@ describe('enhanceActualApiError', () => {
             const err = enhanceActualApiError(new Error('x'), ctx(), logger);
             expect(err.code).toBeUndefined();
             expect(err.errorCode).toBeUndefined();
+        });
+    });
+
+    describe('explainBudgetNotOpen (#155)', () => {
+        test('server-ahead: asserts VERSION_MISMATCH, names both versions, recommends updating', () => {
+            const { errorCode, message } = explainBudgetNotOpen({
+                serverVersion: '27.0.0', clientVersion: '26.7.0', verdict: 'server-ahead',
+            });
+            expect(errorCode).toBe('VERSION_MISMATCH');
+            expect(message).toMatch(/27\.0\.0/);
+            expect(message).toMatch(/26\.7\.0/);
+            expect(message).toMatch(/[Uu]pdate Actual-sync/);
+        });
+
+        test('compatible versions: does NOT claim VERSION_MISMATCH (avoids mislabelling)', () => {
+            const { errorCode, message } = explainBudgetNotOpen({
+                serverVersion: '26.7.0', clientVersion: '26.7.0', verdict: 'compatible',
+            });
+            expect(errorCode).toBe('BUDGET_NOT_OPEN');
+            // lists real possibilities including (but not asserting) a version mismatch
+            expect(message).toMatch(/syncId/);
+            expect(message).toMatch(/cache/);
+            expect(message).toMatch(/version mismatch/i);
+        });
+
+        test('unknown versions: neutral BUDGET_NOT_OPEN message listing likely causes', () => {
+            const { errorCode, message } = explainBudgetNotOpen({});
+            expect(errorCode).toBe('BUDGET_NOT_OPEN');
+            expect(message).toMatch(/could not be opened/i);
+            expect(message).toMatch(/syncId/);
         });
     });
 });
