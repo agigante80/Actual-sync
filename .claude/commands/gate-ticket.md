@@ -1,3 +1,5 @@
+<!-- gate-ticket-version: 3 -->
+
 # Gate a GitHub ticket for readiness
 
 Run the ticket readiness gate on a GitHub issue before implementation begins.
@@ -44,9 +46,16 @@ Run the ticket readiness gate on GitHub issue #<issue-number> in agigante80/Actu
 Follow all steps in the ticket-gate agent instructions:
 1. Fetch the issue with gh issue view
 2. Load CLAUDE.md, src/syncService.js (API call sequence), and src/__tests__/helpers/testHelpers.js
-3. Run actual-api agent — wait for result — then qa agent — wait for result — then release-manager agent.
+3. Thin-ticket pre-check (with CLAUDE.md context loaded — conventions the docs answer are
+   not gaps); if 3+ material unanswered questions remain, post them as a comment and halt
+   BLOCKED without scoring
+4. Run complexity research (if triggered) and the codebase-exploration sub-agent (only when
+   2+ complexity signals fire or the area is unfamiliar; skip for simple tickets)
+5. Run actual-api agent — wait for result — then qa agent — wait for result — then release-manager agent.
    IMPORTANT: one agent per message, strictly sequential, never in parallel.
-4. Compile the scorecard
-5. Post it as a GitHub comment
-6. Report PASS or BLOCKED with required changes
+6. Compile the scorecard (include Research performed / Codebase context sections)
+7. Post it as a GitHub comment
+8. Report PASS, or on any score < 10 auto-remediate: write the updated body to a file and
+   apply it with `gh issue edit --body-file` (never `--body "..."`), replacing rather than
+   duplicating any prior "Required additions" section per agent; report BLOCKED
 ```
