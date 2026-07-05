@@ -1,4 +1,37 @@
 /**
+ * Explains an opaque "No budget file is open" failure (#155).
+ *
+ * Only claims a version mismatch when there is evidence for it (the server is
+ * detectably ahead of the bundled @actual-app/api client). "No budget file is
+ * open" also arises from an incorrect syncId, a stale/corrupt local cache, or a
+ * cold sync state — so without server-ahead evidence this returns a neutral
+ * message listing the likely causes and a generic errorCode, to avoid
+ * mislabelling metrics/history/notifications or misdirecting the user.
+ *
+ * @param {{ serverVersion?: string|null, clientVersion?: string|null, verdict?: string }} versionContext
+ * @returns {{ errorCode: string, message: string }}
+ */
+function explainBudgetNotOpen(versionContext = {}) {
+    const { serverVersion, clientVersion, verdict } = versionContext;
+
+    if (verdict === 'server-ahead' && serverVersion && clientVersion) {
+        return {
+            errorCode: 'VERSION_MISMATCH',
+            message: `The budget file could not be opened for syncing. The Actual server (${serverVersion}) is newer than the @actual-app/api client bundled in Actual-sync (${clientVersion}); the budget's migrations are ahead of what this client supports. Update Actual-sync to a version that matches your Actual server.`,
+        };
+    }
+
+    // No version-ahead evidence: keep it honest — list the real possibilities.
+    const versionHint = serverVersion && clientVersion
+        ? ` (this server is running ${serverVersion}; Actual-sync is tested up to ${clientVersion})`
+        : '';
+    return {
+        errorCode: 'BUDGET_NOT_OPEN',
+        message: `The budget file could not be opened for syncing${versionHint}. Common causes: an incorrect syncId, a stale or corrupt local cache, or a version mismatch between the Actual server and Actual-sync. Verify the syncId and that Actual-sync is up to date with your Actual server.`,
+    };
+}
+
+/**
  * Enhances errors thrown by @actual-app/api with human-readable context
  * and troubleshooting guidance.
  *
@@ -105,4 +138,4 @@ function enhanceActualApiError(error, context, logger) {
     return enhancedError;
 }
 
-module.exports = { enhanceActualApiError };
+module.exports = { enhanceActualApiError, explainBudgetNotOpen };

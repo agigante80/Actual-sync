@@ -54,8 +54,13 @@ class HealthCheckService {
       successCount: 0,
       failureCount: 0,
       lastError: null,
-      serverStatuses: {}
+      serverStatuses: {},
+      // Version compatibility per server (#154/#158), kept separate from
+      // serverStatuses so a sync-status update never clobbers it.
+      serverVersions: {}
     };
+    // "Tested up to" = the installed @actual-app/api client version (#154).
+    this.testedUpTo = null;
     
     // Parse JSON bodies
     this.app.use(express.json());
@@ -300,6 +305,13 @@ class HealthCheckService {
               }
             }
             
+            // Merge per-server version compatibility (#158)
+            const versionInfo = this.status.serverVersions[server.name];
+            if (versionInfo) {
+              serverStatus.serverVersion = versionInfo.serverVersion;
+              serverStatus.versionVerdict = versionInfo.verdict;
+            }
+
             allServers[server.name] = serverStatus;
           });
         } catch (error) {
@@ -315,6 +327,8 @@ class HealthCheckService {
       res.json({
         status: this.getOverallStatus(),
         version: global.APP_VERSION || resolveVersion(),
+        // "Tested up to" @actual-app/api client version (#154/#158)
+        testedUpTo: this.testedUpTo,
         uptime: uptime,
         sync: {
           lastSyncTime: this.status.lastSyncTime,
@@ -926,6 +940,24 @@ This test verifies that notifications are configured correctly and can reach the
    * @param {string} syncResult.serverName - Name of server synced
    * @param {Error} syncResult.error - Error object if sync failed
    */
+  /**
+   * Record per-server version compatibility (#154/#158). Stored separately from
+   * serverStatuses so a later sync-status update does not overwrite it.
+   * @param {string} serverName
+   * @param {{ testedUpTo: string|null, serverVersion: string|null, verdict: string }} info
+   */
+  updateServerVersion(serverName, info = {}) {
+    if (!serverName) return;
+    this.status.serverVersions[serverName] = {
+      serverVersion: info.serverVersion || null,
+      verdict: info.verdict || 'unknown',
+      checkedAt: new Date().toISOString()
+    };
+    if (info.testedUpTo) {
+      this.testedUpTo = info.testedUpTo;
+    }
+  }
+
   updateSyncStatus(syncResult) {
     this.status.lastSyncTime = new Date().toISOString();
     this.status.syncCount++;
