@@ -3,6 +3,10 @@ updates:
   # Monitor npm dependencies
   - package-ecosystem: "npm"
     directory: "/"
+    # Target the integration branch, not the default branch (main). main is
+    # production; merging a dep PR there auto-cuts a release. Landing dep updates
+    # on development lets them batch through normal CI and one promotion to main.
+    target-branch: "development"
     schedule:
       interval: "daily"
       time: "01:00"
@@ -38,6 +42,8 @@ updates:
   # Monitor GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
+    # Same rationale as npm above: target development, not main.
+    target-branch: "development"
     schedule:
       interval: "weekly"
       day: "monday"
