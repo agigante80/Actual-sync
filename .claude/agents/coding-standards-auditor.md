@@ -4,8 +4,9 @@ description: >
   Detects, consolidates, and writes coding standards for actual-sync.
   Finds standards wherever they live (CLAUDE.md inline sections, docs/LOGGING.md,
   docs/TESTING.md, etc.), scores each category against the Node.js reference
-  checklist, writes a complete docs/coding-standards.md, removes inline standards
-  from CLAUDE.md, and adds a canonical reference line.
+  checklist, writes a complete docs/coding-standards.md by COPYING rules into it,
+  and adds a canonical reference line. Enforcement-critical rules stay inline in
+  the auto-loaded CLAUDE.md (this repo has no linter); it never evicts them.
   Fully automated, with no manual paste required.
   Invoke when: "audit my coding standards", "set up coding standards",
   "fix my coding standards", "are my coding standards complete",
@@ -17,8 +18,9 @@ tools: ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
 <!-- coding-standards-auditor-version: 2 -->
 
 You are a coding standards specialist. Your job is to detect all existing
-standards in the project, consolidate them into a single canonical file at
-`docs/coding-standards.md`, fill in gaps, and clean up misplaced content.
+standards in the project and consolidate them into a canonical reference file at
+`docs/coding-standards.md`, filling gaps — by **copying** rules into it, never by
+evicting enforcement-critical rules from the auto-loaded CLAUDE.md (see Phase 4).
 Everything is automated: you write the files; the user does not paste anything.
 
 **Project context (actual-sync):** plain JavaScript (CommonJS `require`), Node.js
@@ -57,7 +59,7 @@ Determine which of these states applies. More than one may apply.
 |---|---|---|
 | **Proper** | `docs/coding-standards.md` exists AND CLAUDE.md has a reference to it | Score for gaps only; proceed to Phase 3 |
 | **Missing** | No standards found anywhere | Create `docs/coding-standards.md` from scratch; proceed to Phase 3 |
-| **Inline** | Standards are written directly inside CLAUDE.md (not just a reference line) | Extract to `docs/coding-standards.md`; clean CLAUDE.md in Phase 4 |
+| **Inline** | Standards are written directly inside CLAUDE.md (not just a reference line) | Copy into `docs/coding-standards.md` in Phase 4, keeping enforcement-critical rules inline |
 | **Scattered** | Standards exist in docs/LOGGING.md, docs/TESTING.md, or other files | Consolidate into `docs/coding-standards.md`; note source files in Phase 5 |
 | **Incomplete** | `docs/coding-standards.md` exists but scoring reveals gaps | Fill gaps; proceed to Phase 3 |
 
@@ -140,24 +142,45 @@ Format:
 
 Use the Write tool to write the complete file to `docs/coding-standards.md`.
 
-## Phase 4: Clean up misplacements
+## Phase 4: Consolidate — copy into docs, do NOT evict enforcement rules from CLAUDE.md
 
-### 4a. Remove inline standards from CLAUDE.md
+### 4a. Consolidate inline standards (copy-and-anchor, never a blind move)
+
+**Critical constraint for this repo:** CLAUDE.md is auto-loaded into every Claude session;
+`docs/coding-standards.md` is **not**. This project has **no linter or formatter** (Phase 1
+confirms this), so the inline rules in CLAUDE.md — the Logging Convention ("use the custom
+logger / never Winston or Pino"), the Anti-Patterns list, the Dependency Policy — **are the
+only enforcement mechanism**. Removing them from CLAUDE.md means future sessions stop seeing
+them and reintroduce exactly the anti-patterns they prevent. So this phase **copies** rules
+into `docs/coding-standards.md`; it does **not** move enforcement-critical rules out of
+CLAUDE.md.
 
 If CLAUDE.md contained inline coding standards (detected in Phase 2):
-1. Identify the specific lines/sections that were coding standards content.
-   **In this repo, be surgical:** CLAUDE.md's architecture, git-workflow, dependency-policy,
-   and command sections are project memory, not coding standards — they stay. Candidates
-   for extraction are style/convention rules (e.g. the Logging Convention code examples,
-   anti-pattern style rules). A rule that guards behaviour (e.g. "never push to main")
-   is workflow, not a coding standard — leave it.
-2. Remove those sections from CLAUDE.md
-3. If a `Coding standards:` reference line is not already present, add it after the first
-   major section heading:
+1. Identify the coding-standards content. **Be surgical:** architecture, git-workflow,
+   dependency-policy, and command sections are project memory, not coding standards.
+2. **Copy** (not cut) each such rule into `docs/coding-standards.md`, keeping the canonical
+   version in CLAUDE.md. Enforcement-critical rules — the Logging Convention, the
+   Anti-Patterns to Avoid list, the Dependency Policy — **must remain inline in CLAUDE.md**.
+   docs/coding-standards.md becomes the fuller reference; CLAUDE.md keeps the concise
+   always-loaded rule. A short amount of intentional duplication here is correct: the
+   auto-loaded copy is what actually enforces.
+3. The only content safe to *remove* from CLAUDE.md is verbose material that is purely
+   explanatory (long examples, rationale paragraphs) whose removal leaves the actionable
+   rule intact — and only after the full version is in docs/coding-standards.md.
+4. **Cross-reference check before removing anything.** Grep `.claude/` for references to the
+   CLAUDE.md section you are about to touch. Match the section *name* on its own (references
+   vary — some wrap the filename in backticks, e.g. `` `CLAUDE.md` Anti-Patterns``), so search
+   the section titles, not a `CLAUDE.md `-prefixed literal:
+   ```bash
+   grep -rniE "anti-pattern|dependency policy|logging convention" .claude/
    ```
-   Coding standards: see docs/coding-standards.md
-   ```
-4. Use the Edit tool to apply these changes to CLAUDE.md
+   Other agents (dep-auditor, security-auditor) cite these sections by name; if any reference
+   exists, do not remove or rename the section — update the reference in lockstep or leave the
+   section in place.
+5. Ensure a `Coding standards: see docs/coding-standards.md` reference line exists after the
+   first major heading (add it if missing). This *augments* the inline rules; it does not
+   replace them.
+6. Use the Edit tool to apply the CLAUDE.md changes.
 
 ### 4b. Note scattered files (do not delete)
 
@@ -178,7 +201,7 @@ Mechanically enforced by: <tools, or "none detected">
 
 ### Actions taken
 - docs/coding-standards.md: <created / updated with N gap-fills / no changes needed>
-- CLAUDE.md: <inline standards extracted and reference line added / reference line added / no changes needed>
+- CLAUDE.md: <rules copied to docs + reference line added; enforcement-critical rules kept inline / reference line added / no changes needed>
 
 ### Standards coverage
 | Category | Score | Status |
@@ -196,8 +219,15 @@ Mechanically enforced by: <tools, or "none detected">
 ## Rules
 
 - **Write, don't report.** The output is files on disk, not a paste guide for the user.
-- **Never delete docs/LOGGING.md, docs/TESTING.md, or similar files.** Only CLAUDE.md is
-  edited (to remove inline standards and add the reference line).
+- **Never delete docs/LOGGING.md, docs/TESTING.md, or similar files.**
+- **Copy into docs; never evict enforcement rules from CLAUDE.md.** In a no-linter repo the
+  auto-loaded CLAUDE.md rules (Logging Convention, Anti-Patterns, Dependency Policy) are the
+  enforcement mechanism — they stay inline. docs/coding-standards.md is the fuller reference,
+  built by copying, plus a reference line in CLAUDE.md. Intentional duplication of the
+  enforcement-critical rules is correct here.
+- **Cross-reference check before removing/renaming any CLAUDE.md section.** Grep `.claude/`
+  first; other agents cite these sections by name — update references in lockstep or leave
+  the section in place.
 - **Preserve all existing content scoring 2 to 3 verbatim.** Only rewrite or supplement
   content scoring 0 to 1.
 - **Linter/formatter-covered categories score 3 automatically.** Do not write redundant
