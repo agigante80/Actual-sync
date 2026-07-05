@@ -102,16 +102,22 @@ jobs:
           git checkout development
           git merge --no-ff deps/actual-api-$LATEST -m "chore(deps): merge @actual-app/api bump to $LATEST into development"
           git push origin development
-          # The working branch only ever existed locally on this path (it is
-          # pushed to origin only when tests fail) — nothing to delete remotely.
           git branch -d deps/actual-api-$LATEST
+          # A previous FAILED run of this same version pushed the working branch
+          # to origin (see the failure path below). Now that it's merged, delete
+          # that stale remote branch too; harmless no-op if it was never pushed.
+          git push origin --delete deps/actual-api-$LATEST 2>/dev/null || true
           echo "### ✅ Merged @actual-app/api $LATEST into development" >> $GITHUB_STEP_SUMMARY
 
       - name: Push branch for inspection (tests failed)
         if: steps.compare.outputs.update_needed == 'true' && steps.tests.outcome != 'success'
         run: |
           LATEST="${{ steps.latest.outputs.version }}"
-          git push origin deps/actual-api-$LATEST
+          # Force-push: a prior failed run of this same version may have left a
+          # remote branch, and this run recreates it from a newer development tip
+          # (different SHA, not a fast-forward). Force keeps the inspection branch
+          # at the current state instead of failing the step on non-fast-forward.
+          git push --force origin deps/actual-api-$LATEST
           echo "### ⚠️ Tests failed — branch deps/actual-api-$LATEST pushed for manual inspection" >> $GITHUB_STEP_SUMMARY
           exit 1
 
