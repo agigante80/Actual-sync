@@ -426,6 +426,10 @@
                                 <span class="metric-value" id="version">-</span>
                             </div>
                             <div class="metric">
+                                <span class="metric-label" title="The @actual-app/api client version Actual-sync is tested against">Supported Actual API</span>
+                                <span class="metric-value" id="tested-up-to">-</span>
+                            </div>
+                            <div class="metric">
                                 <span class="metric-label">Uptime</span>
                                 <span class="metric-value" id="uptime">-</span>
                             </div>
@@ -766,6 +770,8 @@
                 const uptimeEl = document.getElementById('uptime');
                 
                 if (versionEl) versionEl.textContent = data.version || 'unknown';
+                const testedUpToEl = document.getElementById('tested-up-to');
+                if (testedUpToEl) testedUpToEl.textContent = data.testedUpTo || 'unknown';
                 if (uptimeEl) uptimeEl.textContent = formatUptime(data.uptime);
 
                 // Update status badge and subtitle
@@ -962,6 +968,20 @@
                     }
                 }
                 
+                // Version compatibility badge (#158): each server's running version + verdict
+                let versionBadge = '';
+                if (status.serverVersion || status.versionVerdict) {
+                    const verdict = status.versionVerdict || 'unknown';
+                    const vb = {
+                        'compatible':    { bg: '#065f46', fg: '#10b981', label: 'compatible' },
+                        'server-behind': { bg: '#1e3a5f', fg: '#60a5fa', label: 'server behind' },
+                        'server-ahead':  { bg: '#92400e', fg: '#fbbf24', label: 'server ahead — update Actual-sync' },
+                        'unknown':       { bg: '#334155', fg: '#94a3b8', label: 'unknown' }
+                    }[verdict] || { bg: '#334155', fg: '#94a3b8', label: 'unknown' };
+                    const ver = status.serverVersion ? escapeHtml(status.serverVersion) : 'unknown';
+                    versionBadge = `<br><span style="color: #94a3b8; font-size: 0.85em;">Server version: ${ver} <span style="display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 0.75rem; font-weight: 600; margin-left: 4px; background: ${vb.bg}; color: ${vb.fg};">${vb.label}</span></span>`;
+                }
+
                 // Escape server name for safe HTML rendering
                 const escapedName = escapeHtml(name);
 
@@ -979,6 +999,7 @@
                         <div class="server-info">
                             Last sync: ${lastSyncText}
                             ${accountCountsText}
+                            ${versionBadge}
                             ${scheduleInfo}
                             ${errorDisplay}
                         </div>
