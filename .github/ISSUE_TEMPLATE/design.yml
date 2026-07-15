@@ -1,0 +1,141 @@
+name: Design / UX Task
+description: Dashboard UI, visual assets, UX improvements, accessibility
+labels: ["design"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        <!-- template-version: 4 -->
+        ## Design / UX Task
+        For the web dashboard UI, notification message formatting, visual assets, UX
+        improvements, and accessibility work.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What design work is needed and why?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 - Critical
+        - P1 - High
+        - P2 - Medium
+        - P3 - Low
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: Surface(s)
+      multiple: true
+      options:
+        - Web dashboard (src/services/dashboard.html + /api/dashboard/*)
+        - Notification messages (Telegram/Slack/Discord/email formatting)
+        - Both
+    validations:
+      required: true
+
+  - type: textarea
+    id: screens
+    attributes:
+      label: Views / components affected
+      description: Which dashboard views or UI components does this touch?
+      placeholder: |
+        - Dashboard -> Server status cards
+        - Dashboard -> Sync history table
+        - Notification -> sync summary message layout
+    validations:
+      required: true
+
+  - type: textarea
+    id: wireframes
+    attributes:
+      label: Wireframe / mockup references
+      description: Link to existing mockups or screenshots if updating, or describe new ones needed.
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true for this design work to be complete?
+      placeholder: |
+        - [ ] Mockup created and approved
+        - [ ] Status labels and colors consistent across views
+    validations:
+      required: true
+
+  - type: textarea
+    id: accessibility
+    attributes:
+      label: Accessibility requirements
+      description: WCAG 2.2 AA requirements for this design work.
+      value: |
+        - [ ] Interactive targets >= 44x44px
+        - [ ] Color contrast >= 4.5:1 (normal text) / 3:1 (large text)
+        - [ ] Focus order annotated
+        - [ ] Screen reader labels (aria-label) specified
+        - [ ] prefers-reduced-motion considered
+    validations:
+      required: true
+
+  - type: textarea
+    id: brand
+    attributes:
+      label: Visual consistency
+      description: Verify the dashboard's existing visual language is followed.
+      value: |
+        - [ ] Existing color palette / status colors used correctly
+        - [ ] Typography scale followed
+        - [ ] Icon / badge style consistent
+    validations:
+      required: true
+
+  - type: textarea
+    id: scenarios
+    attributes:
+      label: Test scenarios (Given / When / Then)
+      description: |
+        One positive and one negative scenario per design condition being addressed.
+      placeholder: |
+        **Condition: [name the condition]**
+
+        Positive
+        - Given: [valid starting state]
+        - When: [action is performed]
+        - Then: [expected correct result]
+
+        Negative
+        - Given: [invalid or edge-case state]
+        - When: [action is performed]
+        - Then: [expected error / rejection message]
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: agent_reviews
+    attributes:
+      label: Required reviews (mandatory)
+      description: |
+        The gate orchestrators auto-select which specialist agents to run based on labels and content.
+        All selected agents must score 10/10 before implementation begins.
+      options:
+        - label: "**ticket-gate** - mandatory before implementation. Runs 5 core agents (Security, Architect, Developer, QA, GDPR) + dynamic agents based on labels. All must score 10/10."
+          required: true
+
+  - type: textarea
+    id: codebase_context
+    attributes:
+      label: Codebase Context
+      description: "Auto-populated by ticket-gate. Do not edit manually."
+      placeholder: "Populated automatically when you run /gate-ticket"
+    validations:
+      required: false
