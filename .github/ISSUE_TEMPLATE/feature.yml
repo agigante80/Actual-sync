@@ -1,0 +1,216 @@
+name: Feature Request
+description: Propose a new feature or enhancement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        <!-- template-version: 4 -->
+        ## Feature Request
+        Please fill in all required fields. This template ensures alignment with architecture,
+        security, and privacy requirements before implementation begins.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What does this feature do and why is it needed?
+      placeholder: "One paragraph describing the feature and its value."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 - Critical (blocks release or safety-impacting)
+        - P1 - High (important for current milestone)
+        - P2 - Medium (should do, not blocking)
+        - P3 - Low (nice to have)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: areas
+    attributes:
+      label: Affected areas
+      description: Which areas does this touch? If 3+, consider splitting into separate tickets.
+      multiple: true
+      options:
+        - sync-engine (src/syncService.js — sync flow, retries, correlation IDs)
+        - actual-api (@actual-app/api integration, budget download/decrypt, E2EE)
+        - config (config schema/loader, AJV validation, config bootstrap)
+        - dashboard (Express dashboard + /api/dashboard/* + healthCheck)
+        - notifications (Telegram/Slack/Discord/email, telegramBot)
+        - metrics (Prometheus / prom-client)
+        - sync-history (better-sqlite3 storage)
+        - logging (custom logger, redaction, rotation)
+        - docker (image, entrypoint, PUID/PGID)
+        - ci-release (GitHub Actions, auto-release, version bump)
+        - docs
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files to create/modify
+      description: List all files that will be created or changed.
+      placeholder: |
+        - `src/lib/example.js` - new helper module
+        - `config/config.schema.json` - new config field + validation
+        - `config/config.example.json` - matching example value
+    validations:
+      required: false
+
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Implementation details
+      description: How should this be implemented? Include code snippets if helpful.
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true for this feature to be considered complete?
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+    validations:
+      required: true
+
+  - type: textarea
+    id: gdpr
+    attributes:
+      label: GDPR compliance
+      description: How does this feature handle personal data (bank/transaction data, credentials, budget passwords)?
+      value: |
+        - **PII fields affected:**
+        - **Article 17 (erasure):**
+        - **Article 20 (portability):**
+        - **Article 25 (by design):**
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security considerations
+      description: Auth, validation, secret handling, data exposure.
+      value: |
+        - **Authentication:** required / public (justify if public — dashboard routes sit behind `dashboardAuth()`)
+        - **Input validation:** AJV schema updated in `config/config.schema.json`? validated in `configLoader.validateLogic()`?
+        - **Secret handling:** any new tokens/passwords — are they redacted by the logger?
+        - **Data exposure:** any sensitive fields in a dashboard/API response or notification?
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Other issues that must be completed before this one.
+      placeholder: "Depends on: #54, #55"
+    validations:
+      required: false
+
+  - type: textarea
+    id: scenarios
+    attributes:
+      label: Test scenarios (Given / When / Then)
+      description: |
+        One positive and one negative scenario per condition being added. For features with
+        multiple independent conditions, repeat the block for each.
+      placeholder: |
+        **Condition: [name the condition]**
+
+        Positive
+        - Given: [valid starting state]
+        - When: [action is performed]
+        - Then: [expected correct result]
+
+        Negative
+        - Given: [invalid or edge-case state]
+        - When: [action is performed]
+        - Then: [expected error / rejection message]
+    validations:
+      required: true
+
+  - type: textarea
+    id: unit_tests
+    attributes:
+      label: Unit tests (Jest)
+      description: |
+        Specific test cases. State file path, input, and expected output for each case.
+        Tests live in `src/__tests__/` and use the helpers in `src/__tests__/helpers/testHelpers.js`.
+      placeholder: |
+        - [ ] Positive: `src/__tests__/[file].test.js` - call with [valid input] -> [expected output / field value]
+        - [ ] Negative: `src/__tests__/[file].test.js` - call with [bad input] -> error code "[CODE]" / message contains "[text]"
+        - [ ] `npm test` passes with coverage thresholds met
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: agent_reviews
+    attributes:
+      label: Required reviews (mandatory)
+      description: |
+        The gate orchestrators auto-select which specialist agents to run based on labels and content.
+        All selected agents must score 10/10 before implementation begins.
+      options:
+        - label: "**ticket-gate** - mandatory before implementation. Runs 5 core agents (Security, Architect, Developer, QA, GDPR) + dynamic agents based on labels. All must score 10/10."
+          required: true
+
+  - type: textarea
+    id: qa_security
+    attributes:
+      label: QA & Security testing
+      description: Security and quality assurance requirements for this feature.
+      value: |
+        ### Security tests
+        - [ ] **Auth bypass:** Dashboard/API routes tested without auth / with wrong credentials (`dashboardAuth()`)
+        - [ ] **Injection:** Tested with XSS and command/path injection payloads in all string inputs
+        - [ ] **Secret redaction:** New tokens/passwords confirmed masked in logs, dashboard, and notifications
+        - [ ] **Malformed input:** Tested with empty/invalid config, wrong types, unexpected fields (AJV rejects)
+        - [ ] **Rate limiting / retries:** Retry + backoff behavior unaffected or correctly extended
+
+        ### QA tests
+        - [ ] **Unit tests:** Pure function logic covered
+        - [ ] **Integration tests:** Full sync-flow (or dashboard request) round-trip for happy + error paths
+        - [ ] **Error handling:** Failures classified at the correct log level (ERROR only for genuine failures)
+        - [ ] **Edge cases:** Null/undefined inputs, boundary values, multi-server isolation
+    validations:
+      required: true
+
+  - type: textarea
+    id: e2e_tests
+    attributes:
+      label: Dashboard / integration test scenarios
+      description: |
+        For features touching the Express dashboard or /api/dashboard/* endpoints, list specific
+        integration test cases - both happy and unhappy paths. Non-UI features can mark this N/A.
+      placeholder: |
+        ### Happy path
+        - [ ] Request `GET /api/dashboard/[route]` -> assert expected payload
+        - [ ] User action via dashboard -> assert expected result
+
+        ### Unhappy path
+        - [ ] Backend error -> error status/state returned
+        - [ ] Empty data -> empty state returned
+        N/A - no dashboard surface affected by this feature
+    validations:
+      required: true
+
+  - type: textarea
+    id: codebase_context
+    attributes:
+      label: Codebase Context
+      description: "Auto-populated by ticket-gate. Do not edit manually."
+      placeholder: "Populated automatically when you run /gate-ticket"
+    validations:
+      required: false
