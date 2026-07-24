@@ -34,10 +34,13 @@ updates:
         update-types:
           - "minor"
           - "patch"
-    # Keep @actual-app/api separate for critical updates
+    # @actual-app/api is owned END-TO-END by .github/workflows/dependency-update.yml
+    # (the "Actual API Release Train"), which auto-publishes every forward move
+    # including MAJORS. Dependabot must therefore ignore it entirely — no
+    # update-types filter. Narrowing this back to patch/minor would make every
+    # major produce BOTH a Dependabot PR and an auto-published release.
     ignore:
       - dependency-name: "@actual-app/api"
-        update-types: ["version-update:semver-patch", "version-update:semver-minor"]
         
   # Monitor GitHub Actions
   - package-ecosystem: "github-actions"
