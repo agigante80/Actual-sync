@@ -422,33 +422,138 @@ See [VERSIONING.md](VERSIONING.md#automated-releases) for the full flow.
 
 ---
 
-### Automated @actual-app/api updates (separate workflow)
+### Automated @actual-app/api updates — the release train
 
-`.github/workflows/dependency-update.yml` runs daily (and on demand) to keep
-`@actual-app/api` current. It checks the latest published version, and on a
-**same-major** update creates a `deps/actual-api-<version>` branch, installs the
-new version, runs the test suite, and — only if tests pass — merges the bump into
-`development` (which then flows through the normal CI/CD + auto-release path). On
-test failure it force-pushes the branch for inspection and fails the run.
+`.github/workflows/dependency-update.yml` ("Actual API Release Train") runs daily
+at 01:00 UTC (and on demand). It is the **only** fully automated publish path in
+the repo, and it covers **only** `@actual-app/api`. Every other dependency —
+including all other production deps — stays on the normal Dependabot →
+`development` → manual-promotion route.
 
-**Ownership split with Dependabot (avoids a double-bump on majors):**
+When a newer `@actual-app/api` is published, the run:
+
+1. **Fast-forwards `development` up to `main`** (`git merge --ff-only`). If that is
+   not possible it opens a **sync PR** instead (see below).
+2. **Branches off `main`** and bumps the dependency only — *not* the version.
+3. **Opens a PR to `main`** and waits for the full CI pipeline to pass.
+4. **Merges it.** `ci-cd.yml` then runs on `main`, `auto-release.yml` patch-bumps
+   + tags + publishes, and the `v*` tag builds and pushes the Docker images.
+5. **Verifies the chain actually started** — polls for the `ci-cd.yml` run on the
+   merge commit (hard fail if it never appears), then watches it best-effort.
+
+No human interaction at any point. On CI failure nothing is merged: the PR is
+left open for inspection and the run is marked failed.
+
+**Why step 5 exists (silent-stall detector).** Without it the workflow ends at the
+merge and merely *assumes* the rest of the chain runs. If the GitHub App token were
+ever misconfigured, the merge would land, `ci-cd.yml` would never trigger,
+`auto-release.yml` would never fire, nothing would publish — and the job would still
+exit **green**. A correct App token prevents that stall; this step is what turns a
+*regression* of it into a red run instead of silence. (Adopted from
+`actual-mcp-server`, which shipped a release with no Docker image exactly this way.)
+It runs on `github.token` rather than the App token: the calls are read-only, and
+`GITHUB_TOKEN` cannot expire mid-watch the way a 60-minute App token can.
+
+**Two tiers, deliberately.** *Trigger proof* is a **hard gate** — that is the
+App-token failure mode, and 10 minutes of polling is cheap. The *completion watch*
+is **observational and capped at 20 minutes**, because `auto-release.yml` self-gates
+on `workflow_run.conclusion == 'success'` and so nothing here decides whether the
+release happens. Still running at the cap is reported and passes; there is no value
+in paying a hosted runner to idle for a verdict that changes nothing.
+
+The watch reads the run's **conclusion explicitly** rather than inferring it from
+`gh run watch --exit-status`, which also exits non-zero on a **cancelled** run. A
+cancelled run (e.g. superseded by a newer push, if `ci-cd.yml` ever gains
+`concurrency`/`cancel-in-progress` on `main`) is reported as its own outcome, not
+misdiagnosed as a failure.
+
+**"Superseded" is verified, not assumed.** Accepting *cancelled* as benign is only
+valid if something newer actually ran — a run cancelled by hand, or by a push whose
+own run then went red, ends with nothing published. So on `cancelled` the workflow
+checks for a **newer `ci-cd.yml` run on `main`** and only then passes; with no newer
+run it fails loudly. Otherwise the silent stall this whole step exists to prevent
+simply reappears one layer in.
+
+**Race vs. divergence — they are different failures.** A failed `--ff-only` means
+`development` genuinely diverged: the workflow opens a `main` → `development` sync PR
+rather than only emitting a warning, which is easy to miss. A **rejected push** means
+someone pushed to `development` between the fetch and the push — a transient race,
+*not* a divergence. That path re-fetches and retries once, then warns without opening
+a PR, so a race never produces a misleading "diverged" annotation or a spurious PR.
+
+The divergence path first checks for an already-open sync PR so it cannot spam a
+duplicate daily. The PR is created with the **App token**, not `github.token`, so it
+actually receives CI runs — a PR opened by `GITHUB_TOKEN` does not trigger workflows.
+Note that **closing the sync PR does not suppress it**: if `development` is still
+diverged the next day, a new one is opened.
+
+**HEAD restoration is a `trap`, not a trailing command.** The sync step restores
+`HEAD` to `main` via `trap ... EXIT`. Cleanup written as the last line of a `set -e`
+block is unreachable on every failure path, and git working state persists *across
+steps* in a job. The release branch is cut with an explicit `origin/main` start
+point so it does not depend on this, but the invariant is stated where it belongs
+instead of being absorbed by a later step.
+
+The whole sync step carries `continue-on-error: true`: it is best-effort by design
+and must never block the dependency from shipping, since the release branches off
+`main` and does not depend on `development` at all. Authenticating the git remote is
+deliberately kept in a **separate, non-best-effort step**, because every later push
+depends on it and a failure there must fail the job rather than be swallowed.
+
+**Majors are in scope.** The only version move the train refuses is a backwards
+one — the comparison is a forward-only `sort -V` check, which also guards against
+the upstream `latest` dist-tag being rolled back to an older release (`npm show`
+returns the tag, not the highest published version).
+
+**Ownership: Dependabot ignores `@actual-app/api` entirely.**
 
 | Update type | Owned by | Mechanism |
 |---|---|---|
-| `@actual-app/api` **patch / minor** (same major) | `dependency-update.yml` | auto-merge to `development` after tests pass |
-| `@actual-app/api` **major** | Dependabot | opens a PR for manual review |
+| `@actual-app/api` (**any** forward move, incl. majors) | `dependency-update.yml` | auto-publishes to `main` after full CI passes |
+| Everything else | Dependabot | PR to `development`, promoted manually |
 
-This split is enforced on both sides: `dependabot.yml` **ignores** patch/minor for
-`@actual-app/api` (so Dependabot only PRs majors), and `dependency-update.yml`
-**skips** cross-major bumps (it compares the major component and leaves majors to
-the Dependabot PR). A major release therefore produces exactly one artifact — a
-Dependabot PR — not a competing auto-merge.
+`dependabot.yml` carries a bare `dependency-name: "@actual-app/api"` ignore rule
+with **no** `update-types` filter. Narrowing it back to patch/minor would make
+every major produce *both* a Dependabot PR and an auto-published release.
 
-**Token handling:** the write-scoped GitHub App token is minted *after* the test
-run (so untrusted freshly-bumped package code never executes alongside a persisted
-write token) and used only for the push steps; checkout runs with
-`persist-credentials: false`. The job has a 30-minute timeout, well under the App
-token's 60-minute lifetime.
+**Why the version is not bumped in the train:** `auto-release.yml` patch-bumps
+precisely when the version on `main` equals the latest tag. Bumping in the PR
+would push `main` ahead of the tag, and auto-release would release it *as-is*,
+skipping its own bump. Leaving the version untouched is what makes the routine
+auto-patch fire.
+
+**Why `development` is synced first, not back-merged after:** `auto-release.yml`
+pushes a bump commit to `main` and `metrics-badges.yml` pushes a badge commit
+after every `v*` tag, so `main` permanently drifts ahead of `development` once a
+release completes. Syncing at the *start* of the next daily run is race-free —
+the previous release has long settled. A back-merge at the *end* would race those
+two pushes and miss exactly the commits that cause the drift.
+
+**Why `--ff-only` and never `--force`:** when `development` has no unique commits
+this is a plain fast-forward, so no force is needed. When `development` *has*
+diverged, `--ff-only` fails and changes nothing, whereas `reset --hard` +
+force-push would silently destroy in-flight work. The failure is non-fatal — the
+release branches off `main` regardless — but `development` then needs the sync PR
+merged before it can be promoted, or `auto-release.yml` will refuse the version
+regression.
+
+**Timeouts.** The job allows 120 minutes because it waits on CI **twice**: the PR
+merge gate (≤45 min) and the post-merge chain verification (≤35 min: 10 min
+discovery + 20 min capped watch + slack). The verification step is sized well inside
+the job budget on purpose — a *step* timeout does not protect against the *job*
+timeout truncating the run, which would kill the step before it can write its
+diagnostic summary. Only ever reached when an upgrade actually exists; no-op days
+exit in seconds.
+
+**Token handling:** checkout runs with `persist-credentials: false`. The dep bump
+uses `npm install --package-lock-only`, which rewrites `package.json` +
+`package-lock.json` without populating `node_modules`, so no lifecycle script from
+the new package version executes in this job — the freshly bumped code is only
+ever run by CI, in its own isolated run. The write-scoped GitHub App token is
+required (not `GITHUB_TOKEN`) because pushes made with `GITHUB_TOKEN` do not
+trigger workflow runs, so the merge commit would never fire `ci-cd.yml` or
+`auto-release.yml`. It is re-minted after the CI wait so a long pipeline cannot
+outlive the App token's 60-minute lifetime.
 
 ---
 

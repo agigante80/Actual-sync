@@ -50,6 +50,10 @@ npm run list-accounts
 # View sync history
 npm run history
 
+# Regenerate docs/screenshots/* (Puppeteer, dev-only) and README metric badges
+npm run screenshots
+npm run badges:generate
+
 # Bump version (updates VERSION + package.json + package-lock.json in sync;
 # aborts if local version is behind the latest released tag). For a patch
 # release you do not need this (the auto-release patch-bumps). Run it on
@@ -109,9 +113,9 @@ Scheduler (node-schedule) or manual trigger
 - `lib/configLoader.js` — AJV schema validation against `config/config.schema.json`
 - `lib/logger.js` — Custom structured logger (no Winston/Pino); supports file rotation and correlation IDs
 - `services/syncHistory.js` — SQLite-backed sync history via `better-sqlite3`
-- `services/healthCheck.js` — Express HTTP server. Public (no auth): `/health`, `/ready`, `/metrics`, `/metrics/prometheus`, `/icon.png`, and a WebSocket log stream at `/ws/logs`. Behind `dashboardAuth()`: `/dashboard` and the `/api/dashboard/*` REST API (`status`, `servers`, `orphaned-servers`, `schedules`, `metrics`, `history`, `accounts`, plus POST `sync`, `dismiss-error`, `reset-history`, `test-notification`)
+- `services/healthCheck.js` — Express HTTP server. Public (no auth): `/health`, `/ready`, `/metrics`, `/metrics/prometheus`, `/icon.png`, and a WebSocket log stream at `/ws/logs`. Behind `dashboardAuth()`: `/dashboard` and the `/api/dashboard/*` REST API (`status`, `servers`, `orphaned-servers`, `schedules`, `metrics`, `history`, `accounts`, plus POST `sync`, `dismiss-error`, `reset-history`, `test-notification`). A global `express-rate-limit` (60 req/min/IP) covers every route except `/icon.png`, which is exempt so the dashboard's favicon/logo fetch doesn't eat the API budget (#113)
 - `services/prometheusService.js` — Prometheus metrics via `prom-client`
-- `services/notificationService.js` — Routes alerts to Email/Telegram/Slack/Discord
+- `services/notificationService.js` — Routes alerts to Email, Telegram, ntfy, and webhooks (Slack / Discord / generic). Config keys under `notifications`: `email`, `telegram`, `ntfy`, `webhooks`, plus `branding`, `thresholds`, `rateLimit`. Note there is **no** Teams channel — see the advertised-channels drift guard below before adding one to the README
 - `services/telegramBot.js` — Interactive Telegram bot (9 commands)
 
 Each service receives options and a logging config object:
@@ -126,7 +130,12 @@ new ServiceClass(options, {
 
 ### Key Patterns
 
-**Retry logic**: `runWithRetries()` in `syncService.js` wraps bank sync calls with exponential backoff + jitter. Retryable errors: `ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, HTTP 429.
+**Two independent retry layers** — don't conflate them:
+
+1. **In-sync retries** — `runWithRetries()` wraps each bank sync call with exponential backoff + jitter, inside a single `syncBank()` run. Retryable errors: `ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, HTTP 429.
+2. **Cross-sync auto-retry** — `scheduleAutoRetry()` re-runs the *whole* `syncBank()` later via a `setTimeout` tracked per server in the `activeRetryTimers` map, driven by `getSyncConfig(server).autoRetry` (`enabled`/`maxAttempts`/`delayMinutes`). Always go through `cancelPendingRetry(serverName)` before scheduling or on manual sync, otherwise a server accumulates overlapping timers.
+
+**Version compatibility** (#154–#158): at connect time `syncBank()` calls `fetchServerVersion()` / `getClientVersion()` / `describeCompatibility()` from `lib/versionInfo.js`. The "supported" ceiling is the *installed* `@actual-app/api` version — never hardcode it, since the dependency-update workflow only merges a client bump after the suite passes. The check is non-fatal (a failed `/info` fetch just skips it) and its result is recorded on `HealthCheckService` separately from sync status, then merged into the `/api/dashboard/servers` payload as `serverVersion` + `versionVerdict`.
 
 **Correlation IDs**: Set at the start of each sync operation, always cleared in `finally` blocks alongside `actual.shutdown()`:
 
@@ -156,6 +165,9 @@ Beyond `configLoader.js` and `logger.js`, small single-purpose modules encode no
 - `actualApiError.js` — `enhanceActualApiError()` wraps opaque `@actual-app/api` errors (often empty `PostError`s) with human-readable context and `.phase`/`.code`/`.errorCode`/`.originalError` fields, branching on phase (`download`/`sync`) and E2EE.
 - `messageFormatter.js` — `MessageFormatter.formatSyncNotification()` produces one unified notification payload formatted per channel; notification channels consume this rather than building their own strings.
 - `configBootstrap.js` — On first run seeds an example config into an empty (bind-mounted) config dir from the image-baked `config-defaults/`, so a fresh container gets a fillable template instead of a cryptic "not found" (#96).
+- `loggerConfig.js` — Maps a `config.logging` block to `createLogger()` options via an explicit `LOGGER_CONFIG_KEYS` allow-list, dropping `undefined` so logger defaults apply. Runtime-only options (`serviceName`, `broadcastCallback`, `context`, `inheritStreams`) are deliberately excluded. **When you add a `logging.*` config option, add its key here** — hand-picking a subset inline is exactly how `redact` and `fileFormat` became unreachable (#116).
+- `versionInfo.js` — Server/client version fetch + compatibility verdict (see Key Patterns above). Client version is resolved once and cached.
+- `version.js` — Resolves the service's own version: prefers `process.env.VERSION` (CI passes it as a Docker `--build-arg`), but treats the literal `"unknown"` — the Dockerfile's `ARG VERSION=unknown` default — the same as unset and falls back to `package.json` (#132).
 
 ### Logging Convention
 
@@ -239,8 +251,14 @@ Notes:
 - The patch-bump path commits to `main` only, so **after a routine (auto-patch) release, back-merge `main` → `development`** (fast-forward) to avoid version drift. A minor/major release bumped on `development` does not drift.
 - Auth uses a GitHub App token (`APP_ID` / `APP_PRIVATE_KEY` secrets), not `GITHUB_TOKEN`, otherwise the new tag would not trigger the tag-based Docker publish.
 
+**Actual API release train:** `.github/workflows/dependency-update.yml` is the one exception to "releases are human-initiated" — it fully automates `@actual-app/api` upgrades, and **only** that dependency. Daily it fast-forwards `development` up to `main`, branches off `main`, bumps the dep (never the version — auto-release owns that), opens a PR to `main`, and merges it once full CI passes; auto-release then patch-bumps, tags and publishes. Majors included. Consequences to preserve:
+- `dependabot.yml` must ignore `@actual-app/api` **entirely** (bare `dependency-name`, no `update-types`), or every major yields both a Dependabot PR and an auto-published release.
+- Never add a version bump to the train — bumping would push `main` past the tag and auto-release would release as-is instead of patch-bumping.
+- The `development` sync is `--ff-only` and must never become a force-push: on a diverged `development` it fails harmlessly (and opens a sync PR), whereas a reset would destroy in-flight work. The step is `continue-on-error` on purpose — the sync must never block the dependency from shipping.
+- Never drop the post-merge "Verify the release chain actually started" step. Without it a misconfigured App token means the merge lands, nothing publishes, and the job still exits green — a silent stall. Any push that must trigger a downstream workflow needs the App token, never `GITHUB_TOKEN`.
+
 **Rules:**
-- **Never push to `main` directly.** Merging `development` → `main` happens ONLY when the user explicitly asks (e.g. "merge to main").
+- **Never push to `main` directly.** Merging `development` → `main` happens ONLY when the user explicitly asks (e.g. "merge to main"). The release train above is the sole automated exception.
 - Do not run `git push` unless the user asked for it in that message.
 
 ## Dependency Policy
