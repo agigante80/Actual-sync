@@ -1,0 +1,132 @@
+name: Infrastructure Task
+description: DevOps, CI/CD, Docker, release automation, configuration
+labels: ["infrastructure"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        <!-- template-version: 4 -->
+        ## Infrastructure Task
+        For CI/CD, Docker, release automation, monitoring, and configuration work.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What infrastructure work is needed and why?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 - Critical
+        - P1 - High
+        - P2 - Medium
+        - P3 - Low
+    validations:
+      required: true
+
+  - type: dropdown
+    id: areas
+    attributes:
+      label: Area(s) affected
+      multiple: true
+      options:
+        - ci-release (GitHub Actions, auto-release, version bump)
+        - docker (image, entrypoint, PUID/PGID)
+        - config (config schema/loader, AJV validation, config bootstrap)
+        - sync-history (better-sqlite3 storage)
+        - metrics (Prometheus / prom-client)
+        - logging (custom logger, redaction, rotation)
+        - Secrets / credentials
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files to create/modify
+      placeholder: |
+        - `.github/workflows/ci-cd.yml`
+        - `.github/workflows/auto-release.yml`
+        - `Dockerfile`
+        - `docker/entrypoint.sh`
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] CI pipeline passes (`npm test`, `npm run dead:check`)
+        - [ ] Docker image builds successfully
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback plan
+      description: How to revert if this change causes problems.
+      placeholder: |
+        - Revert commit / re-pull previous published image (`docker compose pull`)
+        - No data migration needed
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security considerations
+      value: |
+        - **Credentials:** Are secrets stored securely (GitHub App token / Secrets, not committed config)?
+        - **Access control:** Who can access the changed infrastructure? Does the container still drop to non-root (PUID/PGID)?
+        - **Network exposure:** Any new ports or endpoints exposed by the dashboard/health server?
+    validations:
+      required: true
+
+  - type: textarea
+    id: scenarios
+    attributes:
+      label: Test scenarios (Given / When / Then)
+      description: |
+        One positive and one negative scenario per condition being changed.
+      placeholder: |
+        **Condition: [name the condition]**
+
+        Positive
+        - Given: [valid starting state]
+        - When: [action is performed]
+        - Then: [expected correct result]
+
+        Negative
+        - Given: [invalid or edge-case state]
+        - When: [action is performed]
+        - Then: [expected error / rejection message]
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: agent_reviews
+    attributes:
+      label: Required reviews (mandatory)
+      description: |
+        The gate orchestrators auto-select which specialist agents to run based on labels and content.
+        All selected agents must score 10/10 before implementation begins.
+      options:
+        - label: "**ticket-gate** - mandatory before implementation. Runs 5 core agents (Security, Architect, Developer, QA, GDPR) + dynamic agents based on labels. All must score 10/10."
+          required: true
+
+  - type: textarea
+    id: codebase_context
+    attributes:
+      label: Codebase Context
+      description: "Auto-populated by ticket-gate. Do not edit manually."
+      placeholder: "Populated automatically when you run /gate-ticket"
+    validations:
+      required: false

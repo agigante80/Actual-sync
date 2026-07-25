@@ -1,0 +1,168 @@
+name: Security Issue
+description: Report a security vulnerability or propose a security hardening
+labels: ["security"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        <!-- template-version: 4 -->
+        ## Security Issue
+        For responsible disclosure of active vulnerabilities, consider reporting privately first.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Vulnerability description
+      description: What is the vulnerability or security gap?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: owasp
+    attributes:
+      label: OWASP category
+      description: Which OWASP Top 10 category applies?
+      options:
+        - A01 Broken Access Control
+        - A02 Cryptographic Failures
+        - A03 Injection
+        - A04 Insecure Design
+        - A05 Security Misconfiguration
+        - A06 Vulnerable Components
+        - A07 Authentication Failures
+        - A08 Data Integrity Failures
+        - A09 Logging/Monitoring Failures
+        - A10 SSRF
+        - Other / N/A
+    validations:
+      required: true
+
+  - type: textarea
+    id: affected
+    attributes:
+      label: Affected endpoints/files
+      description: Which routes, files, or components are vulnerable?
+      placeholder: |
+        - `src/services/healthCheck.js` - GET /api/dashboard/status
+        - `src/lib/logger.js` - secret redaction
+        - `src/lib/configLoader.js`
+    validations:
+      required: true
+
+  - type: textarea
+    id: gdpr
+    attributes:
+      label: GDPR implications
+      description: Does this vulnerability affect personal data handling (bank/transaction data, credentials, budget passwords)?
+      value: |
+        - **PII at risk:**
+        - **Articles affected (17/20/25):**
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - critical (actively exploitable, PII exposed)
+        - high (exploitable with effort, safety-impacting)
+        - medium (requires specific conditions)
+        - low (theoretical, defense-in-depth)
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true for this vulnerability to be considered resolved?
+      placeholder: |
+        - [ ] Vulnerability no longer exploitable
+        - [ ] Regression test added
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Other issues blocked by or related to this security fix.
+      placeholder: "Blocks: #55"
+    validations:
+      required: false
+
+  - type: textarea
+    id: scenarios
+    attributes:
+      label: Test scenarios (Given / When / Then)
+      description: |
+        One positive and one negative scenario per condition being fixed.
+      placeholder: |
+        **Condition: [name the condition]**
+
+        Positive
+        - Given: [valid starting state]
+        - When: [action is performed]
+        - Then: [expected correct result]
+
+        Negative
+        - Given: [invalid or edge-case state]
+        - When: [action is performed]
+        - Then: [expected error / rejection message]
+    validations:
+      required: true
+
+  - type: textarea
+    id: unit_tests
+    attributes:
+      label: Unit tests (Jest)
+      description: |
+        Specific test cases. State file path, input, and expected output for each case.
+        Tests live in `src/__tests__/` and use the helpers in `src/__tests__/helpers/testHelpers.js`.
+      placeholder: |
+        - [ ] Positive: `src/__tests__/[file].test.js` - call with [valid input] -> [expected output / field value]
+        - [ ] Negative: `src/__tests__/[file].test.js` - call with [bad input] -> error code "[CODE]" / message contains "[text]"
+        - [ ] `npm test` passes with coverage thresholds met
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: agent_reviews
+    attributes:
+      label: Required reviews (mandatory)
+      description: |
+        The gate orchestrators auto-select which specialist agents to run based on labels and content.
+        All selected agents must score 10/10 before implementation begins.
+      options:
+        - label: "**ticket-gate** - mandatory before implementation. Runs 5 core agents (Security, Architect, Developer, QA, GDPR) + dynamic agents based on labels. All must score 10/10."
+          required: true
+
+  - type: textarea
+    id: remediation
+    attributes:
+      label: Remediation approach
+      description: How should this be fixed?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tests
+    attributes:
+      label: Test plan for the fix
+      description: How do we verify the fix works and doesn't regress?
+      placeholder: |
+        - [ ] Unit test: ...
+        - [ ] Integration test: ...
+        - [ ] Manual verification: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: codebase_context
+    attributes:
+      label: Codebase Context
+      description: "Auto-populated by ticket-gate. Do not edit manually."
+      placeholder: "Populated automatically when you run /gate-ticket"
+    validations:
+      required: false

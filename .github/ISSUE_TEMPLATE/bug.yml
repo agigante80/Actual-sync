@@ -1,0 +1,201 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        <!-- template-version: 4 -->
+        ## Bug Report
+        Please provide enough detail to reproduce and assess the impact.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: What is happening? What did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug.
+      placeholder: |
+        1. Run `npm run sync -- --server "MyServer"` (or trigger via the dashboard)
+        2. Wait for the account sync to run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behavior
+      description: What should happen vs what actually happens.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: areas
+    attributes:
+      label: Affected areas
+      description: Which areas does this bug affect?
+      multiple: true
+      options:
+        - sync-engine (src/syncService.js — sync flow, retries, correlation IDs)
+        - actual-api (@actual-app/api integration, budget download/decrypt, E2EE)
+        - config (config schema/loader, AJV validation, config bootstrap)
+        - dashboard (Express dashboard + /api/dashboard/* + healthCheck)
+        - notifications (Telegram/Slack/Discord/email, telegramBot)
+        - metrics (Prometheus / prom-client)
+        - sync-history (better-sqlite3 storage)
+        - logging (custom logger, redaction, rotation)
+        - docker (image, entrypoint, PUID/PGID)
+        - ci-release (GitHub Actions, auto-release, version bump)
+        - docs
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - critical (safety-impacting, data loss, security breach)
+        - high (feature broken, no workaround)
+        - medium (feature degraded, workaround exists)
+        - low (cosmetic, minor inconvenience)
+    validations:
+      required: true
+
+  - type: textarea
+    id: gdpr
+    attributes:
+      label: GDPR impact
+      description: Does this bug expose, leak, or mishandle PII (bank/transaction data, credentials, budget passwords)?
+      value: |
+        - **Does this bug expose PII?** yes / no
+        - **Details:**
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security impact
+      description: Does this bug create a vulnerability?
+      value: |
+        - **Does this bug create a vulnerability?** yes / no
+        - **Details:**
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true for this bug to be considered fixed?
+      placeholder: |
+        - [ ] Bug no longer reproducible
+        - [ ] Regression test added
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Other issues that must be completed before or are blocked by this fix.
+      placeholder: "Blocked by: #54 | Blocks: #55"
+    validations:
+      required: false
+
+  - type: textarea
+    id: scenarios
+    attributes:
+      label: Test scenarios (Given / When / Then)
+      description: |
+        One positive and one negative scenario per condition being fixed. For bugs fixing
+        multiple independent conditions, repeat the block for each.
+      placeholder: |
+        **Condition: [name the condition]**
+
+        Positive
+        - Given: [valid starting state]
+        - When: [action is performed]
+        - Then: [expected correct result]
+
+        Negative
+        - Given: [invalid or edge-case state]
+        - When: [action is performed]
+        - Then: [expected error / rejection message]
+    validations:
+      required: true
+
+  - type: textarea
+    id: unit_tests
+    attributes:
+      label: Unit tests (Jest)
+      description: |
+        Specific test cases. State file path, input, and expected output for each case.
+        Tests live in `src/__tests__/` and use the helpers in `src/__tests__/helpers/testHelpers.js`.
+      placeholder: |
+        - [ ] Positive: `src/__tests__/[file].test.js` - call with [valid input] -> [expected output / field value]
+        - [ ] Negative: `src/__tests__/[file].test.js` - call with [bad input] -> error code "[CODE]" / message contains "[text]"
+        - [ ] `npm test` passes with coverage thresholds met
+    validations:
+      required: true
+
+  - type: textarea
+    id: e2e_tests
+    attributes:
+      label: Dashboard / integration tests
+      description: |
+        For bugs affecting the Express dashboard or its /api/dashboard/* endpoints, describe an
+        integration test exercising the affected route end-to-end. Non-UI bugs can mark this N/A
+        with justification.
+      placeholder: |
+        - [ ] Positive: [setup] -> request `GET /api/dashboard/[route]` -> assert [response/state]
+        - [ ] Negative: [bad state] -> assert [error status / empty state]
+        N/A - no dashboard surface affected by this bug
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: agent_reviews
+    attributes:
+      label: Required reviews (mandatory)
+      description: |
+        The gate orchestrators auto-select which specialist agents to run based on labels and content.
+        All selected agents must score 10/10 before implementation begins.
+      options:
+        - label: "**ticket-gate** - mandatory before implementation. Runs 5 core agents (Security, Architect, Developer, QA, GDPR) + dynamic agents based on labels. All must score 10/10."
+          required: true
+
+  - type: textarea
+    id: qa_security
+    attributes:
+      label: QA & Regression tests
+      description: What tests should be added to prevent this bug from recurring?
+      value: |
+        - [ ] **Regression test:** Reproduces this exact bug scenario and asserts the fix
+        - [ ] **Security test:** If security-related - injection/auth/redaction test covering the vector
+        - [ ] **Edge cases:** Related boundary conditions that should also be tested
+
+        ### Dashboard test (if dashboard-visible bug)
+        - [ ] **Happy path:** Integration test verifying the fix works end-to-end
+        - [ ] **Unhappy path:** Error state still handled correctly after fix
+    validations:
+      required: true
+
+  - type: textarea
+    id: codebase_context
+    attributes:
+      label: Codebase Context
+      description: "Auto-populated by ticket-gate. Do not edit manually."
+      placeholder: "Populated automatically when you run /gate-ticket"
+    validations:
+      required: false
