@@ -1,4 +1,43 @@
-name: Dependency Update Check
+name: Actual API Release Train
+
+# -----------------------------------------------------------------------------
+# Fully automated release train for @actual-app/api — and ONLY that dependency.
+# Every other package (including all other production deps) stays on the normal
+# Dependabot → development → manual-promotion path.
+#
+# Daily, if a newer @actual-app/api is published:
+#   1. Fast-forward `development` up to `main` (best-effort; see below).
+#   2. Branch off `main`, bump the dep only — NOT the version.
+#   3. Open a PR to `main` and wait for the full CI pipeline to go green.
+#   4. Merge it. ci-cd.yml then runs on main, auto-release.yml patch-bumps +
+#      tags + publishes, and the v* tag builds/pushes the Docker images.
+#
+# No human interaction anywhere in that chain.
+#
+# WHY THE VERSION IS NOT BUMPED HERE: auto-release.yml already patch-bumps when
+# the version on main equals the latest tag (its routine path). Bumping here too
+# would push main ahead of the tag, and auto-release would then release it "as-is"
+# — skipping its own bump. Leaving the version alone is what makes the routine
+# auto-patch fire. Do not add a version:bump step.
+#
+# WHY STEP 1 EXISTS AND WHY IT RUNS FIRST: metrics-badges.yml pushes a badge
+# commit to main after every v* tag, and auto-release.yml pushes a bump commit,
+# so main permanently drifts ahead of development after each release. Syncing at
+# the START of the next daily run is race-free — the previous release has long
+# settled. Back-merging at the END instead would race the bump + badge pushes and
+# miss exactly the commits that cause the drift.
+#
+# WHY --ff-only AND NEVER --force: when development has no unique commits this is
+# a plain fast-forward, so no force is needed. When development HAS diverged
+# (someone mid-feature), --ff-only fails and changes nothing, whereas a reset
+# --hard + force-push would silently destroy that work. The failure is non-fatal:
+# the release branches off main regardless, so it is unaffected either way.
+#
+# MAJORS ARE IN SCOPE. This train publishes major @actual-app/api bumps too, so
+# dependabot.yml must ignore @actual-app/api ENTIRELY — otherwise a major would
+# produce both a Dependabot PR and an auto-published release. The only version
+# move it refuses is a backwards one (see the sort -V check).
+# -----------------------------------------------------------------------------
 
 on:
   schedule:
@@ -8,26 +47,36 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
+
+# A scheduled run and a manual dispatch must never drive two release trains at
+# once (both would push main and race auto-release).
+concurrency:
+  group: actual-api-release-train
+  cancel-in-progress: false
 
 jobs:
-  check-updates:
-    name: Check for Actual API Updates
+  release-train:
+    name: Check, test and publish @actual-app/api update
     runs-on: ubuntu-latest
-    # Bound the job well under the 60-minute GitHub App installation-token
-    # lifetime, so the token minted before the push steps can never expire
-    # mid-run (a hung test phase is masked by continue-on-error on the test step).
-    timeout-minutes: 30
+    # Generous, and it has to be: the job waits on the FULL CI pipeline twice —
+    # once on the PR (gate, ≤45m) and again on main after the merge (chain
+    # verification, ≤45m) — so 60 would kill a legitimately slow run mid-watch.
+    # Only ever reached when an upgrade actually exists; no-op days exit in
+    # seconds. The App token is re-minted before the merge so a long PR wait
+    # cannot outlive it, and the post-merge watch runs on github.token, which
+    # does not expire.
+    timeout-minutes: 120
 
     steps:
-      - name: Checkout development branch
+      - name: Checkout main
         uses: actions/checkout@v7
         with:
-          ref: development
+          # The train releases from main, not development.
+          ref: main
           fetch-depth: 0
-          # Do NOT persist credentials: npm ci + npm test below execute the
-          # freshly-bumped @actual-app/api code, and we don't want a write-scoped
-          # token sitting in .git/config while untrusted package code runs. The
-          # App token is minted later and used only for the push steps.
+          # No write-scoped token in .git/config; the App token is minted below
+          # and scoped to the steps that actually push.
           persist-credentials: false
 
       - name: Setup Node.js
@@ -45,7 +94,15 @@ jobs:
       - name: Check latest version
         id: latest
         run: |
+          set -euo pipefail
           LATEST=$(npm show @actual-app/api version)
+          # A registry blip returns empty without failing the assignment, which
+          # would otherwise reach the comparison and be reported as a confusing
+          # "latest is behind installed" warning. Fail loudly instead.
+          if [ -z "$LATEST" ]; then
+            echo "::error::Could not resolve the latest @actual-app/api version from the registry"
+            exit 1
+          fi
           echo "version=$LATEST" >> $GITHUB_OUTPUT
           echo "Latest @actual-app/api version: $LATEST"
 
@@ -55,72 +112,30 @@ jobs:
           CURRENT: ${{ steps.current.outputs.version }}
           LATEST: ${{ steps.latest.outputs.version }}
         run: |
-          CURRENT_MAJOR="${CURRENT%%.*}"
-          LATEST_MAJOR="${LATEST%%.*}"
+          set -euo pipefail
+          # Forward-only, direction-checked with sort -V (the same idiom
+          # auto-release.yml uses). Majors included; anything that is not a
+          # strict forward move is a no-op. In particular this refuses to
+          # DOWNGRADE when the upstream `latest` dist-tag is rolled back to an
+          # older release — npm show returns the tag, not the highest version.
           if [ "$CURRENT" = "$LATEST" ]; then
             echo "update_needed=false" >> $GITHUB_OUTPUT
-            echo "major_available=false" >> $GITHUB_OUTPUT
             echo "Already on latest: $CURRENT"
-          elif [ "$LATEST_MAJOR" -gt "$CURRENT_MAJOR" ]; then
-            # A new MAJOR is owned by the Dependabot PR flow (dependabot.yml
-            # ignores only patch/minor for @actual-app/api, so it opens a PR for
-            # majors). This workflow auto-merges same-major updates only, so the
-            # two mechanisms never collide on a major release.
-            echo "update_needed=false" >> $GITHUB_OUTPUT
-            echo "major_available=true" >> $GITHUB_OUTPUT
-            echo "Major release available: $CURRENT → $LATEST — left to Dependabot / manual review"
-          elif [ "$LATEST_MAJOR" -lt "$CURRENT_MAJOR" ]; then
-            # Latest dist-tag is behind the installed version (a rare upstream
-            # regression, or package.json set ahead). Never auto-downgrade.
-            echo "update_needed=false" >> $GITHUB_OUTPUT
-            echo "major_available=false" >> $GITHUB_OUTPUT
-            echo "::warning::Latest published $LATEST is behind installed $CURRENT — no action"
           else
-            # Same major, different version. Only proceed for a forward move;
-            # a same-major downgrade would be a no-op under the ^ range anyway.
-            echo "update_needed=true" >> $GITHUB_OUTPUT
-            echo "major_available=false" >> $GITHUB_OUTPUT
-            echo "Same-major update available: $CURRENT → $LATEST"
+            HIGHEST=$(printf '%s\n%s\n' "$CURRENT" "$LATEST" | sort -V | tail -1)
+            if [ "$HIGHEST" = "$LATEST" ]; then
+              echo "update_needed=true" >> $GITHUB_OUTPUT
+              echo "Update available: $CURRENT → $LATEST"
+            else
+              echo "update_needed=false" >> $GITHUB_OUTPUT
+              echo "::warning::Latest published $LATEST is behind installed $CURRENT — refusing to downgrade"
+            fi
           fi
 
-      - name: Configure git identity
-        if: steps.compare.outputs.update_needed == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Create update branch
-        if: steps.compare.outputs.update_needed == 'true'
-        env:
-          LATEST: ${{ steps.latest.outputs.version }}
-        run: |
-          git checkout -b deps/actual-api-$LATEST
-
-      - name: Update package.json
-        if: steps.compare.outputs.update_needed == 'true'
-        env:
-          CURRENT: ${{ steps.current.outputs.version }}
-          LATEST: ${{ steps.latest.outputs.version }}
-        run: |
-          npm install --package-lock-only @actual-app/api@^$LATEST
-          git add package.json package-lock.json
-          git commit -m "chore(deps): bump @actual-app/api from $CURRENT to $LATEST"
-
-      - name: Install dependencies for test run
-        if: steps.compare.outputs.update_needed == 'true'
-        run: npm ci
-
-      - name: Run tests
-        if: steps.compare.outputs.update_needed == 'true'
-        id: tests
-        run: npm test -- --ci
-        continue-on-error: true
-
-      # Mint the write-scoped App token only now — after the untrusted package
-      # code has finished running (npm ci/npm test) and immediately before the
-      # push steps that need it. Pushes made with the default GITHUB_TOKEN do not
-      # trigger workflow runs on the same repo, so ci-cd.yml would never fire on
-      # the auto-merged bump commit; the App token makes downstream CI trigger.
+      # Minted once the run is known to be doing real work. Used for every push
+      # below AND for the merge: pushes made with the default GITHUB_TOKEN do not
+      # trigger workflow runs, so ci-cd.yml (and therefore auto-release.yml)
+      # would never fire on the merge commit.
       - name: Generate GitHub App token
         id: token
         if: steps.compare.outputs.update_needed == 'true'
@@ -129,52 +144,393 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - name: Merge to development (tests passed)
-        if: steps.compare.outputs.update_needed == 'true' && steps.tests.outcome == 'success'
-        env:
-          LATEST: ${{ steps.latest.outputs.version }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+      - name: Configure git identity
+        if: steps.compare.outputs.update_needed == 'true'
         run: |
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git checkout development
-          git merge --no-ff deps/actual-api-$LATEST -m "chore(deps): merge @actual-app/api bump to $LATEST into development"
-          git push origin development
-          git branch -d deps/actual-api-$LATEST
-          # A previous FAILED run of this same version pushed the working branch
-          # to origin (see the failure path below). Now that it's merged, delete
-          # that stale remote branch too; harmless no-op if it was never pushed.
-          git push origin --delete deps/actual-api-$LATEST 2>/dev/null || true
-          echo "### ✅ Merged @actual-app/api $LATEST into development" >> $GITHUB_STEP_SUMMARY
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Push branch for inspection (tests failed)
-        if: steps.compare.outputs.update_needed == 'true' && steps.tests.outcome != 'success'
+      # Kept OUT of the best-effort sync step below: authenticating the remote is
+      # a hard prerequisite for every later push, so a failure here must fail the
+      # job rather than be swallowed by the sync's continue-on-error.
+      - name: Authenticate git remote
+        if: steps.compare.outputs.update_needed == 'true'
         env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git fetch origin main development
+
+      - name: Sync development up to main (fast-forward only)
+        id: sync
+        if: steps.compare.outputs.update_needed == 'true'
+        # The sync is best-effort BY DESIGN and must never block the release —
+        # the release branches off main and does not depend on development at
+        # all. continue-on-error guarantees that even an unexpected failure in
+        # here (a gh API blip, say) cannot stop the dependency from shipping.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # Restore HEAD on EVERY exit path, including an errexit abort partway
+          # through. The release branch below passes an explicit `origin/main`
+          # start point so it does not actually depend on this — but leaving HEAD
+          # parked on development is a fragile invariant to make another step
+          # absorb. Never put cleanup on the last line of a `set -e` block.
+          trap 'git checkout main >/dev/null 2>&1 || true' EXIT
+
+          SYNCED=false
+          DIVERGED=false
+
+          git checkout -B development origin/development
+          # --ff-only: no-op when already equal, fast-forward when main is ahead,
+          # clean failure when development has diverged. Never rewrites history.
+          if git merge --ff-only origin/main; then
+            if git push origin development; then
+              SYNCED=true
+              echo "development is now level with main"
+            else
+              # A REJECTED PUSH IS A RACE, NOT A DIVERGENCE — someone pushed to
+              # development between our fetch and our push. Treating it as
+              # divergence would emit a false warning and open a sync PR that
+              # should not exist. Refresh and retry once against the new tip.
+              echo "Push rejected — re-fetching and retrying once"
+              git fetch origin development
+              git checkout -B development origin/development
+              if git merge --ff-only origin/main && git push origin development; then
+                SYNCED=true
+                echo "development synced on retry"
+              else
+                echo "::warning::Could not sync development this run (lost push race, or it diverged in the meantime). Not acted on as a divergence — the next daily run re-classifies it."
+              fi
+            fi
+          else
+            DIVERGED=true
+          fi
+
+          if [ "$DIVERGED" = true ]; then
+            echo "::warning::development has diverged from main — opening a sync PR instead. The release still proceeds from main."
+            # Assigned on its own line, NOT inline in the test: under errexit a
+            # transient gh failure inside a test condition is swallowed and reads
+            # as "0 open PRs", which would spam a duplicate PR every single day.
+            OPEN_SYNC_PRS=$(gh pr list --base development --head main --state open --json number --jq 'length')
+            if [ "$OPEN_SYNC_PRS" != "0" ]; then
+              echo "A main → development sync PR is already open; nothing to do"
+            else
+              # Created with the App token (not github.token) so the sync PR
+              # actually gets CI runs — a PR opened by GITHUB_TOKEN does not
+              # trigger workflows, which is trap 1 one layer down.
+              gh pr create --base development --head main \
+                --title "chore: sync development with main" \
+                --body "Opened automatically by the @actual-app/api release train.
+
+          \`development\` has diverged from \`main\`, so the daily fast-forward could not
+          apply. Merge this to bring \`development\` back in line.
+
+          Until it is merged, promoting \`development\` to \`main\` will be refused by
+          \`auto-release.yml\` as a version regression. The dependency release itself is
+          unaffected — it branches from \`main\`.
+
+          Note: closing this PR does not suppress it permanently — if \`development\` is
+          still diverged tomorrow, the train opens a new one."
+            fi
+          fi
+
+          echo "synced=$SYNCED" >> $GITHUB_OUTPUT
+
+      - name: Create update branch
+        if: steps.compare.outputs.update_needed == 'true'
+        env:
+          LATEST: ${{ steps.latest.outputs.version }}
+        run: |
+          set -euo pipefail
+          git checkout -B "deps/actual-api-$LATEST" origin/main
+
+      - name: Update package.json
+        if: steps.compare.outputs.update_needed == 'true'
+        env:
+          CURRENT: ${{ steps.current.outputs.version }}
+          LATEST: ${{ steps.latest.outputs.version }}
+        run: |
+          set -euo pipefail
+          # --package-lock-only: resolves and rewrites package.json +
+          # package-lock.json without populating node_modules, so no lifecycle
+          # script from the new package version executes in this job. The freshly
+          # bumped code is only ever run by CI, in its own isolated run.
+          npm install --package-lock-only "@actual-app/api@^$LATEST"
+          git add package.json package-lock.json
+          git commit -m "chore(deps): bump @actual-app/api from $CURRENT to $LATEST"
+
+      - name: Push branch and open PR
+        id: pr
+        if: steps.compare.outputs.update_needed == 'true'
+        env:
+          CURRENT: ${{ steps.current.outputs.version }}
           LATEST: ${{ steps.latest.outputs.version }}
           GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          # Force-push: a prior failed run of this same version may have left a
-          # remote branch, and this run recreates it from a newer development tip
-          # (different SHA, not a fast-forward). Force keeps the inspection branch
-          # at the current state instead of failing the step on non-fast-forward.
-          git push --force origin deps/actual-api-$LATEST
-          echo "### ⚠️ Tests failed — branch deps/actual-api-$LATEST pushed for manual inspection" >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
+          BRANCH="deps/actual-api-$LATEST"
+          # Force: a prior failed run of this same version may have left the
+          # branch on origin, cut from an older main (different SHA, not a
+          # fast-forward). Recreate it at the current state rather than fail.
+          git push --force origin "$BRANCH"
+
+          # Reuse an existing open PR for this branch if a prior run made one.
+          EXISTING=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "Reusing existing PR #$EXISTING"
+            echo "number=$EXISTING" >> $GITHUB_OUTPUT
+          else
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore(deps): bump @actual-app/api from $CURRENT to $LATEST" \
+              --body "Automated @actual-app/api release train.
+
+          Bumps \`@actual-app/api\` from \`$CURRENT\` to \`$LATEST\`.
+
+          This PR is merged automatically once the full CI pipeline passes, after
+          which \`auto-release.yml\` patch-bumps, tags and publishes the release.
+          No manual action is required. If CI fails, this PR is left open for
+          inspection and the workflow run is marked failed."
+            NUMBER=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number')
+            echo "number=$NUMBER" >> $GITHUB_OUTPUT
+            echo "Opened PR #$NUMBER"
+          fi
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Wait for CI to pass
+        id: checks
+        if: steps.compare.outputs.update_needed == 'true'
+        # Bounded independently of the job so a stuck pipeline fails here with a
+        # clear message rather than silently eating the whole job budget.
+        timeout-minutes: 45
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          # `gh pr checks` errors when no check has registered yet, which is the
+          # normal state for the first few seconds after opening a PR. Poll until
+          # at least one appears before handing over to --watch.
+          for _ in $(seq 1 20); do
+            if gh pr checks "$PR" >/dev/null 2>&1; then break; fi
+            echo "Waiting for checks to register..."
+            sleep 15
+          done
+          # --watch blocks until every check completes; --fail-fast returns as
+          # soon as one fails. Non-zero exit fails the step and skips the merge.
+          gh pr checks "$PR" --watch --fail-fast --interval 30
+
+      # Re-minted after the CI wait: the first token may be close to its
+      # 60-minute lifetime by now, and the merge push is the one that must
+      # trigger ci-cd.yml + auto-release.yml.
+      - name: Refresh GitHub App token
+        id: token2
+        if: steps.compare.outputs.update_needed == 'true' && steps.checks.outcome == 'success'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Merge to main (CI passed)
+        if: steps.compare.outputs.update_needed == 'true' && steps.checks.outcome == 'success'
+        env:
+          LATEST: ${{ steps.latest.outputs.version }}
+          GH_TOKEN: ${{ steps.token2.outputs.token }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          gh pr merge "$PR" --merge --delete-branch
+          echo "PR #$PR merged to main"
+
+      # WHY THIS EXISTS: without it, this workflow ends at the merge and merely
+      # ASSUMES the rest of the chain runs. If the App token were ever
+      # misconfigured, the merge would land, ci-cd.yml would never fire,
+      # auto-release.yml would never run, NOTHING would publish — and this job
+      # would still exit green. That silent stall is exactly how
+      # actual-mcp-server shipped a release with no Docker image (their #261).
+      # A correct App token prevents the stall; this step is what turns a
+      # REGRESSION of it into a red run instead of silence.
+      #
+      # Uses github.token deliberately: these are read-only API calls, so they
+      # need no App privileges, and GITHUB_TOKEN cannot expire mid-watch the way
+      # a 60-minute App token can.
+      - name: Verify the release chain actually started
+        if: steps.compare.outputs.update_needed == 'true' && steps.checks.outcome == 'success'
+        # 10m discovery + 20m capped watch + slack. Deliberately well inside the
+        # job budget: a step timeout does NOT protect against the JOB timeout
+        # truncating the run, which would kill the step before it can write its
+        # diagnostic summary.
+        timeout-minutes: 35
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.latest.outputs.version }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          # GitHub does not always populate mergeCommit the instant `gh pr merge`
+          # returns. Retry briefly. The `// empty` matters: WITHOUT it a null
+          # mergeCommit makes jq print the literal string "null" and exit 0, so a
+          # plain -z check passes, the poll below hunts for headSha=="null" for
+          # ten minutes, and a perfectly good release is reported as a failed
+          # chain. Guard on "null" as well, belt and braces.
+          SHA=""
+          for _ in $(seq 1 12); do
+            SHA=$(gh pr view "$PR" --json mergeCommit --jq '.mergeCommit.oid // empty' || true)
+            if [ -n "$SHA" ] && [ "$SHA" != "null" ]; then break; fi
+            echo "Waiting for GitHub to populate the merge commit..."
+            sleep 5
+          done
+          if [ -z "$SHA" ] || [ "$SHA" = "null" ]; then
+            echo "::error::Could not resolve the merge commit for PR #$PR after 60s. The merge itself succeeded; re-run this workflow or check ci-cd.yml on main manually."
+            exit 1
+          fi
+          echo "Merge commit on main: $SHA"
+
+          # Discovery polls runner-queue latency, not execution: 40 x 15s = 10min.
+          # `|| true` keeps a transient API error from aborting the loop under
+          # errexit — it retries on the next tick instead.
+          # SHA is read from the ENVIRONMENT by jq (env.SHA) rather than
+          # interpolated into the jq program by the shell. Not exploitable here
+          # (SHA is GitHub-supplied hex) but it removes a quoting layer, and it
+          # matches how every other value in this workflow is passed.
+          # --limit 100, not 30: discovery must not miss a slow-to-queue run just
+          # because main got chatty.
+          export SHA
+          RUN_ID=""
+          for _ in $(seq 1 40); do
+            RUN_ID=$(gh run list --workflow ci-cd.yml --branch main --event push --limit 100 \
+              --json databaseId,headSha --jq '[.[] | select(.headSha == env.SHA)][0].databaseId // empty' || true)
+            if [ -n "$RUN_ID" ]; then break; fi
+            echo "Waiting for ci-cd.yml to trigger on $SHA..."
+            sleep 15
+          done
+
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::ci-cd.yml never triggered on merge commit $SHA. The merge likely authenticated as GITHUB_TOKEN instead of the GitHub App — GITHUB_TOKEN pushes do not trigger workflow runs, so auto-release.yml will never fire and nothing will publish."
+            {
+              echo "### ❌ Release chain did not start"
+              echo ""
+              echo "\`@actual-app/api $LATEST\` was merged to \`main\` (\`$SHA\`) but \`ci-cd.yml\` never triggered, so **nothing was published**. Check the GitHub App token configuration."
+            } >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+          # ---------------------------------------------------------------
+          # Trigger proof (above) is the HARD gate — it catches the App-token
+          # failure mode and is cheap. The completion watch below is purely
+          # OBSERVATIONAL: auto-release.yml self-gates on
+          # workflow_run.conclusion == 'success', so nothing here decides whether
+          # the release happens. Keep the signal (a red main must not read as a
+          # silent success) but cap it rather than paying a hosted runner to idle
+          # for 45 minutes, and never let it truncate the job.
+          # ---------------------------------------------------------------
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID"
+          echo "Found ci-cd run $RUN_ID; watching (best-effort, 20m cap)..."
+          set +e
+          timeout 1200 gh run watch "$RUN_ID" --exit-status --interval 30
+          WATCH_RC=$?
+          set -e
+
+          # Read the conclusion explicitly instead of inferring from the exit
+          # status. `gh run watch --exit-status` also exits non-zero on a
+          # CANCELLED run, which would otherwise be misreported as a failure —
+          # e.g. if ci-cd ever gains concurrency/cancel-in-progress on main and a
+          # newer push supersedes ours. Cancelled is not failed.
+          CONCLUSION=$(gh run view "$RUN_ID" --json conclusion --jq '.conclusion // empty' || true)
+          echo "watch rc=$WATCH_RC conclusion=${CONCLUSION:-<still running>}"
+
+          case "$CONCLUSION" in
+            success)
+              {
+                echo "### ✅ Published @actual-app/api $LATEST"
+                echo ""
+                echo "PR #$PR merged to \`main\`; [\`ci-cd.yml\` run \`$RUN_ID\`]($RUN_URL) succeeded. \`auto-release.yml\` patch-bumps, tags and publishes from here."
+              } >> $GITHUB_STEP_SUMMARY
+              ;;
+            failure|timed_out|startup_failure)
+              echo "::error::ci-cd.yml run $RUN_ID concluded '$CONCLUSION' on main after the merge. The bump IS on main but auto-release will not publish it."
+              {
+                echo "### ❌ Merged, but the pipeline failed on \`main\`"
+                echo ""
+                echo "\`@actual-app/api $LATEST\` was merged to \`main\` (\`$SHA\`), but [\`ci-cd.yml\` run \`$RUN_ID\`]($RUN_URL) concluded **$CONCLUSION**."
+                echo ""
+                echo "\`auto-release.yml\` only releases on a successful CI run, so **nothing was published**. \`main\` now carries the bump without a release — fix forward on \`main\`."
+              } >> $GITHUB_STEP_SUMMARY
+              exit 1
+              ;;
+            cancelled)
+              # "Superseded" is only benign IF something newer actually ran.
+              # Cancelled by a human, or by a newer push whose own run then went
+              # red, both end with nothing published and this train green — the
+              # silent stall again, one layer in. Require evidence of a newer
+              # ci-cd run before accepting the superseded explanation.
+              # A gh failure here yields 0, i.e. NOT superseded, so the
+              # conservative branch is the one that fails loudly.
+              export RUN_ID
+              NEWER=$(gh run list --workflow ci-cd.yml --branch main --event push --limit 100 \
+                --json databaseId --jq '[.[] | select(.databaseId > (env.RUN_ID | tonumber))] | length' || echo 0)
+              if [ "${NEWER:-0}" -gt 0 ]; then
+                echo "::warning::ci-cd.yml run $RUN_ID was cancelled but $NEWER newer run(s) exist on main — superseded, not a failure."
+                {
+                  echo "### ⚠️ Merged; pipeline run was superseded"
+                  echo ""
+                  echo "\`@actual-app/api $LATEST\` was merged to \`main\` (\`$SHA\`). [Run \`$RUN_ID\`]($RUN_URL) was **cancelled**, and $NEWER newer \`ci-cd.yml\` run(s) exist on \`main\` — so it was superseded by a later push, not a failure. Confirm the superseding run published."
+                } >> $GITHUB_STEP_SUMMARY
+              else
+                echo "::error::ci-cd.yml run $RUN_ID was cancelled and NO newer run exists on main. Nothing superseded it, so nothing will publish."
+                {
+                  echo "### ❌ Merged, but the pipeline was cancelled with nothing to replace it"
+                  echo ""
+                  echo "\`@actual-app/api $LATEST\` was merged to \`main\` (\`$SHA\`), but [run \`$RUN_ID\`]($RUN_URL) was **cancelled** and no newer \`ci-cd.yml\` run exists on \`main\` — most likely cancelled by hand."
+                  echo ""
+                  echo "\`auto-release.yml\` only releases on a successful CI run, so **nothing was published**. Re-run \`ci-cd.yml\` on \`main\`."
+                } >> $GITHUB_STEP_SUMMARY
+                exit 1
+              fi
+              ;;
+            *)
+              # Empty conclusion = still running when the cap expired. The merge
+              # landed and ci-cd demonstrably triggered, which is what this step
+              # exists to prove, so this is a success for our purposes.
+              echo "::warning::Stopped watching ci-cd.yml run $RUN_ID after the 20m cap; it was still running."
+              {
+                echo "### ✅ Merged; pipeline still running"
+                echo ""
+                echo "\`@actual-app/api $LATEST\` was merged to \`main\` (\`$SHA\`) and [\`ci-cd.yml\` run \`$RUN_ID\`]($RUN_URL) triggered correctly, but was still running at the 20m watch cap. \`auto-release.yml\` publishes on its own once CI goes green — follow the run link if you want to confirm."
+              } >> $GITHUB_STEP_SUMMARY
+              ;;
+          esac
+
+      - name: Report CI failure
+        # always() is REQUIRED: an `if:` with no status-check function is
+        # implicitly ANDed with success(), so without it this step would be
+        # skipped in the exact situation it exists for (the CI wait having
+        # failed). Matching 'failure' specifically — rather than != 'success' —
+        # keeps it from firing when the checks step was skipped because an
+        # earlier step broke, where there is no meaningful PR to point at.
+        if: always() && steps.compare.outputs.update_needed == 'true' && steps.checks.outcome == 'failure'
+        env:
+          LATEST: ${{ steps.latest.outputs.version }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          {
+            echo "### ⚠️ CI failed for @actual-app/api $LATEST"
+            echo ""
+            echo "PR #$PR left open for inspection. Nothing was merged or published."
+          } >> $GITHUB_STEP_SUMMARY
           exit 1
 
-      - name: Major update available (left to Dependabot)
-        if: steps.compare.outputs.major_available == 'true'
-        env:
-          CURRENT: ${{ steps.current.outputs.version }}
-          LATEST: ${{ steps.latest.outputs.version }}
-        run: |
-          echo "### ⏭️ Major @actual-app/api update available" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "\`$CURRENT\` → \`$LATEST\` crosses a major version. This workflow auto-merges only same-major (patch/minor) updates; the major bump is left to the Dependabot PR for manual review (see docs/CI_CD.md)." >> $GITHUB_STEP_SUMMARY
-
       - name: No update needed
-        if: steps.compare.outputs.update_needed == 'false' && steps.compare.outputs.major_available == 'false'
+        if: steps.compare.outputs.update_needed == 'false'
         env:
           CURRENT: ${{ steps.current.outputs.version }}
         run: |
-          echo "### ✅ Already Up to Date" >> $GITHUB_STEP_SUMMARY
-          echo "Current version $CURRENT is the latest." >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### ✅ Already Up to Date"
+            echo "Current version $CURRENT is the latest."
+          } >> $GITHUB_STEP_SUMMARY
