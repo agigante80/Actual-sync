@@ -613,6 +613,31 @@ describe('TelegramBotService', () => {
         await expect(bot.handleNotify(['never'])).resolves.not.toThrow();
         expect(bot.config.notifyOnSuccess).toBe('never');
       });
+
+      // Found by running the real service: /notify persists the mode to disk and
+      // loadPreferences() restores it onto the bot at boot, but the restored value
+      // never reached the dispatch path. A mode set with /notify therefore applied
+      // immediately and then silently reverted to the config value on restart —
+      // while /notify kept reporting the persisted one.
+      test('a persisted preference is applied to the notification service at startup', () => {
+        const existsSpy = jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+        const readSpy = jest.spyOn(fs, 'readFileSync')
+          .mockReturnValue(JSON.stringify({ notifyOnSuccess: 'never' }));
+
+        try {
+          const notificationService = { config: { telegram: { notifyOnSuccess: 'always' } } };
+          const bot = new TelegramBotService(
+            { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'always' },
+            { notificationService }
+          );
+
+          expect(bot.config.notifyOnSuccess).toBe('never');
+          expect(notificationService.config.telegram.notifyOnSuccess).toBe('never');
+        } finally {
+          existsSpy.mockRestore();
+          readSpy.mockRestore();
+        }
+      });
     });
 
     // #169: notifyOnSuccess === 'never' used to be read as "notifications are
