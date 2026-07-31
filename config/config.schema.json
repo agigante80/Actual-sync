@@ -507,6 +507,7 @@
             "properties": { "enabled": { "const": true } }
           },
           "then": {
+            "required": ["from", "to"],
             "properties": {
               "from": { "type": "string", "format": "email" },
               "to": { "type": "array", "minItems": 1, "items": { "type": "string", "format": "email" } }

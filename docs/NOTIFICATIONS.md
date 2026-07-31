@@ -184,6 +184,8 @@ Each webhook type (Slack, Discord, Telegram) accepts an array of webhook configu
 
 **Note**: The legacy Telegram webhook configuration is deprecated. Use the new `telegram` object for interactive bot features.
 
+An entry here has no `enabled` flag — **its presence is its enablement**. If a `webhooks.telegram` entry exists it is used whenever the top-level `notifications.telegram` is absent or `enabled: false`, so setting `telegram.enabled: false` does *not* switch Telegram off while a legacy entry remains. To silence Telegram, remove the entry or set [`notifyOnSuccess: "never"`](#notification-mode-notifyonsuccess).
+
 **Generic webhooks** (`webhooks.generic`): POST a documented JSON payload to any URL, so notifications work out of the box with ntfy (JSON publishing), Gotify, Home Assistant, n8n, and custom endpoints. **Microsoft Teams**: point a `generic` webhook at your Teams incoming-webhook URL — there is no dedicated `teams` channel.
 
 | Property | Type | Required | Description |
@@ -263,7 +265,14 @@ Tip: ntfy users can also just point a `webhooks.generic` entry at their topic fo
 
 #### Rate Limit Settings
 
-**Applies to `failure` results only**, like thresholds. It cannot quieten routine success notifications — that is [`notifyOnSuccess`](#notification-mode-notifyonsuccess). A channel muted by `notifyOnSuccess` does not consume the rate-limit budget.
+**Applies to `failure` results only**, like thresholds. It cannot quieten routine success notifications — that is [`notifyOnSuccess`](#notification-mode-notifyonsuccess).
+
+Only a notification that **actually reached someone** consumes the budget:
+
+- A channel muted by `notifyOnSuccess` does not consume it.
+- A notification that failed to deliver on every channel does not consume it either. Otherwise a single transport blip would spend the hourly slot and silently suppress the *next* failure, even after the transport recovered.
+
+The trade-off is that a persistently broken transport is retried on every scheduled sync rather than being rate-limited away. That is bounded by your sync schedule, and each attempt is capped by the 15-second webhook timeout. If you see repeated `Sync notification failed on every channel` warnings, fix or disable the channel — the retries are the symptom, not the problem.
 
 | Property | Type | Default | Range | Description |
 |----------|------|---------|-------|-------------|
