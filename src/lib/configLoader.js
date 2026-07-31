@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const Ajv = require('ajv');
 const addFormats = require('ajv-formats');
-const { resolveDefaultsDir } = require('./configBootstrap');
+const { resolveSchemaPath } = require('./configBootstrap');
 
 // AJV combinator keywords whose failures are pure structural noise: when an
 // allOf/if-then/anyOf branch fails, AJV (allErrors:true) ALSO emits the concrete
@@ -57,7 +57,7 @@ class ConfigLoader {
             this.configPath = path.join(projectRoot, 'config', 'config.json');
             // Load the schema from the bundled defaults dir so it's still found
             // when the config dir is a fresh/empty bind mount in a container. (#96)
-            this.schemaPath = path.join(resolveDefaultsDir(projectRoot), 'config.schema.json');
+            this.schemaPath = resolveSchemaPath(projectRoot);
         } else {
             // Use provided paths (assume absolute or relative to cwd)
             this.configPath = path.resolve(configPath);

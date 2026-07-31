@@ -13,7 +13,7 @@ docker run --rm -v ./config:/app/config:ro \
   ghcr.io/agigante80/actual-sync:latest npm run validate-config
 ```
 
-Anything reported here is something that would otherwise fail at startup. (This check was itself broken in 1.11.0 and 1.11.1 — it silently skipped schema validation under a bind mount and always reported success. Use 1.11.2 or later for it to mean anything.)
+Anything reported here is something that would otherwise fail at startup. (This check was itself broken in 1.11.0 and 1.11.1 — under a bind mount it silently skipped **schema** validation, so it reported configs as valid that the service then refused to start. Use a release later than 1.11.1 for it to be meaningful.)
 
 ### 1. `notifyOnSuccess` now actually works — and `never` silences failures too
 

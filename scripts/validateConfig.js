@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const ConfigLoader = require('../src/lib/configLoader');
-const { resolveDefaultsDir } = require('../src/lib/configBootstrap');
+const { resolveSchemaPath } = require('../src/lib/configBootstrap');
 
 /**
  * Validate the config under `projectRoot`. Throws on any problem.
@@ -13,7 +13,7 @@ const { resolveDefaultsDir } = require('../src/lib/configBootstrap');
  *
  * @param {Object} [options]
  * @param {string} [options.projectRoot] - Root holding config/ (and config-defaults/ in the image)
- * @returns {string[]} Non-fatal warnings produced by logic validation
+ * @returns {void} Throws on any problem; there is no warnings channel to return.
  */
 function runValidation({ projectRoot = path.join(__dirname, '..') } = {}) {
   const configPath = path.join(projectRoot, 'config', 'config.json');
@@ -23,7 +23,7 @@ function runValidation({ projectRoot = path.join(__dirname, '..') } = {}) {
   // which replaces that directory with the user's own — so this check silently
   // skipped schema validation and reported success for configs that could not
   // start. The baked copy in config-defaults/ is outside the mount. (#177)
-  const schemaPath = path.join(resolveDefaultsDir(projectRoot), 'config.schema.json');
+  const schemaPath = resolveSchemaPath(projectRoot);
   const loader = new ConfigLoader(configPath, schemaPath);
 
   if (!fs.existsSync(configPath)) {
@@ -53,8 +53,6 @@ function runValidation({ projectRoot = path.join(__dirname, '..') } = {}) {
   loader.validateConfig(config, schema);
   loader.applyDefaults(config);
   loader.validateLogic(config);
-
-  return [];
 }
 
 module.exports = { runValidation };
