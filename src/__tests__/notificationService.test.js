@@ -1233,6 +1233,75 @@ describe('NotificationService', () => {
       expect(result.reason).toBe('all_channels_failed');
     });
 
+    // Round-2 review: the `attempted > 0` conjunct left a hole. Two senders return
+    // null — the value read as "not attempted" — on real MISCONFIGURATION rather
+    // than on "channel off": sendFormattedEmail with an empty `to`, and sendNtfy
+    // with an empty `url`. Both are schema-valid, so the likeliest real-world
+    // path to a dropped notification still reported success.
+    test('an enabled email channel with no recipients is not reported as sent', async () => {
+      const s = new NotificationService({ email: { enabled: true, from: 'a@b.c', to: [] } });
+      const result = await s.notifySync(syncArgs);
+      expect(result.sent).toBe(false);
+    });
+
+    test('an enabled ntfy channel with no url is not reported as sent', async () => {
+      const s = new NotificationService({ ntfy: { enabled: true, url: '' } });
+      const result = await s.notifySync(syncArgs);
+      expect(result.sent).toBe(false);
+    });
+
+    test('no configured channels at all is not reported as sent', async () => {
+      const s = new NotificationService({});
+      const result = await s.notifySync(syncArgs);
+      expect(result.sent).toBe(false);
+      expect(result.reason).toBe('no_channels_delivered');
+    });
+
+    test('nothing-attempted is distinguishable from every-channel-failed', async () => {
+      const nothing = new NotificationService({});
+      const failed = service();
+      mockTransporter.sendMail.mockRejectedValue(new Error('smtp down'));
+      jest.spyOn(failed, 'sendWebhook').mockRejectedValue(new Error('ECONNREFUSED'));
+
+      expect((await nothing.notifySync(syncArgs)).reason).toBe('no_channels_delivered');
+      expect((await failed.notifySync(syncArgs)).reason).toBe('all_channels_failed');
+    });
+
+    // Round-2 review, and the more dangerous of the two: updateRateLimitTracking()
+    // ran before the outcome was known, so a failure that reached NOBODY still
+    // consumed the hourly slot. The next failure — with a healthy transport — was
+    // then refused as rate-limited. A genuine failure alert, silently dropped.
+    // A real interval, so checkRateLimit() can actually refuse — with the helper's
+    // minIntervalMinutes:0 these assertions would pass no matter what the code did.
+    function rateLimited() {
+      return new NotificationService({
+        email: { enabled: true, from: 'a@b.c', to: ['d@e.f'] },
+        thresholds: { consecutiveFailures: 1 },
+        rateLimit: { minIntervalMinutes: 15, maxPerHour: 4 }
+      });
+    }
+
+    test('an undelivered failure does not consume the rate-limit budget', async () => {
+      const s = rateLimited();
+      mockTransporter.sendMail.mockRejectedValue(new Error('smtp down'));
+      s.recordSyncResult('S1', false);
+
+      const first = await s.notifySync({ ...syncArgs, status: 'failure', accountsFailed: 1 });
+      expect(first.sent).toBe(false);
+
+      // The transport recovers; the next failure must still be allowed through.
+      expect(s.checkRateLimit('S1')).toBe(true);
+    });
+
+    test('a delivered failure still consumes the rate-limit budget', async () => {
+      const s = rateLimited();
+      s.recordSyncResult('S1', false);
+
+      await s.notifySync({ ...syncArgs, status: 'failure', accountsFailed: 1 });
+
+      expect(s.checkRateLimit('S1')).toBe(false);
+    });
+
     test('rate-limit tracking on failures is unchanged by the outcome check', async () => {
       const s = service();
       jest.spyOn(s, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
@@ -1242,6 +1311,58 @@ describe('NotificationService', () => {
       await s.notifySync({ ...syncArgs, status: 'failure', accountsFailed: 1 });
 
       expect(trackSpy).toHaveBeenCalledWith('S1');
+    });
+  });
+
+  // #174: the constructor always materialises config.telegram, so
+  // `this.config.telegram || this.config.webhooks?.telegram?.[0]` never reached
+  // the fallback — the schema-supported webhooks.telegram shape silently
+  // delivered nothing, reporting only a DEBUG "not configured".
+  describe('legacy webhooks.telegram delivers (#174)', () => {
+    const entry = { name: 'legacy', botToken: '999:ZZZ', chatId: '42' };
+
+    test('sends via a webhooks.telegram entry when the top-level block is absent', async () => {
+      const s = new NotificationService({ webhooks: { telegram: [entry] } });
+      const spy = jest.spyOn(s, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+
+      const ok = await s.sendTelegramMessage('hello');
+
+      expect(ok).toBe(true);
+      expect(spy.mock.calls[0][0]).toContain('999:ZZZ');
+    });
+
+    test('the top-level block wins when it is enabled', async () => {
+      const s = new NotificationService({
+        telegram: { enabled: true, botToken: '111:AAA', chatId: '1' },
+        webhooks: { telegram: [entry] }
+      });
+      const spy = jest.spyOn(s, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+
+      await s.sendTelegramMessage('hello');
+
+      expect(spy.mock.calls[0][0]).toContain('111:AAA');
+    });
+
+    test('a disabled top-level block falls through to the webhook entry', async () => {
+      const s = new NotificationService({
+        telegram: { enabled: false, botToken: '111:AAA', chatId: '1' },
+        webhooks: { telegram: [entry] }
+      });
+      const spy = jest.spyOn(s, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+
+      await s.sendTelegramMessage('hello');
+
+      expect(spy.mock.calls[0][0]).toContain('999:ZZZ');
+    });
+
+    test('no telegram configured at all still returns false', async () => {
+      const s = new NotificationService({});
+      expect(await s.sendTelegramMessage('hello')).toBe(false);
+    });
+
+    test('an empty webhooks.telegram array returns false without throwing', async () => {
+      const s = new NotificationService({ webhooks: { telegram: [] } });
+      expect(await s.sendTelegramMessage('hello')).toBe(false);
     });
   });
 

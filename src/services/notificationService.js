@@ -538,18 +538,26 @@ class NotificationService {
         results.telegram = success;
       }
 
-      // Update rate limiting for failures
-      if (status === 'failure') {
-        this.updateRateLimitTracking(serverName);
-      }
-
       // Only claim delivery if something actually got through (#171). The
       // per-channel ERRORs already carry the detail, so a total failure is WARN
       // here rather than a second ERROR — the alerting path is broken, but the
       // sync outcome itself was already reported.
       const outcome = this._deliveryOutcome(results);
 
-      if (outcome.delivered === 0 && outcome.attempted > 0) {
+      if (outcome.delivered === 0) {
+        // "Nothing attempted" is not success. sendFormattedEmail returns null on
+        // an empty `to` list and sendNtfy on an empty `url` — both schema-valid
+        // misconfigurations of an *enabled* channel, so gating on attempted > 0
+        // would report those as sent.
+        if (outcome.attempted === 0) {
+          this.logger.debug('No live notification channel for this status', {
+            status,
+            serverName,
+            correlationId
+          });
+          return { sent: false, reason: 'no_channels_delivered', results, status };
+        }
+
         this.logger.warn('Sync notification failed on every channel', {
           status,
           serverName,
@@ -563,6 +571,15 @@ class NotificationService {
           results,
           status
         };
+      }
+
+      // Only a notification that actually reached someone consumes the budget.
+      // Charging an undelivered attempt would let one transport blip suppress the
+      // NEXT failure — a genuine alert dropped because of an unrelated outage.
+      // The cost is that a broken transport is retried each sync, which is bounded
+      // by the schedule and by checkThresholds(); that is the safer side to err on.
+      if (status === 'failure') {
+        this.updateRateLimitTracking(serverName);
       }
 
       this.logger.info('Sync notification sent', {
@@ -1428,7 +1445,12 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
       // Same honesty rule as notifySync() (#171).
       const outcome = this._deliveryOutcome(results);
 
-      if (outcome.delivered === 0 && outcome.attempted > 0) {
+      if (outcome.delivered === 0) {
+        if (outcome.attempted === 0) {
+          this.logger.debug('No live notification channel for the startup notification');
+          return { sent: false, reason: 'no_channels_delivered', results };
+        }
+
         this.logger.warn('Startup notification failed on every channel', {
           failedChannels: outcome.failedChannels
         });
@@ -1472,8 +1494,16 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
    * @returns {Promise<boolean>} Success status
    */
   async sendTelegramMessage(message, options = {}) {
-    // Check if telegram is configured
-    const telegram = this.config.telegram || this.config.webhooks?.telegram?.[0];
+    // The constructor always materialises config.telegram, so a plain
+    // `config.telegram || webhooks.telegram[0]` never reached the fallback and the
+    // schema-supported legacy shape silently delivered nothing (#174). A
+    // webhooks.telegram entry has no `enabled` key — the schema forbids extras —
+    // so its presence IS its enablement.
+    const legacyEntry = this.config.webhooks?.telegram?.[0];
+    const telegram = this.config.telegram?.enabled
+      ? this.config.telegram
+      : (legacyEntry ? { ...legacyEntry, enabled: true } : this.config.telegram);
+
     if (!telegram || !telegram.enabled) {
       this.logger.debug('Telegram not configured or not enabled');
       return false;

@@ -105,8 +105,12 @@ class PrometheusService {
     });
 
     // Set application info
-    const packageJson = require('../../package.json');
-    this.appInfo.labels(packageJson.version || '0.0.0', process.version).set(1);
+    // Go through the shared resolver so actual_sync_info agrees with /health and
+    // the dashboard. Reading package.json directly ignored the VERSION build-arg
+    // CI passes, so the two surfaces reported different versions for the same
+    // process on any build where they differ (#173, resolver from #132).
+    const { resolveVersion } = require('../lib/version');
+    this.appInfo.labels(resolveVersion(), process.version).set(1);
 
     this.logger.debug('Prometheus metrics initialized');
   }
