@@ -192,8 +192,9 @@ module.exports = [
         id: '177-extractor-looks-like-section', ticket: '#177',
         desc: 'looksLikeSection stops discriminating, so any single-key wrapper is treated as config',
         file: 'src/__tests__/helpers/configSnippets.js',
-        anchor: '    const looksLikeSection = (v) => v && typeof v === \'object\' && !Array.isArray(v) &&',
-        mutant: '    const looksLikeSection = (v) => true && v !== undefined &&',
+        anchor: "    const looksLikeSection = (v) => v && typeof v === 'object' && !Array.isArray(v) &&\n"
+            + '        Object.keys(v).some(k => notifKeys.has(k) || serverKeys.has(k) || topLevel.has(k));',
+        mutant: '    const looksLikeSection = () => true;',
         tests: 'configExamplesGuard'
     },
     {
@@ -227,6 +228,14 @@ module.exports = [
         file: 'src/services/notificationService.js',
         anchor: '    const muted = this.mutedChannels();',
         mutant: '    const muted = [];',
+        tests: 'notificationService'
+    },
+    {
+        id: '169-muted-warning-callsite', ticket: '#169',
+        desc: 'the constructor computes muted channels but never warns about them',
+        file: 'src/services/notificationService.js',
+        anchor: '    if (muted.length > 0) {',
+        mutant: '    if (false) {',
         tests: 'notificationService'
     },
     {
