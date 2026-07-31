@@ -976,4 +976,333 @@ describe('NotificationService', () => {
       spy.mockRestore();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // notifyOnSuccess channel gate (#169)
+  // ---------------------------------------------------------------------------
+  describe('shouldNotifyChannel (#169)', () => {
+    describe('mode x status matrix', () => {
+      const CASES = [
+        // [mode, status, expected]
+        ['always', 'success', true],
+        ['always', 'partial', true],
+        ['always', 'failure', true],
+        ['errors_only', 'success', false],
+        ['errors_only', 'partial', true],
+        ['errors_only', 'failure', true],
+        ['never', 'success', false],
+        ['never', 'partial', false],
+        ['never', 'failure', false]
+      ];
+
+      test.each(CASES)('%s + %s -> %s', (mode, status, expected) => {
+        const service = new NotificationService({ notifyOnSuccess: mode });
+        expect(service.shouldNotifyChannel('email', status)).toBe(expected);
+      });
+    });
+
+    describe('resolution precedence', () => {
+      test('per-channel value overrides the global default', () => {
+        const service = new NotificationService({
+          notifyOnSuccess: 'errors_only',
+          email: { notifyOnSuccess: 'always' }
+        });
+        expect(service.shouldNotifyChannel('email', 'success')).toBe(true);
+      });
+
+      test('global default applies when the channel sets nothing', () => {
+        const service = new NotificationService({ notifyOnSuccess: 'errors_only' });
+        expect(service.shouldNotifyChannel('email', 'success')).toBe(false);
+        expect(service.shouldNotifyChannel('ntfy', 'success')).toBe(false);
+        expect(service.shouldNotifyChannel('telegram', 'success')).toBe(false);
+      });
+
+      test('global cannot override an explicit per-channel value', () => {
+        const service = new NotificationService({
+          notifyOnSuccess: 'always',
+          email: { notifyOnSuccess: 'never' }
+        });
+        expect(service.shouldNotifyChannel('email', 'failure')).toBe(false);
+      });
+
+      test('defaults to always when nothing is configured anywhere', () => {
+        const service = new NotificationService();
+        expect(service.shouldNotifyChannel('email', 'success')).toBe(true);
+        expect(service.shouldNotifyChannel('email', 'partial')).toBe(true);
+        expect(service.shouldNotifyChannel('email', 'failure')).toBe(true);
+      });
+
+      test('treats an undefined per-channel value as unset rather than invalid', () => {
+        const service = new NotificationService({
+          notifyOnSuccess: 'errors_only',
+          email: { notifyOnSuccess: undefined }
+        });
+        expect(service.shouldNotifyChannel('email', 'success')).toBe(false);
+      });
+    });
+
+    describe('per-webhook-entry overrides', () => {
+      test('uses the entry value when provided', () => {
+        const service = new NotificationService({ notifyOnSuccess: 'always' });
+        expect(service.shouldNotifyChannel('slack', 'success', { notifyOnSuccess: 'never' })).toBe(false);
+      });
+
+      test('falls back to the global default when the entry sets nothing', () => {
+        const service = new NotificationService({ notifyOnSuccess: 'errors_only' });
+        expect(service.shouldNotifyChannel('slack', 'success', { name: 'ops' })).toBe(false);
+        expect(service.shouldNotifyChannel('slack', 'failure', { name: 'ops' })).toBe(true);
+      });
+    });
+
+    describe('startup notifications', () => {
+      test('errors_only does not suppress startup (no sync status to filter on)', () => {
+        const service = new NotificationService({ notifyOnSuccess: 'errors_only' });
+        expect(service.shouldNotifyChannel('email', 'startup')).toBe(true);
+      });
+
+      test('never suppresses startup', () => {
+        const service = new NotificationService({ notifyOnSuccess: 'never' });
+        expect(service.shouldNotifyChannel('email', 'startup')).toBe(false);
+      });
+    });
+  });
+
+  describe('notifyOnSuccess dispatch gate (#169)', () => {
+    const URLS = {
+      slack: 'https://slack.test/hook',
+      discord: 'https://discord.test/hook',
+      generic: 'https://generic.test/hook',
+      ntfy: 'https://ntfy.test/topic'
+    };
+
+    /** Build a service with all six sinks enabled and distinct, identifiable URLs. */
+    function allSinks(overrides = {}) {
+      return new NotificationService({
+        email: { enabled: true, from: 'a@b.c', to: ['d@e.f'] },
+        telegram: { enabled: true, botToken: '123:ABC', chatId: '1' },
+        ntfy: { enabled: true, url: URLS.ntfy },
+        webhooks: {
+          slack: [{ name: 's', url: URLS.slack }],
+          discord: [{ name: 'd', url: URLS.discord }],
+          generic: [{ name: 'g', url: URLS.generic }]
+        },
+        thresholds: { consecutiveFailures: 1 },
+        rateLimit: { minIntervalMinutes: 0, maxPerHour: 100 },
+        ...overrides
+      });
+    }
+
+    /** Spy every transport and report which sinks actually fired. */
+    function spyTransports(service) {
+      const webhookSpy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      const telegramSpy = jest.spyOn(service, 'sendTelegramMessage').mockResolvedValue(true);
+      return {
+        webhookSpy,
+        telegramSpy,
+        fired() {
+          const urls = webhookSpy.mock.calls.map(c => c[0]);
+          return {
+            email: mockTransporter.sendMail.mock.calls.length > 0,
+            slack: urls.includes(URLS.slack),
+            discord: urls.includes(URLS.discord),
+            generic: urls.includes(URLS.generic),
+            ntfy: urls.includes(URLS.ntfy),
+            telegram: telegramSpy.mock.calls.length > 0
+          };
+        }
+      };
+    }
+
+    async function runSync(service, status, extra = {}) {
+      // A failure only clears the pre-existing threshold gate once one has been recorded.
+      if (status === 'failure') service.recordSyncResult('S1', false);
+      return service.notifySync({
+        status,
+        serverName: 'S1',
+        duration: 100,
+        accountsProcessed: 1,
+        accountsFailed: status === 'success' ? 0 : 1,
+        ...extra
+      });
+    }
+
+    const SINKS = ['email', 'slack', 'discord', 'generic', 'ntfy', 'telegram'];
+
+    describe('always sends on every status', () => {
+      test.each(['success', 'partial', 'failure'])('%s', async (status) => {
+        const service = allSinks({ notifyOnSuccess: 'always' });
+        const t = spyTransports(service);
+        await runSync(service, status);
+        SINKS.forEach(sink => expect(t.fired()[sink]).toBe(true));
+      });
+    });
+
+    describe('errors_only suppresses success on every sink', () => {
+      test('success is suppressed everywhere', async () => {
+        const service = allSinks({ notifyOnSuccess: 'errors_only' });
+        const t = spyTransports(service);
+        await runSync(service, 'success');
+        SINKS.forEach(sink => expect(t.fired()[sink]).toBe(false));
+      });
+
+      test.each(['partial', 'failure'])('%s still sends everywhere', async (status) => {
+        const service = allSinks({ notifyOnSuccess: 'errors_only' });
+        const t = spyTransports(service);
+        await runSync(service, status);
+        SINKS.forEach(sink => expect(t.fired()[sink]).toBe(true));
+      });
+    });
+
+    describe('never suppresses every status on every sink', () => {
+      test.each(['success', 'partial', 'failure'])('%s', async (status) => {
+        const service = allSinks({ notifyOnSuccess: 'never' });
+        const t = spyTransports(service);
+        await runSync(service, status);
+        SINKS.forEach(sink => expect(t.fired()[sink]).toBe(false));
+      });
+    });
+
+    describe('per-sink independence', () => {
+      test('never on email leaves the other five sending', async () => {
+        const service = allSinks({
+          notifyOnSuccess: 'always',
+          email: { enabled: true, from: 'a@b.c', to: ['d@e.f'], notifyOnSuccess: 'never' }
+        });
+        const t = spyTransports(service);
+        await runSync(service, 'success');
+        const fired = t.fired();
+        expect(fired.email).toBe(false);
+        ['slack', 'discord', 'generic', 'ntfy', 'telegram'].forEach(s => expect(fired[s]).toBe(true));
+      });
+
+      test('never on ntfy leaves email sending', async () => {
+        const service = allSinks({
+          notifyOnSuccess: 'always',
+          ntfy: { enabled: true, url: URLS.ntfy, notifyOnSuccess: 'never' }
+        });
+        const t = spyTransports(service);
+        await runSync(service, 'success');
+        expect(t.fired().ntfy).toBe(false);
+        expect(t.fired().email).toBe(true);
+      });
+    });
+
+    describe('mixed webhook arrays', () => {
+      function mixed() {
+        return new NotificationService({
+          notifyOnSuccess: 'always',
+          webhooks: {
+            slack: [
+              { name: 'a', url: 'https://slack.test/always', notifyOnSuccess: 'always' },
+              { name: 'e', url: 'https://slack.test/errors', notifyOnSuccess: 'errors_only' },
+              { name: 'n', url: 'https://slack.test/never', notifyOnSuccess: 'never' }
+            ]
+          },
+          thresholds: { consecutiveFailures: 1 },
+          rateLimit: { minIntervalMinutes: 0, maxPerHour: 100 }
+        });
+      }
+
+      test('success reaches only the always entry', async () => {
+        const service = mixed();
+        const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+        await runSync(service, 'success');
+        expect(spy.mock.calls.map(c => c[0])).toEqual(['https://slack.test/always']);
+      });
+
+      test('partial reaches the always and errors_only entries', async () => {
+        const service = mixed();
+        const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+        await runSync(service, 'partial');
+        expect(spy.mock.calls.map(c => c[0])).toEqual([
+          'https://slack.test/always',
+          'https://slack.test/errors'
+        ]);
+      });
+
+      test('per-entry results still carry the entry name', async () => {
+        const service = mixed();
+        jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+        const result = await runSync(service, 'success');
+        expect(result.results.slack).toEqual([{ name: 'a', success: true }]);
+      });
+    });
+
+    describe('interaction with the pre-existing failure gates', () => {
+      test('bypassThresholds overrides never so a test notification always sends', async () => {
+        const service = allSinks({ notifyOnSuccess: 'never' });
+        const t = spyTransports(service);
+        await runSync(service, 'failure', { bypassThresholds: true });
+        SINKS.forEach(sink => expect(t.fired()[sink]).toBe(true));
+      });
+
+      test('bypassThresholds does not resurrect a disabled channel', async () => {
+        const service = allSinks({
+          notifyOnSuccess: 'never',
+          email: { enabled: false, from: 'a@b.c', to: ['d@e.f'] }
+        });
+        const t = spyTransports(service);
+        await runSync(service, 'failure', { bypassThresholds: true });
+        expect(t.fired().email).toBe(false);
+      });
+
+      test('a muted failure does not consume the rate-limit budget', async () => {
+        const service = allSinks({ notifyOnSuccess: 'never' });
+        spyTransports(service);
+        const trackSpy = jest.spyOn(service, 'updateRateLimitTracking');
+        await runSync(service, 'failure');
+        expect(trackSpy).not.toHaveBeenCalled();
+      });
+
+      test('thresholds still gate failures ahead of the channel gate', async () => {
+        const service = allSinks({
+          notifyOnSuccess: 'errors_only',
+          thresholds: { consecutiveFailures: 5 }
+        });
+        spyTransports(service);
+        const result = await service.notifySync({
+          status: 'failure', serverName: 'S1', duration: 1, accountsFailed: 1
+        });
+        expect(result.reason).toBe('thresholds_not_exceeded');
+      });
+
+      test('a fully muted sync reports a distinct reason and never formats a message', async () => {
+        const service = allSinks({ notifyOnSuccess: 'never' });
+        spyTransports(service);
+        const formatSpy = jest.spyOn(MessageFormatter, 'formatSyncNotification');
+        const result = await runSync(service, 'success');
+        expect(result.sent).toBe(false);
+        expect(result.reason).toBe('channels_muted');
+        expect(formatSpy).not.toHaveBeenCalled();
+        formatSpy.mockRestore();
+      });
+    });
+
+    describe('startup notifications', () => {
+      test('errors_only still sends startup on every sink', async () => {
+        const service = allSinks({ notifyOnSuccess: 'errors_only' });
+        const t = spyTransports(service);
+        await service.sendStartupNotification({ version: '1.0.0', serverNames: 'S1' });
+        SINKS.forEach(sink => expect(t.fired()[sink]).toBe(true));
+      });
+
+      test('never suppresses startup on every sink', async () => {
+        const service = allSinks({ notifyOnSuccess: 'never' });
+        const t = spyTransports(service);
+        await service.sendStartupNotification({ version: '1.0.0', serverNames: 'S1' });
+        SINKS.forEach(sink => expect(t.fired()[sink]).toBe(false));
+      });
+    });
+
+    describe('backward compatibility', () => {
+      test('a config with no notifyOnSuccess anywhere notifies on every status', async () => {
+        for (const status of ['success', 'partial', 'failure']) {
+          const service = allSinks();
+          const t = spyTransports(service);
+          await runSync(service, status);
+          SINKS.forEach(sink => expect(t.fired()[sink]).toBe(true));
+        }
+      });
+    });
+  });
 });

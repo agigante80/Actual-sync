@@ -158,7 +158,12 @@ Logging configuration. See **[docs/LOGGING.md](LOGGING.md)** for the full refere
 
 Multi-channel alerts on sync results. See **[docs/NOTIFICATIONS.md](NOTIFICATIONS.md)** for the full reference and examples.
 
-**Channels:** `email` (SMTP), `telegram` (interactive bot), `webhooks.slack`, `webhooks.discord`, `webhooks.generic` (POST a documented JSON payload to any URL: ntfy/Gotify/Home Assistant/n8n/custom), and `ntfy` (push to an ntfy topic). Plus `thresholds` (when to alert) and `rateLimit` (anti-spam).
+**Channels:** `email` (SMTP), `telegram` (interactive bot), `webhooks.slack`, `webhooks.discord`, `webhooks.generic` (POST a documented JSON payload to any URL: ntfy/Gotify/Home Assistant/n8n/custom), and `ntfy` (push to an ntfy topic).
+
+**Cross-cutting controls:**
+
+- **`notifyOnSuccess`** (`always` / `errors_only` / `never`) — which sync results reach a channel. Set it on `notifications` as the global default and override it per channel, or per entry inside `webhooks.slack[]` / `webhooks.discord[]` / `webhooks.generic[]`. Defaults to `always`. `never` turns a channel off entirely (failures included); dashboard test notifications always send.
+- **`thresholds`** (when to alert) and **`rateLimit`** (anti-spam) — both apply to **`failure` results only**. They do not affect success or partial results; use `notifyOnSuccess` for those.
 
 ### healthCheck (optional)
 

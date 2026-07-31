@@ -51,6 +51,9 @@ class NotificationService {
     const brandingEnabled = config.branding !== false;
     this.config = {
       branding: brandingEnabled,
+      // Global fallback for the per-channel notifyOnSuccess gate (#169). Kept at
+      // 'always' so an existing config that sets nothing keeps its old behavior.
+      notifyOnSuccess: config.notifyOnSuccess,
       email: {
         enabled: false,
         host: 'smtp.gmail.com',
@@ -186,6 +189,38 @@ class NotificationService {
       recentSyncsCount: this.recentSyncs[serverName].length,
       correlationId
     });
+  }
+
+  /**
+   * Decide whether a channel should receive a notification for this status (#169).
+   *
+   * Resolution precedence: per-webhook-entry -> per-channel -> global -> 'always'.
+   *
+   * `never` means the channel is off entirely (it suppresses failures too) — it is
+   * an explicit user opt-out, not a noise filter. The narrower invariant that must
+   * hold is that `always` and `errors_only` never suppress a failure.
+   *
+   * `partial` counts as an error for `errors_only`: a partial sync is a failure
+   * signal, and this matches MessageFormatter, which already maps partial to
+   * ntfy `level: 'failure'`.
+   *
+   * @param {string} channel - 'email' | 'telegram' | 'ntfy' | 'slack' | 'discord' | 'generic'
+   * @param {string} status - 'success' | 'partial' | 'failure' | 'startup'
+   * @param {Object} [entry] - Webhook array entry, for per-entry overrides
+   * @returns {boolean} True if the notification should be dispatched
+   */
+  shouldNotifyChannel(channel, status, entry) {
+    const mode =
+      entry?.notifyOnSuccess ??
+      this.config[channel]?.notifyOnSuccess ??
+      this.config.notifyOnSuccess ??
+      'always';
+
+    if (mode === 'never') return false;
+    // Startup has no sync status, so errors_only has nothing to filter on.
+    if (status === 'startup') return true;
+    if (mode === 'errors_only') return status !== 'success';
+    return true;
   }
 
   /**
@@ -344,6 +379,30 @@ class NotificationService {
       };
     }
 
+    // Per-channel notifyOnSuccess gate (#169). A test notification
+    // (bypassThresholds) is an explicit user action and always sends, otherwise a
+    // muted channel could never be verified.
+    const allow = (channel, entry) =>
+      bypassThresholds || this.shouldNotifyChannel(channel, status, entry);
+
+    const anyActive =
+      allow('email') || allow('ntfy') || allow('telegram') ||
+      (this.config.webhooks.slack || []).some(w => allow('slack', w)) ||
+      (this.config.webhooks.discord || []).some(w => allow('discord', w)) ||
+      (this.config.webhooks.generic || []).some(w => allow('generic', w));
+
+    if (!anyActive) {
+      this.logger.debug('All channels muted for this status, skipping notification', {
+        serverName,
+        status,
+        correlationId
+      });
+      return {
+        sent: false,
+        reason: 'channels_muted'
+      };
+    }
+
     // Format unified message content
     const formatted = MessageFormatter.formatSyncNotification({
       status,
@@ -368,24 +427,24 @@ class NotificationService {
 
     try {
       // Send email
-      if (this.config.email.enabled && this.emailTransporter) {
+      if (this.config.email.enabled && this.emailTransporter && allow('email')) {
         const subject = status === 'success' && accountsFailed === 0
           ? `[Actual Budget Sync] ✅ Sync Successful: ${serverName}`
           : status === 'partial' || accountsFailed > 0
           ? `[Actual Budget Sync] ⚠️ Sync Issues: ${serverName}`
           : `[Actual Budget Sync] ❌ Sync Failed: ${serverName}`;
-        
+
         results.email = await this.sendFormattedEmail(subject, formatted.text, formatted.html);
       }
 
       // Send webhooks using unified payloads
-      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
-      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
-      results.generic = await this.sendGenericWebhooks(formatted.generic);
-      results.ntfy = await this.sendNtfy(formatted.ntfy);
+      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack, allow);
+      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord, allow);
+      results.generic = await this.sendGenericWebhooks(formatted.generic, allow);
+      results.ntfy = allow('ntfy') ? await this.sendNtfy(formatted.ntfy) : null;
 
       // Send Telegram
-      if (this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) {
+      if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) && allow('telegram')) {
         const success = await this.sendTelegramMessage(formatted.text);
         results.telegram = success;
       }
@@ -597,13 +656,14 @@ class NotificationService {
    * @param {Object} payload - Formatted Slack payload
    * @returns {Promise<Array>} Send results
    */
-  async sendSlackFormattedWebhooks(payload) {
+  async sendSlackFormattedWebhooks(payload, allow) {
     const results = [];
     const webhooks = this.config.webhooks.slack || [];
     this._brandPayload(payload, 'icon_url'); // Slack honors username + icon_url (#114)
 
     for (const webhook of webhooks) {
       if (webhook.enabled === false) continue;
+      if (allow && !allow('slack', webhook)) continue; // per-entry notifyOnSuccess (#169)
 
       try {
         await this.sendWebhook(webhook.url, payload);
@@ -632,13 +692,14 @@ class NotificationService {
    * @param {Object} payload - Formatted Discord payload
    * @returns {Promise<Array>} Send results
    */
-  async sendDiscordFormattedWebhooks(payload) {
+  async sendDiscordFormattedWebhooks(payload, allow) {
     const results = [];
     const webhooks = this.config.webhooks.discord || [];
     this._brandPayload(payload, 'avatar_url'); // Discord honors username + avatar_url (#114)
 
     for (const webhook of webhooks) {
       if (webhook.enabled === false) continue;
+      if (allow && !allow('discord', webhook)) continue; // per-entry notifyOnSuccess (#169)
 
       try {
         await this.sendWebhook(webhook.url, payload);
@@ -669,12 +730,13 @@ class NotificationService {
    * @param {Object} payload - The generic JSON payload (formatted.generic)
    * @returns {Promise<Array>} Per-URL send results
    */
-  async sendGenericWebhooks(payload) {
+  async sendGenericWebhooks(payload, allow) {
     const results = [];
     const webhooks = this.config.webhooks.generic || [];
 
     for (const webhook of webhooks) {
       if (!webhook.url || webhook.enabled === false) continue;
+      if (allow && !allow('generic', webhook)) continue; // per-entry notifyOnSuccess (#169)
 
       try {
         await this.sendWebhook(webhook.url, payload, {
@@ -1211,21 +1273,24 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
       telegram: null
     };
 
+    // Startup has no sync status, so only `never` (channel off entirely) applies (#169).
+    const allow = (channel, entry) => this.shouldNotifyChannel(channel, 'startup', entry);
+
     try {
       // Send email
-      if (this.config.email.enabled && this.emailTransporter) {
+      if (this.config.email.enabled && this.emailTransporter && allow('email')) {
         const subject = '[Actual Budget Sync] 🚀 Service Started';
         results.email = await this.sendFormattedEmail(subject, formatted.text, formatted.html);
       }
 
       // Send webhooks using unified payloads
-      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
-      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
-      results.generic = await this.sendGenericWebhooks(formatted.generic);
-      results.ntfy = await this.sendNtfy(formatted.ntfy);
+      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack, allow);
+      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord, allow);
+      results.generic = await this.sendGenericWebhooks(formatted.generic, allow);
+      results.ntfy = allow('ntfy') ? await this.sendNtfy(formatted.ntfy) : null;
 
       // Send Telegram
-      if (this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) {
+      if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) && allow('telegram')) {
         const success = await this.sendTelegramMessage(formatted.text);
         results.telegram = success;
       }
