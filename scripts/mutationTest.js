@@ -144,15 +144,29 @@ function dirtyFiles() {
 }
 
 /**
+ * Build the jest argv. Extracted so the ordering can be unit-tested — getting it
+ * wrong silently inverted --fast rather than failing loudly.
+ *
+ * @param {string|null} testPattern
+ * @returns {string[]}
+ */
+function buildJestArgs(testPattern) {
+    // Argument ORDER is load-bearing. --testPathIgnorePatterns is variadic, so a
+    // positional pattern placed after it is swallowed as another ignore pattern —
+    // which silently EXCLUDED the very test file --fast was meant to run, turning
+    // every --fast result into a false "survived". The positional must come first.
+    const jestArgs = ['jest'];
+    if (testPattern) jestArgs.push(testPattern);
+    jestArgs.push('--forceExit', '--silent', '--testPathIgnorePatterns', CATALOG_GUARD);
+    return jestArgs;
+}
+
+/**
  * @returns {'caught'|'survived'} — anything else throws, because a run that did
  * not actually execute the suite must never be scored.
  */
 function runSuite(testPattern) {
-    const jestArgs = ['jest', '--forceExit', '--silent',
-        '--testPathIgnorePatterns', CATALOG_GUARD];
-    if (testPattern) jestArgs.push(testPattern);
-
-    const res = spawnSync('npx', jestArgs, { cwd: ROOT, encoding: 'utf8', timeout: 900000 });
+    const res = spawnSync('npx', buildJestArgs(testPattern), { cwd: ROOT, encoding: 'utf8', timeout: 900000 });
 
     if (res.error) throw new Error(`Could not run jest: ${res.error.message}`);
     if (res.status === null) {
@@ -276,6 +290,8 @@ function main() {
 
     return (survived.length > 0 || missing.length > 0 || unscored.length > 0) ? 1 : 0;
 }
+
+module.exports = { buildJestArgs, CATALOG_GUARD };
 
 if (require.main === module) {
     let code = 2;

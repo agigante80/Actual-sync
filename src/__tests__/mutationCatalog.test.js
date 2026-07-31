@@ -103,3 +103,36 @@ describe('mutation catalog integrity', () => {
         }
     });
 });
+
+/**
+ * The runner's jest argv.
+ *
+ * `--testPathIgnorePatterns` is variadic, so a positional pattern placed after it
+ * is swallowed as another ignore pattern. That silently EXCLUDED the very test
+ * file `--fast` was meant to run, inverting every --fast result into a false
+ * "survived" — a scoring bug that looked like a coverage gap.
+ */
+describe('mutation runner jest arguments', () => {
+    const { buildJestArgs, CATALOG_GUARD } = require('../../scripts/mutationTest');
+
+    it('always excludes the catalog guard from the scored suite', () => {
+        expect(buildJestArgs(null)).toContain('--testPathIgnorePatterns');
+        expect(buildJestArgs(null)).toContain(CATALOG_GUARD);
+    });
+
+    it('puts a --fast pattern BEFORE the variadic ignore flag', () => {
+        const argv = buildJestArgs('telegramBot');
+        expect(argv.indexOf('telegramBot')).toBeLessThan(argv.indexOf('--testPathIgnorePatterns'));
+    });
+
+    it('never places the pattern adjacent to the ignore flag, where jest would eat it', () => {
+        const argv = buildJestArgs('telegramBot');
+        const ignoreAt = argv.indexOf('--testPathIgnorePatterns');
+        expect(argv.slice(ignoreAt + 1)).toEqual([CATALOG_GUARD]);
+    });
+
+    it('omits any positional when no pattern is given', () => {
+        expect(buildJestArgs(null)).toEqual(
+            ['jest', '--forceExit', '--silent', '--testPathIgnorePatterns', CATALOG_GUARD]);
+    });
+});
