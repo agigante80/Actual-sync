@@ -27,6 +27,17 @@
  * 3. A suite that was already red made every mutation "caught". The runner now
  *    establishes a green baseline before mutating anything and refuses to start
  *    without one.
+ * 4. A suite that fails to LOAD is invisible to both of the guards above: jest
+ *    reports numFailedTests: 0 with numTotalTests non-zero for a suite that
+ *    throws on import, so the baseline printed "green" while `npm test` exited
+ *    1, and a mutant scored a false SURVIVED for a defect that IS guarded.
+ *    Scoring now reads success and numRuntimeErrorTestSuites too, and a load
+ *    error under a mutant is UNSCORED rather than a verdict.
+ * 5. --recover ran before the lock was consulted, so recovering mid-flight
+ *    reverted the mutant underneath a running suite, which then passed against
+ *    unmutated code and scored SURVIVED. --recover now refuses while a live pid
+ *    holds the lock, and a file back at its original content when the mutant
+ *    write SUCCEEDED is contamination, not the benign failed-write case.
  *
  * Safety: the original AND the mutant are journalled to disk (atomically) before
  * a file is touched, so a hard kill is recoverable via --recover — and --recover
@@ -68,7 +79,34 @@ function clearJournal() {
     } catch { /* leaving it is safer than throwing */ }
 }
 
+/**
+ * Whether --recover may write, given who holds the lock.
+ *
+ * Recovery rewrites a file the runner mutated. Doing that while a run is live
+ * restores the original underneath the suite currently testing the mutant — the
+ * suite then passes against unmutated code and the mutation is scored SURVIVED.
+ * That is a false coverage gap reported by the tool built to rule them out.
+ *
+ * @param {string|null} owner pid holding the lock, or null if nobody live does
+ * @param {number} self
+ * @returns {string|null} the refusal, or null if recovery may proceed
+ */
+function recoveryRefusal(owner, self) {
+    if (owner && owner !== String(self)) {
+        return `A mutation run is in progress (pid ${owner}). Recovering now would revert `
+            + 'its mutant mid-suite, so it would score unmutated code as SURVIVED. '
+            + 'Wait for that run to finish, or kill it and re-run --recover.';
+    }
+    return null;
+}
+
 function recover() {
+    const refusal = recoveryRefusal(liveLockOwner(), process.pid);
+    if (refusal) {
+        console.error(refusal);
+        return 2;
+    }
+
     if (!fs.existsSync(JOURNAL)) {
         console.log('No journal found — nothing to recover.');
         return 0;
@@ -124,30 +162,54 @@ function recover() {
 
 let lockHeld = false;
 
-function acquireLock() {
+/**
+ * process.kill(pid, 0) throws EPERM for a live process owned by another user.
+ * Reading that as "dead" clears a lock a running mutation still holds, so only
+ * ESRCH — no such process — counts as dead.
+ */
+function pidIsAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
     try {
-        fs.writeFileSync(LOCK, String(process.pid), { flag: 'wx' });
-        lockHeld = true;
+        process.kill(pid, 0);
         return true;
-    } catch {
-        const owner = fs.existsSync(LOCK) ? fs.readFileSync(LOCK, 'utf8').trim() : '';
-        let alive = false;
-        try {
-            if (owner) {
-                process.kill(Number(owner), 0);
-                alive = true;
-            }
-        } catch { /* dead */ }
-        if (alive) {
-            console.error(`Another mutation run is in progress (pid ${owner}). Refusing to start.`);
-            return false;
-        }
-        console.error(`Removing stale lock from dead pid ${owner || '?'}.`);
-        try {
-            fs.unlinkSync(LOCK);
-        } catch { /* raced with the owner */ }
-        return acquireLock();
+    } catch (err) {
+        return err.code !== 'ESRCH';
     }
+}
+
+/** @returns {string|null} the pid in the lock file, if that process is alive. */
+function liveLockOwner() {
+    let owner;
+    try {
+        owner = fs.readFileSync(LOCK, 'utf8').trim();
+    } catch {
+        return null; // no lock, or unreadable — treat as unheld
+    }
+    return owner && pidIsAlive(Number(owner)) ? owner : null;
+}
+
+function acquireLock() {
+    // Bounded: an unlinkable stale lock (read-only ROOT) recursed until the
+    // stack overflowed, burying the real cause under a stack trace.
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            fs.writeFileSync(LOCK, String(process.pid), { flag: 'wx' });
+            lockHeld = true;
+            return true;
+        } catch {
+            const owner = liveLockOwner();
+            if (owner) {
+                console.error(`Another mutation run is in progress (pid ${owner}). Refusing to start.`);
+                return false;
+            }
+            console.error('Removing stale lock from a dead pid.');
+            try {
+                fs.unlinkSync(LOCK);
+            } catch { /* raced with the owner, or we cannot write here at all */ }
+        }
+    }
+    console.error(`Could not take the lock at ${LOCK}. Remove it by hand if no run is active.`);
+    return false;
 }
 
 /** Only ever remove a lock this process actually holds. */
@@ -195,9 +257,70 @@ function buildJestArgs(testPattern, reportFile) {
 }
 
 /**
+ * Normalise a jest --json report into the four facts scoring depends on.
+ *
+ * numFailedTests alone is not one of them: a suite that throws while LOADING
+ * contributes zero failed tests, so a report can show "0 failed" for a run that
+ * never executed whole files.
+ *
+ * @returns {{ran: number, failed: number, success: boolean, loadErrors: number}}
+ * @throws if the run executed nothing at all.
+ */
+function readReport(report) {
+    // jest exits 1 for "no tests found" and for config errors too, so an exit
+    // code alone would score those as "caught" having run nothing.
+    if (!report.numTotalTests) {
+        throw new Error('jest ran zero tests — the pattern matched nothing.');
+    }
+    return {
+        ran: report.numTotalTests,
+        failed: report.numFailedTests || 0,
+        success: report.success === true,
+        loadErrors: report.numRuntimeErrorTestSuites || 0
+    };
+}
+
+/**
+ * @param {{ran: number, failed: number, success: boolean, loadErrors: number}} result
+ * @returns {string|null} why the baseline cannot be trusted, or null if green
+ */
+function baselineProblem(result) {
+    if (result.loadErrors > 0) {
+        return `${result.loadErrors} test suite(s) failed to LOAD. jest counts no failed `
+            + 'tests for those, so the run looks green while the suite is broken.';
+    }
+    if (result.failed > 0) {
+        return `the suite is already failing (${result.failed} of ${result.ran}). `
+            + 'Every mutation would score "caught" for the wrong reason.';
+    }
+    if (!result.success) {
+        return 'jest reported the run as unsuccessful despite zero failed tests.';
+    }
+    return null;
+}
+
+/**
+ * @param {{ran: number, failed: number, success: boolean, loadErrors: number}} result
+ * @returns {'caught'|'survived'}
+ * @throws if the run cannot honestly be scored — the caller records it UNSCORED.
+ */
+function scoreMutant(result) {
+    if (result.loadErrors > 0) {
+        throw new Error(`${result.loadErrors} test suite(s) failed to load. A suite that `
+            + 'cannot be imported reports zero failed tests, which reads as SURVIVED for '
+            + 'a defect that may well be guarded.');
+    }
+    if (!result.success && result.failed === 0) {
+        throw new Error('jest reported failure with zero failed tests and no load errors. '
+            + 'Refusing to turn that into a verdict.');
+    }
+    return result.failed > 0 ? 'caught' : 'survived';
+}
+
+/**
  * Run the suite and report what actually happened.
  *
- * @returns {{ran: number, failed: number}}
+ * @returns {{ran: number, failed: number, success: boolean, loadErrors: number}}
  * @throws if the suite did not run to completion — such a run must never be scored.
  */
 function runSuite(testPattern) {
@@ -215,13 +338,7 @@ function runSuite(testPattern) {
                 + '(a config error or no test files matched).');
         }
 
-        const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'));
-        // jest exits 1 for "no tests found" and for config errors too, so an exit
-        // code alone would score those as "caught" having run nothing.
-        if (!report.numTotalTests) {
-            throw new Error('jest ran zero tests — the pattern matched nothing.');
-        }
-        return { ran: report.numTotalTests, failed: report.numFailedTests };
+        return readReport(JSON.parse(fs.readFileSync(reportFile, 'utf8')));
     } finally {
         try {
             if (fs.existsSync(reportFile)) fs.unlinkSync(reportFile);
@@ -229,10 +346,28 @@ function runSuite(testPattern) {
     }
 }
 
-function main() {
-    const MUTATIONS = require('./mutations');
+/**
+ * What became of the mutated file while the suite was running.
+ *
+ * `now === original` is only benign when we never managed to write the mutant.
+ * When the write SUCCEEDED, something reverted it underneath the run — which is
+ * exactly what a concurrent --recover does — and the verdict just measured
+ * unmutated code.
+ *
+ * @returns {'mutant-intact'|'contaminated'|'never-mutated'}
+ */
+function postRunState({ now, original, mutated, mutantWritten }) {
+    if (now === mutated) return 'mutant-intact';
+    if (now !== original) return 'contaminated';
+    return mutantWritten ? 'contaminated' : 'never-mutated';
+}
 
+function main() {
+    // Before requiring the catalog: a broken catalog must not block recovery of
+    // a file an earlier run left mutated.
     if (has('--recover')) return recover();
+
+    const MUTATIONS = require('./mutations');
 
     if (has('--list')) {
         for (const m of MUTATIONS) console.log(`${m.ticket.padEnd(6)} ${m.id.padEnd(38)} ${m.desc}`);
@@ -271,9 +406,10 @@ function main() {
         // a different direction.
         process.stdout.write('Establishing a green baseline... ');
         const baseline = runSuite(null);
-        if (baseline.failed > 0) {
-            console.error(`\nThe suite is already failing (${baseline.failed} of ${baseline.ran}).`);
-            console.error('Every mutation would score "caught" for the wrong reason. Fix the suite first.');
+        const problem = baselineProblem(baseline);
+        if (problem) {
+            console.error(`\nNo usable baseline: ${problem}`);
+            console.error('Fix the suite first — until it is green, no verdict here means anything.');
             return 2;
         }
         console.log(`green (${baseline.ran} tests)\n`);
@@ -300,15 +436,17 @@ function main() {
 
             let verdict = null;
             let contaminated = false;
+            let mutantWritten = false;
             try {
                 fs.writeFileSync(file, mutated);
-                const result = runSuite(fast ? m.tests : null);
-                verdict = result.failed > 0 ? 'caught' : 'survived';
+                mutantWritten = true;
+                verdict = scoreMutant(runSuite(fast ? m.tests : null));
             } catch (err) {
                 unscored.push({ ...m, reason: err.message });
             } finally {
                 const now = fs.readFileSync(file, 'utf8');
-                if (now === mutated) {
+                const state = postRunState({ now, original, mutated, mutantWritten });
+                if (state === 'mutant-intact') {
                     fs.writeFileSync(file, original);
                     if (fs.readFileSync(file, 'utf8') !== original) {
                         console.error(`\nFATAL: could not restore ${m.file}.`);
@@ -317,7 +455,7 @@ function main() {
                         return 3; // journal deliberately NOT cleared
                     }
                     clearJournal();
-                } else if (now !== original) {
+                } else if (state === 'contaminated') {
                     contaminated = true;
                 } else {
                     clearJournal();
@@ -325,10 +463,17 @@ function main() {
             }
 
             if (contaminated) {
+                const reverted = fs.readFileSync(file, 'utf8') === original;
                 console.error(`\n${m.file} changed while the suite was running.`);
-                console.error('Your version is left in place and the run is stopping — later');
-                console.error('mutations would read the changed file as their original.');
-                console.error(`The mutant was NOT reverted. Check: git diff ${m.file}`);
+                if (reverted) {
+                    console.error('It is back at its original content even though the mutant was');
+                    console.error('written — something (a concurrent --recover?) reverted it, so the');
+                    console.error('suite just scored UNMUTATED code. Any verdict here is meaningless.');
+                } else {
+                    console.error('Your version is left in place and the run is stopping — later');
+                    console.error('mutations would read the changed file as their original.');
+                    console.error(`The mutant was NOT reverted. Check: git diff ${m.file}`);
+                }
                 unscored.push({ ...m, reason: 'file changed mid-run' });
                 return 3; // journal deliberately NOT cleared
             }
@@ -368,8 +513,36 @@ function main() {
     }
 }
 
-module.exports = { buildJestArgs, CATALOG_GUARD };
+/**
+ * Exit-code discipline. 1 means "mutations survived" — a claim about coverage.
+ * An internal crash reported as 1 asserts something the run never established,
+ * so anything unexpected exits 2 instead.
+ *
+ * @param {() => number} [run] the runner to invoke; injectable so the failure
+ *   path can be tested without breaking the real catalog.
+ */
+function cli(run = main) {
+    try {
+        return run();
+    } catch (err) {
+        console.error(`\nThe mutation runner itself failed: ${err && err.stack || err}`);
+        console.error('If a file was left mutated: npm run test:mutation -- --recover');
+        return 2;
+    }
+}
+
+module.exports = {
+    buildJestArgs,
+    CATALOG_GUARD,
+    readReport,
+    baselineProblem,
+    scoreMutant,
+    postRunState,
+    recoveryRefusal,
+    pidIsAlive,
+    cli
+};
 
 if (require.main === module) {
-    process.exit(main());
+    process.exit(cli());
 }
