@@ -738,6 +738,57 @@ describe('TelegramBotService', () => {
         expect(bot.logger.warn).not.toHaveBeenCalled();
       });
 
+      // Precedence: an explicit notifications.telegram.notifyOnSuccess is the
+      // operator's declarative statement and wins at startup. A persisted /notify
+      // value fills the gap when config is silent — including when only the GLOBAL
+      // default is set, since that is a fallback rather than a statement about
+      // Telegram. Before 1.11.0 /notify changed nothing on the dispatch path, so a
+      // stale persisted value could otherwise silently take effect on upgrade.
+      function bootWith({ persisted, configMode, notificationService }) {
+        const existsSpy = jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+        const readSpy = jest.spyOn(fs, 'readFileSync')
+          .mockReturnValue(JSON.stringify({ notifyOnSuccess: persisted }));
+        try {
+          return new TelegramBotService(
+            {
+              botToken: '123:ABC',
+              chatId: '456',
+              notifyOnSuccess: configMode || 'always',
+              notifyOnSuccessFromConfig: configMode
+            },
+            { notificationService }
+          );
+        } finally {
+          existsSpy.mockRestore();
+          readSpy.mockRestore();
+        }
+      }
+
+      test('an explicit telegram config value beats a persisted preference', () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'errors_only' } } };
+        const bot = bootWith({ persisted: 'never', configMode: 'errors_only', notificationService });
+
+        expect(bot.config.notifyOnSuccess).toBe('errors_only');
+        expect(notificationService.config.telegram.notifyOnSuccess).toBe('errors_only');
+      });
+
+      test('a persisted preference applies when telegram config is silent', () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'always' } } };
+        const bot = bootWith({ persisted: 'never', configMode: undefined, notificationService });
+
+        expect(bot.config.notifyOnSuccess).toBe('never');
+        expect(notificationService.config.telegram.notifyOnSuccess).toBe('never');
+      });
+
+      test('/notify still overrides an explicit config value for the running process', async () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'errors_only' } } };
+        const bot = bootWith({ persisted: 'errors_only', configMode: 'errors_only', notificationService });
+
+        await bot.handleNotify(['never']);
+
+        expect(notificationService.config.telegram.notifyOnSuccess).toBe('never');
+      });
+
       test('a persisted preference is applied to the notification service at startup', () => {
         const existsSpy = jest.spyOn(fs, 'existsSync').mockReturnValue(true);
         const readSpy = jest.spyOn(fs, 'readFileSync')

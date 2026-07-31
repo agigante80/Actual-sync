@@ -140,8 +140,12 @@ try {
                 // (per-channel -> global -> 'always'), so /notify reports the mode that
                 // actually gates dispatch rather than a second, divergent default (#169).
                 notifyOnSuccess: config.notifications.telegram.notifyOnSuccess
-                    || config.notifications.notifyOnSuccess
-                    || 'always'
+                    ?? config.notifications.notifyOnSuccess
+                    ?? 'always',
+                // Only the channel-specific key counts as an explicit statement about
+                // Telegram; it is what lets a persisted /notify value be overridden on
+                // restart. A global default deliberately does not block one.
+                notifyOnSuccessFromConfig: config.notifications.telegram.notifyOnSuccess
             },
             {
                 syncHistory: syncHistory,
