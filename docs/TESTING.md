@@ -61,15 +61,25 @@ The catalog covers behaviour at every level, not just service code — a mutatio
 
 It is deliberately **not** wired into CI: it runs the whole suite once per mutation, which is far too slow per-PR. Run it when you change notification dispatch, config validation, or anything else the catalog covers, and before a release.
 
-**It refuses to run without a green baseline.** The suite is run unmutated first; if anything is already failing, the run aborts. Otherwise every mutation would score "caught" for a reason that has nothing to do with the mutation — a colleague's WIP test or a flake would produce a perfect score.
+**It refuses to run without a green baseline.** The suite is run unmutated first, and the run aborts unless that baseline is genuinely clean: no failed tests, no suites that failed to *load*, and jest's own `success` flag set. Otherwise every mutation would score "caught" for a reason that has nothing to do with the mutation — a colleague's WIP test or a flake would produce a perfect score.
 
-**Scoring reads jest's JSON report, not its exit code.** jest exits 1 for "no tests found" and for a config error as well as for a real failure, so an exit-code reading counted those as caught having run nothing. A mutation is caught only when tests actually ran *and* at least one failed; anything else is `UNSCORED` and fails the run.
+The load-error case is separate on purpose. A suite that throws while being imported contributes **zero failed tests** to jest's report while `numTotalTests` stays non-zero, so a "did tests run, did any fail" reading called it green. With one unresolvable import the runner printed `green (841 tests)` while `npm test` exited 1, and a mutant then scored a false `SURVIVED` for a defect that *was* guarded — the exact phantom coverage gap this tool exists to rule out.
+
+**Scoring reads jest's JSON report, not its exit code.** jest exits 1 for "no tests found" and for a config error as well as for a real failure, so an exit-code reading counted those as caught having run nothing. A mutation is caught only when tests actually ran *and* at least one failed. A run with a load error, or one jest calls unsuccessful while reporting no failures, is `UNSCORED` rather than a verdict — the run fails, but it does not claim a coverage gap it has not demonstrated.
+
+**The baseline is a single sample.** It rules out a suite that is already broken; it cannot rule out a genuinely flaky test, which would fail under some mutant and be recorded as `caught` for the wrong reason. If a mutation's result surprises you, re-run that ticket with `--ticket` before believing it.
 
 **Safety.** Before a file is touched, both its original content and the mutant are journalled to disk atomically, so a hard kill is recoverable with `--recover`. `--recover` refuses to overwrite content that is neither the mutant nor the original — that is how it would otherwise destroy a repair you made by hand — and copies your version aside first. A pid lockfile blocks concurrent runs, and is only ever removed by the process that took it.
 
+`--recover` also **refuses while a live run holds the lock**. Recovering mid-flight restores the original underneath the suite currently testing the mutant, so that suite passes against unmutated code and the mutation is scored `SURVIVED` — the tool reporting a coverage gap it just manufactured. `--recover` is dispatched before the catalog is loaded, so a broken `scripts/mutations.js` cannot block recovery of a file an earlier run left mutated.
+
 Signal handlers are deliberately **not** installed. `main()` is synchronous, so a handler could never fire while jest is running; registering one only removed the default terminate behaviour, leaving a runner that `kill` could not stop. The journal is the recovery mechanism — if a run is killed, the next one refuses to start and tells you to run `--recover`.
 
-One honest limitation: the uncommitted-changes check is a snapshot taken at startup, so a file created *during* a run is not covered by it. A file *modified* during a run is detected — the runner leaves your version alone and stops, rather than reverting it.
+One honest limitation: the uncommitted-changes check is a snapshot taken at startup, so a file created *during* a run is not covered by it. A file *modified* during a run is detected — the runner leaves your version alone and stops, rather than reverting it. That includes the case where the file was put **back to its original content** while the mutant was in place, which earlier read as the benign "the mutant write failed" path and said nothing.
+
+**The runner mutates itself too.** `scripts/mutationTest.js` is in the catalog, which works because jest re-reads the file from disk while the running process keeps its own copy in the require cache. Those mutations are guarded by `src/__tests__/mutationRunner.test.js` and deliberately **not** by `mutationCatalog.test.js` — the runner excludes the catalog guard from the scored suite, so a guard placed there would score every one of them as `SURVIVED` regardless of the truth.
+
+Exit codes: `0` all caught, `1` at least one survived (or a stale anchor / unscored run), `2` the runner refused to start or failed internally, `3` a file was left mutated and needs `--recover`. `1` is a claim about coverage, so an internal crash must never exit `1`.
 
 ### Documented config examples
 

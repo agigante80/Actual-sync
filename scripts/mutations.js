@@ -276,6 +276,115 @@ module.exports = [
         tests: 'configLoader'
     },
 
+    // ---- #177: the runner's own scoring -------------------------------------
+    // These mutate the mutation runner itself. That works because jest re-reads
+    // the file from disk, while the running runner keeps its own copy in the
+    // require cache. Their guards live in mutationRunner.test.js and NOT in
+    // mutationCatalog.test.js, which the runner excludes from the scored suite —
+    // a guard placed there would score every one of these as SURVIVED.
+    {
+        id: '177-mutant-load-error-scored', ticket: '#177',
+        desc: 'a suite that fails to LOAD is scored, so a guarded defect reads as SURVIVED',
+        file: 'scripts/mutationTest.js',
+        anchor: '    if (result.loadErrors > 0) {\n        throw new Error(',
+        mutant: '    if (false) {\n        throw new Error(',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '177-baseline-load-error-ignored', ticket: '#177',
+        desc: 'the baseline prints green while whole test files failed to import',
+        file: 'scripts/mutationTest.js',
+        anchor: '    if (result.loadErrors > 0) {\n        return ',
+        mutant: '    if (false) {\n        return ',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '177-baseline-success-ignored', ticket: '#177',
+        desc: "jest's own success flag is dropped from the baseline check",
+        file: 'scripts/mutationTest.js',
+        anchor: '    if (!result.success) {\n        return \'jest reported the run as unsuccessful',
+        mutant: '    if (false) {\n        return \'jest reported the run as unsuccessful',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '177-recover-ignores-lock', ticket: '#177',
+        desc: '--recover proceeds during a live run, inverting that run\'s verdict',
+        file: 'scripts/mutationTest.js',
+        anchor: '    if (owner && owner !== String(self)) {',
+        mutant: '    if (false) {',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '177-reverted-mutant-benign', ticket: '#177',
+        desc: 'a mutant reverted mid-run is read as the benign failed-write case',
+        file: 'scripts/mutationTest.js',
+        anchor: "    return mutantWritten ? 'contaminated' : 'never-mutated';",
+        mutant: "    return 'never-mutated';",
+        tests: 'mutationRunner'
+    },
+    {
+        id: '177-eperm-read-as-dead', ticket: '#177',
+        desc: 'a live lock owner belonging to another user is treated as dead',
+        file: 'scripts/mutationTest.js',
+        anchor: "        return err.code !== 'ESRCH';",
+        mutant: '        return false;',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '177-runner-crash-exits-1', ticket: '#177',
+        desc: 'an internal crash exits 1, indistinguishable from "mutations survived"',
+        file: 'scripts/mutationTest.js',
+        anchor: "        console.error('If a file was left mutated: npm run test:mutation -- --recover');\n"
+            + '        return 2;',
+        mutant: "        console.error('If a file was left mutated: npm run test:mutation -- --recover');\n"
+            + '        return 1;',
+        tests: 'mutationRunner'
+    },
+    // Unwiring: each decision above is a pure function, so deleting its call
+    // site leaves every unit test green. These prove the call sites exist.
+    {
+        id: '177-readreport-unwired', ticket: '#177',
+        desc: 'runSuite stops normalising through readReport, losing success and load errors',
+        file: 'scripts/mutationTest.js',
+        anchor: "        return readReport(JSON.parse(fs.readFileSync(reportFile, 'utf8')));",
+        mutant: "        const r = JSON.parse(fs.readFileSync(reportFile, 'utf8'));\n"
+            + '        return { ran: r.numTotalTests, failed: r.numFailedTests };',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '177-recover-lock-unwired', ticket: '#177',
+        desc: 'recover() no longer consults the lock before writing',
+        file: 'scripts/mutationTest.js',
+        anchor: '    const refusal = recoveryRefusal(liveLockOwner(), process.pid);',
+        mutant: '    const refusal = null;',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '177-baseline-check-unwired', ticket: '#177',
+        desc: 'main() computes no baseline problem, so any baseline is accepted',
+        file: 'scripts/mutationTest.js',
+        anchor: '        const problem = baselineProblem(baseline);',
+        mutant: '        const problem = null;',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '177-score-unwired', ticket: '#177',
+        desc: 'the verdict goes back to raw failed-count, skipping the load-error refusal',
+        file: 'scripts/mutationTest.js',
+        anchor: '                verdict = scoreMutant(runSuite(fast ? m.tests : null));',
+        mutant: "                verdict = runSuite(fast ? m.tests : null).failed > 0 ? 'caught' : 'survived';",
+        tests: 'mutationRunner'
+    },
+    {
+        id: '177-poststate-unwired', ticket: '#177',
+        desc: 'the file-state check is inlined again without the mutantWritten case',
+        file: 'scripts/mutationTest.js',
+        anchor: '                const state = postRunState({ now, original, mutated, mutantWritten });',
+        mutant: "                const state = now === mutated ? 'mutant-intact'\n"
+            + "                    : (now === original ? 'never-mutated' : 'contaminated');",
+        tests: 'mutationRunner'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
