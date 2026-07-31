@@ -1261,23 +1261,63 @@ describe('NotificationService', () => {
     // belongs at DEBUG, but an ENABLED channel that produced zero attempts means
     // nobody was alerted — and both notifySync call sites discard the return
     // value, so DEBUG would be the only trace of a failure reaching no one.
-    test('zero attempts from an enabled channel is a warning, not a debug line', async () => {
-      const s = new NotificationService({ email: { enabled: true, from: 'a@b.c', to: [] } });
+    const NO_CHANNEL_MSG = 'No live notification channel for this status';
+    const spyLogger = (s) => {
       s.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+      return s;
+    };
+
+    test('zero attempts from an enabled channel is a warning, not a debug line', async () => {
+      const s = spyLogger(new NotificationService({ email: { enabled: true, from: 'a@b.c', to: [] } }));
 
       await s.notifySync({ ...syncArgs, status: 'failure', accountsFailed: 1, bypassThresholds: true });
 
-      expect(s.logger.warn).toHaveBeenCalled();
+      expect(s.logger.warn).toHaveBeenCalledWith(NO_CHANNEL_MSG, expect.anything());
     });
 
     test('zero attempts with nothing configured stays at debug', async () => {
-      const s = new NotificationService({});
-      s.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+      const s = spyLogger(new NotificationService({}));
 
       await s.notifySync(syncArgs);
 
       expect(s.logger.warn).not.toHaveBeenCalled();
-      expect(s.logger.debug).toHaveBeenCalled();
+      expect(s.logger.debug).toHaveBeenCalledWith(NO_CHANNEL_MSG, expect.anything());
+    });
+
+    // Round-4 review: enabledChannelCount() asked "is this channel switched on?"
+    // when the level decision needs "switched on AND permitted for this status".
+    // A per-channel or per-entry errors_only does not trip the channels_muted
+    // early return (anyActive consults the mode only, never enablement), so every
+    // SUCCESSFUL sync warned — punishing users for following the documented cure
+    // for notification noise.
+    test('a per-channel errors_only does not warn on a successful sync', async () => {
+      const s = spyLogger(new NotificationService({
+        email: { enabled: true, from: 'a@b.c', to: ['d@e.f'], notifyOnSuccess: 'errors_only' }
+      }));
+
+      await s.notifySync(syncArgs);
+
+      expect(s.logger.warn).not.toHaveBeenCalled();
+    });
+
+    test('a per-entry errors_only does not warn on a successful sync', async () => {
+      const s = spyLogger(new NotificationService({
+        webhooks: { slack: [{ name: 's', url: 'https://slack.test/h', notifyOnSuccess: 'errors_only' }] }
+      }));
+
+      await s.notifySync(syncArgs);
+
+      expect(s.logger.warn).not.toHaveBeenCalled();
+    });
+
+    test('an enabled-but-undeliverable channel still warns on a failure', async () => {
+      const s = spyLogger(new NotificationService({
+        email: { enabled: true, from: 'a@b.c', to: [], notifyOnSuccess: 'errors_only' }
+      }));
+
+      await s.notifySync({ ...syncArgs, status: 'failure', accountsFailed: 1, bypassThresholds: true });
+
+      expect(s.logger.warn).toHaveBeenCalledWith(NO_CHANNEL_MSG, expect.anything());
     });
 
     test('nothing-attempted is distinguishable from every-channel-failed', async () => {
