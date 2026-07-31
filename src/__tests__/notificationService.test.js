@@ -1390,6 +1390,25 @@ describe('NotificationService', () => {
         await service.sendStartupNotification({ version: '1.0.0', serverNames: 'S1' });
         SINKS.forEach(sink => expect(t.fired()[sink]).toBe(false));
       });
+
+      // Caught by running the service: with everything muted the startup path
+      // still reported success, and syncService logged "Startup notifications sent
+      // to all channels" when nothing had been sent. An operator reading that log
+      // would believe their channels were working.
+      test('a fully muted startup reports it was not sent', async () => {
+        const service = allSinks({ notifyOnSuccess: 'never' });
+        spyTransports(service);
+        const result = await service.sendStartupNotification({ version: '1.0.0', serverNames: 'S1' });
+        expect(result.sent).toBe(false);
+        expect(result.reason).toBe('channels_muted');
+      });
+
+      test('a startup that does reach a channel still reports sent', async () => {
+        const service = allSinks({ notifyOnSuccess: 'errors_only' });
+        spyTransports(service);
+        const result = await service.sendStartupNotification({ version: '1.0.0', serverNames: 'S1' });
+        expect(result.sent).toBe(true);
+      });
     });
 
     describe('backward compatibility', () => {

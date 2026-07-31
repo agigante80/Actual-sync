@@ -1325,6 +1325,20 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
     // Startup has no sync status, so only `never` (channel off entirely) applies (#169).
     const allow = (channel, entry) => this.shouldNotifyChannel(channel, 'startup', entry);
 
+    // Mirror notifySync()'s short-circuit. Without it a fully muted startup still
+    // reported success, and the caller logged "Startup notifications sent to all
+    // channels" having sent nothing — a false success claim in the operator's log.
+    const anyActive =
+      allow('email') || allow('ntfy') || allow('telegram') ||
+      (this.config.webhooks.slack || []).some(w => allow('slack', w)) ||
+      (this.config.webhooks.discord || []).some(w => allow('discord', w)) ||
+      (this.config.webhooks.generic || []).some(w => allow('generic', w));
+
+    if (!anyActive) {
+      this.logger.debug('All channels muted, skipping startup notification');
+      return { sent: false, reason: 'channels_muted' };
+    }
+
     try {
       // Send email
       if (this.config.email.enabled && this.emailTransporter && allow('email')) {
