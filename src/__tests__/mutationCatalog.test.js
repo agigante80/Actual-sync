@@ -116,23 +116,37 @@ describe('mutation runner jest arguments', () => {
     const { buildJestArgs, CATALOG_GUARD } = require('../../scripts/mutationTest');
 
     it('always excludes the catalog guard from the scored suite', () => {
-        expect(buildJestArgs(null)).toContain('--testPathIgnorePatterns');
-        expect(buildJestArgs(null)).toContain(CATALOG_GUARD);
+        expect(buildJestArgs(null, '/tmp/r.json')).toContain('--testPathIgnorePatterns');
+        expect(buildJestArgs(null, '/tmp/r.json')).toContain(CATALOG_GUARD);
+    });
+
+    it('restates the node_modules default it would otherwise replace', () => {
+        // Passing --testPathIgnorePatterns on the CLI overrides jest's default,
+        // and node_modules contains *.test.js files that would then be collected.
+        expect(buildJestArgs(null, '/tmp/r.json')).toContain('/node_modules/');
+    });
+
+    it('asks for a machine-readable report, since an exit code alone lies', () => {
+        // jest exits 1 for "no tests found" and for config errors, which an
+        // exit-code-only reading scored as "caught" having run nothing.
+        const argv = buildJestArgs(null, '/tmp/r.json');
+        expect(argv).toContain('--json');
+        expect(argv).toContain('--outputFile=/tmp/r.json');
     });
 
     it('puts a --fast pattern BEFORE the variadic ignore flag', () => {
-        const argv = buildJestArgs('telegramBot');
+        const argv = buildJestArgs('telegramBot', '/tmp/r.json');
         expect(argv.indexOf('telegramBot')).toBeLessThan(argv.indexOf('--testPathIgnorePatterns'));
     });
 
     it('never places the pattern adjacent to the ignore flag, where jest would eat it', () => {
-        const argv = buildJestArgs('telegramBot');
+        const argv = buildJestArgs('telegramBot', '/tmp/r.json');
         const ignoreAt = argv.indexOf('--testPathIgnorePatterns');
-        expect(argv.slice(ignoreAt + 1)).toEqual([CATALOG_GUARD]);
+        expect(argv.slice(ignoreAt + 1)).toEqual(['/node_modules/', CATALOG_GUARD]);
     });
 
     it('omits any positional when no pattern is given', () => {
-        expect(buildJestArgs(null)).toEqual(
-            ['jest', '--forceExit', '--silent', '--testPathIgnorePatterns', CATALOG_GUARD]);
+        const argv = buildJestArgs(null, '/tmp/r.json');
+        expect(argv[1]).toBe('--forceExit');
     });
 });

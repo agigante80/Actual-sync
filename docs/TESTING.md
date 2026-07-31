@@ -61,11 +61,15 @@ The catalog covers behaviour at every level, not just service code — a mutatio
 
 It is deliberately **not** wired into CI: it runs the whole suite once per mutation, which is far too slow per-PR. Run it when you change notification dispatch, config validation, or anything else the catalog covers, and before a release.
 
-**Safety.** Before a file is touched, its original content is journalled to disk, so even `SIGKILL` or a power cut is recoverable with `--recover`. Restores also run in a `finally` and on `SIGINT`/`SIGTERM`/`SIGHUP`. A lockfile prevents two concurrent runs from interleaving. Before restoring, the file is compared against the mutant that was written — if it differs, someone edited it mid-run and the runner leaves their version alone and says so.
+**It refuses to run without a green baseline.** The suite is run unmutated first; if anything is already failing, the run aborts. Otherwise every mutation would score "caught" for a reason that has nothing to do with the mutation — a colleague's WIP test or a flake would produce a perfect score.
 
-Two honest limitations: `spawnSync` blocks the event loop while jest runs, so signal handlers cannot fire until it returns — the journal, not the handler, is what makes a hard kill recoverable. And the uncommitted-changes check is a snapshot taken at startup, so a file created *during* a run is not covered by it.
+**Scoring reads jest's JSON report, not its exit code.** jest exits 1 for "no tests found" and for a config error as well as for a real failure, so an exit-code reading counted those as caught having run nothing. A mutation is caught only when tests actually ran *and* at least one failed; anything else is `UNSCORED` and fails the run.
 
-A run that could not execute the suite — missing toolchain, timeout, killed jest — is reported `UNSCORED` and fails the run, rather than being counted as caught. Only an actual test failure counts.
+**Safety.** Before a file is touched, both its original content and the mutant are journalled to disk atomically, so a hard kill is recoverable with `--recover`. `--recover` refuses to overwrite content that is neither the mutant nor the original — that is how it would otherwise destroy a repair you made by hand — and copies your version aside first. A pid lockfile blocks concurrent runs, and is only ever removed by the process that took it.
+
+Signal handlers are deliberately **not** installed. `main()` is synchronous, so a handler could never fire while jest is running; registering one only removed the default terminate behaviour, leaving a runner that `kill` could not stop. The journal is the recovery mechanism — if a run is killed, the next one refuses to start and tells you to run `--recover`.
+
+One honest limitation: the uncommitted-changes check is a snapshot taken at startup, so a file created *during* a run is not covered by it. A file *modified* during a run is detected — the runner leaves your version alone and stops, rather than reverting it.
 
 ### Documented config examples
 
