@@ -600,10 +600,16 @@ class TelegramBotService {
       always: 'You will receive notifications for every sync.'
     }[this.config.notifyOnSuccess];
 
+    // Persistence is conditional: an explicit notifications.telegram.notifyOnSuccess
+    // wins on restart, so promising the change sticks would be a lie for that config.
+    const persistence = this.config.notifyOnSuccessFromConfig
+      ? `⚠️ Your config sets notifyOnSuccess: "${this.config.notifyOnSuccessFromConfig}" for Telegram, so this reverts on restart. Change it in config.json to make it permanent.`
+      : 'This setting will be remembered across restarts.';
+
     await this.sendMessage(
       `✅ Notification mode changed to: ${this.config.notifyOnSuccess}\n\n` +
       `${effect}\n` +
-      `This setting will be remembered across restarts.`
+      `${persistence}`
     );
   }
 
