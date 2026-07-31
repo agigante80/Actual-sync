@@ -51,6 +51,9 @@ class NotificationService {
     const brandingEnabled = config.branding !== false;
     this.config = {
       branding: brandingEnabled,
+      // Global fallback for the per-channel notifyOnSuccess gate (#169). Kept at
+      // 'always' so an existing config that sets nothing keeps its old behavior.
+      notifyOnSuccess: config.notifyOnSuccess,
       email: {
         enabled: false,
         host: 'smtp.gmail.com',
@@ -116,6 +119,105 @@ class NotificationService {
     if (this.config.email.enabled) {
       this.initializeEmailTransporter();
     }
+
+    // `never` mutes failures too, and before #169 the key gated nothing at all —
+    // so a config carrying it from an older version silently stops alerting on
+    // upgrade. Say so at startup rather than letting failures vanish quietly.
+    const muted = this.mutedChannels();
+    if (muted.length > 0) {
+      this.logger.warn('Channels muted by notifyOnSuccess: "never" — these will NOT notify on failures either', {
+        channels: muted
+      });
+    }
+  }
+
+  /**
+   * Summarise what a dispatch round actually achieved (#171).
+   *
+   * The per-channel senders swallow their own transport errors and report the
+   * outcome in three different shapes — an object-or-null (email, ntfy), an array
+   * of `{ name, success }` (the webhook arrays), or a boolean (telegram) — so the
+   * caller has to normalise them before it can honestly claim anything.
+   *
+   * @param {Object} results - The per-channel results collected during dispatch
+   * @returns {{attempted: number, delivered: number, failedChannels: string[]}}
+   */
+  _deliveryOutcome(results) {
+    let attempted = 0;
+    let delivered = 0;
+    const failedChannels = [];
+
+    // Careful: a failed email/ntfy send resolves to a TRUTHY `{ success: false }`
+    // object, so truthiness alone reads a failure as a delivery. Only null/undefined
+    // means "not attempted".
+    const single = (name, value) => {
+      if (value === null || value === undefined) return; // not attempted
+      attempted += 1;
+      const ok = typeof value === 'object' ? value.success !== false : Boolean(value);
+      if (ok) delivered += 1;
+      else failedChannels.push(name);
+    };
+
+    single('email', results.email);
+    single('ntfy', results.ntfy);
+    single('telegram', results.telegram);
+
+    for (const channel of ['slack', 'discord', 'generic']) {
+      for (const entry of results[channel] || []) {
+        attempted += 1;
+        if (entry.success) delivered += 1;
+        else failedChannels.push(`${channel}[${entry.name || 'unnamed'}]`);
+      }
+    }
+
+    return { attempted, delivered, failedChannels };
+  }
+
+  /**
+   * How many channels the operator has switched on, regardless of whether they
+   * are muted or currently working. Used to tell "nothing configured" (fine)
+   * apart from "configured but delivered nothing" (worth a warning).
+   *
+   * @returns {number}
+   */
+  enabledChannelCount(allow = () => true) {
+    let count = 0;
+    if (this.config.email?.enabled && allow('email')) count += 1;
+    if (this.config.ntfy?.enabled && allow('ntfy')) count += 1;
+    if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0)
+        && allow('telegram')) count += 1;
+    for (const channel of ['slack', 'discord', 'generic']) {
+      count += (this.config.webhooks?.[channel] || [])
+        .filter(w => w.enabled !== false && allow(channel, w)).length;
+    }
+    return count;
+  }
+
+  /**
+   * List enabled channels whose resolved notifyOnSuccess is 'never' (#169).
+   *
+   * Only reports channels that are otherwise live — a disabled channel is already
+   * silent for an obvious reason and does not need a warning.
+   *
+   * @returns {string[]} Channel identifiers, e.g. ['email', 'webhooks.slack[ops]']
+   */
+  mutedChannels() {
+    const muted = [];
+    const isMuted = (channel, entry) => !this.shouldNotifyChannel(channel, 'failure', entry);
+
+    if (this.config.email.enabled && isMuted('email')) muted.push('email');
+    if (this.config.ntfy?.enabled && isMuted('ntfy')) muted.push('ntfy');
+    if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0)
+        && isMuted('telegram')) muted.push('telegram');
+
+    for (const channel of ['slack', 'discord', 'generic']) {
+      for (const entry of this.config.webhooks?.[channel] || []) {
+        if (entry.enabled === false) continue;
+        if (isMuted(channel, entry)) muted.push(`webhooks.${channel}[${entry.name || entry.url}]`);
+      }
+    }
+
+    return muted;
   }
 
   /**
@@ -186,6 +288,43 @@ class NotificationService {
       recentSyncsCount: this.recentSyncs[serverName].length,
       correlationId
     });
+  }
+
+  /**
+   * Decide whether a channel should receive a notification for this status (#169).
+   *
+   * Resolution precedence: per-webhook-entry -> per-channel -> global -> 'always'.
+   *
+   * The per-channel tier exists only for the object-shaped channels (`email`,
+   * `telegram`, `ntfy`). `slack`/`discord`/`generic` are arrays with no config
+   * object of their own, so they resolve entry -> global; there is deliberately
+   * no way to set one mode for "all Slack webhooks" in a single place.
+   *
+   * `never` means the channel is off entirely (it suppresses failures too) — it is
+   * an explicit user opt-out, not a noise filter. The narrower invariant that must
+   * hold is that `always` and `errors_only` never suppress a failure.
+   *
+   * `partial` counts as an error for `errors_only`: a partial sync is a failure
+   * signal, and this matches MessageFormatter, which already maps partial to
+   * ntfy `level: 'failure'`.
+   *
+   * @param {string} channel - 'email' | 'telegram' | 'ntfy' | 'slack' | 'discord' | 'generic'
+   * @param {string} status - 'success' | 'partial' | 'failure' | 'startup'
+   * @param {Object} [entry] - Webhook array entry, for per-entry overrides
+   * @returns {boolean} True if the notification should be dispatched
+   */
+  shouldNotifyChannel(channel, status, entry) {
+    const mode =
+      entry?.notifyOnSuccess ??
+      this.config[channel]?.notifyOnSuccess ??
+      this.config.notifyOnSuccess ??
+      'always';
+
+    if (mode === 'never') return false;
+    // Startup has no sync status, so errors_only has nothing to filter on.
+    if (status === 'startup') return true;
+    if (mode === 'errors_only') return status !== 'success';
+    return true;
   }
 
   /**
@@ -344,6 +483,35 @@ class NotificationService {
       };
     }
 
+    // Per-channel notifyOnSuccess gate (#169). A test notification
+    // (bypassThresholds) is an explicit user action and always sends, otherwise a
+    // muted channel could never be verified.
+    //
+    // Note: today the dashboard's test-notification route calls the per-channel
+    // senders directly rather than notifySync(), so no production caller passes
+    // bypassThresholds:true — this branch is exercised only by tests. It is kept
+    // so the invariant holds if that route is ever migrated onto notifySync().
+    const allow = (channel, entry) =>
+      bypassThresholds || this.shouldNotifyChannel(channel, status, entry);
+
+    const anyActive =
+      allow('email') || allow('ntfy') || allow('telegram') ||
+      (this.config.webhooks.slack || []).some(w => allow('slack', w)) ||
+      (this.config.webhooks.discord || []).some(w => allow('discord', w)) ||
+      (this.config.webhooks.generic || []).some(w => allow('generic', w));
+
+    if (!anyActive) {
+      this.logger.debug('All channels muted for this status, skipping notification', {
+        serverName,
+        status,
+        correlationId
+      });
+      return {
+        sent: false,
+        reason: 'channels_muted'
+      };
+    }
+
     // Format unified message content
     const formatted = MessageFormatter.formatSyncNotification({
       status,
@@ -368,29 +536,80 @@ class NotificationService {
 
     try {
       // Send email
-      if (this.config.email.enabled && this.emailTransporter) {
+      if (this.config.email.enabled && this.emailTransporter && allow('email')) {
         const subject = status === 'success' && accountsFailed === 0
           ? `[Actual Budget Sync] ✅ Sync Successful: ${serverName}`
           : status === 'partial' || accountsFailed > 0
           ? `[Actual Budget Sync] ⚠️ Sync Issues: ${serverName}`
           : `[Actual Budget Sync] ❌ Sync Failed: ${serverName}`;
-        
+
         results.email = await this.sendFormattedEmail(subject, formatted.text, formatted.html);
       }
 
       // Send webhooks using unified payloads
-      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
-      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
-      results.generic = await this.sendGenericWebhooks(formatted.generic);
-      results.ntfy = await this.sendNtfy(formatted.ntfy);
+      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack, allow);
+      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord, allow);
+      results.generic = await this.sendGenericWebhooks(formatted.generic, allow);
+      results.ntfy = allow('ntfy') ? await this.sendNtfy(formatted.ntfy) : null;
 
       // Send Telegram
-      if (this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) {
+      if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) && allow('telegram')) {
         const success = await this.sendTelegramMessage(formatted.text);
         results.telegram = success;
       }
 
-      // Update rate limiting for failures
+      // Only claim delivery if something actually got through (#171). The
+      // per-channel ERRORs already carry the detail, so a total failure is WARN
+      // here rather than a second ERROR — the alerting path is broken, but the
+      // sync outcome itself was already reported.
+      const outcome = this._deliveryOutcome(results);
+
+      if (outcome.delivered === 0) {
+        // "Nothing attempted" is not success. sendFormattedEmail returns null on
+        // an empty `to` list and sendNtfy on an empty `url` — both schema-valid
+        // misconfigurations of an *enabled* channel, so gating on attempted > 0
+        // would report those as sent.
+        if (outcome.attempted === 0) {
+          // "No channels configured" is a legitimate deployment and belongs at
+          // DEBUG. An *enabled* channel that produced zero attempts is different:
+          // nobody was alerted, and both notifySync() call sites discard the
+          // return value, so this line is the only trace.
+          //
+          // Pass `allow`: the count must mean "switched on AND permitted for this
+          // status", not merely "switched on". A per-channel or per-entry
+          // errors_only does not trip the channels_muted early return above —
+          // anyActive consults the mode without checking enablement — so counting
+          // enablement alone warned on every successful sync, punishing exactly
+          // the config the docs recommend for reducing noise.
+          const level = this.enabledChannelCount(allow) > 0 ? 'warn' : 'debug';
+          this.logger[level]('No live notification channel for this status', {
+            status,
+            serverName,
+            correlationId
+          });
+          return { sent: false, reason: 'no_channels_delivered', results, status };
+        }
+
+        this.logger.warn('Sync notification failed on every channel', {
+          status,
+          serverName,
+          correlationId,
+          failedChannels: outcome.failedChannels
+        });
+
+        return {
+          sent: false,
+          reason: 'all_channels_failed',
+          results,
+          status
+        };
+      }
+
+      // Only a notification that actually reached someone consumes the budget.
+      // Charging an undelivered attempt would let one transport blip suppress the
+      // NEXT failure — a genuine alert dropped because of an unrelated outage.
+      // The cost is that a broken transport is retried each sync, which is bounded
+      // by the schedule and by checkThresholds(); that is the safer side to err on.
       if (status === 'failure') {
         this.updateRateLimitTracking(serverName);
       }
@@ -399,6 +618,9 @@ class NotificationService {
         status,
         serverName,
         correlationId,
+        delivered: outcome.delivered,
+        attempted: outcome.attempted,
+        failedChannels: outcome.failedChannels.length > 0 ? outcome.failedChannels : undefined,
         email: !!results.email,
         webhooks: {
           slack: results.slack.length,
@@ -411,118 +633,6 @@ class NotificationService {
         sent: true,
         results,
         status
-      };
-    } catch (err) {
-      this.logger.error('Failed to send notification', {
-        error: err.message,
-        stack: err.stack,
-        serverName,
-        correlationId
-      });
-      throw err;
-    }
-  }
-
-  /**
-   * Send error notification (backward compatibility wrapper)
-   * @param {Object} error - Error details
-   * @param {string} error.serverName - Server name
-   * @param {string} error.errorMessage - Error message
-   * @param {string} error.errorCode - Error code
-   * @param {string} error.timestamp - Timestamp
-   * @param {string} error.correlationId - Correlation ID
-   * @param {Object} error.context - Additional context
-   * @returns {Promise<Object>} Notification result
-   */
-  async notifyError(error) {
-    const { serverName, errorMessage, errorCode, timestamp, correlationId, context = {} } = error;
-
-    // Check thresholds
-    const thresholds = this.checkThresholds(serverName);
-    if (!thresholds.shouldNotify) {
-      this.logger.debug('Thresholds not exceeded, skipping notification', {
-        serverName,
-        thresholds,
-        correlationId
-      });
-      return {
-        sent: false,
-        reason: 'thresholds_not_exceeded',
-        thresholds
-      };
-    }
-
-    // Check rate limit
-    if (!this.checkRateLimit(serverName)) {
-      this.logger.warn('Rate limit exceeded, skipping notification', {
-        serverName,
-        correlationId
-      });
-      return {
-        sent: false,
-        reason: 'rate_limit_exceeded'
-      };
-    }
-
-    // Prepare notification content with thresholds
-    const notification = {
-      serverName,
-      errorMessage,
-      errorCode,
-      timestamp: timestamp || new Date().toISOString(),
-      correlationId,
-      context,
-      thresholds,
-      consecutiveFailures: this.consecutiveFailures[serverName]
-    };
-
-    // Format unified message content
-    const formatted = MessageFormatter.formatErrorNotification(notification);
-
-    // Send via all configured channels
-    const results = {
-      email: null,
-      slack: [],
-      discord: [],
-      telegram: []
-    };
-
-    try {
-      // Send email
-      if (this.config.email.enabled && this.emailTransporter) {
-        const isTest = serverName?.includes('🧪') || errorCode === 'TEST_NOTIFICATION';
-        const subject = isTest 
-          ? `[Actual Budget Sync] 🧪 Test Notification`
-          : `[Actual Budget Sync] Error: ${serverName}`;
-        
-        results.email = await this.sendFormattedEmail(subject, formatted.text, formatted.html);
-      }
-
-      // Send webhooks using unified payloads
-      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
-      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
-      results.generic = await this.sendGenericWebhooks(formatted.generic);
-      results.ntfy = await this.sendNtfy(formatted.ntfy);
-      results.telegram = await this.sendTelegramWebhooks(notification);
-
-      // Update rate limiting
-      this.updateRateLimitTracking(serverName);
-
-      this.logger.info('Error notification sent', {
-        serverName,
-        correlationId,
-        email: !!results.email,
-        webhooks: {
-          slack: results.slack.length,
-          discord: results.discord.length,
-          telegram: results.telegram.length
-        }
-      });
-
-      return {
-        sent: true,
-        results,
-        thresholds
       };
     } catch (err) {
       this.logger.error('Failed to send notification', {
@@ -597,13 +707,14 @@ class NotificationService {
    * @param {Object} payload - Formatted Slack payload
    * @returns {Promise<Array>} Send results
    */
-  async sendSlackFormattedWebhooks(payload) {
+  async sendSlackFormattedWebhooks(payload, allow) {
     const results = [];
     const webhooks = this.config.webhooks.slack || [];
     this._brandPayload(payload, 'icon_url'); // Slack honors username + icon_url (#114)
 
     for (const webhook of webhooks) {
       if (webhook.enabled === false) continue;
+      if (allow && !allow('slack', webhook)) continue; // per-entry notifyOnSuccess (#169)
 
       try {
         await this.sendWebhook(webhook.url, payload);
@@ -632,13 +743,14 @@ class NotificationService {
    * @param {Object} payload - Formatted Discord payload
    * @returns {Promise<Array>} Send results
    */
-  async sendDiscordFormattedWebhooks(payload) {
+  async sendDiscordFormattedWebhooks(payload, allow) {
     const results = [];
     const webhooks = this.config.webhooks.discord || [];
     this._brandPayload(payload, 'avatar_url'); // Discord honors username + avatar_url (#114)
 
     for (const webhook of webhooks) {
       if (webhook.enabled === false) continue;
+      if (allow && !allow('discord', webhook)) continue; // per-entry notifyOnSuccess (#169)
 
       try {
         await this.sendWebhook(webhook.url, payload);
@@ -669,12 +781,13 @@ class NotificationService {
    * @param {Object} payload - The generic JSON payload (formatted.generic)
    * @returns {Promise<Array>} Per-URL send results
    */
-  async sendGenericWebhooks(payload) {
+  async sendGenericWebhooks(payload, allow) {
     const results = [];
     const webhooks = this.config.webhooks.generic || [];
 
     for (const webhook of webhooks) {
       if (!webhook.url || webhook.enabled === false) continue;
+      if (allow && !allow('generic', webhook)) continue; // per-entry notifyOnSuccess (#169)
 
       try {
         await this.sendWebhook(webhook.url, payload, {
@@ -958,6 +1071,7 @@ Please investigate and resolve the issue.
 
     const results = [];
     for (const webhook of this.config.webhooks.slack) {
+      if (webhook.enabled === false) continue; // #169: enabled:false wins everywhere
       try {
         const result = await this.sendWebhook(webhook.url, payload);
         results.push({ webhook: webhook.name || webhook.url, success: true, result });
@@ -1020,6 +1134,7 @@ Please investigate and resolve the issue.
 
     const results = [];
     for (const webhook of this.config.webhooks.discord) {
+      if (webhook.enabled === false) continue; // #169: enabled:false wins everywhere
       try {
         const result = await this.sendWebhook(webhook.url, payload);
         results.push({ webhook: webhook.name || webhook.url, success: true, result });
@@ -1037,61 +1152,6 @@ Please investigate and resolve the issue.
 
 
 
-  /**
-   * Send Telegram bot notifications
-   * @param {Object} notification - Notification details
-   * @returns {Promise<Array>} Send results
-   */
-  async sendTelegramWebhooks(notification) {
-    if (!this.config.webhooks.telegram || this.config.webhooks.telegram.length === 0) {
-      return [];
-    }
-
-    // Format message with Telegram MarkdownV2 escaping
-    const escapeMarkdown = (text) => {
-      return String(text).replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
-    };
-
-    const message = `
-🚨 *Actual Budget Sync Error*
-
-*Server:* ${escapeMarkdown(notification.serverName)}
-*Time:* ${escapeMarkdown(notification.timestamp)}
-*Error:* ${escapeMarkdown(notification.errorMessage)}
-${notification.errorCode ? `*Code:* \`${escapeMarkdown(notification.errorCode)}\`` : ''}
-${notification.correlationId ? `*Correlation ID:* \`${escapeMarkdown(notification.correlationId)}\`` : ''}
-
-*Alert Triggered:*
-• Consecutive Failures: ${notification.consecutiveFailures}
-• Failure Rate: ${(notification.thresholds.failureRate * 100).toFixed(1)}%
-${notification.thresholds.consecutiveExceeded ? '• ⚠️ Exceeded consecutive failure threshold' : ''}
-${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate threshold' : ''}
-`.trim();
-
-    const results = [];
-    for (const bot of this.config.webhooks.telegram) {
-      try {
-        const url = `https://api.telegram.org/bot${bot.botToken}/sendMessage`;
-        const payload = {
-          chat_id: bot.chatId,
-          text: message,
-          parse_mode: 'MarkdownV2',
-          disable_web_page_preview: true
-        };
-
-        const result = await this.sendWebhook(url, payload);
-        results.push({ webhook: bot.name || bot.chatId, success: true, result });
-      } catch (error) {
-        this.logger.error('Failed to send Telegram message', {
-          webhook: bot.name || bot.chatId,
-          error: error.message
-        });
-        results.push({ webhook: bot.name || bot.chatId, success: false, error: error.message });
-      }
-    }
-
-    return results;
-  }
 
   /**
    * Send HTTP webhook
@@ -1211,26 +1271,66 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
       telegram: null
     };
 
+    // Startup has no sync status, so only `never` (channel off entirely) applies (#169).
+    const allow = (channel, entry) => this.shouldNotifyChannel(channel, 'startup', entry);
+
+    // Mirror notifySync()'s short-circuit. Without it a fully muted startup still
+    // reported success, and the caller logged "Startup notifications sent to all
+    // channels" having sent nothing — a false success claim in the operator's log.
+    const anyActive =
+      allow('email') || allow('ntfy') || allow('telegram') ||
+      (this.config.webhooks.slack || []).some(w => allow('slack', w)) ||
+      (this.config.webhooks.discord || []).some(w => allow('discord', w)) ||
+      (this.config.webhooks.generic || []).some(w => allow('generic', w));
+
+    if (!anyActive) {
+      this.logger.debug('All channels muted, skipping startup notification');
+      return { sent: false, reason: 'channels_muted' };
+    }
+
     try {
       // Send email
-      if (this.config.email.enabled && this.emailTransporter) {
+      if (this.config.email.enabled && this.emailTransporter && allow('email')) {
         const subject = '[Actual Budget Sync] 🚀 Service Started';
         results.email = await this.sendFormattedEmail(subject, formatted.text, formatted.html);
       }
 
       // Send webhooks using unified payloads
-      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack);
-      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord);
-      results.generic = await this.sendGenericWebhooks(formatted.generic);
-      results.ntfy = await this.sendNtfy(formatted.ntfy);
+      results.slack = await this.sendSlackFormattedWebhooks(formatted.slack, allow);
+      results.discord = await this.sendDiscordFormattedWebhooks(formatted.discord, allow);
+      results.generic = await this.sendGenericWebhooks(formatted.generic, allow);
+      results.ntfy = allow('ntfy') ? await this.sendNtfy(formatted.ntfy) : null;
 
       // Send Telegram
-      if (this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) {
+      if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) && allow('telegram')) {
         const success = await this.sendTelegramMessage(formatted.text);
         results.telegram = success;
       }
 
+      // Same honesty rule as notifySync() (#171).
+      const outcome = this._deliveryOutcome(results);
+
+      if (outcome.delivered === 0) {
+        if (outcome.attempted === 0) {
+          this.logger.debug('No live notification channel for the startup notification');
+          return { sent: false, reason: 'no_channels_delivered', results };
+        }
+
+        this.logger.warn('Startup notification failed on every channel', {
+          failedChannels: outcome.failedChannels
+        });
+
+        return {
+          sent: false,
+          reason: 'all_channels_failed',
+          results
+        };
+      }
+
       this.logger.info('Startup notification sent', {
+        delivered: outcome.delivered,
+        attempted: outcome.attempted,
+        failedChannels: outcome.failedChannels.length > 0 ? outcome.failedChannels : undefined,
         email: !!results.email,
         webhooks: {
           slack: results.slack.length,
@@ -1259,8 +1359,16 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
    * @returns {Promise<boolean>} Success status
    */
   async sendTelegramMessage(message, options = {}) {
-    // Check if telegram is configured
-    const telegram = this.config.telegram || this.config.webhooks?.telegram?.[0];
+    // The constructor always materialises config.telegram, so a plain
+    // `config.telegram || webhooks.telegram[0]` never reached the fallback and the
+    // schema-supported legacy shape silently delivered nothing (#174). A
+    // webhooks.telegram entry has no `enabled` key — the schema forbids extras —
+    // so its presence IS its enablement.
+    const legacyEntry = this.config.webhooks?.telegram?.[0];
+    const telegram = this.config.telegram?.enabled
+      ? this.config.telegram
+      : (legacyEntry ? { ...legacyEntry, enabled: true } : this.config.telegram);
+
     if (!telegram || !telegram.enabled) {
       this.logger.debug('Telegram not configured or not enabled');
       return false;

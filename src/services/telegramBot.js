@@ -43,6 +43,9 @@ class TelegramBotService {
 
     this.lastUpdateId = 0;
     this.polling = false;
+    // Last non-transient poll failure, so it is reported once rather than on
+    // every tick until it changes or polling recovers (#172).
+    this.lastPollErrorKey = null;
     this.pollTimeout = null;
     this.commands = this.initializeCommands();
     this.preferencesFile = path.join(process.cwd(), 'data', 'telegram-preferences.json');
@@ -104,18 +107,64 @@ class TelegramBotService {
         const data = fs.readFileSync(this.preferencesFile, 'utf8');
         const preferences = JSON.parse(data);
         
-        // Apply saved notification mode if it exists
+        // Apply saved notification mode if it exists.
+        //
+        // An explicit notifications.telegram.notifyOnSuccess is the operator's
+        // declarative statement about this channel and wins on restart; a
+        // persisted /notify value only fills the gap when config is silent. That
+        // keeps config authoritative for IaC deployments while preserving the
+        // point of the bot (mute from your phone without a redeploy).
+        //
+        // It also defuses an upgrade hazard: before 1.11.0 /notify changed nothing
+        // on the dispatch path, so a value typed long ago as a no-op would
+        // otherwise silently take effect — including muting failures.
+        //
+        // A GLOBAL notifications.notifyOnSuccess does not block it: that is a
+        // fallback, not a statement about Telegram.
         if (preferences.notifyOnSuccess) {
-          this.config.notifyOnSuccess = preferences.notifyOnSuccess;
-          this.logger.info('Loaded notification preferences', {
-            notifyOnSuccess: this.config.notifyOnSuccess
-          });
+          if (this.config.notifyOnSuccessFromConfig) {
+            this.logger.info('Ignoring persisted notification mode; config sets it explicitly', {
+              persisted: preferences.notifyOnSuccess,
+              config: this.config.notifyOnSuccessFromConfig
+            });
+          } else {
+            this.config.notifyOnSuccess = preferences.notifyOnSuccess;
+            // Must reach the dispatch path too (#169), or the restored mode
+            // applies to the bot alone: /notify reports it while notifications
+            // keep using config.
+            this.applyNotifyModeToNotificationService();
+            this.logger.info('Loaded notification preferences', {
+              notifyOnSuccess: this.config.notifyOnSuccess
+            });
+          }
         }
       }
     } catch (error) {
       this.logger.error('Failed to load preferences', {
         error: error.message
       });
+    }
+  }
+
+  /**
+   * Push the current notification mode onto the dispatch path (#169).
+   *
+   * NotificationService owns the gate that actually decides whether a Telegram
+   * message is sent; the bot only holds the mode for /notify. Without this, a
+   * mode set or restored on the bot looks applied and changes nothing.
+   */
+  applyNotifyModeToNotificationService() {
+    const notificationService = this.services?.notificationService;
+    if (notificationService?.config?.telegram) {
+      notificationService.config.telegram.notifyOnSuccess = this.config.notifyOnSuccess;
+    }
+
+    // The startup muted-channel warning runs when NotificationService is built,
+    // which is before this ever applies a persisted or runtime mode — so warn
+    // here too, or the likeliest route to a Telegram channel muted for FAILURES
+    // (an operator typing /notify never) is never reported at all (#169).
+    if (this.config.notifyOnSuccess === 'never') {
+      this.logger.warn('Telegram muted by notifyOnSuccess: "never" — it will NOT notify on failures either');
     }
   }
 
@@ -220,13 +269,38 @@ class TelegramBotService {
       });
 
       const response = await this.makeRequest(`${url}?${params.toString()}`);
+
+      // A poll that works again after a persistent failure is worth one line, and
+      // clears the suppression so a future failure is reported afresh. (#172)
+      if (this.lastPollErrorKey) {
+        this.logger.info('Telegram polling recovered', { previousError: this.lastPollErrorKey });
+        this.lastPollErrorKey = null;
+      }
+
       return response.result || [];
     } catch (error) {
       // Transient polling failures (rate limits, gateway errors, network blips)
       // are expected when long-polling a public API. Log them at DEBUG so the
       // error log stays honest; genuine auth/config errors stay at ERROR. (#102)
-      const level = this.isTransientPollError(error) ? 'debug' : 'error';
-      this.logger[level]('Failed to get updates', { error: error.message });
+      if (this.isTransientPollError(error)) {
+        this.logger.debug('Failed to get updates', { error: error.message });
+        return [];
+      }
+
+      // A non-transient failure (invalid token, deleted bot) cannot resolve
+      // without human action, so re-reporting it every pollInterval floods the
+      // log without adding information. Report it once at ERROR, then drop
+      // repeats to DEBUG until the error changes or polling recovers. (#172)
+      const key = `${error.statusCode || 'none'}:${error.message}`;
+      if (key === this.lastPollErrorKey) {
+        this.logger.debug('Failed to get updates (unchanged, suppressed)', { error: error.message });
+      } else {
+        this.lastPollErrorKey = key;
+        this.logger.error('Failed to get updates', {
+          error: error.message,
+          note: 'This will not resolve on its own; repeats are suppressed until it changes or recovers'
+        });
+      }
       return [];
     }
   }
@@ -494,9 +568,9 @@ class TelegramBotService {
       await this.sendMessage(
         `⚙️ Current notification mode: ${this.config.notifyOnSuccess}\n\n` +
         `Usage: /notify [always|errors|never]\n\n` +
-        `• always - Notify on all syncs\n` +
-        `• errors - Notify only on failures (default)\n` +
-        `• never - No sync notifications (commands still work)`
+        `• always - Notify on all syncs (default)\n` +
+        `• errors - Notify only on failures and partial syncs\n` +
+        `• never - No notifications at all, INCLUDING failures (commands still work)`
       );
       return;
     }
@@ -508,6 +582,8 @@ class TelegramBotService {
     };
 
     this.config.notifyOnSuccess = modeMap[mode];
+    this.applyNotifyModeToNotificationService();
+
     this.logger.info('Notification mode changed', {
       mode: this.config.notifyOnSuccess
     });
@@ -515,9 +591,18 @@ class TelegramBotService {
     // Save preferences to persist across restarts
     this.savePreferences();
 
+    // `never` now genuinely silences failures too (#169) — before it gated
+    // nothing, so the same word carries a materially riskier meaning. Say so
+    // where the mode is actually set, not only in the startup log.
+    const effect = {
+      never: '⚠️ You will receive NO sync notifications, including failures.',
+      errors_only: 'You will receive notifications for failures and partial syncs only.',
+      always: 'You will receive notifications for every sync.'
+    }[this.config.notifyOnSuccess];
+
     await this.sendMessage(
       `✅ Notification mode changed to: ${this.config.notifyOnSuccess}\n\n` +
-      `You will ${mode === 'never' ? 'not receive' : 'receive'} sync notifications.\n` +
+      `${effect}\n` +
       `This setting will be remembered across restarts.`
     );
   }
@@ -616,12 +701,12 @@ class TelegramBotService {
 
       await syncBank(server, { isAutomated: false, retryAttempt: 0 });
 
-      // The full sync notification is sent by the sync service (notificationService)
-      // when notifications are enabled. If they are disabled, send a minimal
-      // confirmation here so the /sync user still gets feedback.
-      if (this.config.notifyOnSuccess === 'never') {
-        await this.sendMessage(`✅ Sync completed for ${serverName}`);
-      }
+      // The sync result is reported by notificationService.notifySync(), which now
+      // honours notifyOnSuccess for Telegram like every other channel (#169). This
+      // used to send an extra confirmation when the mode was 'never', on the false
+      // assumption that 'never' meant "notifications are disabled" — so muting the
+      // channel produced MORE messages than 'always'. The user already gets the
+      // "Starting sync" acknowledgement above, so no second message is added here.
     } catch (error) {
       this.logger.error('Sync command failed', {
         error: error.message,

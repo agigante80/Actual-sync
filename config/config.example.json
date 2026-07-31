@@ -83,6 +83,7 @@
   },
   "notifications": {
     "branding": true,
+    "notifyOnSuccess": "errors_only",
     "email": {
       "enabled": false,
       "host": "smtp.gmail.com",
@@ -99,7 +100,6 @@
       "enabled": false,
       "botToken": "YOUR_BOT_TOKEN",
       "chatId": "YOUR_CHAT_ID",
-      "notifyOnSuccess": "errors_only",
       "pollInterval": 2000
     },
     "webhooks": {
@@ -110,6 +110,7 @@
         {
           "name": "example-ntfy-json",
           "url": "https://ntfy.sh/your-topic",
+          "notifyOnSuccess": "always",
           "headers": { "Authorization": "Bearer YOUR_NTFY_TOKEN" }
         }
       ]

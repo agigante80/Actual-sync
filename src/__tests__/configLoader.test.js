@@ -277,6 +277,100 @@ describe('ConfigLoader', () => {
             expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
         });
 
+        describe('notifyOnSuccess across channels (#169)', () => {
+            test('accepts the global default and every per-channel override', () => {
+                const cfg = createMockConfig({
+                    notifications: {
+                        notifyOnSuccess: 'errors_only',
+                        email: { enabled: false, notifyOnSuccess: 'always' },
+                        ntfy: { enabled: false, notifyOnSuccess: 'never' },
+                        telegram: { enabled: false, notifyOnSuccess: 'errors_only' },
+                        webhooks: {
+                            slack: [{ name: 's', url: 'https://hooks.slack.com/x', notifyOnSuccess: 'never' }],
+                            discord: [{ name: 'd', url: 'https://discord.com/api/webhooks/x', notifyOnSuccess: 'always' }],
+                            generic: [{ name: 'g', url: 'https://example.com/hook', notifyOnSuccess: 'errors_only' }]
+                        }
+                    }
+                });
+                expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();
+            });
+
+            test.each([
+                ['global', { notifyOnSuccess: 'errorsOnly' }],
+                ['email', { email: { enabled: false, notifyOnSuccess: 'errorsOnly' } }],
+                ['ntfy', { ntfy: { enabled: false, notifyOnSuccess: 'sometimes' } }],
+                ['slack entry', { webhooks: { slack: [{ url: 'https://hooks.slack.com/x', notifyOnSuccess: 'nope' }] } }],
+                ['discord entry', { webhooks: { discord: [{ url: 'https://discord.com/api/webhooks/x', notifyOnSuccess: 'nope' }] } }],
+                ['generic entry', { webhooks: { generic: [{ url: 'https://example.com/h', notifyOnSuccess: 'nope' }] } }]
+            ])('rejects an invalid enum value on %s', (_label, notifications) => {
+                const cfg = createMockConfig({ notifications });
+                expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+            });
+
+            test.each([[true], [0], ['']])('rejects wrong-typed value %p', (value) => {
+                const cfg = createMockConfig({ notifications: { notifyOnSuccess: value } });
+                expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+            });
+
+            test('rejects a misspelled key rather than silently ignoring it', () => {
+                const cfg = createMockConfig({
+                    notifications: { email: { enabled: false, notifyOnSucess: 'never' } }
+                });
+                expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+            });
+
+            // Defect B: the code has always honoured `enabled` on slack/discord
+            // entries, but the item schemas declared only name/url with
+            // additionalProperties:false — so setting it failed validation and the
+            // branch was unreachable.
+            test('accepts enabled:false on slack and discord webhook entries', () => {
+                const cfg = createMockConfig({
+                    notifications: {
+                        webhooks: {
+                            slack: [{ name: 's', url: 'https://hooks.slack.com/x', enabled: false }],
+                            discord: [{ name: 'd', url: 'https://discord.com/api/webhooks/x', enabled: false }]
+                        }
+                    }
+                });
+                expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();
+            });
+        });
+
+        // #171: an enabled email channel with no recipients silently sends nothing.
+        // sendFormattedEmail returns null, which the delivery accounting reads as
+        // "not attempted" — so the config validated, the service reported success,
+        // and no failure alert ever arrived. Reject it at startup instead.
+        test('rejects email enabled with an empty recipient list', () => {
+            const cfg = createMockConfig({
+                notifications: { email: { enabled: true, from: 'a@b.com', to: [] } }
+            });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
+        // minItems only constrains a property that is PRESENT, so omitting `to`
+        // entirely reached the same dead-end: the constructor defaults it to []
+        // and the channel can never deliver.
+        test('rejects email enabled with the recipient list omitted', () => {
+            const cfg = createMockConfig({
+                notifications: { email: { enabled: true, from: 'a@b.com' } }
+            });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
+        test('rejects email enabled with the from address omitted', () => {
+            const cfg = createMockConfig({
+                notifications: { email: { enabled: true, to: ['a@b.com'] } }
+            });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
+        test('still allows an empty recipient list on a disabled email stub', () => {
+            const cfg = createMockConfig({
+                notifications: { email: { enabled: false, from: 'YOUR_EMAIL', to: [] } }
+            });
+            expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();
+        });
+
         test('allows ntfy.icon:"" — the documented opt-out (#1)', () => {
             const cfg = createMockConfig({ notifications: { ntfy: { enabled: true, url: 'https://ntfy.sh/t', icon: '' } } });
             expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();

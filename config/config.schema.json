@@ -434,11 +434,22 @@
       "additionalProperties": false,
       "description": "Error notification configuration",
       "properties": {
+        "notifyOnSuccess": {
+          "type": "string",
+          "description": "Global default for when to send sync notifications, overridable per channel. 'always' sends on every result; 'errors_only' sends on failure and partial but not success; 'never' turns the channel off entirely (failures included). Test notifications always send.",
+          "enum": ["always", "errors_only", "never"],
+          "default": "always"
+        },
         "email": {
           "type": "object",
           "additionalProperties": false,
           "description": "Email notification settings",
           "properties": {
+            "notifyOnSuccess": {
+              "type": "string",
+              "description": "When to send sync notifications by email. Overrides notifications.notifyOnSuccess.",
+              "enum": ["always", "errors_only", "never"]
+            },
             "enabled": {
               "type": "boolean",
               "description": "Enable email notifications",
@@ -496,9 +507,10 @@
             "properties": { "enabled": { "const": true } }
           },
           "then": {
+            "required": ["from", "to"],
             "properties": {
               "from": { "type": "string", "format": "email" },
-              "to": { "type": "array", "items": { "type": "string", "format": "email" } }
+              "to": { "type": "array", "minItems": 1, "items": { "type": "string", "format": "email" } }
             }
           }
         },
@@ -527,9 +539,8 @@
             },
             "notifyOnSuccess": {
               "type": "string",
-              "description": "When to send sync notifications",
-              "enum": ["always", "errors_only", "never"],
-              "default": "errors_only"
+              "description": "When to send sync notifications to Telegram. Overrides notifications.notifyOnSuccess. Also settable at runtime with the /notify bot command.",
+              "enum": ["always", "errors_only", "never"]
             },
             "pollInterval": {
               "type": "integer",
@@ -593,6 +604,16 @@
                     "type": "string",
                     "description": "Slack webhook URL",
                     "pattern": "^https://hooks\\.slack\\.com/.*"
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "description": "Set false to disable this webhook without removing it",
+                    "default": true
+                  },
+                  "notifyOnSuccess": {
+                    "type": "string",
+                    "description": "When to send sync notifications to this webhook. Overrides notifications.notifyOnSuccess.",
+                    "enum": ["always", "errors_only", "never"]
                   }
                 },
                 "required": ["url"]
@@ -613,6 +634,16 @@
                     "type": "string",
                     "description": "Discord webhook URL",
                     "pattern": "^https://discord\\.com/api/webhooks/.*"
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "description": "Set false to disable this webhook without removing it",
+                    "default": true
+                  },
+                  "notifyOnSuccess": {
+                    "type": "string",
+                    "description": "When to send sync notifications to this webhook. Overrides notifications.notifyOnSuccess.",
+                    "enum": ["always", "errors_only", "never"]
                   }
                 },
                 "required": ["url"]
@@ -634,6 +665,11 @@
                     "description": "Destination URL the JSON payload is POSTed to",
                     "minLength": 1,
                     "pattern": "^https?://.+"
+                  },
+                  "notifyOnSuccess": {
+                    "type": "string",
+                    "description": "When to send sync notifications to this webhook. Overrides notifications.notifyOnSuccess.",
+                    "enum": ["always", "errors_only", "never"]
                   },
                   "enabled": {
                     "type": "boolean",
@@ -661,6 +697,11 @@
           "additionalProperties": false,
           "description": "ntfy push notifications (https://ntfy.sh). Posts to a topic URL with Title/Priority/Tags headers.",
           "properties": {
+            "notifyOnSuccess": {
+              "type": "string",
+              "description": "When to send sync notifications to ntfy. Overrides notifications.notifyOnSuccess.",
+              "enum": ["always", "errors_only", "never"]
+            },
             "enabled": {
               "type": "boolean",
               "description": "Enable ntfy notifications",

@@ -23,7 +23,7 @@ The Notification System provides automated alerts and interactive commands to mo
 - **Rate Limiting**: Prevent notification spam with configurable intervals and limits
 - **Rich Context**: Includes error details, correlation IDs, and sync statistics
 - **Automatic Tracking**: Monitors sync results and tracks failure patterns
-- **Configurable Notifications**: Choose to receive notifications for all syncs, only failures, or never
+- **Configurable Notifications**: Choose to receive notifications for all syncs, only failures, or never — globally, per channel, or per individual webhook (see [Notification mode](#notification-mode-notifyonsuccess))
 - **Graceful Degradation**: Continues operation even if notifications fail
 
 ## Sync notification content
@@ -100,6 +100,51 @@ Add the `notifications` section to your `config/config.json`:
 
 ### Configuration Schema
 
+#### Notification mode (`notifyOnSuccess`)
+
+Decides **which sync results reach a channel**. Every channel supports it, and the behaviour is identical everywhere.
+
+| Mode | `success` | `partial` | `failure` | Startup | Test notification |
+|------|-----------|-----------|-----------|---------|-------------------|
+| `always` (default) | send | send | send¹ | send | send |
+| `errors_only` | — | send | send¹ | send | send |
+| `never` | — | — | — | — | send |
+
+¹ Failures additionally pass through [thresholds](#notification-thresholds) and [rate limiting](#rate-limiting), which are unchanged and apply to failures only.
+
+**Key points:**
+
+- **`partial` counts as an error.** A sync where some accounts failed is a failure signal, so `errors_only` reports it. (This matches ntfy, which already maps partial to `priorityOnFailure`.)
+- **`never` turns the channel off entirely**, failures included. It is an explicit opt-out, not a noise filter. The guarantee that holds is narrower: **`always` and `errors_only` never suppress a failure.**
+
+  > ⚠️ **Upgrading from 1.10.x or earlier?** `notifyOnSuccess` previously existed in the schema but gated nothing — a channel set to `never` still received everything, failures included. From 1.11.0 it works, so that same config now receives **nothing at all**. If you meant "don't tell me about successful syncs", you want **`errors_only`**, not `never`. The service logs a `WARN` at startup naming every channel it has muted.
+- **Test notifications always send**, on every mode including `never` — otherwise you could not verify a channel you had muted. `enabled: false` still wins over everything.
+- **Startup notifications** have no sync status, so `errors_only` does not apply to them; only `never` suppresses them.
+
+**Resolution order** — first value found wins:
+
+1. The individual webhook entry (`webhooks.slack[]`, `webhooks.discord[]`, `webhooks.generic[]`)
+2. The channel (`notifications.email`, `notifications.telegram`, `notifications.ntfy`)
+3. The global default (`notifications.notifyOnSuccess`)
+4. Built-in default: `always`
+
+```json
+"notifications": {
+  "notifyOnSuccess": "errors_only",
+  "email": { "notifyOnSuccess": "always" },
+  "webhooks": {
+    "discord": [
+      { "name": "alerts", "url": "https://discord.com/api/webhooks/xxx" },
+      { "name": "audit-log", "url": "https://discord.com/api/webhooks/yyy", "notifyOnSuccess": "always" }
+    ]
+  }
+}
+```
+
+Above: everything defaults to `errors_only`; email overrides back to `always`; the `alerts` Discord webhook inherits `errors_only` while `audit-log` records every sync.
+
+> **Telegram note:** the `/notify` bot command uses `errors` where the config key uses `errors_only` — same mode, two spellings. `/notify` changes take effect immediately and persist across restarts.
+
 #### Email Settings
 
 | Property | Type | Required | Default | Description |
@@ -112,6 +157,7 @@ Add the `notifications` section to your `config/config.json`:
 | `auth.pass` | string | Yes* | - | SMTP password or app password |
 | `from` | string | Yes* | - | From email address |
 | `to` | array | Yes* | - | Recipient email addresses |
+| `notifyOnSuccess` | string | No | inherits | `always`, `errors_only`, or `never` — see [Notification mode](#notification-mode-notifyonsuccess) |
 
 *Required when email is enabled
 
@@ -125,6 +171,8 @@ Each webhook type (Slack, Discord, Telegram) accepts an array of webhook configu
 |----------|------|----------|-------------|
 | `name` | string | No | Descriptive name for logs |
 | `url` | string | Yes | Webhook URL |
+| `enabled` | boolean | No | Set `false` to disable without removing (default `true`) |
+| `notifyOnSuccess` | string | No | `always`, `errors_only`, or `never` for this entry — see [Notification mode](#notification-mode-notifyonsuccess) |
 
 **Telegram (Legacy Webhooks - deprecated):**
 
@@ -136,6 +184,8 @@ Each webhook type (Slack, Discord, Telegram) accepts an array of webhook configu
 
 **Note**: The legacy Telegram webhook configuration is deprecated. Use the new `telegram` object for interactive bot features.
 
+An entry here has no `enabled` flag — **its presence is its enablement**. If a `webhooks.telegram` entry exists it is used whenever the top-level `notifications.telegram` is absent or `enabled: false`, so setting `telegram.enabled: false` does *not* switch Telegram off while a legacy entry remains. To silence Telegram, remove the entry or set [`notifyOnSuccess: "never"`](#notification-mode-notifyonsuccess).
+
 **Generic webhooks** (`webhooks.generic`): POST a documented JSON payload to any URL, so notifications work out of the box with ntfy (JSON publishing), Gotify, Home Assistant, n8n, and custom endpoints. **Microsoft Teams**: point a `generic` webhook at your Teams incoming-webhook URL — there is no dedicated `teams` channel.
 
 | Property | Type | Required | Description |
@@ -143,6 +193,7 @@ Each webhook type (Slack, Discord, Telegram) accepts an array of webhook configu
 | `name` | string | No | Descriptive name for logs |
 | `url` | string | Yes | Destination the JSON payload is POSTed to |
 | `enabled` | boolean | No | Set `false` to disable without removing (default `true`) |
+| `notifyOnSuccess` | string | No | `always`, `errors_only`, or `never` for this entry — see [Notification mode](#notification-mode-notifyonsuccess) |
 | `headers` | object | No | Extra HTTP headers (e.g. `Authorization`, `Priority`). Secrets are redacted in logs. |
 | `contentType` | string | No | Override request Content-Type (default `application/json`) |
 
@@ -171,8 +222,9 @@ The JSON payload:
 | `enabled` | boolean | No | Enable ntfy (default `false`) |
 | `url` | string | Yes | Full topic URL, e.g. `https://ntfy.sh/my-topic` |
 | `token` | string | No | Access token sent as `Authorization: Bearer <token>` (redacted in logs) |
-| `priorityOnFailure` | string | No | Priority for failures (default `high`) |
+| `priorityOnFailure` | string | No | Priority for failures (default `high`). **Partial syncs use this too** — a partial counts as a failure. |
 | `priorityOnSuccess` | string | No | Priority for success/info (default `default`) |
+| `notifyOnSuccess` | string | No | `always`, `errors_only`, or `never` — see [Notification mode](#notification-mode-notifyonsuccess) |
 | `tags` | array | No | Base tags/emoji added to every notification |
 | `icon` | string | No | Icon URL shown in the notification (sent as the `Icon` header). Defaults to the Actual-sync project icon; set to an empty string `""` to send no icon (e.g. on an air-gapped network, or set `notifications.branding: false`). |
 
@@ -194,7 +246,7 @@ Tip: ntfy users can also just point a `webhooks.generic` entry at their topic fo
 | `botToken` | string | Yes* | - | Bot token from @BotFather |
 | `chatId` | string | Yes** | - | Chat ID (user, group, or channel) |
 | `chatIds` | array | No** | - | One or more chat IDs (alternative to `chatId`). The first entry is used for outbound notifications; the bot also accepts numeric IDs. |
-| `notifyOnSuccess` | string | No | `errors_only` | Notification mode: `always`, `errors_only`, or `never` |
+| `notifyOnSuccess` | string | No | inherits | Notification mode: `always`, `errors_only`, or `never` — see [Notification mode](#notification-mode-notifyonsuccess). Also settable at runtime with [`/notify`](#notify-mode), which uses `errors` for `errors_only`. |
 | `pollInterval` | integer | No | `2000` | Polling interval in milliseconds for the interactive bot (minimum 100) |
 
 *Required when Telegram bot is enabled. **Provide either `chatId` or `chatIds` (at least one).
@@ -203,6 +255,8 @@ Tip: ntfy users can also just point a `webhooks.generic` entry at their topic fo
 
 #### Threshold Settings
 
+**Applies to `failure` results only.** Success and partial results never pass through thresholds — use [`notifyOnSuccess`](#notification-mode-notifyonsuccess) to control those.
+
 | Property | Type | Default | Range | Description |
 |----------|------|---------|-------|-------------|
 | `consecutiveFailures` | integer | `3` | 1-20 | Number of consecutive failures to trigger notification |
@@ -210,6 +264,15 @@ Tip: ntfy users can also just point a `webhooks.generic` entry at their topic fo
 | `ratePeriodMinutes` | integer | `60` | 5-1440 | Time window for failure rate calculation |
 
 #### Rate Limit Settings
+
+**Applies to `failure` results only**, like thresholds. It cannot quieten routine success notifications — that is [`notifyOnSuccess`](#notification-mode-notifyonsuccess).
+
+Only a notification that **actually reached someone** consumes the budget:
+
+- A channel muted by `notifyOnSuccess` does not consume it.
+- A notification that failed to deliver on every channel does not consume it either. Otherwise a single transport blip would spend the hourly slot and silently suppress the *next* failure, even after the transport recovered.
+
+The trade-off is that a persistently broken transport is retried on every scheduled sync rather than being rate-limited away. That is bounded by your sync schedule, and each attempt is capped by the 15-second webhook timeout. If you see repeated `Sync notification failed on every channel` warnings, fix or disable the channel — the retries are the symptom, not the problem.
 
 | Property | Type | Default | Range | Description |
 |----------|------|---------|-------|-------------|
@@ -498,7 +561,7 @@ Duration: 2156ms
 Accounts Processed: 5
 ```
 
-#### Failure Notification (when mode is `always` or `errors`)
+#### Failure Notification (when mode is `always` or `errors_only`)
 ```
 ❌ Sync Failed
 
@@ -593,7 +656,7 @@ docker logs actual-sync | grep "notifySync"
 
 ### Best Practices
 
-1. **Start with `errors_only`**: Reduces notification noise while staying informed of issues.
+1. **Start with `errors_only`**: Reduces notification noise while staying informed of issues. Set it on `notifications` to apply it to every channel at once, or on a single channel to quieten just that one. Partial syncs still come through.
 
 2. **Use `/status` regularly**: Quick health check without waiting for scheduled syncs.
 
@@ -980,22 +1043,27 @@ Route notifications to appropriate teams:
 
 ### Silent Operation
 
-Disable notifications for maintenance or testing:
+Mute notifications for maintenance or testing **without dismantling your configuration**. Set `notifyOnSuccess: "never"` globally — every channel goes quiet, credentials and webhook URLs stay in place, and dashboard test notifications still work so you can verify the channels before switching back:
 
 ```json
 {
   "notifications": {
-    "email": {
-      "enabled": false
-    },
-    "webhooks": {
-      "slack": [],
-      "discord": [],
-      "telegram": []
-    }
+    "notifyOnSuccess": "never"
   }
 }
 ```
+
+To mute one channel and leave the rest alone, set it on that channel instead:
+
+```json
+{
+  "notifications": {
+    "email": { "enabled": true, "notifyOnSuccess": "never" }
+  }
+}
+```
+
+Prefer this to setting `enabled: false` and emptying the webhook arrays. That older approach also silences genuine failures, loses the configuration, and has to be reassembled from scratch afterwards. Reach for `enabled: false` only when you want the channel gone entirely.
 
 ## Troubleshooting
 
@@ -1054,13 +1122,18 @@ Disable notifications for maintenance or testing:
 
 **Solutions**:
 
-1. **Check thresholds**: Failures might not exceed configured thresholds
+1. **Check the channel is not muted**: `notifyOnSuccess: "never"` turns a channel off entirely, failures included — globally, on the channel, or on an individual webhook entry. For Telegram, check `/notify` too: the mode is settable at runtime and persists across restarts.
+   ```bash
+   grep -i "channels muted\|notifyOnSuccess" logs/*.log
+   ```
+
+2. **Check thresholds**: Failures might not exceed configured thresholds
    ```bash
    # View sync history to analyze failure patterns
    npm run history --server YourServer --days 1
    ```
 
-2. **Check rate limiting**: Previous notifications might be blocking new ones
+3. **Check rate limiting**: Previous notifications might be blocking new ones
 
 3. **Verify configuration loaded**:
    ```bash
@@ -1077,9 +1150,23 @@ Disable notifications for maintenance or testing:
 
 **Problem**: Receiving excessive notifications
 
+**First, work out what is noisy.** Thresholds and rate limiting apply to **failures only** — if the noise is routine *successful* syncs, changing them will do nothing.
+
 **Solutions**:
 
-1. **Increase thresholds**:
+1. **Noisy on successful syncs** — this is the common case on a frequent schedule. Switch the channel to `errors_only`:
+   ```json
+   {
+     "notifications": {
+       "notifyOnSuccess": "errors_only"
+     }
+   }
+   ```
+   Set it per channel to keep a low-traffic channel verbose while quietening a busy one. See [Notification mode](#notification-mode-notifyonsuccess).
+
+2. **Noisy on partial syncs** — a partial counts as an error, so `errors_only` still reports it, every time and without rate limiting. That is usually a genuine standing problem (e.g. one account whose bank link is broken). Fix the account, or set that channel to `never` if you have accepted it.
+
+3. **Noisy on failures** — raise the thresholds:
    ```json
    {
      "thresholds": {
@@ -1089,7 +1176,7 @@ Disable notifications for maintenance or testing:
    }
    ```
 
-2. **Increase rate limit intervals**:
+4. **Still noisy on failures** — increase the rate limit intervals:
    ```json
    {
      "rateLimit": {
@@ -1099,7 +1186,7 @@ Disable notifications for maintenance or testing:
    }
    ```
 
-3. **Fix underlying sync issues** rather than suppressing notifications
+5. **Fix underlying sync issues** rather than suppressing notifications
 
 ## Best Practices
 

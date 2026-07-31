@@ -665,7 +665,10 @@ This test verifies that notifications are configured correctly and can reach the
             break;
 
           case 'discord':
-            if (!this.notificationService?.config?.webhooks?.discord?.length) {
+            // Count only entries that would actually be sent to, so an all-disabled
+            // array reports "not configured" instead of claiming success (#169).
+            if (!this.notificationService?.config?.webhooks?.discord
+                ?.filter(w => w.enabled !== false).length) {
               return res.status(400).json({ error: 'Discord not configured' });
             }
             // Call sendDiscordWebhooks directly
@@ -692,7 +695,9 @@ This test verifies that notifications are configured correctly and can reach the
             break;
 
           case 'slack':
-            if (!this.notificationService?.config?.webhooks?.slack?.length) {
+            // Same as Discord above: disabled entries must not count as configured (#169).
+            if (!this.notificationService?.config?.webhooks?.slack
+                ?.filter(w => w.enabled !== false).length) {
               return res.status(400).json({ error: 'Slack not configured' });
             }
             // Call sendSlackWebhooks directly
