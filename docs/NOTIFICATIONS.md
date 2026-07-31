@@ -116,6 +116,8 @@ Decides **which sync results reach a channel**. Every channel supports it, and t
 
 - **`partial` counts as an error.** A sync where some accounts failed is a failure signal, so `errors_only` reports it. (This matches ntfy, which already maps partial to `priorityOnFailure`.)
 - **`never` turns the channel off entirely**, failures included. It is an explicit opt-out, not a noise filter. The guarantee that holds is narrower: **`always` and `errors_only` never suppress a failure.**
+
+  > ⚠️ **Upgrading from 1.10.x or earlier?** `notifyOnSuccess` previously existed in the schema but gated nothing — a channel set to `never` still received everything, failures included. From 1.11.0 it works, so that same config now receives **nothing at all**. If you meant "don't tell me about successful syncs", you want **`errors_only`**, not `never`. The service logs a `WARN` at startup naming every channel it has muted.
 - **Test notifications always send**, on every mode including `never` — otherwise you could not verify a channel you had muted. `enabled: false` still wins over everything.
 - **Startup notifications** have no sync status, so `errors_only` does not apply to them; only `never` suppresses them.
 

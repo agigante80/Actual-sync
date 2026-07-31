@@ -119,6 +119,43 @@ class NotificationService {
     if (this.config.email.enabled) {
       this.initializeEmailTransporter();
     }
+
+    // `never` mutes failures too, and before #169 the key gated nothing at all —
+    // so a config carrying it from an older version silently stops alerting on
+    // upgrade. Say so at startup rather than letting failures vanish quietly.
+    const muted = this.mutedChannels();
+    if (muted.length > 0) {
+      this.logger.warn('Channels muted by notifyOnSuccess: "never" — these will NOT notify on failures either', {
+        channels: muted
+      });
+    }
+  }
+
+  /**
+   * List enabled channels whose resolved notifyOnSuccess is 'never' (#169).
+   *
+   * Only reports channels that are otherwise live — a disabled channel is already
+   * silent for an obvious reason and does not need a warning.
+   *
+   * @returns {string[]} Channel identifiers, e.g. ['email', 'webhooks.slack[ops]']
+   */
+  mutedChannels() {
+    const muted = [];
+    const isMuted = (channel, entry) => !this.shouldNotifyChannel(channel, 'failure', entry);
+
+    if (this.config.email.enabled && isMuted('email')) muted.push('email');
+    if (this.config.ntfy?.enabled && isMuted('ntfy')) muted.push('ntfy');
+    if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0)
+        && isMuted('telegram')) muted.push('telegram');
+
+    for (const channel of ['slack', 'discord', 'generic']) {
+      for (const entry of this.config.webhooks?.[channel] || []) {
+        if (entry.enabled === false) continue;
+        if (isMuted(channel, entry)) muted.push(`webhooks.${channel}[${entry.name || entry.url}]`);
+      }
+    }
+
+    return muted;
   }
 
   /**
@@ -195,6 +232,11 @@ class NotificationService {
    * Decide whether a channel should receive a notification for this status (#169).
    *
    * Resolution precedence: per-webhook-entry -> per-channel -> global -> 'always'.
+   *
+   * The per-channel tier exists only for the object-shaped channels (`email`,
+   * `telegram`, `ntfy`). `slack`/`discord`/`generic` are arrays with no config
+   * object of their own, so they resolve entry -> global; there is deliberately
+   * no way to set one mode for "all Slack webhooks" in a single place.
    *
    * `never` means the channel is off entirely (it suppresses failures too) — it is
    * an explicit user opt-out, not a noise filter. The narrower invariant that must
@@ -382,6 +424,11 @@ class NotificationService {
     // Per-channel notifyOnSuccess gate (#169). A test notification
     // (bypassThresholds) is an explicit user action and always sends, otherwise a
     // muted channel could never be verified.
+    //
+    // Note: today the dashboard's test-notification route calls the per-channel
+    // senders directly rather than notifySync(), so no production caller passes
+    // bypassThresholds:true — this branch is exercised only by tests. It is kept
+    // so the invariant holds if that route is ever migrated onto notifySync().
     const allow = (channel, entry) =>
       bypassThresholds || this.shouldNotifyChannel(channel, status, entry);
 
@@ -1020,6 +1067,7 @@ Please investigate and resolve the issue.
 
     const results = [];
     for (const webhook of this.config.webhooks.slack) {
+      if (webhook.enabled === false) continue; // #169: enabled:false wins everywhere
       try {
         const result = await this.sendWebhook(webhook.url, payload);
         results.push({ webhook: webhook.name || webhook.url, success: true, result });
@@ -1082,6 +1130,7 @@ Please investigate and resolve the issue.
 
     const results = [];
     for (const webhook of this.config.webhooks.discord) {
+      if (webhook.enabled === false) continue; // #169: enabled:false wins everywhere
       try {
         const result = await this.sendWebhook(webhook.url, payload);
         results.push({ webhook: webhook.name || webhook.url, success: true, result });

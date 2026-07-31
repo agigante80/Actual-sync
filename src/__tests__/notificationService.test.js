@@ -1067,6 +1067,104 @@ describe('NotificationService', () => {
     });
   });
 
+  // Upgrade-path trap: before #169 `notifyOnSuccess` gated nothing, so a config
+  // already carrying "never" kept receiving everything, failures included. Now it
+  // receives nothing. The name reads like "never notify on success" (= errors_only),
+  // which is very likely what such a user meant — so surface it loudly at startup
+  // rather than letting failure alerts vanish on a minor upgrade.
+  describe('muted-channel startup warning (#169)', () => {
+    test('reports a channel muted by the global default', () => {
+      const service = new NotificationService({
+        notifyOnSuccess: 'never',
+        email: { enabled: true, from: 'a@b.c', to: ['d@e.f'] }
+      });
+      expect(service.mutedChannels()).toContain('email');
+    });
+
+    test('reports a channel muted by its own override', () => {
+      const service = new NotificationService({
+        ntfy: { enabled: true, url: 'https://ntfy.test/t', notifyOnSuccess: 'never' }
+      });
+      expect(service.mutedChannels()).toContain('ntfy');
+    });
+
+    test('names the individual webhook entry that is muted', () => {
+      const service = new NotificationService({
+        webhooks: { slack: [{ name: 'ops', url: 'https://slack.test/h', notifyOnSuccess: 'never' }] }
+      });
+      expect(service.mutedChannels()).toContain('webhooks.slack[ops]');
+    });
+
+    test('does not report channels that are simply not enabled', () => {
+      const service = new NotificationService({
+        notifyOnSuccess: 'never',
+        email: { enabled: false },
+        ntfy: { enabled: false }
+      });
+      expect(service.mutedChannels()).toEqual([]);
+    });
+
+    test('does not report anything when nothing is muted', () => {
+      const service = new NotificationService({
+        notifyOnSuccess: 'errors_only',
+        email: { enabled: true, from: 'a@b.c', to: ['d@e.f'] },
+        webhooks: { discord: [{ name: 'd', url: 'https://discord.test/h' }] }
+      });
+      expect(service.mutedChannels()).toEqual([]);
+    });
+  });
+
+  // The legacy senders back the dashboard "test notification" button. #169 made
+  // `enabled` settable on slack/discord entries for the first time (it was
+  // rejected by additionalProperties:false before), and the docs now promise
+  // "enabled: false still wins over everything" — which these paths broke.
+  describe('legacy senders honour enabled:false (#169)', () => {
+    // Shape the dashboard test-notification route actually passes (healthCheck.js).
+    const testNotification = {
+      serverName: 'S1',
+      errorMessage: 'test',
+      errorCode: 'TEST',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      correlationId: 'abc',
+      context: {},
+      consecutiveFailures: 1,
+      thresholds: {
+        consecutiveExceeded: false,
+        rateExceeded: false,
+        failureRate: 0,
+        consecutiveFailures: 1
+      }
+    };
+
+    test('sendSlackWebhooks skips a disabled entry', async () => {
+      const service = new NotificationService({
+        webhooks: {
+          slack: [
+            { name: 'on', url: 'https://slack.test/on' },
+            { name: 'off', url: 'https://slack.test/off', enabled: false }
+          ]
+        }
+      });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendSlackWebhooks(testNotification);
+      expect(spy.mock.calls.map(c => c[0])).toEqual(['https://slack.test/on']);
+    });
+
+    test('sendDiscordWebhooks skips a disabled entry', async () => {
+      const service = new NotificationService({
+        webhooks: {
+          discord: [
+            { name: 'on', url: 'https://discord.test/on' },
+            { name: 'off', url: 'https://discord.test/off', enabled: false }
+          ]
+        }
+      });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendDiscordWebhooks(testNotification);
+      expect(spy.mock.calls.map(c => c[0])).toEqual(['https://discord.test/on']);
+    });
+  });
+
   describe('notifyOnSuccess dispatch gate (#169)', () => {
     const URLS = {
       slack: 'https://slack.test/hook',
