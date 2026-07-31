@@ -43,6 +43,9 @@ class TelegramBotService {
 
     this.lastUpdateId = 0;
     this.polling = false;
+    // Last non-transient poll failure, so it is reported once rather than on
+    // every tick until it changes or polling recovers (#172).
+    this.lastPollErrorKey = null;
     this.pollTimeout = null;
     this.commands = this.initializeCommands();
     this.preferencesFile = path.join(process.cwd(), 'data', 'telegram-preferences.json');
@@ -239,13 +242,38 @@ class TelegramBotService {
       });
 
       const response = await this.makeRequest(`${url}?${params.toString()}`);
+
+      // A poll that works again after a persistent failure is worth one line, and
+      // clears the suppression so a future failure is reported afresh. (#172)
+      if (this.lastPollErrorKey) {
+        this.logger.info('Telegram polling recovered', { previousError: this.lastPollErrorKey });
+        this.lastPollErrorKey = null;
+      }
+
       return response.result || [];
     } catch (error) {
       // Transient polling failures (rate limits, gateway errors, network blips)
       // are expected when long-polling a public API. Log them at DEBUG so the
       // error log stays honest; genuine auth/config errors stay at ERROR. (#102)
-      const level = this.isTransientPollError(error) ? 'debug' : 'error';
-      this.logger[level]('Failed to get updates', { error: error.message });
+      if (this.isTransientPollError(error)) {
+        this.logger.debug('Failed to get updates', { error: error.message });
+        return [];
+      }
+
+      // A non-transient failure (invalid token, deleted bot) cannot resolve
+      // without human action, so re-reporting it every pollInterval floods the
+      // log without adding information. Report it once at ERROR, then drop
+      // repeats to DEBUG until the error changes or polling recovers. (#172)
+      const key = `${error.statusCode || 'none'}:${error.message}`;
+      if (key === this.lastPollErrorKey) {
+        this.logger.debug('Failed to get updates (unchanged, suppressed)', { error: error.message });
+      } else {
+        this.lastPollErrorKey = key;
+        this.logger.error('Failed to get updates', {
+          error: error.message,
+          note: 'This will not resolve on its own; repeats are suppressed until it changes or recovers'
+        });
+      }
       return [];
     }
   }
