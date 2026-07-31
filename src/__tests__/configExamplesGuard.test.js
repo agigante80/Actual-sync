@@ -21,6 +21,7 @@ const path = require('path');
 const Ajv = require('ajv');
 const addFormats = require('ajv-formats');
 const { resolveDefaultsDir } = require('../lib/configBootstrap');
+const { createTempDir, cleanupTempDir } = require('./helpers/testHelpers');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -34,36 +35,98 @@ function makeValidator() {
 
 describe('schema resolution parity (#177)', () => {
     it('resolveDefaultsDir prefers config-defaults when it holds the example', () => {
-        const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cfgres-'));
+        const tmp = createTempDir();
         fs.mkdirSync(path.join(tmp, 'config-defaults'));
         fs.mkdirSync(path.join(tmp, 'config'));
         fs.writeFileSync(path.join(tmp, 'config-defaults', 'config.example.json'), '{}');
 
         expect(resolveDefaultsDir(tmp)).toBe(path.join(tmp, 'config-defaults'));
-        fs.rmSync(tmp, { recursive: true, force: true });
+        cleanupTempDir(tmp);
     });
 
     it('falls back to config/ when only that holds the example', () => {
-        const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'cfgres-'));
+        const tmp = createTempDir();
         fs.mkdirSync(path.join(tmp, 'config'));
         fs.writeFileSync(path.join(tmp, 'config', 'config.example.json'), '{}');
 
         expect(resolveDefaultsDir(tmp)).toBe(path.join(tmp, 'config'));
-        fs.rmSync(tmp, { recursive: true, force: true });
+        cleanupTempDir(tmp);
     });
 
-    it('validateConfig.js resolves its schema through the shared helper, like index.js', () => {
-        const script = read('scripts/validateConfig.js');
-        expect(script).toMatch(/resolveDefaultsDir/);
-        // The bind-mounted config dir must not be the source of the schema.
-        expect(script).not.toMatch(/['"]config\/config\.schema\.json['"]/);
+    it('index.js also resolves its schema through the shared helper', () => {
+        // Parity is only meaningful if BOTH sides are checked; asserting on the
+        // script alone would stay green if index.js regressed to a hardcoded path.
+        expect(read('index.js')).toMatch(/resolveDefaultsDir/);
+    });
+});
+
+/**
+ * Behavioural tests for the pre-flight validator.
+ *
+ * These deliberately replace the source-text assertions that were here first: a
+ * review reintroduced BOTH original #177 defects in ordinary refactor spellings
+ * — a path split into segments (`path.join(root, 'config', 'config.schema.json')`)
+ * and a brace-less `if (fs.existsSync(schemaPath))` — and every regex still
+ * passed. Only real invocations can catch that.
+ */
+describe('validate-config behaviour (#177)', () => {
+    const { runValidation } = require('../../scripts/validateConfig');
+    const VALID_CONFIG = {
+        servers: [{
+            name: 's', url: 'https://example.com', password: 'longenough',
+            syncId: 'sync-id', dataDir: '/tmp/x'
+        }]
+    };
+
+    let root;
+    beforeEach(() => {
+        root = createTempDir();
+    });
+    afterEach(() => {
+        cleanupTempDir(root);
     });
 
-    it('validateConfig.js treats a missing schema as an error, not a silent skip', () => {
-        const script = read('scripts/validateConfig.js');
-        // A validator that cannot find its schema must never reach the success path.
-        expect(script).not.toMatch(/if\s*\(\s*fs\.existsSync\(schemaPath\)\s*\)\s*\{/);
-        expect(script).toMatch(/Configuration schema not found|schema not found/i);
+    /** Lay out a project root the way the image does: config/ plus config-defaults/. */
+    function project({ config, schemaIn = 'config-defaults' }) {
+        fs.mkdirSync(path.join(root, 'config'), { recursive: true });
+        if (config !== undefined) {
+            fs.writeFileSync(path.join(root, 'config', 'config.json'), JSON.stringify(config));
+        }
+        if (schemaIn) {
+            const dir = path.join(root, schemaIn);
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(path.join(dir, 'config.example.json'), '{}');
+            fs.copyFileSync(path.join(ROOT, 'config/config.schema.json'),
+                path.join(dir, 'config.schema.json'));
+        }
+        return root;
+    }
+
+    it('accepts a valid config', () => {
+        expect(() => runValidation({ projectRoot: project({ config: VALID_CONFIG }) })).not.toThrow();
+    });
+
+    it('finds the schema in config-defaults even though config/ has none', () => {
+        // The #177 shape: the user's bind mount replaces config/, so a schema
+        // sought there is invisible. Validation must still happen.
+        const bad = { ...VALID_CONFIG, notifications: { email: { enabled: true, from: 'a@b.com', to: [] } } };
+        expect(() => runValidation({ projectRoot: project({ config: bad }) }))
+            .toThrow(/must NOT have fewer than 1 items/);
+    });
+
+    it('rejects an invalid enum value', () => {
+        const bad = { ...VALID_CONFIG, notifications: { notifyOnSuccess: 'sometimes' } };
+        expect(() => runValidation({ projectRoot: project({ config: bad }) })).toThrow(/validation failed/i);
+    });
+
+    it('throws rather than reporting success when no schema can be found', () => {
+        expect(() => runValidation({ projectRoot: project({ config: VALID_CONFIG, schemaIn: null }) }))
+            .toThrow(/schema not found/i);
+    });
+
+    it('reports a missing config file', () => {
+        expect(() => runValidation({ projectRoot: project({ config: undefined }) }))
+            .toThrow(/Configuration file not found/);
     });
 });
 
@@ -94,28 +157,51 @@ describe('shipped config examples validate against the schema (#177)', () => {
  */
 function configSnippets(markdown) {
     const topLevel = new Set(Object.keys(SCHEMA.properties));
+    const notifKeys = new Set(Object.keys(SCHEMA.properties.notifications.properties));
+    const serverKeys = new Set(Object.keys(SCHEMA.properties.servers.items.properties));
     const blocks = [...markdown.matchAll(/```json\n([\s\S]*?)```/g)].map(m => m[1]);
     const out = [];
 
     for (const raw of blocks) {
+        let parsed;
         for (const candidate of [raw, `{${raw}}`]) {
-            let parsed;
             try {
                 parsed = JSON.parse(candidate);
-            } catch {
-                continue;
-            }
-            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) break;
-            const keys = Object.keys(parsed);
-            if (keys.length > 0 && keys.every(k => topLevel.has(k))) out.push(parsed);
-            break;
+                break;
+            } catch { /* try the wrapped form */ }
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+
+        const keys = Object.keys(parsed);
+        if (keys.length === 0) continue;
+
+        // Docs show config at three nesting levels. Recognise each and lift it to
+        // a whole config, so a snippet is EXCLUDED only when it is not config at
+        // all (an API payload, a log sample) — never merely because it is nested.
+        // Excluding on an unrecognised key would silently skip the single most
+        // likely doc error, a typo'd key.
+        const looksLikeSection = (v) => v && typeof v === 'object' && !Array.isArray(v) &&
+            Object.keys(v).some(k => notifKeys.has(k) || serverKeys.has(k) || topLevel.has(k));
+
+        if (keys.every(k => topLevel.has(k))) {
+            out.push(parsed);
+        } else if (keys.some(k => notifKeys.has(k))) {
+            out.push({ notifications: parsed });
+        } else if (keys.some(k => serverKeys.has(k))) {
+            out.push({ servers: [parsed] });
+        } else if (keys.length === 1 && looksLikeSection(parsed[keys[0]])) {
+            // A single unrecognised wrapper around something that is plainly a
+            // config section is a typo'd key ("notifcations"), not a payload
+            // sample. Validate as-is so additionalProperties reports it.
+            out.push(parsed);
         }
     }
     return out;
 }
 
 describe('documented config examples are valid (#177)', () => {
-    const DOCS = ['docs/NOTIFICATIONS.md', 'docs/CONFIG.md', 'docs/MIGRATION.md', 'README.md'];
+    const DOCS = ['docs/NOTIFICATIONS.md', 'docs/CONFIG.md', 'docs/MIGRATION.md',
+        'docs/DOCKER_DEPLOYMENT.md', 'README.md'];
 
     for (const doc of DOCS) {
         const snippets = configSnippets(read(doc));
