@@ -20,8 +20,9 @@ const fs = require('fs');
 const path = require('path');
 const Ajv = require('ajv');
 const addFormats = require('ajv-formats');
-const { resolveDefaultsDir } = require('../lib/configBootstrap');
+const { resolveDefaultsDir, resolveSchemaPath } = require('../lib/configBootstrap');
 const { createTempDir, cleanupTempDir } = require('./helpers/testHelpers');
+const { buildSnippetExtractor } = require('./helpers/configSnippets');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -36,27 +37,50 @@ function makeValidator() {
 describe('schema resolution parity (#177)', () => {
     it('resolveDefaultsDir prefers config-defaults when it holds the example', () => {
         const tmp = createTempDir();
-        fs.mkdirSync(path.join(tmp, 'config-defaults'));
-        fs.mkdirSync(path.join(tmp, 'config'));
-        fs.writeFileSync(path.join(tmp, 'config-defaults', 'config.example.json'), '{}');
-
-        expect(resolveDefaultsDir(tmp)).toBe(path.join(tmp, 'config-defaults'));
-        cleanupTempDir(tmp);
+        try {
+            fs.mkdirSync(path.join(tmp, 'config-defaults'));
+            fs.mkdirSync(path.join(tmp, 'config'));
+            fs.writeFileSync(path.join(tmp, 'config-defaults', 'config.example.json'), '{}');
+            expect(resolveDefaultsDir(tmp)).toBe(path.join(tmp, 'config-defaults'));
+        } finally {
+            cleanupTempDir(tmp);
+        }
     });
 
     it('falls back to config/ when only that holds the example', () => {
         const tmp = createTempDir();
-        fs.mkdirSync(path.join(tmp, 'config'));
-        fs.writeFileSync(path.join(tmp, 'config', 'config.example.json'), '{}');
-
-        expect(resolveDefaultsDir(tmp)).toBe(path.join(tmp, 'config'));
-        cleanupTempDir(tmp);
+        try {
+            fs.mkdirSync(path.join(tmp, 'config'));
+            fs.writeFileSync(path.join(tmp, 'config', 'config.example.json'), '{}');
+            expect(resolveDefaultsDir(tmp)).toBe(path.join(tmp, 'config'));
+        } finally {
+            cleanupTempDir(tmp);
+        }
     });
 
-    it('index.js also resolves its schema through the shared helper', () => {
-        // Parity is only meaningful if BOTH sides are checked; asserting on the
-        // script alone would stay green if index.js regressed to a hardcoded path.
-        expect(read('index.js')).toMatch(/resolveDefaultsDir/);
+    // A regex for the helper NAME does not work: a review regressed index.js to a
+    // hardcoded path while leaving the import in place — ordinary refactor debris —
+    // and the suite stayed green, because the surviving `require` satisfied it.
+    // Keying on the absence of the literal is what bites: any hand-rolled path
+    // must reintroduce the filename.
+    it.each(['index.js', 'src/lib/configLoader.js', 'scripts/validateConfig.js'])(
+        '%s builds no schema path of its own', (file) => {
+            const src = read(file).replace(/^\s*\*.*$/gm, ''); // ignore doc comments
+            expect(src).not.toMatch(/config\.schema\.json/);
+            expect(src).toMatch(/resolveSchemaPath/);
+        });
+
+    it('resolveSchemaPath points at the defaults dir, not the mounted config dir', () => {
+        const tmp = createTempDir();
+        try {
+            fs.mkdirSync(path.join(tmp, 'config-defaults'));
+            fs.mkdirSync(path.join(tmp, 'config'));
+            fs.writeFileSync(path.join(tmp, 'config-defaults', 'config.example.json'), '{}');
+            expect(resolveSchemaPath(tmp))
+                .toBe(path.join(tmp, 'config-defaults', 'config.schema.json'));
+        } finally {
+            cleanupTempDir(tmp);
+        }
     });
 });
 
@@ -148,56 +172,7 @@ describe('shipped config examples validate against the schema (#177)', () => {
     });
 });
 
-/**
- * Extract fenced ```json blocks that are config fragments and validate them.
- *
- * Only blocks whose top-level keys are ALL real config properties are checked —
- * that naturally skips abbreviated fragments (e.g. a bare `{"thresholds": …}`)
- * and non-config payload samples, without needing a hand-maintained skip list.
- */
-function configSnippets(markdown) {
-    const topLevel = new Set(Object.keys(SCHEMA.properties));
-    const notifKeys = new Set(Object.keys(SCHEMA.properties.notifications.properties));
-    const serverKeys = new Set(Object.keys(SCHEMA.properties.servers.items.properties));
-    const blocks = [...markdown.matchAll(/```json\n([\s\S]*?)```/g)].map(m => m[1]);
-    const out = [];
-
-    for (const raw of blocks) {
-        let parsed;
-        for (const candidate of [raw, `{${raw}}`]) {
-            try {
-                parsed = JSON.parse(candidate);
-                break;
-            } catch { /* try the wrapped form */ }
-        }
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
-
-        const keys = Object.keys(parsed);
-        if (keys.length === 0) continue;
-
-        // Docs show config at three nesting levels. Recognise each and lift it to
-        // a whole config, so a snippet is EXCLUDED only when it is not config at
-        // all (an API payload, a log sample) — never merely because it is nested.
-        // Excluding on an unrecognised key would silently skip the single most
-        // likely doc error, a typo'd key.
-        const looksLikeSection = (v) => v && typeof v === 'object' && !Array.isArray(v) &&
-            Object.keys(v).some(k => notifKeys.has(k) || serverKeys.has(k) || topLevel.has(k));
-
-        if (keys.every(k => topLevel.has(k))) {
-            out.push(parsed);
-        } else if (keys.some(k => notifKeys.has(k))) {
-            out.push({ notifications: parsed });
-        } else if (keys.some(k => serverKeys.has(k))) {
-            out.push({ servers: [parsed] });
-        } else if (keys.length === 1 && looksLikeSection(parsed[keys[0]])) {
-            // A single unrecognised wrapper around something that is plainly a
-            // config section is a typo'd key ("notifcations"), not a payload
-            // sample. Validate as-is so additionalProperties reports it.
-            out.push(parsed);
-        }
-    }
-    return out;
-}
+const configSnippets = buildSnippetExtractor(SCHEMA);
 
 describe('documented config examples are valid (#177)', () => {
     const DOCS = ['docs/NOTIFICATIONS.md', 'docs/CONFIG.md', 'docs/MIGRATION.md',
@@ -206,8 +181,13 @@ describe('documented config examples are valid (#177)', () => {
     for (const doc of DOCS) {
         const snippets = configSnippets(read(doc));
 
-        it(`${doc} yields config snippets to check`, () => {
-            expect(snippets.length).toBeGreaterThan(0);
+        // A bare `> 0` would not notice the extractor narrowing from 17 blocks to
+        // 1. Floors are per-doc and deliberately a little below current counts so
+        // ordinary doc edits do not trip them.
+        const FLOOR = { 'docs/NOTIFICATIONS.md': 15, 'docs/CONFIG.md': 5,
+            'docs/MIGRATION.md': 4, 'docs/DOCKER_DEPLOYMENT.md': 2, 'README.md': 4 };
+        it(`${doc} yields at least ${FLOOR[doc]} config snippets to check`, () => {
+            expect(snippets.length).toBeGreaterThanOrEqual(FLOOR[doc]);
         });
 
         snippets.forEach((snippet, i) => {
@@ -239,4 +219,63 @@ describe('documented config examples are valid (#177)', () => {
             });
         });
     }
+});
+
+/**
+ * Unit tests for the extraction rules themselves.
+ *
+ * A review proved the headline branch — the typo'd-wrapper heuristic — had zero
+ * coverage: deleting it left the whole suite green, because no block in any
+ * guarded doc reaches it. These pin each branch against synthetic markdown so
+ * the rules are protected independently of what the docs happen to contain.
+ */
+describe('snippet extraction rules (#177)', () => {
+    const fence = (obj) => '```json\n' + (typeof obj === 'string' ? obj : JSON.stringify(obj)) + '\n```\n';
+
+    it('takes a whole-config block', () => {
+        expect(configSnippets(fence({ notifications: { notifyOnSuccess: 'never' } })))
+            .toEqual([{ notifications: { notifyOnSuccess: 'never' } }]);
+    });
+
+    it('lifts a notifications-level fragment', () => {
+        expect(configSnippets(fence({ email: { enabled: true } })))
+            .toEqual([{ notifications: { email: { enabled: true } } }]);
+    });
+
+    it('lifts a bare server entry', () => {
+        expect(configSnippets(fence({ name: 'Main', url: 'https://a.b' })))
+            .toEqual([{ servers: [{ name: 'Main', url: 'https://a.b' }] }]);
+    });
+
+    it('keeps a typo\'d top-level wrapper so the schema can reject it', () => {
+        // The branch that previously had no coverage at all.
+        expect(configSnippets(fence({ notifcations: { email: { enabled: true } } })))
+            .toEqual([{ notifcations: { email: { enabled: true } } }]);
+    });
+
+    it('accepts a fragment written without enclosing braces', () => {
+        expect(configSnippets('```json\n"notifications": {"notifyOnSuccess": "never"}\n```'))
+            .toEqual([{ notifications: { notifyOnSuccess: 'never' } }]);
+    });
+
+    it('skips blocks that are not configuration', () => {
+        expect(configSnippets(fence({ event: 'sync', status: 'success', timestamp: 'x' }))).toEqual([]);
+    });
+
+    it('skips arrays, empty objects and unparseable blocks', () => {
+        expect(configSnippets(fence([1, 2]))).toEqual([]);
+        expect(configSnippets(fence({}))).toEqual([]);
+        expect(configSnippets('```json\nnot json at all\n```')).toEqual([]);
+    });
+
+    it('honours an explicit opt-out marker', () => {
+        const md = '<!-- config-guard: skip -->\n' + fence({ name: 'Main', url: 'https://a.b' });
+        expect(configSnippets(md)).toEqual([]);
+    });
+
+    it('does not let the opt-out marker leak to a later block', () => {
+        const md = '<!-- config-guard: skip -->\n' + fence({ name: 'A', url: 'https://a.b' })
+            + '\ntext\n' + fence({ name: 'B', url: 'https://b.c' });
+        expect(configSnippets(md)).toEqual([{ servers: [{ name: 'B', url: 'https://b.c' }] }]);
+    });
 });
