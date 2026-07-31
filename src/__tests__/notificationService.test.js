@@ -1165,6 +1165,86 @@ describe('NotificationService', () => {
     });
   });
 
+  // #171: notifySync() reported success unconditionally, so a run where every
+  // transport failed was indistinguishable from one where all succeeded. Grepping
+  // "Sync notification sent" to confirm alerting works gave a false positive
+  // exactly when it mattered — during an outage also breaking the transport.
+  describe('delivery-outcome honesty (#171)', () => {
+    function service() {
+      return new NotificationService({
+        email: { enabled: true, from: 'a@b.c', to: ['d@e.f'] },
+        ntfy: { enabled: true, url: 'https://ntfy.test/t' },
+        webhooks: { generic: [{ name: 'g', url: 'https://generic.test/h' }] },
+        thresholds: { consecutiveFailures: 1 },
+        rateLimit: { minIntervalMinutes: 0, maxPerHour: 100 }
+      });
+    }
+
+    const syncArgs = { status: 'success', serverName: 'S1', duration: 1, accountsProcessed: 1 };
+
+    test('reports not-sent when every channel fails', async () => {
+      const s = service();
+      mockTransporter.sendMail.mockRejectedValue(new Error('smtp down'));
+      jest.spyOn(s, 'sendWebhook').mockRejectedValue(new Error('ECONNREFUSED'));
+
+      const result = await s.notifySync(syncArgs);
+
+      expect(result.sent).toBe(false);
+      expect(result.reason).toBe('all_channels_failed');
+    });
+
+    test('a total delivery failure is distinguishable from a muted run', async () => {
+      const muted = new NotificationService({
+        notifyOnSuccess: 'never',
+        email: { enabled: true, from: 'a@b.c', to: ['d@e.f'] }
+      });
+      const result = await muted.notifySync(syncArgs);
+      expect(result.reason).toBe('channels_muted');
+    });
+
+    test('reports sent when every channel succeeds', async () => {
+      const s = service();
+      jest.spyOn(s, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+
+      const result = await s.notifySync(syncArgs);
+
+      expect(result.sent).toBe(true);
+      expect(result.reason).toBeUndefined();
+    });
+
+    test('reports sent when at least one channel succeeds', async () => {
+      const s = service();
+      mockTransporter.sendMail.mockRejectedValue(new Error('smtp down'));
+      jest.spyOn(s, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+
+      const result = await s.notifySync(syncArgs);
+
+      expect(result.sent).toBe(true);
+    });
+
+    test('startup reports not-sent when every channel fails', async () => {
+      const s = service();
+      mockTransporter.sendMail.mockRejectedValue(new Error('smtp down'));
+      jest.spyOn(s, 'sendWebhook').mockRejectedValue(new Error('ECONNREFUSED'));
+
+      const result = await s.sendStartupNotification({ version: '1.0.0', serverNames: 'S1' });
+
+      expect(result.sent).toBe(false);
+      expect(result.reason).toBe('all_channels_failed');
+    });
+
+    test('rate-limit tracking on failures is unchanged by the outcome check', async () => {
+      const s = service();
+      jest.spyOn(s, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      const trackSpy = jest.spyOn(s, 'updateRateLimitTracking');
+      s.recordSyncResult('S1', false);
+
+      await s.notifySync({ ...syncArgs, status: 'failure', accountsFailed: 1 });
+
+      expect(trackSpy).toHaveBeenCalledWith('S1');
+    });
+  });
+
   describe('notifyOnSuccess dispatch gate (#169)', () => {
     const URLS = {
       slack: 'https://slack.test/hook',

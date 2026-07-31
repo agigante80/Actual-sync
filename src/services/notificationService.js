@@ -132,6 +132,48 @@ class NotificationService {
   }
 
   /**
+   * Summarise what a dispatch round actually achieved (#171).
+   *
+   * The per-channel senders swallow their own transport errors and report the
+   * outcome in three different shapes — an object-or-null (email, ntfy), an array
+   * of `{ name, success }` (the webhook arrays), or a boolean (telegram) — so the
+   * caller has to normalise them before it can honestly claim anything.
+   *
+   * @param {Object} results - The per-channel results collected during dispatch
+   * @returns {{attempted: number, delivered: number, failedChannels: string[]}}
+   */
+  _deliveryOutcome(results) {
+    let attempted = 0;
+    let delivered = 0;
+    const failedChannels = [];
+
+    // Careful: a failed email/ntfy send resolves to a TRUTHY `{ success: false }`
+    // object, so truthiness alone reads a failure as a delivery. Only null/undefined
+    // means "not attempted".
+    const single = (name, value) => {
+      if (value === null || value === undefined) return; // not attempted
+      attempted += 1;
+      const ok = typeof value === 'object' ? value.success !== false : Boolean(value);
+      if (ok) delivered += 1;
+      else failedChannels.push(name);
+    };
+
+    single('email', results.email);
+    single('ntfy', results.ntfy);
+    single('telegram', results.telegram);
+
+    for (const channel of ['slack', 'discord', 'generic']) {
+      for (const entry of results[channel] || []) {
+        attempted += 1;
+        if (entry.success) delivered += 1;
+        else failedChannels.push(`${channel}[${entry.name || 'unnamed'}]`);
+      }
+    }
+
+    return { attempted, delivered, failedChannels };
+  }
+
+  /**
    * List enabled channels whose resolved notifyOnSuccess is 'never' (#169).
    *
    * Only reports channels that are otherwise live — a disabled channel is already
@@ -501,10 +543,35 @@ class NotificationService {
         this.updateRateLimitTracking(serverName);
       }
 
+      // Only claim delivery if something actually got through (#171). The
+      // per-channel ERRORs already carry the detail, so a total failure is WARN
+      // here rather than a second ERROR — the alerting path is broken, but the
+      // sync outcome itself was already reported.
+      const outcome = this._deliveryOutcome(results);
+
+      if (outcome.delivered === 0 && outcome.attempted > 0) {
+        this.logger.warn('Sync notification failed on every channel', {
+          status,
+          serverName,
+          correlationId,
+          failedChannels: outcome.failedChannels
+        });
+
+        return {
+          sent: false,
+          reason: 'all_channels_failed',
+          results,
+          status
+        };
+      }
+
       this.logger.info('Sync notification sent', {
         status,
         serverName,
         correlationId,
+        delivered: outcome.delivered,
+        attempted: outcome.attempted,
+        failedChannels: outcome.failedChannels.length > 0 ? outcome.failedChannels : undefined,
         email: !!results.email,
         webhooks: {
           slack: results.slack.length,
@@ -1358,7 +1425,25 @@ ${notification.thresholds.rateExceeded ? '• ⚠️ Exceeded failure rate thres
         results.telegram = success;
       }
 
+      // Same honesty rule as notifySync() (#171).
+      const outcome = this._deliveryOutcome(results);
+
+      if (outcome.delivered === 0 && outcome.attempted > 0) {
+        this.logger.warn('Startup notification failed on every channel', {
+          failedChannels: outcome.failedChannels
+        });
+
+        return {
+          sent: false,
+          reason: 'all_channels_failed',
+          results
+        };
+      }
+
       this.logger.info('Startup notification sent', {
+        delivered: outcome.delivered,
+        attempted: outcome.attempted,
+        failedChannels: outcome.failedChannels.length > 0 ? outcome.failedChannels : undefined,
         email: !!results.email,
         webhooks: {
           slack: results.slack.length,
