@@ -107,6 +107,11 @@ class TelegramBotService {
         // Apply saved notification mode if it exists
         if (preferences.notifyOnSuccess) {
           this.config.notifyOnSuccess = preferences.notifyOnSuccess;
+          // A mode set with /notify is a deliberate runtime override, so it wins
+          // over the config value on restart — but only if it reaches the dispatch
+          // path too (#169). Without this the restored mode applied to the bot
+          // alone: /notify reported it while notifications kept using config.
+          this.applyNotifyModeToNotificationService();
           this.logger.info('Loaded notification preferences', {
             notifyOnSuccess: this.config.notifyOnSuccess
           });
@@ -116,6 +121,20 @@ class TelegramBotService {
       this.logger.error('Failed to load preferences', {
         error: error.message
       });
+    }
+  }
+
+  /**
+   * Push the current notification mode onto the dispatch path (#169).
+   *
+   * NotificationService owns the gate that actually decides whether a Telegram
+   * message is sent; the bot only holds the mode for /notify. Without this, a
+   * mode set or restored on the bot looks applied and changes nothing.
+   */
+  applyNotifyModeToNotificationService() {
+    const notificationService = this.services?.notificationService;
+    if (notificationService?.config?.telegram) {
+      notificationService.config.telegram.notifyOnSuccess = this.config.notifyOnSuccess;
     }
   }
 
@@ -508,15 +527,7 @@ class TelegramBotService {
     };
 
     this.config.notifyOnSuccess = modeMap[mode];
-
-    // Push the change onto the dispatch path too (#169). Without this the mode
-    // changes only on the bot instance, while notificationService keeps gating
-    // Telegram on the value loaded from config — the setting would look applied
-    // and do nothing.
-    const notificationService = this.services.notificationService;
-    if (notificationService?.config?.telegram) {
-      notificationService.config.telegram.notifyOnSuccess = this.config.notifyOnSuccess;
-    }
+    this.applyNotifyModeToNotificationService();
 
     this.logger.info('Notification mode changed', {
       mode: this.config.notifyOnSuccess
