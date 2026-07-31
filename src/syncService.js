@@ -136,13 +136,19 @@ try {
                 botToken: config.notifications.telegram.botToken,
                 chatId: config.notifications.telegram.chatId || config.notifications.telegram.chatIds?.[0],
                 chatIds: config.notifications.telegram.chatIds,
-                notifyOnSuccess: config.notifications.telegram.notifyOnSuccess || 'errors_only'
+                // Resolve the same way NotificationService.shouldNotifyChannel() does
+                // (per-channel -> global -> 'always'), so /notify reports the mode that
+                // actually gates dispatch rather than a second, divergent default (#169).
+                notifyOnSuccess: config.notifications.telegram.notifyOnSuccess
+                    || config.notifications.notifyOnSuccess
+                    || 'always'
             },
             {
                 syncHistory: syncHistory,
                 healthCheck: null, // Will be set after healthCheck is created
                 getServerConfig: () => config.servers,
-                syncBank: syncBank
+                syncBank: syncBank,
+                notificationService: notificationService // /notify must reach the dispatch path (#169)
             },
             {
                 level: config.logging.level,
