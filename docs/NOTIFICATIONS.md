@@ -102,7 +102,7 @@ Add the `notifications` section to your `config/config.json`:
 
 #### Notification mode (`notifyOnSuccess`)
 
-Decides **which sync results reach a channel**. Every channel supports it, and the behaviour is identical everywhere.
+Decides **which sync results reach a channel**. Every channel supports it and the behaviour is identical everywhere, with one exception: the deprecated [`webhooks.telegram`](#webhook-settings) entries, which have no such key — set it on `notifications.telegram` instead, which governs them too.
 
 | Mode | `success` | `partial` | `failure` | Startup | Test notification |
 |------|-----------|-----------|-----------|---------|-------------------|
@@ -143,7 +143,7 @@ Decides **which sync results reach a channel**. Every channel supports it, and t
 
 Above: everything defaults to `errors_only`; email overrides back to `always`; the `alerts` Discord webhook inherits `errors_only` while `audit-log` records every sync.
 
-> **Telegram note:** the `/notify` bot command uses `errors` where the config key uses `errors_only` — same mode, two spellings. `/notify` changes take effect immediately and persist across restarts.
+> **Telegram note:** the `/notify` bot command uses `errors` where the config key uses `errors_only` — same mode, two spellings. `/notify` changes take effect immediately. They persist across restarts **only if** `notifications.telegram.notifyOnSuccess` is unset in config — an explicit config value wins on restart, and the bot says so when you set the mode.
 
 #### Email Settings
 
@@ -184,7 +184,9 @@ Each webhook type (Slack, Discord, Telegram) accepts an array of webhook configu
 
 **Note**: The legacy Telegram webhook configuration is deprecated. Use the new `telegram` object for interactive bot features.
 
-An entry here has no `enabled` flag — **its presence is its enablement**. If a `webhooks.telegram` entry exists it is used whenever the top-level `notifications.telegram` is absent or `enabled: false`, so setting `telegram.enabled: false` does *not* switch Telegram off while a legacy entry remains. To silence Telegram, remove the entry or set [`notifyOnSuccess: "never"`](#notification-mode-notifyonsuccess).
+An entry here has no `enabled` flag — **its presence is its enablement**. If a `webhooks.telegram` entry exists it is used whenever the top-level `notifications.telegram` is absent or `enabled: false`, so setting `telegram.enabled: false` does *not* switch Telegram off while a legacy entry remains.
+
+These entries are also the **one exception** to [`notifyOnSuccess`](#notification-mode-notifyonsuccess) being available on every channel: the key does not exist on them, and setting it there is silently ignored (an unknown key is only an advisory warning, so the service still starts). To silence Telegram, remove the entry, or set `notifyOnSuccess: "never"` on the top-level `notifications.telegram` block — which applies to the legacy entry too.
 
 **Generic webhooks** (`webhooks.generic`): POST a documented JSON payload to any URL, so notifications work out of the box with ntfy (JSON publishing), Gotify, Home Assistant, n8n, and custom endpoints. **Microsoft Teams**: point a `generic` webhook at your Teams incoming-webhook URL — there is no dedicated `teams` channel.
 
@@ -1122,7 +1124,7 @@ Prefer this to setting `enabled: false` and emptying the webhook arrays. That ol
 
 **Solutions**:
 
-1. **Check the channel is not muted**: `notifyOnSuccess: "never"` turns a channel off entirely, failures included — globally, on the channel, or on an individual webhook entry. For Telegram, check `/notify` too: the mode is settable at runtime and persists across restarts.
+1. **Check the channel is not muted**: `notifyOnSuccess: "never"` turns a channel off entirely, failures included — globally, on the channel, or on an individual webhook entry. For Telegram, check `/notify` too: the mode is settable at runtime, and persists across restarts unless config sets it explicitly.
    ```bash
    grep -i "channels muted\|notifyOnSuccess" logs/*.log
    ```
