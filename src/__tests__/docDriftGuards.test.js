@@ -137,3 +137,93 @@ describe('no hardcoded / rotting metrics guard (#130)', () => {
         expect(decoded).toBe(engines);
     });
 });
+
+/**
+ * Config-option drift guard (#169).
+ *
+ * The advertised-channels guard above catches a documented CHANNEL with no
+ * implementation. It could not catch `notifyOnSuccess`, which was documented and
+ * schema-described as gating sync notifications while being read nowhere on the
+ * dispatch path — option-level drift that went unnoticed for the setting's whole
+ * lifetime, across 23 documented locations. These guards close that gap.
+ */
+describe('documented notification options exist in the schema (#169)', () => {
+    const SCHEMA = JSON.parse(read('config/config.schema.json'));
+    const NOTIF = SCHEMA.properties.notifications;
+    const NOTIFICATIONS_DOC = read('docs/NOTIFICATIONS.md');
+    const EXAMPLE = JSON.parse(read('config/config.example.json'));
+
+    const enumAt = (node) => node && node.enum;
+
+    it('notifications.notifyOnSuccess is declared as the global default', () => {
+        expect(enumAt(NOTIF.properties.notifyOnSuccess)).toEqual(['always', 'errors_only', 'never']);
+    });
+
+    // Every sink the notification service dispatches to must accept the override,
+    // or the docs describing "per-channel control" are lying for that sink.
+    const OBJECT_CHANNELS = ['email', 'telegram', 'ntfy'];
+    for (const channel of OBJECT_CHANNELS) {
+        it(`notifications.${channel} accepts a notifyOnSuccess override`, () => {
+            expect(enumAt(NOTIF.properties[channel].properties.notifyOnSuccess))
+                .toEqual(['always', 'errors_only', 'never']);
+        });
+    }
+
+    const ARRAY_CHANNELS = ['slack', 'discord', 'generic'];
+    for (const channel of ARRAY_CHANNELS) {
+        it(`notifications.webhooks.${channel}[] accepts a per-entry notifyOnSuccess`, () => {
+            expect(enumAt(NOTIF.properties.webhooks.properties[channel].items.properties.notifyOnSuccess))
+                .toEqual(['always', 'errors_only', 'never']);
+        });
+
+        // Defect B: the senders have always honoured `enabled`, but the slack and
+        // discord item schemas declared only name/url under
+        // additionalProperties:false, so setting it failed validation outright.
+        it(`notifications.webhooks.${channel}[] declares the enabled flag the code reads`, () => {
+            const props = NOTIF.properties.webhooks.properties[channel].items.properties;
+            expect(props.enabled).toBeDefined();
+            expect(props.enabled.type).toBe('boolean');
+        });
+    }
+
+    it('every notifyOnSuccess value used in a docs JSON snippet is a schema enum member', () => {
+        const allowed = NOTIF.properties.notifyOnSuccess.enum;
+        // Only JSON-ish assignments, so the /notify command vocabulary ("errors")
+        // discussed in prose is not mistaken for a config value.
+        const used = [...NOTIFICATIONS_DOC.matchAll(/"notifyOnSuccess"\s*:\s*"([^"]+)"/g)].map(m => m[1]);
+        expect(used.length).toBeGreaterThan(0);
+        for (const value of used) expect(allowed).toContain(value);
+    });
+
+    it('the example config demonstrates the option it documents', () => {
+        expect(EXAMPLE.notifications.notifyOnSuccess).toBeDefined();
+        const perChannel = [
+            EXAMPLE.notifications.email?.notifyOnSuccess,
+            EXAMPLE.notifications.telegram?.notifyOnSuccess,
+            EXAMPLE.notifications.ntfy?.notifyOnSuccess,
+            ...(EXAMPLE.notifications.webhooks?.generic || []).map(w => w.notifyOnSuccess)
+        ].filter(Boolean);
+        expect(perChannel.length).toBeGreaterThan(0);
+    });
+});
+
+/**
+ * The claim that started #168: the README stated notifications fire only on
+ * failures, in two places ~700 lines apart, while every success also notified.
+ * Lock the corrected wording so the drift cannot quietly return.
+ */
+describe('README does not claim notifications are failure-only (#169)', () => {
+    it('the "What It Does" notify line does not say "of failures"', () => {
+        const line = README.split('\n').find((l) => /\*\*Notifies\*\*/.test(l));
+        expect(line).toBeTruthy();
+        expect(line).not.toMatch(/\bof failures\b/i);
+    });
+
+    it('the Notifications section intro does not say "on sync failures"', () => {
+        expect(README).not.toMatch(/can send notifications on sync failures/i);
+    });
+
+    it('the thresholds blurb does not claim all notifications are threshold-gated', () => {
+        expect(README).not.toMatch(/^Notifications are sent only when thresholds are exceeded:/m);
+    });
+});

@@ -83,8 +83,10 @@
   },
   "notifications": {
     "branding": true,
+    "notifyOnSuccess": "always",
     "email": {
       "enabled": false,
+      "notifyOnSuccess": "errors_only",
       "host": "smtp.gmail.com",
       "port": 587,
       "secure": false,
@@ -110,6 +112,7 @@
         {
           "name": "example-ntfy-json",
           "url": "https://ntfy.sh/your-topic",
+          "notifyOnSuccess": "errors_only",
           "headers": { "Authorization": "Bearer YOUR_NTFY_TOKEN" }
         }
       ]

@@ -508,6 +508,16 @@ class TelegramBotService {
     };
 
     this.config.notifyOnSuccess = modeMap[mode];
+
+    // Push the change onto the dispatch path too (#169). Without this the mode
+    // changes only on the bot instance, while notificationService keeps gating
+    // Telegram on the value loaded from config — the setting would look applied
+    // and do nothing.
+    const notificationService = this.services.notificationService;
+    if (notificationService?.config?.telegram) {
+      notificationService.config.telegram.notifyOnSuccess = this.config.notifyOnSuccess;
+    }
+
     this.logger.info('Notification mode changed', {
       mode: this.config.notifyOnSuccess
     });
@@ -616,12 +626,12 @@ class TelegramBotService {
 
       await syncBank(server, { isAutomated: false, retryAttempt: 0 });
 
-      // The full sync notification is sent by the sync service (notificationService)
-      // when notifications are enabled. If they are disabled, send a minimal
-      // confirmation here so the /sync user still gets feedback.
-      if (this.config.notifyOnSuccess === 'never') {
-        await this.sendMessage(`✅ Sync completed for ${serverName}`);
-      }
+      // The sync result is reported by notificationService.notifySync(), which now
+      // honours notifyOnSuccess for Telegram like every other channel (#169). This
+      // used to send an extra confirmation when the mode was 'never', on the false
+      // assumption that 'never' meant "notifications are disabled" — so muting the
+      // channel produced MORE messages than 'always'. The user already gets the
+      // "Starting sync" acknowledgement above, so no second message is added here.
     } catch (error) {
       this.logger.error('Sync command failed', {
         error: error.message,

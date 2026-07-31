@@ -53,7 +53,7 @@
 - **Manages** multiple Actual Budget servers from a single service
 - **Handles** network failures, rate limits, and API errors gracefully
 - **Monitors** sync health with HTTP endpoints and Prometheus metrics
-- **Notifies** you of failures via Telegram, email, Slack, Discord, ntfy, or generic webhooks
+- **Notifies** you of sync results via Telegram, email, Slack, Discord, ntfy, or generic webhooks
 - **Tracks** complete sync history in SQLite with CLI query tools
 
 ### Why Actual-sync?
@@ -132,8 +132,9 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Interactive Telegram Bot** - Real-time commands (`/status`, `/history`, `/errors`, `/sync`) with notifications
 - ✅ **Multi-Channel Alerts** - Email (SMTP), Telegram, ntfy, and webhooks (Slack, Discord, and a generic JSON webhook for Gotify/Home Assistant/n8n/custom)
 - ✅ **Honest Account Reporting** - Every notification shows which accounts synced, failed (with the error), or were skipped and why (closed / not bank-linked)
-- ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate)
-- ✅ **Rate Limiting** - Notification spam prevention with configurable intervals
+- ✅ **Per-Channel Notification Mode** - `notifyOnSuccess` (`always` / `errors_only` / `never`) set globally, per channel, or per webhook, so an alert channel can skip routine successes
+- ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate) applied to failures
+- ✅ **Rate Limiting** - Failure-notification spam prevention with configurable intervals
 
 ### 🛡️ Reliability & Security
 
@@ -457,7 +458,7 @@ If you've configured the Telegram bot, you can interact with the service:
 - `/stats` - Show sync statistics
 - `/servers` - List configured servers
 - `/sync ServerName` - Trigger manual sync for specific server
-- `/notify [always|errors|never]` - Change notification preferences
+- `/notify [always|errors|never]` - Change notification preferences at runtime (the command's `errors` is the config's `errors_only`)
 - `/help` - Show all available commands
 - `/ping` - Test bot connectivity
 - `/stats` - Show sync statistics
@@ -743,7 +744,7 @@ See **[docs/PROMETHEUS.md](docs/PROMETHEUS.md)** and **[docs/HEALTH_CHECK.md](do
 
 ## 🔔 Notifications
 
-Actual-sync can send notifications on sync failures via multiple channels:
+Actual-sync can send notifications on sync results — success, partial, or failure — via multiple channels. Each channel decides for itself which results are worth a message, so an alert channel can stay quiet on routine successes:
 
 ### Supported Channels
 
@@ -754,16 +755,33 @@ Actual-sync can send notifications on sync failures via multiple channels:
 - **ntfy** - Push notifications to an ntfy topic (priority + tags)
 - **Generic webhook** - POSTs a documented JSON payload to any URL (works with Gotify, Home Assistant, n8n, Apprise, or custom endpoints)
 
+### Notification Mode (per channel)
+
+`notifyOnSuccess` decides which sync results reach a channel. Set it globally under `notifications`, and override it per channel — or per individual webhook entry:
+
+- **`always`** (default) — notify on every sync
+- **`errors_only`** — notify on failures and partial syncs, stay silent on clean successes
+- **`never`** — turn the channel off entirely, failures included
+
+```json
+"notifications": {
+  "notifyOnSuccess": "errors_only",
+  "email": { "notifyOnSuccess": "always" }
+}
+```
+
+Test notifications from the dashboard always send, so you can still verify a muted channel.
+
 ### Smart Thresholds
 
-Notifications are sent only when thresholds are exceeded:
+**Failures only.** Once a channel is set to notify on a failure, these decide whether that failure is worth alerting about — they do not apply to success or partial results:
 
 - **Consecutive Failures**: Alert after N consecutive failed syncs (default: 3)
 - **Failure Rate**: Alert when failure rate exceeds X% over Y minutes (default: 50% over 60 min)
 
 ### Rate Limiting
 
-Prevent notification spam:
+**Failures only**, like thresholds. To quieten routine success notifications, use `notifyOnSuccess: "errors_only"` above — rate limiting will not do it:
 
 - **Minimum Interval**: Don't send notifications more frequently than X minutes (default: 15)
 - **Maximum Per Hour**: Don't send more than X notifications per hour (default: 4)
