@@ -136,13 +136,23 @@ try {
                 botToken: config.notifications.telegram.botToken,
                 chatId: config.notifications.telegram.chatId || config.notifications.telegram.chatIds?.[0],
                 chatIds: config.notifications.telegram.chatIds,
-                notifyOnSuccess: config.notifications.telegram.notifyOnSuccess || 'errors_only'
+                // Resolve the same way NotificationService.shouldNotifyChannel() does
+                // (per-channel -> global -> 'always'), so /notify reports the mode that
+                // actually gates dispatch rather than a second, divergent default (#169).
+                notifyOnSuccess: config.notifications.telegram.notifyOnSuccess
+                    ?? config.notifications.notifyOnSuccess
+                    ?? 'always',
+                // Only the channel-specific key counts as an explicit statement about
+                // Telegram; it is what lets a persisted /notify value be overridden on
+                // restart. A global default deliberately does not block one.
+                notifyOnSuccessFromConfig: config.notifications.telegram.notifyOnSuccess
             },
             {
                 syncHistory: syncHistory,
                 healthCheck: null, // Will be set after healthCheck is created
                 getServerConfig: () => config.servers,
-                syncBank: syncBank
+                syncBank: syncBank,
+                notificationService: notificationService // /notify must reach the dispatch path (#169)
             },
             {
                 level: config.logging.level,
@@ -1047,14 +1057,22 @@ async function run() {
                 }) : 'N/A';
                 
                 // Send unified startup notification to all channels
-                await notificationService.sendStartupNotification({
+                const startupResult = await notificationService.sendStartupNotification({
                     version: VERSION,
                     serverNames,
                     schedules: scheduleInfo,
                     nextSync: nextSyncStr
                 });
-                
-                logger.info('Startup notifications sent to all channels');
+
+                // Only claim it was sent if it was (#171). sendStartupNotification
+                // reports channels_muted / all_channels_failed / no_channels_delivered,
+                // and logging success over any of those is exactly the dishonest log
+                // line that fix set out to remove.
+                if (startupResult?.sent) {
+                    logger.info('Startup notifications sent to all channels');
+                } else {
+                    logger.debug('Startup notification not sent', { reason: startupResult?.reason });
+                }
                 
             } catch (error) {
                 logger.error('Failed to send startup notification', { error: error.message });

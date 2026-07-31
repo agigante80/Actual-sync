@@ -579,6 +579,280 @@ describe('TelegramBotService', () => {
       })).toBe(true);
     });
     
+    // #172: a permanent poll failure (invalid/revoked token -> 401, deleted bot ->
+    // 404) was re-logged at ERROR on every tick. At the default 2s pollInterval
+    // that is ~1800 identical ERROR lines per hour, indefinitely, drowning every
+    // other error in the log and the /ws/logs stream. The LEVEL is correct (#102
+    // deliberately keeps auth errors at ERROR) — the repetition is the defect.
+    describe('unrecoverable polling errors are not repeated at ERROR (#172)', () => {
+      function bot() {
+        const b = new TelegramBotService({ botToken: '123:ABC', chatId: '456' }, {});
+        b.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+        return b;
+      }
+
+      const httpError = (statusCode) => {
+        const e = new Error(`HTTP ${statusCode}: Unauthorized`);
+        e.statusCode = statusCode;
+        return e;
+      };
+
+      test('a repeated 401 is logged at ERROR only once', async () => {
+        const b = bot();
+        jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(401));
+
+        await b.getUpdates();
+        await b.getUpdates();
+        await b.getUpdates();
+
+        expect(b.logger.error).toHaveBeenCalledTimes(1);
+      });
+
+      test('polling still happens on every tick while suppressed', async () => {
+        const b = bot();
+        const spy = jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(401));
+
+        await b.getUpdates();
+        await b.getUpdates();
+
+        expect(spy).toHaveBeenCalledTimes(2);
+      });
+
+      test('suppressed repeats are still visible at DEBUG', async () => {
+        const b = bot();
+        jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(401));
+
+        await b.getUpdates();
+        await b.getUpdates();
+
+        expect(b.logger.debug).toHaveBeenCalled();
+      });
+
+      test('a different error while suppressed is reported', async () => {
+        const b = bot();
+        const spy = jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(401));
+        await b.getUpdates();
+
+        spy.mockRejectedValue(httpError(404));
+        await b.getUpdates();
+
+        expect(b.logger.error).toHaveBeenCalledTimes(2);
+      });
+
+      test('recovery is logged and resets the suppression', async () => {
+        const b = bot();
+        const spy = jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(401));
+        await b.getUpdates();
+
+        spy.mockResolvedValue({ result: [] });
+        await b.getUpdates();
+        expect(b.logger.info).toHaveBeenCalled();
+
+        spy.mockRejectedValue(httpError(401));
+        await b.getUpdates();
+        expect(b.logger.error).toHaveBeenCalledTimes(2);
+      });
+
+      // #102 regression: transient errors must keep their DEBUG treatment and
+      // must not be pulled into the suppression path.
+      test.each([[429], [500], [503]])('a repeated %i stays at DEBUG, never ERROR', async (code) => {
+        const b = bot();
+        jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(code));
+
+        await b.getUpdates();
+        await b.getUpdates();
+
+        expect(b.logger.error).not.toHaveBeenCalled();
+        expect(b.logger.debug).toHaveBeenCalled();
+      });
+    });
+
+    // #169: /notify used to mutate only the bot's own copy of the mode, so a
+    // runtime change never reached the dispatch path that actually sends
+    // notifications — the setting appeared to work and did nothing.
+    describe('/notify propagates the mode to the notification service (#169)', () => {
+      function botWithNotificationService(notificationService) {
+        return new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'always' },
+          { notificationService }
+        );
+      }
+
+      test('applies the new mode to the notification service', async () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'always' } } };
+        const bot = botWithNotificationService(notificationService);
+
+        await bot.handleNotify(['errors']);
+
+        expect(notificationService.config.telegram.notifyOnSuccess).toBe('errors_only');
+      });
+
+      test('maps never through to the notification service', async () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'always' } } };
+        const bot = botWithNotificationService(notificationService);
+
+        await bot.handleNotify(['never']);
+
+        expect(notificationService.config.telegram.notifyOnSuccess).toBe('never');
+      });
+
+      test('works without a notification service wired in', async () => {
+        const bot = new TelegramBotService({ botToken: '123:ABC', chatId: '456' }, {});
+        await expect(bot.handleNotify(['never'])).resolves.not.toThrow();
+        expect(bot.config.notifyOnSuccess).toBe('never');
+      });
+
+      // Found by running the real service: /notify persists the mode to disk and
+      // loadPreferences() restores it onto the bot at boot, but the restored value
+      // never reached the dispatch path. A mode set with /notify therefore applied
+      // immediately and then silently reverted to the config value on restart —
+      // while /notify kept reporting the persisted one.
+      // Round-2 review: the muted-channel WARN runs in the NotificationService
+      // constructor, which happens BEFORE the bot restores a persisted mode. So
+      // the likeliest route to Telegram being muted for failures — an operator
+      // typing /notify never once — is precisely the case that warning misses.
+      test('muting via /notify warns that failures are muted too', async () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'always' } } };
+        const bot = new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'always' },
+          { notificationService }
+        );
+        bot.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+
+        await bot.handleNotify(['never']);
+
+        expect(bot.logger.warn).toHaveBeenCalled();
+        expect(bot.logger.warn.mock.calls[0][0]).toMatch(/failure/i);
+      });
+
+      test('switching away from never does not warn', async () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'never' } } };
+        const bot = new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'never' },
+          { notificationService }
+        );
+        bot.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+
+        await bot.handleNotify(['errors']);
+
+        expect(bot.logger.warn).not.toHaveBeenCalled();
+      });
+
+      // Precedence: an explicit notifications.telegram.notifyOnSuccess is the
+      // operator's declarative statement and wins at startup. A persisted /notify
+      // value fills the gap when config is silent — including when only the GLOBAL
+      // default is set, since that is a fallback rather than a statement about
+      // Telegram. Before 1.11.0 /notify changed nothing on the dispatch path, so a
+      // stale persisted value could otherwise silently take effect on upgrade.
+      function bootWith({ persisted, configMode, notificationService }) {
+        const existsSpy = jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+        const readSpy = jest.spyOn(fs, 'readFileSync')
+          .mockReturnValue(JSON.stringify({ notifyOnSuccess: persisted }));
+        try {
+          return new TelegramBotService(
+            {
+              botToken: '123:ABC',
+              chatId: '456',
+              notifyOnSuccess: configMode || 'always',
+              notifyOnSuccessFromConfig: configMode
+            },
+            { notificationService }
+          );
+        } finally {
+          existsSpy.mockRestore();
+          readSpy.mockRestore();
+        }
+      }
+
+      test('an explicit telegram config value beats a persisted preference', () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'errors_only' } } };
+        const bot = bootWith({ persisted: 'never', configMode: 'errors_only', notificationService });
+
+        expect(bot.config.notifyOnSuccess).toBe('errors_only');
+        expect(notificationService.config.telegram.notifyOnSuccess).toBe('errors_only');
+      });
+
+      test('a persisted preference applies when telegram config is silent', () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'always' } } };
+        const bot = bootWith({ persisted: 'never', configMode: undefined, notificationService });
+
+        expect(bot.config.notifyOnSuccess).toBe('never');
+        expect(notificationService.config.telegram.notifyOnSuccess).toBe('never');
+      });
+
+      test('/notify still overrides an explicit config value for the running process', async () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'errors_only' } } };
+        const bot = bootWith({ persisted: 'errors_only', configMode: 'errors_only', notificationService });
+
+        await bot.handleNotify(['never']);
+
+        expect(notificationService.config.telegram.notifyOnSuccess).toBe('never');
+      });
+
+      test('a persisted preference is applied to the notification service at startup', () => {
+        const existsSpy = jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+        const readSpy = jest.spyOn(fs, 'readFileSync')
+          .mockReturnValue(JSON.stringify({ notifyOnSuccess: 'never' }));
+
+        try {
+          const notificationService = { config: { telegram: { notifyOnSuccess: 'always' } } };
+          const bot = new TelegramBotService(
+            { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'always' },
+            { notificationService }
+          );
+
+          expect(bot.config.notifyOnSuccess).toBe('never');
+          expect(notificationService.config.telegram.notifyOnSuccess).toBe('never');
+        } finally {
+          existsSpy.mockRestore();
+          readSpy.mockRestore();
+        }
+      });
+    });
+
+    // #169: notifyOnSuccess === 'never' used to be read as "notifications are
+    // disabled", so `never` sent an EXTRA confirmation on top of the sync
+    // notification the notification service already dispatches — i.e. muting the
+    // channel produced more messages than 'always', not fewer. Assert the total
+    // count: a test that only checked "the confirmation is gone" would still pass
+    // against a broken fix.
+    describe('notifyOnSuccess and the /sync confirmation (#169)', () => {
+      function botWithMode(notifyOnSuccess) {
+        return new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess },
+          {
+            syncBank: jest.fn().mockResolvedValue(),
+            getServerConfig: jest.fn().mockReturnValue([
+              { name: 'Main Budget', url: 'http://server1:5006' }
+            ])
+          }
+        );
+      }
+
+      const sentTexts = () =>
+        mockRequest.write.mock.calls.map(call => JSON.parse(call[0]).text);
+
+      test('never does not append a completion confirmation', async () => {
+        const bot = botWithMode('never');
+        await bot.handleSync(['Main', 'Budget']);
+        expect(sentTexts().filter(t => t.includes('Sync completed for'))).toHaveLength(0);
+      });
+
+      test('never sends no more messages than always', async () => {
+        const bot = botWithMode('never');
+        await bot.handleSync(['Main', 'Budget']);
+        const neverCount = mockRequest.write.mock.calls.length;
+
+        mockRequest.write.mockClear();
+
+        const alwaysBot = botWithMode('always');
+        await alwaysBot.handleSync(['Main', 'Budget']);
+        const alwaysCount = mockRequest.write.mock.calls.length;
+
+        expect(neverCount).toBeLessThanOrEqual(alwaysCount);
+      });
+    });
+
     test('should handle server not found', async () => {
       const mockSyncBank = jest.fn();
       const mockServers = [

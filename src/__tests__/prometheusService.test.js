@@ -482,4 +482,48 @@ describe('PrometheusService', () => {
       expect(metrics).toContain('error_code="RATE_LIMIT"');
     });
   });
+
+  // #173: prometheusService read package.json directly while every other surface
+  // used resolveVersion() from lib/version.js, so /health and actual_sync_info
+  // disagreed for the same process on any build whose VERSION build-arg differs
+  // from package.json — which the repo's own local compose file does by default.
+  describe('version reporting matches resolveVersion (#173)', () => {
+    const { resolveVersion } = require('../lib/version');
+    const originalVersion = process.env.VERSION;
+
+    afterEach(() => {
+      if (originalVersion === undefined) delete process.env.VERSION;
+      else process.env.VERSION = originalVersion;
+    });
+
+    async function infoVersion() {
+      const svc = new PrometheusService({ syncHistory, loggerConfig: { level: 'silent' } });
+      const metrics = await svc.getMetrics();
+      svc.close();
+      return metrics.match(/actual_sync_info\{version="([^"]+)"/)[1];
+    }
+
+    test('uses the VERSION env var when set', async () => {
+      process.env.VERSION = '9.9.9';
+      expect(await infoVersion()).toBe('9.9.9');
+    });
+
+    test('falls back to package.json when VERSION is unset', async () => {
+      delete process.env.VERSION;
+      expect(await infoVersion()).toBe(require('../../package.json').version);
+    });
+
+    test('does not report the literal "unknown" ARG default', async () => {
+      process.env.VERSION = 'unknown';
+      expect(await infoVersion()).toBe(require('../../package.json').version);
+    });
+
+    test('agrees with resolveVersion in every case', async () => {
+      for (const v of ['9.9.9', 'unknown', undefined]) {
+        if (v === undefined) delete process.env.VERSION;
+        else process.env.VERSION = v;
+        expect(await infoVersion()).toBe(resolveVersion());
+      }
+    });
+  });
 });
