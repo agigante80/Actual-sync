@@ -180,13 +180,15 @@ class NotificationService {
    *
    * @returns {number}
    */
-  enabledChannelCount() {
+  enabledChannelCount(allow = () => true) {
     let count = 0;
-    if (this.config.email?.enabled) count += 1;
-    if (this.config.ntfy?.enabled) count += 1;
-    if (this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) count += 1;
+    if (this.config.email?.enabled && allow('email')) count += 1;
+    if (this.config.ntfy?.enabled && allow('ntfy')) count += 1;
+    if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0)
+        && allow('telegram')) count += 1;
     for (const channel of ['slack', 'discord', 'generic']) {
-      count += (this.config.webhooks?.[channel] || []).filter(w => w.enabled !== false).length;
+      count += (this.config.webhooks?.[channel] || [])
+        .filter(w => w.enabled !== false && allow(channel, w)).length;
     }
     return count;
   }
@@ -572,7 +574,14 @@ class NotificationService {
           // DEBUG. An *enabled* channel that produced zero attempts is different:
           // nobody was alerted, and both notifySync() call sites discard the
           // return value, so this line is the only trace.
-          const level = this.enabledChannelCount() > 0 ? 'warn' : 'debug';
+          //
+          // Pass `allow`: the count must mean "switched on AND permitted for this
+          // status", not merely "switched on". A per-channel or per-entry
+          // errors_only does not trip the channels_muted early return above —
+          // anyActive consults the mode without checking enablement — so counting
+          // enablement alone warned on every successful sync, punishing exactly
+          // the config the docs recommend for reducing noise.
+          const level = this.enabledChannelCount(allow) > 0 ? 'warn' : 'debug';
           this.logger[level]('No live notification channel for this status', {
             status,
             serverName,
