@@ -2,7 +2,18 @@
 
 ## Upgrading to 1.11.0
 
-**Read this before upgrading if you use notifications.** Three changes alter behaviour for existing configs. Two can make a channel go *silent*, and one can make a channel start *talking*.
+**Read this before upgrading if you use notifications.** Four changes alter behaviour for existing configs. Two can make a channel go *silent*, one can make a channel start *talking*, and one can stop the service from starting.
+
+### Check your config first (30 seconds)
+
+Validate against the new schema **before** you switch over, without touching your running service:
+
+```bash
+docker run --rm -v ./config:/app/config:ro \
+  ghcr.io/agigante80/actual-sync:latest npm run validate-config
+```
+
+Anything reported here is something that would otherwise fail at startup. (This check was itself broken in 1.11.0 and 1.11.1 — it silently skipped schema validation under a bind mount and always reported success. Use 1.11.2 or later for it to mean anything.)
 
 ### 1. `notifyOnSuccess` now actually works — and `never` silences failures too
 
@@ -22,6 +33,20 @@ The trap is the name. `notifyOnSuccess: "never"` reads like *"never notify me on
 ```
 
 This also applies to a mode set with the Telegram `/notify` command. Before 1.11.0 that command changed nothing on the dispatch path, so a value typed months ago as a no-op now takes effect. An explicit `notifications.telegram.notifyOnSuccess` in your config overrides a stored `/notify` value on restart; if config is silent, the stored value applies.
+
+### 1b. Seeded your config from the example? Telegram gets quieter
+
+This is the most widely-affected change, and it needs no action — but it will surprise you if you don't expect it.
+
+Every `config.example.json` up to 1.10.1 shipped this:
+
+```json
+"telegram": { "notifyOnSuccess": "errors_only" }
+```
+
+It did nothing, because the setting gated nothing. If you seeded your config from the example and left that line alone, **Telegram now stops notifying on successful syncs** — which is what the line always claimed it did.
+
+**Action:** none, if that is what you want. If you would rather keep every-sync notifications on Telegram, change it to `"always"` or delete the key. The example no longer sets it per-channel.
 
 ### 2. Enabled email now requires a sender and at least one recipient
 

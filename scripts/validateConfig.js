@@ -2,9 +2,16 @@
 const fs = require('fs');
 const path = require('path');
 const ConfigLoader = require('../src/lib/configLoader');
+const { resolveDefaultsDir } = require('../src/lib/configBootstrap');
 
-const configPath = path.join(__dirname, '..', 'config/config.json');
-const schemaPath = path.join(__dirname, '..', 'config/config.schema.json');
+const projectRoot = path.join(__dirname, '..');
+const configPath = path.join(projectRoot, 'config/config.json');
+// Resolve the schema exactly as index.js does. Looking in `config/` would find
+// nothing under the documented Docker mount (`-v ./config:/app/config:ro`),
+// which replaces that directory with the user's own — so this check silently
+// skipped schema validation and reported success for configs that could not
+// start. The baked copy in config-defaults/ is outside the mount. (#177)
+const schemaPath = path.join(resolveDefaultsDir(projectRoot), 'config.schema.json');
 const loader = new ConfigLoader(configPath, schemaPath);
 
 try {
@@ -17,10 +24,17 @@ try {
   // unknown keys (#121); an explicit `validate-config` run is stricter still,
   // treating ANY schema mismatch — including unknown/typo'd keys — as a failure,
   // so a pre-ship check surfaces everything at once. (#115, #121)
-  if (fs.existsSync(schemaPath)) {
-    const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
-    loader.validateConfig(config, schema);
+  // A validator that cannot find its schema must fail loudly. Skipping and
+  // printing success is how this reported a config as valid that the service
+  // then refused to start. (#177)
+  if (!fs.existsSync(schemaPath)) {
+    throw new Error(
+      `Configuration schema not found: ${schemaPath}\n` +
+      'Cannot validate without it — refusing to report a result.'
+    );
   }
+  const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+  loader.validateConfig(config, schema);
   loader.applyDefaults(config);
   loader.validateLogic(config);
 
