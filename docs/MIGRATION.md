@@ -1,5 +1,59 @@
 # Configuration Migration Guide
 
+## Upgrading to 1.11.0
+
+**Read this before upgrading if you use notifications.** Three changes alter behaviour for existing configs. Two can make a channel go *silent*, and one can make a channel start *talking*.
+
+### 1. `notifyOnSuccess` now actually works — and `never` silences failures too
+
+`notifications.telegram.notifyOnSuccess` has existed in the schema for a long time but **gated nothing**: every channel notified on every sync regardless of what you set. From 1.11.0 it is enforced, and it now exists on every channel.
+
+The trap is the name. `notifyOnSuccess: "never"` reads like *"never notify me on success"* — but it means **"turn this channel off entirely, failures included"**.
+
+| If you meant | Use |
+|---|---|
+| Stop telling me about *successful* syncs | **`errors_only`** |
+| Turn this channel off completely | `never` |
+
+**Action:** if any config of yours sets `notifyOnSuccess: "never"` and you actually wanted quiet successes, change it to `errors_only` before upgrading. On startup the service logs a `WARN` naming every channel it has muted, so check your logs after the first boot:
+
+```
+[WARN] Channels muted by notifyOnSuccess: "never" — these will NOT notify on failures either
+```
+
+This also applies to a mode set with the Telegram `/notify` command. Before 1.11.0 that command changed nothing on the dispatch path, so a value typed months ago as a no-op now takes effect. An explicit `notifications.telegram.notifyOnSuccess` in your config overrides a stored `/notify` value on restart; if config is silent, the stored value applies.
+
+### 2. Enabled email now requires a sender and at least one recipient
+
+`notifications.email.enabled: true` combined with a missing `from`, a missing `to`, or an empty `to: []` previously validated fine — and then silently delivered nothing. That is now **rejected at startup**:
+
+```
+Configuration is invalid — it does not match the schema:
+  - /notifications/email/to: must NOT have fewer than 1 items
+```
+
+**Action:** either fill in `from` and `to`, or set `enabled: false`. A disabled email block with an empty `to` is still perfectly valid, so placeholder stubs are unaffected.
+
+If you need to boot before you can fix the config, `CONFIG_STRICT=false` downgrades schema failures to warnings. Use it to get running, not as a permanent setting — the channel still cannot deliver.
+
+### 3. Legacy `webhooks.telegram` entries now actually deliver
+
+A `notifications.webhooks.telegram` entry has never sent a message — the code path that would read it was unreachable. It works now.
+
+Consequence: an entry has **no `enabled` flag — its presence is its enablement**. If you have a legacy entry *and* `notifications.telegram.enabled: false`, you were receiving nothing and will now start receiving messages.
+
+**Action:** if you want that channel to stay off, remove the entry or set `notifyOnSuccess: "never"` on it.
+
+### Also worth knowing
+
+- **Delivery reporting is honest now.** The log line `Sync notification sent` only appears when at least one channel actually delivered; a total failure logs `Sync notification failed on every channel` at WARN. If you have monitoring that greps for the old line, it will now correctly go quiet when your alerting is broken.
+- **Undelivered notifications no longer consume the rate-limit budget.** A broken transport is therefore retried on every scheduled sync instead of being rate-limited away. See [Rate Limiting](NOTIFICATIONS.md#rate-limiting).
+- **A dead Telegram bot token is logged once**, not every two seconds.
+
+Full reference: [docs/NOTIFICATIONS.md](NOTIFICATIONS.md#notification-mode-notifyonsuccess).
+
+---
+
 ## Overview
 
 As of December 2025, Actual-sync has moved from hardcoded server configuration to external configuration files. This provides better flexibility and security.
