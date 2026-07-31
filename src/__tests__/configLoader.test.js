@@ -347,6 +347,23 @@ describe('ConfigLoader', () => {
             expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
         });
 
+        // minItems only constrains a property that is PRESENT, so omitting `to`
+        // entirely reached the same dead-end: the constructor defaults it to []
+        // and the channel can never deliver.
+        test('rejects email enabled with the recipient list omitted', () => {
+            const cfg = createMockConfig({
+                notifications: { email: { enabled: true, from: 'a@b.com' } }
+            });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
+        test('rejects email enabled with the from address omitted', () => {
+            const cfg = createMockConfig({
+                notifications: { email: { enabled: true, to: ['a@b.com'] } }
+            });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
         test('still allows an empty recipient list on a disabled email stub', () => {
             const cfg = createMockConfig({
                 notifications: { email: { enabled: false, from: 'YOUR_EMAIL', to: [] } }

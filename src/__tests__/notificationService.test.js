@@ -1257,6 +1257,29 @@ describe('NotificationService', () => {
       expect(result.reason).toBe('no_channels_delivered');
     });
 
+    // Round-3 review: "no channels configured" is a legitimate deployment and
+    // belongs at DEBUG, but an ENABLED channel that produced zero attempts means
+    // nobody was alerted — and both notifySync call sites discard the return
+    // value, so DEBUG would be the only trace of a failure reaching no one.
+    test('zero attempts from an enabled channel is a warning, not a debug line', async () => {
+      const s = new NotificationService({ email: { enabled: true, from: 'a@b.c', to: [] } });
+      s.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+
+      await s.notifySync({ ...syncArgs, status: 'failure', accountsFailed: 1, bypassThresholds: true });
+
+      expect(s.logger.warn).toHaveBeenCalled();
+    });
+
+    test('zero attempts with nothing configured stays at debug', async () => {
+      const s = new NotificationService({});
+      s.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+
+      await s.notifySync(syncArgs);
+
+      expect(s.logger.warn).not.toHaveBeenCalled();
+      expect(s.logger.debug).toHaveBeenCalled();
+    });
+
     test('nothing-attempted is distinguishable from every-channel-failed', async () => {
       const nothing = new NotificationService({});
       const failed = service();

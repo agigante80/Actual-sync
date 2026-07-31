@@ -174,6 +174,24 @@ class NotificationService {
   }
 
   /**
+   * How many channels the operator has switched on, regardless of whether they
+   * are muted or currently working. Used to tell "nothing configured" (fine)
+   * apart from "configured but delivered nothing" (worth a warning).
+   *
+   * @returns {number}
+   */
+  enabledChannelCount() {
+    let count = 0;
+    if (this.config.email?.enabled) count += 1;
+    if (this.config.ntfy?.enabled) count += 1;
+    if (this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) count += 1;
+    for (const channel of ['slack', 'discord', 'generic']) {
+      count += (this.config.webhooks?.[channel] || []).filter(w => w.enabled !== false).length;
+    }
+    return count;
+  }
+
+  /**
    * List enabled channels whose resolved notifyOnSuccess is 'never' (#169).
    *
    * Only reports channels that are otherwise live — a disabled channel is already
@@ -550,7 +568,12 @@ class NotificationService {
         // misconfigurations of an *enabled* channel, so gating on attempted > 0
         // would report those as sent.
         if (outcome.attempted === 0) {
-          this.logger.debug('No live notification channel for this status', {
+          // "No channels configured" is a legitimate deployment and belongs at
+          // DEBUG. An *enabled* channel that produced zero attempts is different:
+          // nobody was alerted, and both notifySync() call sites discard the
+          // return value, so this line is the only trace.
+          const level = this.enabledChannelCount() > 0 ? 'warn' : 'debug';
+          this.logger[level]('No live notification channel for this status', {
             status,
             serverName,
             correlationId
