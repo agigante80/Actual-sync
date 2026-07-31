@@ -579,6 +579,94 @@ describe('TelegramBotService', () => {
       })).toBe(true);
     });
     
+    // #172: a permanent poll failure (invalid/revoked token -> 401, deleted bot ->
+    // 404) was re-logged at ERROR on every tick. At the default 2s pollInterval
+    // that is ~1800 identical ERROR lines per hour, indefinitely, drowning every
+    // other error in the log and the /ws/logs stream. The LEVEL is correct (#102
+    // deliberately keeps auth errors at ERROR) — the repetition is the defect.
+    describe('unrecoverable polling errors are not repeated at ERROR (#172)', () => {
+      function bot() {
+        const b = new TelegramBotService({ botToken: '123:ABC', chatId: '456' }, {});
+        b.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+        return b;
+      }
+
+      const httpError = (statusCode) => {
+        const e = new Error(`HTTP ${statusCode}: Unauthorized`);
+        e.statusCode = statusCode;
+        return e;
+      };
+
+      test('a repeated 401 is logged at ERROR only once', async () => {
+        const b = bot();
+        jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(401));
+
+        await b.getUpdates();
+        await b.getUpdates();
+        await b.getUpdates();
+
+        expect(b.logger.error).toHaveBeenCalledTimes(1);
+      });
+
+      test('polling still happens on every tick while suppressed', async () => {
+        const b = bot();
+        const spy = jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(401));
+
+        await b.getUpdates();
+        await b.getUpdates();
+
+        expect(spy).toHaveBeenCalledTimes(2);
+      });
+
+      test('suppressed repeats are still visible at DEBUG', async () => {
+        const b = bot();
+        jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(401));
+
+        await b.getUpdates();
+        await b.getUpdates();
+
+        expect(b.logger.debug).toHaveBeenCalled();
+      });
+
+      test('a different error while suppressed is reported', async () => {
+        const b = bot();
+        const spy = jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(401));
+        await b.getUpdates();
+
+        spy.mockRejectedValue(httpError(404));
+        await b.getUpdates();
+
+        expect(b.logger.error).toHaveBeenCalledTimes(2);
+      });
+
+      test('recovery is logged and resets the suppression', async () => {
+        const b = bot();
+        const spy = jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(401));
+        await b.getUpdates();
+
+        spy.mockResolvedValue({ result: [] });
+        await b.getUpdates();
+        expect(b.logger.info).toHaveBeenCalled();
+
+        spy.mockRejectedValue(httpError(401));
+        await b.getUpdates();
+        expect(b.logger.error).toHaveBeenCalledTimes(2);
+      });
+
+      // #102 regression: transient errors must keep their DEBUG treatment and
+      // must not be pulled into the suppression path.
+      test.each([[429], [500], [503]])('a repeated %i stays at DEBUG, never ERROR', async (code) => {
+        const b = bot();
+        jest.spyOn(b, 'makeRequest').mockRejectedValue(httpError(code));
+
+        await b.getUpdates();
+        await b.getUpdates();
+
+        expect(b.logger.error).not.toHaveBeenCalled();
+        expect(b.logger.debug).toHaveBeenCalled();
+      });
+    });
+
     // #169: /notify used to mutate only the bot's own copy of the mode, so a
     // runtime change never reached the dispatch path that actually sends
     // notifications — the setting appeared to work and did nothing.
