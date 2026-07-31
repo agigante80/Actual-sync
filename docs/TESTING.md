@@ -52,6 +52,8 @@ npm run test:mutation -- --list          # what is covered, without running anyt
 
 It exists because three consecutive review rounds on a single change each found a fix that **no test protected**: source-text assertions that passed against a fully reintroduced bug, a parity regex satisfied by a leftover `require`, and a heuristic whose branch could be deleted with the suite still green. Reading a test and judging it plausible does not answer *"would this catch the bug?"* — only reintroducing the bug does.
 
+The catalog covers behaviour at every level, not just service code — a mutation reintroducing the README's old "notifies you of failures" claim is caught by the doc-drift guard, and one relaxing the email `required: [from, to]` schema rule is caught by the config tests. If a guard cannot be broken by a mutation, it is not guarding anything.
+
 **When you fix a bug, add a mutation for it.** The catalog lives in `scripts/mutations.js`; each entry names the file, the exact `anchor` text to replace, and the `mutant` that reintroduces the defect. `src/__tests__/mutationCatalog.test.js` runs in the normal suite and fails if any anchor no longer matches its file — without it, a refactor would silently turn mutations into no-ops and the catalog would rot into false confidence.
 
 It is deliberately **not** wired into CI: it runs the whole suite once per mutation, which is far too slow per-PR. Run it when you change notification dispatch, config validation, or anything else the catalog covers, and before a release.

@@ -211,5 +211,69 @@ module.exports = [
         anchor: 'const SKIP_MARKER = /<!--\\s*config-guard:\\s*skip\\s*-->\\s*$/;',
         mutant: 'const SKIP_MARKER = /<!--\\s*config-guard:\\s*skip\\s*-->/;',
         tests: 'configExamplesGuard'
+    },
+    // ---- #169: fixes found in later review rounds ---------------------------
+    {
+        id: '169-warn-on-success', ticket: '#169',
+        desc: 'enabledChannelCount ignores the status gate, warning on every successful sync',
+        file: 'src/services/notificationService.js',
+        anchor: "          const level = this.enabledChannelCount(allow) > 0 ? 'warn' : 'debug';",
+        mutant: "          const level = this.enabledChannelCount() > 0 ? 'warn' : 'debug';",
+        tests: 'notificationService'
+    },
+    {
+        id: '169-muted-warning-gone', ticket: '#169',
+        desc: 'the startup warning naming muted channels stops firing',
+        file: 'src/services/notificationService.js',
+        anchor: '    const muted = this.mutedChannels();',
+        mutant: '    const muted = [];',
+        tests: 'notificationService'
+    },
+    {
+        id: '169-notify-not-propagated', ticket: '#169',
+        desc: '/notify stops reaching the dispatch path, so the mode applies to the bot alone',
+        file: 'src/services/telegramBot.js',
+        anchor: '      notificationService.config.telegram.notifyOnSuccess = this.config.notifyOnSuccess;',
+        mutant: '      void notificationService;',
+        tests: 'telegramBot'
+    },
+    {
+        id: '169-persisted-overrides-config', ticket: '#169',
+        desc: 'a persisted /notify value wins over an explicit config value again',
+        file: 'src/services/telegramBot.js',
+        anchor: '          if (this.config.notifyOnSuccessFromConfig) {',
+        mutant: '          if (false) {',
+        tests: 'telegramBot'
+    },
+    {
+        id: '169-sync-confirmation-back', ticket: '#169',
+        desc: "the inverted /sync confirmation returns, so `never` sends MORE than `always`",
+        file: 'src/services/telegramBot.js',
+        anchor: '      await syncBank(server, { isAutomated: false, retryAttempt: 0 });',
+        mutant: '      await syncBank(server, { isAutomated: false, retryAttempt: 0 });\n'
+            + "      if (this.config.notifyOnSuccess === 'never') {\n"
+            + '        await this.sendMessage(`✅ Sync completed for ${serverName}`);\n'
+            + '      }',
+        tests: 'telegramBot'
+    },
+
+    // ---- #171: schema rule behind the undeliverable-email case ---------------
+    {
+        id: '171-email-not-required', ticket: '#171',
+        desc: 'an enabled email channel no longer needs from/to, so it can never deliver',
+        file: 'config/config.schema.json',
+        anchor: '            "required": ["from", "to"],',
+        mutant: '            "required": [],',
+        tests: 'configLoader'
+    },
+
+    // ---- #169: the README claim that started #168 ---------------------------
+    {
+        id: '169-readme-failure-only', ticket: '#169',
+        desc: 'the README claims notifications fire only on failures again',
+        file: 'README.md',
+        anchor: '- **Notifies** you of sync results via Telegram',
+        mutant: '- **Notifies** you of failures via Telegram',
+        tests: 'docDriftGuards'
     }
 ];
