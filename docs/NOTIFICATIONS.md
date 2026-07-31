@@ -1023,6 +1023,7 @@ Route notifications to appropriate teams:
 {
   "email": {
     "enabled": true,
+    "from": "actual-sync@example.com",
     "to": ["on-call@example.com"]
   },
   "webhooks": {
