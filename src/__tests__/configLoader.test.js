@@ -336,6 +336,24 @@ describe('ConfigLoader', () => {
             });
         });
 
+        // #171: an enabled email channel with no recipients silently sends nothing.
+        // sendFormattedEmail returns null, which the delivery accounting reads as
+        // "not attempted" — so the config validated, the service reported success,
+        // and no failure alert ever arrived. Reject it at startup instead.
+        test('rejects email enabled with an empty recipient list', () => {
+            const cfg = createMockConfig({
+                notifications: { email: { enabled: true, from: 'a@b.com', to: [] } }
+            });
+            expect(() => loader.validateConfig(cfg, realSchema)).toThrow('Configuration validation failed');
+        });
+
+        test('still allows an empty recipient list on a disabled email stub', () => {
+            const cfg = createMockConfig({
+                notifications: { email: { enabled: false, from: 'YOUR_EMAIL', to: [] } }
+            });
+            expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();
+        });
+
         test('allows ntfy.icon:"" — the documented opt-out (#1)', () => {
             const cfg = createMockConfig({ notifications: { ntfy: { enabled: true, url: 'https://ntfy.sh/t', icon: '' } } });
             expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();

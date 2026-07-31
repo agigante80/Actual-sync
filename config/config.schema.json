@@ -509,7 +509,7 @@
           "then": {
             "properties": {
               "from": { "type": "string", "format": "email" },
-              "to": { "type": "array", "items": { "type": "string", "format": "email" } }
+              "to": { "type": "array", "minItems": 1, "items": { "type": "string", "format": "email" } }
             }
           }
         },

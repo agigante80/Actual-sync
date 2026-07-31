@@ -139,6 +139,14 @@ class TelegramBotService {
     if (notificationService?.config?.telegram) {
       notificationService.config.telegram.notifyOnSuccess = this.config.notifyOnSuccess;
     }
+
+    // The startup muted-channel warning runs when NotificationService is built,
+    // which is before this ever applies a persisted or runtime mode — so warn
+    // here too, or the likeliest route to a Telegram channel muted for FAILURES
+    // (an operator typing /notify never) is never reported at all (#169).
+    if (this.config.notifyOnSuccess === 'never') {
+      this.logger.warn('Telegram muted by notifyOnSuccess: "never" — it will NOT notify on failures either');
+    }
   }
 
   /**
@@ -541,9 +549,9 @@ class TelegramBotService {
       await this.sendMessage(
         `⚙️ Current notification mode: ${this.config.notifyOnSuccess}\n\n` +
         `Usage: /notify [always|errors|never]\n\n` +
-        `• always - Notify on all syncs\n` +
-        `• errors - Notify only on failures (default)\n` +
-        `• never - No sync notifications (commands still work)`
+        `• always - Notify on all syncs (default)\n` +
+        `• errors - Notify only on failures and partial syncs\n` +
+        `• never - No notifications at all, INCLUDING failures (commands still work)`
       );
       return;
     }
@@ -564,9 +572,18 @@ class TelegramBotService {
     // Save preferences to persist across restarts
     this.savePreferences();
 
+    // `never` now genuinely silences failures too (#169) — before it gated
+    // nothing, so the same word carries a materially riskier meaning. Say so
+    // where the mode is actually set, not only in the startup log.
+    const effect = {
+      never: '⚠️ You will receive NO sync notifications, including failures.',
+      errors_only: 'You will receive notifications for failures and partial syncs only.',
+      always: 'You will receive notifications for every sync.'
+    }[this.config.notifyOnSuccess];
+
     await this.sendMessage(
       `✅ Notification mode changed to: ${this.config.notifyOnSuccess}\n\n` +
-      `You will ${mode === 'never' ? 'not receive' : 'receive'} sync notifications.\n` +
+      `${effect}\n` +
       `This setting will be remembered across restarts.`
     );
   }

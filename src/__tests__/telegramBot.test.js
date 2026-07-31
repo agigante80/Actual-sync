@@ -707,6 +707,37 @@ describe('TelegramBotService', () => {
       // never reached the dispatch path. A mode set with /notify therefore applied
       // immediately and then silently reverted to the config value on restart —
       // while /notify kept reporting the persisted one.
+      // Round-2 review: the muted-channel WARN runs in the NotificationService
+      // constructor, which happens BEFORE the bot restores a persisted mode. So
+      // the likeliest route to Telegram being muted for failures — an operator
+      // typing /notify never once — is precisely the case that warning misses.
+      test('muting via /notify warns that failures are muted too', async () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'always' } } };
+        const bot = new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'always' },
+          { notificationService }
+        );
+        bot.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+
+        await bot.handleNotify(['never']);
+
+        expect(bot.logger.warn).toHaveBeenCalled();
+        expect(bot.logger.warn.mock.calls[0][0]).toMatch(/failure/i);
+      });
+
+      test('switching away from never does not warn', async () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'never' } } };
+        const bot = new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'never' },
+          { notificationService }
+        );
+        bot.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+
+        await bot.handleNotify(['errors']);
+
+        expect(bot.logger.warn).not.toHaveBeenCalled();
+      });
+
       test('a persisted preference is applied to the notification service at startup', () => {
         const existsSpy = jest.spyOn(fs, 'existsSync').mockReturnValue(true);
         const readSpy = jest.spyOn(fs, 'readFileSync')

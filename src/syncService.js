@@ -1053,14 +1053,22 @@ async function run() {
                 }) : 'N/A';
                 
                 // Send unified startup notification to all channels
-                await notificationService.sendStartupNotification({
+                const startupResult = await notificationService.sendStartupNotification({
                     version: VERSION,
                     serverNames,
                     schedules: scheduleInfo,
                     nextSync: nextSyncStr
                 });
-                
-                logger.info('Startup notifications sent to all channels');
+
+                // Only claim it was sent if it was (#171). sendStartupNotification
+                // reports channels_muted / all_channels_failed / no_channels_delivered,
+                // and logging success over any of those is exactly the dishonest log
+                // line that fix set out to remove.
+                if (startupResult?.sent) {
+                    logger.info('Startup notifications sent to all channels');
+                } else {
+                    logger.debug('Startup notification not sent', { reason: startupResult?.reason });
+                }
                 
             } catch (error) {
                 logger.error('Failed to send startup notification', { error: error.message });
