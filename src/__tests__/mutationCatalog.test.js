@@ -50,6 +50,23 @@ describe('mutation catalog integrity', () => {
             expect(mutation.mutant).not.toBe(mutation.anchor);
         });
 
+        // A mutant that breaks syntax makes jest fail to parse the file, which
+        // the runner would score as "caught" — proving nothing about coverage.
+        it('produces a file that still parses', () => {
+            if (!mutation.file.endsWith('.js')) return;
+            const src = fs.readFileSync(path.join(ROOT, mutation.file), 'utf8');
+            const mutated = src.replace(mutation.anchor, () => mutation.mutant);
+            const res = require('child_process').spawnSync(
+                process.execPath, ['--check', '-'], { input: mutated, encoding: 'utf8' });
+            expect(res.status).toBe(0);
+        });
+
+        // String.replace() interprets $&, $1 etc. in the replacement. A mutant
+        // containing them would silently produce something else entirely.
+        it('has no accidental String.replace substitution patterns', () => {
+            expect(mutation.mutant).not.toMatch(/\$[&`'0-9<]/);
+        });
+
         it('carries a ticket and a description', () => {
             expect(mutation.ticket).toMatch(/^#\d+$/);
             expect(String(mutation.desc).length).toBeGreaterThan(10);
@@ -57,9 +74,23 @@ describe('mutation catalog integrity', () => {
 
         it('names a test pattern that matches a real test file', () => {
             // Used by --fast; a stale hint would silently run zero tests and
-            // report the mutation as surviving.
-            const testFiles = fs.readdirSync(path.join(ROOT, 'src', '__tests__'));
+            // report the mutation as surviving. Recursive, so a hint targeting a
+            // test in a subdirectory is not a false failure.
+            const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true })
+                .flatMap(e => e.isDirectory()
+                    ? walk(path.join(dir, e.name))
+                    : [path.join(dir, e.name)]);
+            const testFiles = walk(path.join(ROOT, 'src', '__tests__'));
             expect(testFiles.some(f => f.includes(mutation.tests))).toBe(true);
+        });
+
+        // The runner scores a mutation by whether the suite failed. If the only
+        // failing test were the catalog guard itself — which asserts anchors
+        // exist, and every mutant removes its anchor — every mutation would be
+        // "caught" by construction. The runner excludes it; this pins that the
+        // guard is the thing that must be excluded.
+        it('is not itself the mutation-catalog guard', () => {
+            expect(mutation.file).not.toContain('mutationCatalog');
         });
     });
 

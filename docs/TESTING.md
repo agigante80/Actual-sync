@@ -44,11 +44,14 @@ npm run test:mutation
 `npm run test:mutation` reintroduces the original defect behind each shipped fix, one at a time, and asserts the suite **fails**. A mutation that survives is a fix with no test guarding it — a green suite that would not notice the bug coming back.
 
 ```bash
-npm run test:mutation                    # every mutation, full suite each (accurate, ~5 min)
+npm run test:mutation                    # every mutation, full suite each (~5 min)
 npm run test:mutation -- --fast          # only the hinted test file per mutation (~1 min)
 npm run test:mutation -- --ticket '#177' # one ticket's mutations
 npm run test:mutation -- --list          # what is covered, without running anything
+npm run test:mutation -- --recover       # restore after a hard kill
 ```
+
+`mutationCatalog.test.js` is excluded from the runs. It asserts every anchor still exists, and a mutant replaces its anchor — so leaving it in made every mutation "caught" by construction, with the runner scoring its own self-check and unable to ever report a survivor. That bug shipped in the first version of this tool and is the reason the exclusion is pinned by a test.
 
 It exists because three consecutive review rounds on a single change each found a fix that **no test protected**: source-text assertions that passed against a fully reintroduced bug, a parity regex satisfied by a leftover `require`, and a heuristic whose branch could be deleted with the suite still green. Reading a test and judging it plausible does not answer *"would this catch the bug?"* — only reintroducing the bug does.
 
@@ -58,7 +61,11 @@ The catalog covers behaviour at every level, not just service code — a mutatio
 
 It is deliberately **not** wired into CI: it runs the whole suite once per mutation, which is far too slow per-PR. Run it when you change notification dispatch, config validation, or anything else the catalog covers, and before a release.
 
-The runner never leaves the tree dirty — originals are restored in a `finally`, on uncaught errors and on `SIGINT`, then verified byte-for-byte. It refuses to start if a file it would mutate already has uncommitted changes.
+**Safety.** Before a file is touched, its original content is journalled to disk, so even `SIGKILL` or a power cut is recoverable with `--recover`. Restores also run in a `finally` and on `SIGINT`/`SIGTERM`/`SIGHUP`. A lockfile prevents two concurrent runs from interleaving. Before restoring, the file is compared against the mutant that was written — if it differs, someone edited it mid-run and the runner leaves their version alone and says so.
+
+Two honest limitations: `spawnSync` blocks the event loop while jest runs, so signal handlers cannot fire until it returns — the journal, not the handler, is what makes a hard kill recoverable. And the uncommitted-changes check is a snapshot taken at startup, so a file created *during* a run is not covered by it.
+
+A run that could not execute the suite — missing toolchain, timeout, killed jest — is reported `UNSCORED` and fails the run, rather than being counted as caught. Only an actual test failure counts.
 
 ### Documented config examples
 
