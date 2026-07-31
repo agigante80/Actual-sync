@@ -34,7 +34,41 @@ npm run test:watch
 
 # Run tests with coverage report
 npm run test:coverage
+
+# Prove the tests would actually catch the bugs they were written for
+npm run test:mutation
 ```
+
+### Mutation testing
+
+`npm run test:mutation` reintroduces the original defect behind each shipped fix, one at a time, and asserts the suite **fails**. A mutation that survives is a fix with no test guarding it — a green suite that would not notice the bug coming back.
+
+```bash
+npm run test:mutation                    # every mutation, full suite each (accurate, ~5 min)
+npm run test:mutation -- --fast          # only the hinted test file per mutation (~1 min)
+npm run test:mutation -- --ticket '#177' # one ticket's mutations
+npm run test:mutation -- --list          # what is covered, without running anything
+```
+
+It exists because three consecutive review rounds on a single change each found a fix that **no test protected**: source-text assertions that passed against a fully reintroduced bug, a parity regex satisfied by a leftover `require`, and a heuristic whose branch could be deleted with the suite still green. Reading a test and judging it plausible does not answer *"would this catch the bug?"* — only reintroducing the bug does.
+
+**When you fix a bug, add a mutation for it.** The catalog lives in `scripts/mutations.js`; each entry names the file, the exact `anchor` text to replace, and the `mutant` that reintroduces the defect. `src/__tests__/mutationCatalog.test.js` runs in the normal suite and fails if any anchor no longer matches its file — without it, a refactor would silently turn mutations into no-ops and the catalog would rot into false confidence.
+
+It is deliberately **not** wired into CI: it runs the whole suite once per mutation, which is far too slow per-PR. Run it when you change notification dispatch, config validation, or anything else the catalog covers, and before a release.
+
+The runner never leaves the tree dirty — originals are restored in a `finally`, on uncaught errors and on `SIGINT`, then verified byte-for-byte. It refuses to start if a file it would mutate already has uncommitted changes.
+
+### Documented config examples
+
+`src/__tests__/configExamplesGuard.test.js` validates every fenced `json` config block in `README.md`, `docs/NOTIFICATIONS.md`, `docs/CONFIG.md`, `docs/MIGRATION.md` and `docs/DOCKER_DEPLOYMENT.md` against the real schema. A config snippet in the docs is advice people paste, so a wrong one is worse than no advice — this caught three invalid documented examples on its first run, each of which would have caused a startup failure.
+
+If a documented JSON block is genuinely **not** configuration — an API response, a webhook payload — opt it out with a marker on the line before the fence:
+
+```markdown
+<!-- config-guard: skip -->
+```
+
+The marker applies only to the block immediately following it.
 
 ### Test Output
 
