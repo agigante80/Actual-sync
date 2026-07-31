@@ -6,7 +6,7 @@
 
 ### 1. `notifyOnSuccess` now actually works — and `never` silences failures too
 
-`notifications.telegram.notifyOnSuccess` has existed in the schema for a long time but **gated nothing**: every channel notified on every sync regardless of what you set. From 1.11.0 it is enforced, and it now exists on every channel.
+`notifications.telegram.notifyOnSuccess` has existed in the schema for a long time but **gated nothing**: every channel notified on every sync regardless of what you set. From 1.11.0 it is enforced, and it now exists on every channel — with one exception, legacy `webhooks.telegram` entries, covered in §3 below.
 
 The trap is the name. `notifyOnSuccess: "never"` reads like *"never notify me on success"* — but it means **"turn this channel off entirely, failures included"**.
 
@@ -42,7 +42,16 @@ A `notifications.webhooks.telegram` entry has never sent a message — the code 
 
 Consequence: an entry has **no `enabled` flag — its presence is its enablement**. If you have a legacy entry *and* `notifications.telegram.enabled: false`, you were receiving nothing and will now start receiving messages.
 
-**Action:** if you want that channel to stay off, remove the entry or set `notifyOnSuccess: "never"` on it.
+**Action:** if you want that channel to stay off, either **remove the entry**, or set it on the top-level block:
+
+```json
+"notifications": {
+  "telegram": { "enabled": false, "notifyOnSuccess": "never" },
+  "webhooks": { "telegram": [ { "name": "legacy", "botToken": "…", "chatId": "…" } ] }
+}
+```
+
+> **Do not** put `notifyOnSuccess` on the legacy entry itself. Legacy `webhooks.telegram` items are the one exception to "every channel supports it" — the schema has no such key there, and because an unknown key is only an advisory warning the service still starts and silently ignores it. The channel would keep sending.
 
 ### Also worth knowing
 

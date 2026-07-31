@@ -764,6 +764,35 @@ describe('TelegramBotService', () => {
         }
       }
 
+      // The reply has always promised "remembered across restarts". That stopped
+      // being unconditionally true when explicit config gained precedence — so an
+      // operator muting from their phone would be told it sticks, and find it
+      // reverted on the next restart.
+      test('warns that the change reverts when config sets the mode explicitly', async () => {
+        const bot = new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'errors_only', notifyOnSuccessFromConfig: 'errors_only' },
+          {}
+        );
+
+        await bot.handleNotify(['never']);
+
+        const texts = mockRequest.write.mock.calls.map(c => JSON.parse(c[0]).text);
+        expect(texts.join('\n')).toMatch(/reverts on restart/i);
+        expect(texts.join('\n')).not.toMatch(/remembered across restarts/i);
+      });
+
+      test('still promises persistence when config is silent', async () => {
+        const bot = new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'always' },
+          {}
+        );
+
+        await bot.handleNotify(['never']);
+
+        const texts = mockRequest.write.mock.calls.map(c => JSON.parse(c[0]).text);
+        expect(texts.join('\n')).toMatch(/remembered across restarts/i);
+      });
+
       test('an explicit telegram config value beats a persisted preference', () => {
         const notificationService = { config: { telegram: { notifyOnSuccess: 'errors_only' } } };
         const bot = bootWith({ persisted: 'never', configMode: 'errors_only', notificationService });
