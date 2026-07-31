@@ -579,6 +579,85 @@ describe('TelegramBotService', () => {
       })).toBe(true);
     });
     
+    // #169: /notify used to mutate only the bot's own copy of the mode, so a
+    // runtime change never reached the dispatch path that actually sends
+    // notifications — the setting appeared to work and did nothing.
+    describe('/notify propagates the mode to the notification service (#169)', () => {
+      function botWithNotificationService(notificationService) {
+        return new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'always' },
+          { notificationService }
+        );
+      }
+
+      test('applies the new mode to the notification service', async () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'always' } } };
+        const bot = botWithNotificationService(notificationService);
+
+        await bot.handleNotify(['errors']);
+
+        expect(notificationService.config.telegram.notifyOnSuccess).toBe('errors_only');
+      });
+
+      test('maps never through to the notification service', async () => {
+        const notificationService = { config: { telegram: { notifyOnSuccess: 'always' } } };
+        const bot = botWithNotificationService(notificationService);
+
+        await bot.handleNotify(['never']);
+
+        expect(notificationService.config.telegram.notifyOnSuccess).toBe('never');
+      });
+
+      test('works without a notification service wired in', async () => {
+        const bot = new TelegramBotService({ botToken: '123:ABC', chatId: '456' }, {});
+        await expect(bot.handleNotify(['never'])).resolves.not.toThrow();
+        expect(bot.config.notifyOnSuccess).toBe('never');
+      });
+    });
+
+    // #169: notifyOnSuccess === 'never' used to be read as "notifications are
+    // disabled", so `never` sent an EXTRA confirmation on top of the sync
+    // notification the notification service already dispatches — i.e. muting the
+    // channel produced more messages than 'always', not fewer. Assert the total
+    // count: a test that only checked "the confirmation is gone" would still pass
+    // against a broken fix.
+    describe('notifyOnSuccess and the /sync confirmation (#169)', () => {
+      function botWithMode(notifyOnSuccess) {
+        return new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess },
+          {
+            syncBank: jest.fn().mockResolvedValue(),
+            getServerConfig: jest.fn().mockReturnValue([
+              { name: 'Main Budget', url: 'http://server1:5006' }
+            ])
+          }
+        );
+      }
+
+      const sentTexts = () =>
+        mockRequest.write.mock.calls.map(call => JSON.parse(call[0]).text);
+
+      test('never does not append a completion confirmation', async () => {
+        const bot = botWithMode('never');
+        await bot.handleSync(['Main', 'Budget']);
+        expect(sentTexts().filter(t => t.includes('Sync completed for'))).toHaveLength(0);
+      });
+
+      test('never sends no more messages than always', async () => {
+        const bot = botWithMode('never');
+        await bot.handleSync(['Main', 'Budget']);
+        const neverCount = mockRequest.write.mock.calls.length;
+
+        mockRequest.write.mockClear();
+
+        const alwaysBot = botWithMode('always');
+        await alwaysBot.handleSync(['Main', 'Budget']);
+        const alwaysCount = mockRequest.write.mock.calls.length;
+
+        expect(neverCount).toBeLessThanOrEqual(alwaysCount);
+      });
+    });
+
     test('should handle server not found', async () => {
       const mockSyncBank = jest.fn();
       const mockServers = [
