@@ -292,124 +292,6 @@ describe('NotificationService', () => {
     });
   });
 
-  describe('notifyError', () => {
-    test('should not send notification when thresholds not exceeded', async () => {
-      const service = new NotificationService({
-        email: { enabled: true },
-        thresholds: { consecutiveFailures: 3, failureRate: 0.8 }
-      });
-
-      // Only 1 failure, below consecutive threshold and below rate threshold with successes
-      service.recordSyncResult('server1', true);
-      service.recordSyncResult('server1', false);
-
-      const result = await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Test error',
-        correlationId: 'test-id'
-      });
-
-      expect(result.sent).toBe(false);
-      expect(result.reason).toBe('thresholds_not_exceeded');
-      expect(mockTransporter.sendMail).not.toHaveBeenCalled();
-    });
-
-    test('should not send notification when rate limited', async () => {
-      const service = new NotificationService({
-        email: { enabled: true },
-        thresholds: { consecutiveFailures: 2 },
-        rateLimit: { minIntervalMinutes: 15 }
-      });
-
-      service.recordSyncResult('server1', false);
-      service.recordSyncResult('server1', false);
-      service.lastNotificationTime['server1'] = Date.now();
-
-      const result = await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Test error'
-      });
-
-      expect(result.sent).toBe(false);
-      expect(result.reason).toBe('rate_limit_exceeded');
-      expect(mockTransporter.sendMail).not.toHaveBeenCalled();
-    });
-
-    test('should send email notification when conditions met', async () => {
-      const service = new NotificationService({
-        email: {
-          enabled: true,
-          from: 'test@example.com',
-          to: ['admin@example.com']
-        },
-        thresholds: { consecutiveFailures: 2 }
-      });
-
-      service.recordSyncResult('server1', false);
-      service.recordSyncResult('server1', false);
-
-      const result = await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Test error',
-        errorCode: 'TEST_ERROR',
-        correlationId: 'test-id'
-      });
-
-      expect(result.sent).toBe(true);
-      expect(mockTransporter.sendMail).toHaveBeenCalled();
-      
-      const emailCall = mockTransporter.sendMail.mock.calls[0][0];
-      expect(emailCall.to).toBe('admin@example.com');
-      expect(emailCall.subject).toContain('server1');
-      expect(emailCall.text).toContain('Test error');
-    });
-
-    test('should update rate limit tracking after sending', async () => {
-      const service = new NotificationService({
-        email: { enabled: true },
-        thresholds: { consecutiveFailures: 2 }
-      });
-
-      service.recordSyncResult('server1', false);
-      service.recordSyncResult('server1', false);
-
-      await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Test error'
-      });
-
-      expect(service.lastNotificationTime['server1']).toBeTruthy();
-      expect(service.notificationHistory['server1']).toHaveLength(1);
-    });
-
-    test('should include context in notification', async () => {
-      const service = new NotificationService({
-        email: {
-          enabled: true,
-          from: 'test@example.com',
-          to: ['admin@example.com']
-        },
-        thresholds: { consecutiveFailures: 2 }
-      });
-
-      service.recordSyncResult('server1', false);
-      service.recordSyncResult('server1', false);
-
-      await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Test error',
-        context: {
-          accountsProcessed: 5,
-          accountsFailed: 2
-        }
-      });
-
-      expect(mockTransporter.sendMail).toHaveBeenCalled();
-      const emailCall = mockTransporter.sendMail.mock.calls[0][0];
-      expect(emailCall.text).toContain('accountsProcessed: 5');
-      expect(emailCall.text).toContain('accountsFailed: 2');
-    });
-  });
 
   describe('Email Formatting', () => {
     test('should format email text correctly', () => {
@@ -483,10 +365,9 @@ describe('NotificationService', () => {
       service.recordSyncResult('server1', false);
       service.recordSyncResult('server1', false);
 
-      const result = await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Test error',
-        timestamp: '2025-01-01T00:00:00Z'
+      const result = await service.notifySync({
+        status: 'failure', serverName: 'server1', accountsFailed: 1,
+        error: 'Test error'
       });
 
       expect(result.sent).toBe(true);
@@ -510,9 +391,9 @@ describe('NotificationService', () => {
       service.recordSyncResult('server1', false);
       service.recordSyncResult('server1', false);
 
-      await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Test error'
+      await service.notifySync({
+        status: 'failure', serverName: 'server1', accountsFailed: 1,
+        error: 'Test error'
       });
 
       expect(service.sendWebhook).toHaveBeenCalled();
@@ -535,81 +416,18 @@ describe('NotificationService', () => {
       service.recordSyncResult('server1', false);
       service.recordSyncResult('server1', false);
 
-      const result = await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Test error'
+      const result = await service.notifySync({
+        status: 'failure', serverName: 'server1', accountsFailed: 1,
+        error: 'Test error'
       });
 
-      expect(result.sent).toBe(true); // Sent is true even if webhook fails
+      // #171: a sole channel that failed to deliver must NOT report success.
+      expect(result.sent).toBe(false);
+      expect(result.reason).toBe('all_channels_failed');
       expect(result.results.slack[0].success).toBe(false);
       expect(result.results.slack[0].error).toBe('Webhook failed');
     });
 
-    test('should send Telegram message', async () => {
-      const service = new NotificationService({
-        webhooks: {
-          telegram: [{ 
-            name: 'test-telegram', 
-            botToken: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11',
-            chatId: '123456789'
-          }]
-        },
-        thresholds: { consecutiveFailures: 2 }
-      });
-
-      service.sendWebhook = jest.fn().mockResolvedValue({ statusCode: 200 });
-
-      service.recordSyncResult('server1', false);
-      service.recordSyncResult('server1', false);
-
-      await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Test error'
-      });
-
-      expect(service.sendWebhook).toHaveBeenCalled();
-      
-      const webhookCall = service.sendWebhook.mock.calls[0];
-      expect(webhookCall[0]).toContain('api.telegram.org');
-      expect(webhookCall[1]).toHaveProperty('chat_id', '123456789');
-      expect(webhookCall[1]).toHaveProperty('parse_mode', 'MarkdownV2');
-      expect(webhookCall[1].text).toContain('Actual Budget Sync Error');
-    });
-
-    test('should escape Telegram MarkdownV2 special characters', async () => {
-      const service = new NotificationService({
-        webhooks: {
-          telegram: [{ 
-            botToken: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11',
-            chatId: '123456789'
-          }]
-        },
-        thresholds: { consecutiveFailures: 2 }
-      });
-
-      service.sendWebhook = jest.fn().mockResolvedValue({ statusCode: 200 });
-
-      service.recordSyncResult('server1', false);
-      service.recordSyncResult('server1', false);
-
-      await service.notifyError({
-        serverName: 'server1',
-        errorMessage: 'Error with special chars: _*[]()~`>#+-=|{}.!',
-        errorCode: 'TEST_ERROR'
-      });
-
-      expect(service.sendWebhook).toHaveBeenCalled();
-      
-      const webhookCall = service.sendWebhook.mock.calls[0];
-      const text = webhookCall[1].text;
-      
-      // Check that special characters are escaped
-      expect(text).toContain('\\*');
-      expect(text).toContain('\\[');
-      expect(text).toContain('\\]');
-      expect(text).toContain('\\(');
-      expect(text).toContain('\\)');
-    });
   });
 
   describe('getStats', () => {

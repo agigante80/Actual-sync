@@ -107,17 +107,36 @@ class TelegramBotService {
         const data = fs.readFileSync(this.preferencesFile, 'utf8');
         const preferences = JSON.parse(data);
         
-        // Apply saved notification mode if it exists
+        // Apply saved notification mode if it exists.
+        //
+        // An explicit notifications.telegram.notifyOnSuccess is the operator's
+        // declarative statement about this channel and wins on restart; a
+        // persisted /notify value only fills the gap when config is silent. That
+        // keeps config authoritative for IaC deployments while preserving the
+        // point of the bot (mute from your phone without a redeploy).
+        //
+        // It also defuses an upgrade hazard: before 1.11.0 /notify changed nothing
+        // on the dispatch path, so a value typed long ago as a no-op would
+        // otherwise silently take effect — including muting failures.
+        //
+        // A GLOBAL notifications.notifyOnSuccess does not block it: that is a
+        // fallback, not a statement about Telegram.
         if (preferences.notifyOnSuccess) {
-          this.config.notifyOnSuccess = preferences.notifyOnSuccess;
-          // A mode set with /notify is a deliberate runtime override, so it wins
-          // over the config value on restart — but only if it reaches the dispatch
-          // path too (#169). Without this the restored mode applied to the bot
-          // alone: /notify reported it while notifications kept using config.
-          this.applyNotifyModeToNotificationService();
-          this.logger.info('Loaded notification preferences', {
-            notifyOnSuccess: this.config.notifyOnSuccess
-          });
+          if (this.config.notifyOnSuccessFromConfig) {
+            this.logger.info('Ignoring persisted notification mode; config sets it explicitly', {
+              persisted: preferences.notifyOnSuccess,
+              config: this.config.notifyOnSuccessFromConfig
+            });
+          } else {
+            this.config.notifyOnSuccess = preferences.notifyOnSuccess;
+            // Must reach the dispatch path too (#169), or the restored mode
+            // applies to the bot alone: /notify reports it while notifications
+            // keep using config.
+            this.applyNotifyModeToNotificationService();
+            this.logger.info('Loaded notification preferences', {
+              notifyOnSuccess: this.config.notifyOnSuccess
+            });
+          }
         }
       }
     } catch (error) {
