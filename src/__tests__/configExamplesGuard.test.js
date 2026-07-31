@@ -262,6 +262,20 @@ describe('snippet extraction rules (#177)', () => {
         expect(configSnippets(fence({ event: 'sync', status: 'success', timestamp: 'x' }))).toEqual([]);
     });
 
+    // Guards looksLikeSection specifically. The three-key case above never
+    // reaches the `keys.length === 1` branch, so it cannot exercise the
+    // predicate — stubbing it to `() => true` left the whole suite green.
+    it('skips a single-key wrapper whose contents are not a config section', () => {
+        expect(configSnippets(fence({ data: { id: 1, total: 7 } }))).toEqual([]);
+    });
+
+    // Guards the Array.isArray check. `[1,2]` passes even without it, because
+    // Object.keys gives ['0','1'] which matches no branch; a one-element array
+    // of a config-shaped object is what actually reaches the guard.
+    it('skips a single-element array of a config-like object', () => {
+        expect(configSnippets(fence([{ name: 'A', url: 'https://a.b' }]))).toEqual([]);
+    });
+
     it('skips arrays, empty objects and unparseable blocks', () => {
         expect(configSnippets(fence([1, 2]))).toEqual([]);
         expect(configSnippets(fence({}))).toEqual([]);

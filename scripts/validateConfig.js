@@ -24,6 +24,8 @@ function runValidation({ projectRoot = path.join(__dirname, '..') } = {}) {
   // skipped schema validation and reported success for configs that could not
   // start. The baked copy in config-defaults/ is outside the mount. (#177)
   const schemaPath = resolveSchemaPath(projectRoot);
+  // Note: the schema is passed explicitly to validateConfig() below; the
+  // loader is constructed only for applyDefaults()/validateLogic().
   const loader = new ConfigLoader(configPath, schemaPath);
 
   if (!fs.existsSync(configPath)) {
