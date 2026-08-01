@@ -16,10 +16,12 @@ const { spawnSync } = require('child_process');
 const {
     readReport,
     baselineProblem,
+    baselineTargets,
     scoreMutant,
     postRunState,
     recoveryRefusal,
     pidIsAlive,
+    makeReportDir,
     cli
 } = require('../../scripts/mutationTest');
 
@@ -78,6 +80,61 @@ describe('deciding whether the baseline is usable', () => {
     it('rejects a baseline jest itself calls unsuccessful', () => {
         expect(baselineProblem(readReport({ ...greenReport, success: false })))
             .toMatch(/unsuccessful/);
+    });
+});
+
+describe('choosing which suites to baseline (#179)', () => {
+    const catalog = [
+        { id: 'a', tests: 'notificationService' },
+        { id: 'b', tests: 'notificationService' },
+        { id: 'c', tests: 'telegramBot' }
+    ];
+
+    it('baselines the whole suite in normal mode', () => {
+        expect(baselineTargets(catalog, false)).toEqual([null]);
+    });
+
+    it('baselines each hinted file in --fast mode, since that is what it scores', () => {
+        // The baseline rules out "already red, so everything scores caught".
+        // --fast scores a scoped run, so a full-suite baseline does not rule
+        // that out for the suite actually being measured — a file that passes
+        // in the full suite but fails standalone would score every one of its
+        // mutations as caught, having proven nothing.
+        expect(baselineTargets(catalog, true).sort())
+            .toEqual(['notificationService', 'telegramBot']);
+    });
+
+    it('baselines each distinct pattern once, not once per mutation', () => {
+        expect(baselineTargets(catalog, true)).toHaveLength(2);
+    });
+
+    it('falls back to the full suite for a mutation with no hint', () => {
+        expect(baselineTargets([{ id: 'd' }], true)).toEqual([null]);
+    });
+});
+
+describe('allocating somewhere for jest to write its report (#178)', () => {
+    const made = [];
+    const make = () => {
+        const dir = makeReportDir();
+        made.push(dir);
+        return dir;
+    };
+    afterAll(() => made.forEach(d => fs.rmSync(d, { recursive: true, force: true })));
+
+    it('never hands out the same path twice', () => {
+        // The old path was os.tmpdir()/mutation-report-<pid>.json. pids are
+        // reused, and the file was only unlinked after the run — so a run that
+        // died hard left a report that a later run could read as its own.
+        expect(make()).not.toBe(make());
+    });
+
+    it('hands out a directory that exists and is empty', () => {
+        // Empty is the point: "jest produced no report" must stay detectable,
+        // and a stale file from a previous run defeats exactly that check.
+        const dir = make();
+        expect(fs.existsSync(dir)).toBe(true);
+        expect(fs.readdirSync(dir)).toEqual([]);
     });
 });
 
@@ -207,6 +264,14 @@ describe('the scoring decisions are actually wired into the runner', () => {
         expect(body).toContain('baselineProblem');
         expect(body).toContain('scoreMutant');
         expect(body).toContain('postRunState');
+    });
+
+    it('has main pick its baseline targets rather than assuming the full suite', () => {
+        expect(bodyOf('main')).toContain('baselineTargets');
+    });
+
+    it('has runSuite allocate a fresh report directory', () => {
+        expect(bodyOf('runSuite')).toContain('makeReportDir');
     });
 });
 
