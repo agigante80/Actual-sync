@@ -455,6 +455,32 @@ module.exports = [
         tests: 'docDriftGuards'
     },
 
+    // ---- #176: the dead-class-method gate -----------------------------------
+    {
+        id: '176-dead-method-scan-blind', ticket: '#176',
+        desc: 'the dead-method scan stops marking anything dead, so the gate passes on everything',
+        file: 'src/__tests__/deadMethodGuard.test.js',
+        anchor: '            if (refs === 0) { dead.add(m); grew = true; }',
+        mutant: '            if (false) { dead.add(m); grew = true; }',
+        tests: 'deadMethodGuard'
+    },
+    {
+        id: '176-dead-family-not-collapsed', ticket: '#176',
+        desc: 'a one-line dead method keeps propping up its helpers, so a dead family survives',
+        file: 'src/__tests__/deadMethodGuard.test.js',
+        anchor: 'dead.has(d) && d.file === f && n >= d.line && n <= d.end',
+        mutant: 'dead.has(d) && d.file === f && n > d.line && n <= d.end',
+        tests: 'deadMethodGuard'
+    },
+    {
+        id: '176-allowlist-swallows-findings', ticket: '#176',
+        desc: 'the reviewed-kept list is treated as matching everything, hiding real findings',
+        file: 'src/__tests__/deadMethodGuard.test.js',
+        anchor: '    return found.filter((m) => !REVIEWED_KEPT.has(m.key));',
+        mutant: '    return found.filter(() => false);',
+        tests: 'deadMethodGuard'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
