@@ -318,13 +318,44 @@ function scoreMutant(result) {
 }
 
 /**
+ * A fresh directory for jest's --json report.
+ *
+ * The path used to be os.tmpdir()/mutation-report-<pid>.json, and it was only
+ * unlinked after the run. pids are reused, so a run that died hard left a
+ * report where a later run expected none — and the "jest produced no report"
+ * guard would parse the stale file as that run's own result. A directory that
+ * did not exist a moment ago cannot contain someone else's leftovers.
+ */
+function makeReportDir() {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'actual-sync-mutation-'));
+}
+
+/**
+ * Which suites must be proven green before any scoring begins.
+ *
+ * --fast scores a SCOPED run, so a full-suite baseline does not establish what
+ * the baseline is for: a file that passes inside the full suite but fails
+ * standalone would score every one of its mutations as caught, having measured
+ * nothing. Baseline what you are about to score.
+ *
+ * @param {Array<{tests?: string}>} selected
+ * @param {boolean} fast
+ * @returns {Array<string|null>} jest patterns; null means the whole suite
+ */
+function baselineTargets(selected, fast) {
+    if (!fast) return [null];
+    return [...new Set(selected.map(m => m.tests || null))];
+}
+
+/**
  * Run the suite and report what actually happened.
  *
  * @returns {{ran: number, failed: number, success: boolean, loadErrors: number}}
  * @throws if the suite did not run to completion — such a run must never be scored.
  */
 function runSuite(testPattern) {
-    const reportFile = path.join(os.tmpdir(), `mutation-report-${process.pid}.json`);
+    const reportDir = makeReportDir();
+    const reportFile = path.join(reportDir, 'report.json');
     try {
         const res = spawnSync('npx', buildJestArgs(testPattern, reportFile),
             { cwd: ROOT, encoding: 'utf8', timeout: 900000 });
@@ -341,8 +372,8 @@ function runSuite(testPattern) {
         return readReport(JSON.parse(fs.readFileSync(reportFile, 'utf8')));
     } finally {
         try {
-            if (fs.existsSync(reportFile)) fs.unlinkSync(reportFile);
-        } catch { /* temp file */ }
+            fs.rmSync(reportDir, { recursive: true, force: true });
+        } catch { /* temp dir */ }
     }
 }
 
@@ -403,16 +434,20 @@ function main() {
     try {
         // Without this, a suite that is ALREADY red makes every mutation "caught"
         // by construction — the same tautology as the catalog guard, reached from
-        // a different direction.
-        process.stdout.write('Establishing a green baseline... ');
-        const baseline = runSuite(null);
-        const problem = baselineProblem(baseline);
-        if (problem) {
-            console.error(`\nNo usable baseline: ${problem}`);
-            console.error('Fix the suite first — until it is green, no verdict here means anything.');
-            return 2;
+        // a different direction. Baseline what will actually be scored: --fast
+        // scores each hinted file alone, so each is proven green alone.
+        for (const target of baselineTargets(selected, fast)) {
+            process.stdout.write(`Establishing a green baseline${target ? ` for ${target}` : ''}... `);
+            const baseline = runSuite(target);
+            const problem = baselineProblem(baseline);
+            if (problem) {
+                console.error(`\nNo usable baseline: ${problem}`);
+                console.error('Fix the suite first — until it is green, no verdict here means anything.');
+                return 2;
+            }
+            console.log(`green (${baseline.ran} tests)`);
         }
-        console.log(`green (${baseline.ran} tests)\n`);
+        console.log('');
 
         console.log(`Running ${selected.length} mutation(s)${fast ? ' (fast: hinted tests only)' : ''}`);
         console.log(`(${CATALOG_GUARD} is excluded — it asserts anchors exist, which every mutant breaks)\n`);
@@ -536,10 +571,12 @@ module.exports = {
     CATALOG_GUARD,
     readReport,
     baselineProblem,
+    baselineTargets,
     scoreMutant,
     postRunState,
     recoveryRefusal,
     pidIsAlive,
+    makeReportDir,
     cli
 };
 
