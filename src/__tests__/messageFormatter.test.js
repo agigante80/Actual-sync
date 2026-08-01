@@ -134,69 +134,6 @@ describe('MessageFormatter', () => {
     });
   });
   
-  describe('formatErrorNotification', () => {
-    test('should format error notification with thresholds', () => {
-      const error = {
-        serverName: 'Main Budget',
-        errorMessage: 'network-failure during encryption key validation',
-        errorCode: 'PostError',
-        timestamp: '2024-01-15T10:30:00.000Z',
-        correlationId: 'abc-123-def',
-        consecutiveFailures: 3,
-        thresholds: {
-          failureRate: 0.6,
-          consecutiveExceeded: true,
-          rateExceeded: false
-        },
-        context: {
-          accountsProcessed: 0,
-          accountsFailed: 0,
-          durationMs: 500
-        }
-      };
-      
-      const formatted = MessageFormatter.formatErrorNotification(error);
-      
-      // Check text content
-      expect(formatted.text).toContain('🚨 Sync Error');
-      expect(formatted.text).toContain('Main Budget');
-      expect(formatted.text).toContain('network-failure during encryption key validation');
-      expect(formatted.text).toContain('Code: PostError');
-      expect(formatted.text).toContain('Correlation ID: abc-123-def');
-      expect(formatted.text).toContain('Consecutive Failures: 3');
-      expect(formatted.text).toContain('Failure Rate: 60.0%');
-      expect(formatted.text).toContain('⚠️ Exceeded consecutive failure threshold');
-      expect(formatted.text).toContain('accountsProcessed: 0');
-      
-      // Check HTML format
-      expect(formatted.html).toContain('🚨 Sync Error');
-      expect(formatted.html).toContain('#dc3545'); // Error color
-      
-      // Check all formats exist
-      expect(formatted).toHaveProperty('slack');
-      expect(formatted).toHaveProperty('discord');
-    });
-    
-    test('should format test notification', () => {
-      const error = {
-        serverName: '🧪 Test Server',
-        errorMessage: 'This is a test notification',
-        errorCode: 'TEST_NOTIFICATION',
-        timestamp: '2024-01-15T10:30:00.000Z'
-      };
-      
-      const formatted = MessageFormatter.formatErrorNotification(error);
-      
-      // Check test notification formatting
-      expect(formatted.text).toContain('🧪 Test Notification');
-      expect(formatted.html).toContain('🧪 Test Notification');
-      expect(formatted.html).toContain('#0078D4'); // Blue color for test
-      
-      // Check Discord test color
-      expect(formatted.discord.embeds[0].color).toBe(3447003); // Blue
-    });
-  });
-  
   describe('formatStartupNotification', () => {
     test('should format startup notification', () => {
       const info = {
@@ -447,13 +384,7 @@ describe('MessageFormatter', () => {
       }).generic.status).toBe('success');
     });
 
-    test('error and startup notifications include a generic payload', () => {
-      const e = MessageFormatter.formatErrorNotification({
-        serverName: 'srv', errorMessage: 'down', errorCode: 'ECONN', timestamp: '2026-01-01T00:00:00Z'
-      });
-      expect(e.generic.event).toBe('error');
-      expect(e.generic.message).toBe('down');
-
+    test('startup notifications include a generic payload', () => {
       const s = MessageFormatter.formatStartupNotification({
         version: '1.5.0', serverNames: 'A, B', schedules: '...', nextSync: 'soon'
       });

@@ -429,6 +429,58 @@ module.exports = [
         tests: 'docDriftGuards'
     },
 
+    // ---- machine-specific path guards ---------------------------------------
+    {
+        id: 'paths-hook-symlink-blind', ticket: '#180',
+        desc: 'the write guard stops resolving symlinks, so an aliased repo path escapes it',
+        file: '.claude/hooks/no-host-paths.sh',
+        anchor: 'file_r="$(resolve "$(dirname -- "$file")")/$(basename -- "$file")"',
+        mutant: 'file_r="$file"',
+        tests: 'hostPathHook'
+    },
+    {
+        id: 'paths-hook-edit-ignored', ticket: '#180',
+        desc: 'the write guard only inspects whole-file writes, so an Edit slips a path through',
+        file: '.claude/hooks/no-host-paths.sh',
+        anchor: "content=\"$(jqr '[.tool_input.content, .tool_input.new_string,",
+        mutant: "content=\"$(jqr '[.tool_input.content,",
+        tests: 'hostPathHook'
+    },
+    {
+        id: 'paths-guard-marker-always-skips', ticket: '#180',
+        desc: 'every line is treated as carrying the opt-out marker, so the guard finds nothing',
+        file: 'src/__tests__/docDriftGuards.test.js',
+        anchor: '            if (line.includes(ALLOW_MARKER)) return;',
+        mutant: '            if (true) return;',
+        tests: 'docDriftGuards'
+    },
+
+    // ---- #176: the dead-class-method gate -----------------------------------
+    {
+        id: '176-dead-method-scan-blind', ticket: '#176',
+        desc: 'the dead-method scan stops marking anything dead, so the gate passes on everything',
+        file: 'src/__tests__/deadMethodGuard.test.js',
+        anchor: '            if (refs === 0) { dead.add(m); grew = true; }',
+        mutant: '            if (false) { dead.add(m); grew = true; }',
+        tests: 'deadMethodGuard'
+    },
+    {
+        id: '176-dead-family-not-collapsed', ticket: '#176',
+        desc: 'a one-line dead method keeps propping up its helpers, so a dead family survives',
+        file: 'src/__tests__/deadMethodGuard.test.js',
+        anchor: 'dead.has(d) && d.file === f && n >= d.line && n <= d.end',
+        mutant: 'dead.has(d) && d.file === f && n > d.line && n <= d.end',
+        tests: 'deadMethodGuard'
+    },
+    {
+        id: '176-allowlist-swallows-findings', ticket: '#176',
+        desc: 'the reviewed-kept list is treated as matching everything, hiding real findings',
+        file: 'src/__tests__/deadMethodGuard.test.js',
+        anchor: '    return found.filter((m) => !REVIEWED_KEPT.has(m.key));',
+        mutant: '    return found.filter(() => false);',
+        tests: 'deadMethodGuard'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
