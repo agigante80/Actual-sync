@@ -291,29 +291,63 @@ describe('no machine-specific absolute paths in the repo', () => {
 
     // This file names the patterns it forbids, so it cannot scan itself.
     const SELF = path.relative(ROOT, __filename);
+    // Never worth reading as text, and the biggest files in the tree.
+    const BINARY = /\.(png|jpe?g|gif|ico|webp|woff2?|ttf|eot|pdf|zip|gz)$/i;
+    // Deliberate exception, for the case this guard is wrong about: a genuine
+    // container path under /home. Mirrors the `config-guard: skip` convention
+    // already used by configSnippets.js.
+    const ALLOW_MARKER = 'host-path-guard: allow';
 
-    const tracked = require('child_process')
-        .execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
-        .split('\0')
-        .filter(Boolean)
-        .filter((f) => f !== SELF);
+    // Collected, not thrown. A throw out here is a *suite load error*, which
+    // jest reports as zero failed tests — the exact false-green this repo
+    // fixed in the mutation runner (#177). Surface it as a failing assertion.
+    let listError = null;
+    let tracked = [];
+    try {
+        tracked = require('child_process')
+            .execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+            .split('\0')
+            .filter(Boolean)
+            .filter((f) => f !== SELF);
+    } catch (err) {
+        listError = err;
+    }
+
+    /**
+     * Extracted so the scanning itself is testable. Inline, the loop could stop
+     * detecting anything and every assertion here would still pass — the whole
+     * describe would go vacuously green.
+     *
+     * @returns {string[]} one entry per offending line
+     */
+    const scanText = (rel, text) => {
+        const found = [];
+        text.split('\n').forEach((line, i) => {
+            if (line.includes(ALLOW_MARKER)) return;
+            for (const { label, re } of HOME_DIR_PATTERNS) {
+                if (re.test(line)) found.push(`${rel}:${i + 1} (${label}) ${line.trim().slice(0, 120)}`);
+            }
+        });
+        return found;
+    };
 
     const offenders = [];
     for (const rel of tracked) {
-        const abs = path.join(ROOT, rel);
+        if (BINARY.test(rel)) continue;
         let text;
         try {
-            text = fs.readFileSync(abs, 'utf8');
+            text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
         } catch {
             continue; // unreadable or vanished
         }
-        if (text.includes('\0')) continue; // binary
-        text.split('\n').forEach((line, i) => {
-            for (const { label, re } of HOME_DIR_PATTERNS) {
-                if (re.test(line)) offenders.push(`${rel}:${i + 1} (${label}) ${line.trim().slice(0, 120)}`);
-            }
-        });
+        if (text.includes('\0')) continue; // binary without a telling extension
+        offenders.push(...scanText(rel, text));
     }
+
+    it('could list the tracked files at all', () => {
+        // If this fails, every other assertion here is meaningless rather than passing.
+        expect(listError && listError.message).toBeNull();
+    });
 
     it('finds no hardcoded home directory in any tracked file', () => {
         expect(offenders).toEqual([]);
@@ -322,6 +356,24 @@ describe('no machine-specific absolute paths in the repo', () => {
     it('actually scans a meaningful number of files, so an empty pass means something', () => {
         // A broken `git ls-files` would make the guard above vacuously true.
         expect(tracked.length).toBeGreaterThan(50);
+    });
+
+    it('reports a violation when scanning text that contains one', () => {
+        // Exercises the scan, not just the regexes. Without this the loop could
+        // stop detecting anything and every other assertion would still pass.
+        const bad = 'intro line\nsee /' + 'home' + '/someuser/proj/x for details\ntail';
+        const found = scanText('docs/fake.md', bad);
+        expect(found).toHaveLength(1);
+        expect(found[0]).toContain('docs/fake.md:2');
+    });
+
+    it('honours the opt-out marker, so a genuine exception is not a dead end', () => {
+        const excused = 'see /' + 'home' + '/someuser/proj/x  <!-- ' + ALLOW_MARKER + ' -->';
+        expect(scanText('docs/fake.md', excused)).toEqual([]);
+    });
+
+    it('leaves clean text alone', () => {
+        expect(scanText('docs/fake.md', '/app/data\n$HOME/x\n~/y')).toEqual([]);
     });
 
     it('would catch a hardcoded home directory if one were introduced', () => {

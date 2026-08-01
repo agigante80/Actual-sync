@@ -16,6 +16,11 @@
 # CI enforces the same rule over every tracked file via the guard in
 # src/__tests__/docDriftGuards.test.js. This hook just moves the failure earlier,
 # to the moment of authoring.
+#
+# It fails OPEN — a missing jq, an unreadable payload, an unresolvable path all
+# allow the write. That is deliberate: the CI guard is the real enforcement, and
+# a broken hook must not wedge someone's editing. Losing the hook costs you the
+# early warning, never the rule itself.
 set -uo pipefail
 
 payload="$(cat)"
@@ -31,8 +36,18 @@ file="$(jqr '.tool_input.file_path // ""')"
 
 root="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
 [ -n "$root" ] || exit 0
-case "$file" in
-    "$root"/*) ;;
+
+# Resolve symlinks on BOTH sides before comparing. This repo is reachable at two
+# paths on the dev machine (one is a symlink to the other), so a plain prefix
+# match silently lets a write through whenever it arrives via the other alias —
+# a guard that fails open exactly where this repo is unusual.
+resolve() { readlink -f -- "$1" 2>/dev/null || printf '%s' "$1"; }
+root_r="$(resolve "$root")"
+# The target may not exist yet (a new file), so resolve its parent directory.
+file_r="$(resolve "$(dirname -- "$file")")/$(basename -- "$file")"
+
+case "$file_r" in
+    "$root_r"/*) ;;
     *) exit 0 ;;   # outside the repo — not this guard's concern
 esac
 
