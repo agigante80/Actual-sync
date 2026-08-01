@@ -1023,6 +1023,7 @@ Route notifications to appropriate teams:
 {
   "email": {
     "enabled": true,
+    "from": "actual-sync@example.com",
     "to": ["on-call@example.com"]
   },
   "webhooks": {
@@ -1060,10 +1061,17 @@ To mute one channel and leave the rest alone, set it on that channel instead:
 ```json
 {
   "notifications": {
-    "email": { "enabled": true, "notifyOnSuccess": "never" }
+    "email": {
+      "enabled": true,
+      "from": "actual-sync@example.com",
+      "to": ["admin@example.com"],
+      "notifyOnSuccess": "never"
+    }
   }
 }
 ```
+
+(An **enabled** email channel must still carry `from` and a non-empty `to` — muting it does not exempt it from validation.)
 
 Prefer this to setting `enabled: false` and emptying the webhook arrays. That older approach also silences genuine failures, loses the configuration, and has to be reassembled from scratch afterwards. Reach for `enabled: false` only when you want the channel gone entirely.
 

@@ -891,6 +891,45 @@ describe('NotificationService', () => {
   // which is very likely what such a user meant — so surface it loudly at startup
   // rather than letting failure alerts vanish on a minor upgrade.
   describe('muted-channel startup warning (#169)', () => {
+    // The call site, not just the helper. A mutation stubbing the constructor's
+    // `if (muted.length > 0)` branch left the whole suite green — mutedChannels()
+    // was covered, the warning that uses it was not.
+    //
+    // createLogger is destructured at module load, so the module has to be
+    // re-required inside isolateModules for a mock to take effect.
+    function constructWithMockedLogger(config) {
+      const warn = jest.fn();
+      jest.isolateModules(() => {
+        jest.doMock('../lib/logger', () => ({
+          createLogger: () => ({ error: jest.fn(), warn, info: jest.fn(), debug: jest.fn() })
+        }));
+        const { NotificationService: Isolated } = require('../services/notificationService');
+        new Isolated(config);
+      });
+      jest.dontMock('../lib/logger');
+      return warn;
+    }
+
+    test('the constructor warns, naming the muted channels', () => {
+      const warn = constructWithMockedLogger({
+        notifyOnSuccess: 'never',
+        email: { enabled: true, from: 'a@b.c', to: ['d@e.f'] }
+      });
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('NOT notify on failures'),
+        expect.objectContaining({ channels: expect.arrayContaining(['email']) })
+      );
+    });
+
+    test('the constructor stays quiet when nothing is muted', () => {
+      const warn = constructWithMockedLogger({
+        email: { enabled: true, from: 'a@b.c', to: ['d@e.f'] }
+      });
+
+      expect(warn).not.toHaveBeenCalled();
+    });
+
     test('reports a channel muted by the global default', () => {
       const service = new NotificationService({
         notifyOnSuccess: 'never',

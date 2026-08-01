@@ -7,7 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { ensureConfig, resolveDefaultsDir } = require('./src/lib/configBootstrap');
+const { ensureConfig, resolveSchemaPath } = require('./src/lib/configBootstrap');
 const ConfigLoader = require('./src/lib/configLoader');
 
 // Get version from environment (CI build-arg) or package.json (#132)
@@ -85,7 +85,7 @@ function validateStartup() {
 
     // Check if schema exists (optional, but warn if missing). Resolve from the
     // bundled defaults dir so a shadowed config mount doesn't degrade validation. (#96)
-    const schemaFile = path.join(resolveDefaultsDir(__dirname), 'config.schema.json');
+    const schemaFile = resolveSchemaPath(__dirname);
     if (!fs.existsSync(schemaFile)) {
         warnings.push('Configuration schema not found (validation will be limited)');
     }

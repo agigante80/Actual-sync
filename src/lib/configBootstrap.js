@@ -64,4 +64,20 @@ function ensureConfig({ configDir, defaultsDir = resolveDefaultsDir() }) {
     return { configExists: false, seeded: false };
 }
 
-module.exports = { resolveDefaultsDir, ensureConfig };
+/**
+ * The one way to locate config.schema.json (#177).
+ *
+ * Every caller previously rebuilt this by hand, and one of them
+ * (scripts/validateConfig.js) got it wrong — it looked in `config/`, which the
+ * documented Docker mount replaces, then silently skipped validation and
+ * reported success. Centralising it means a regression has to delete a call
+ * rather than quietly rewrite a path, which a guard can actually detect.
+ *
+ * @param {string} [root] - Project root containing config/ (and config-defaults/ in the image)
+ * @returns {string} Absolute path to the schema, whether or not it exists
+ */
+function resolveSchemaPath(root = PROJECT_ROOT) {
+    return path.join(resolveDefaultsDir(root), 'config.schema.json');
+}
+
+module.exports = { resolveDefaultsDir, resolveSchemaPath, ensureConfig };
