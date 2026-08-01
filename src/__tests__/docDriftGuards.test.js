@@ -227,3 +227,42 @@ describe('README does not claim notifications are failure-only (#169)', () => {
         expect(README).not.toMatch(/^Notifications are sent only when thresholds are exceeded:/m);
     });
 });
+
+/**
+ * The Dockerfile copies all of `scripts/` into the runtime image, because
+ * `validateConfig.js` is needed there — `npm run validate-config` in the
+ * container is the documented pre-upgrade check (#177). That same COPY also
+ * shipped the mutation runner, a tool whose entire job is overwriting source
+ * files in place.
+ *
+ * This is a text assertion over a config file, which is weaker than a
+ * behavioural test — but `.dockerignore` has no runtime behaviour to observe
+ * without building an image, and the both-directions form below has real teeth:
+ * excluding all of `scripts/` to satisfy the first half breaks the second.
+ */
+describe('the mutation tooling stays out of the production image (#180)', () => {
+    const DOCKERIGNORE = read('.dockerignore');
+    const entries = DOCKERIGNORE.split('\n')
+        .map(l => l.trim())
+        .filter(l => l && !l.startsWith('#'));
+
+    it.each(['scripts/mutationTest.js', 'scripts/mutations.js'])(
+        'excludes %s, which rewrites source files', (file) => {
+            expect(entries).toContain(file);
+        });
+
+    it('still ships validateConfig.js, which the container genuinely needs', () => {
+        // Guards the lazy fix: ignoring `scripts` wholesale would satisfy the
+        // check above and break `npm run validate-config` in the container.
+        expect(entries).not.toContain('scripts');
+        expect(entries).not.toContain('scripts/');
+        expect(entries).not.toContain('scripts/*');
+        expect(entries).not.toContain('scripts/validateConfig.js');
+    });
+
+    it('names files that actually exist, so the exclusions cannot rot', () => {
+        for (const f of ['scripts/mutationTest.js', 'scripts/mutations.js', 'scripts/validateConfig.js']) {
+            expect(fs.existsSync(path.join(ROOT, f))).toBe(true);
+        }
+    });
+});
