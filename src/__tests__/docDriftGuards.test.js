@@ -266,3 +266,73 @@ describe('the mutation tooling stays out of the production image (#180)', () => 
         }
     });
 });
+
+/**
+ * No host-absolute paths anywhere in the repo.
+ *
+ * A path like /home/<someone>/projects/thing is true on exactly one machine. In
+ * documentation it is an instruction nobody else can follow; in a script it is a
+ * silent breakage on every other checkout. Both had crept into `.claude/` docs.
+ *
+ * Only *host home* directories are flagged. Container-absolute paths (/app/data,
+ * /app/logs) are correct and deliberate here, so the pattern is deliberately
+ * narrow rather than "anything starting with a slash".
+ *
+ * Write `$HOME`, `~`, `$(git rev-parse --show-toplevel)`, or a named variable
+ * instead. The patterns are assembled from fragments so this guard does not
+ * match its own source.
+ */
+describe('no machine-specific absolute paths in the repo', () => {
+    const HOME_DIR_PATTERNS = [
+        { label: 'Linux home', re: new RegExp('/' + 'home' + '/[A-Za-z0-9._-]+/') },
+        { label: 'macOS home', re: new RegExp('/' + 'Users' + '/[A-Za-z0-9._-]+/') },
+        { label: 'Windows profile', re: new RegExp('[A-Za-z]:\\\\' + 'Users' + '\\\\[A-Za-z0-9._-]+') }
+    ];
+
+    // This file names the patterns it forbids, so it cannot scan itself.
+    const SELF = path.relative(ROOT, __filename);
+
+    const tracked = require('child_process')
+        .execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+        .split('\0')
+        .filter(Boolean)
+        .filter((f) => f !== SELF);
+
+    const offenders = [];
+    for (const rel of tracked) {
+        const abs = path.join(ROOT, rel);
+        let text;
+        try {
+            text = fs.readFileSync(abs, 'utf8');
+        } catch {
+            continue; // unreadable or vanished
+        }
+        if (text.includes('\0')) continue; // binary
+        text.split('\n').forEach((line, i) => {
+            for (const { label, re } of HOME_DIR_PATTERNS) {
+                if (re.test(line)) offenders.push(`${rel}:${i + 1} (${label}) ${line.trim().slice(0, 120)}`);
+            }
+        });
+    }
+
+    it('finds no hardcoded home directory in any tracked file', () => {
+        expect(offenders).toEqual([]);
+    });
+
+    it('actually scans a meaningful number of files, so an empty pass means something', () => {
+        // A broken `git ls-files` would make the guard above vacuously true.
+        expect(tracked.length).toBeGreaterThan(50);
+    });
+
+    it('would catch a hardcoded home directory if one were introduced', () => {
+        // Proves the patterns discriminate rather than never matching anything.
+        const samples = ['/' + 'home' + '/someone/repo/x.js', '/' + 'Users' + '/someone/repo/x.js'];
+        for (const s of samples) {
+            expect(HOME_DIR_PATTERNS.some(({ re }) => re.test(s))).toBe(true);
+        }
+        // And that it leaves legitimate container paths alone.
+        for (const ok of ['/app/data', '/app/logs', '/app/config/config.json', '/usr/local/bin/entrypoint.sh']) {
+            expect(HOME_DIR_PATTERNS.some(({ re }) => re.test(ok))).toBe(false);
+        }
+    });
+});
