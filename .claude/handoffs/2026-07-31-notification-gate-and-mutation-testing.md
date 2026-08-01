@@ -121,8 +121,9 @@ this reason, backed by source-reading wiring tests in `mutationRunner.test.js`.
   tests error spuriously. See `[[node-version-hook-trap]]`.
 - **`gh` is a snap**: it cannot read `/tmp` or dotfiles at `$HOME` root. Stage `--body-file`
   content as a non-hidden file in `$HOME`.
-- **Local env:** `/home/alien/docker/librechat-MCP-actual/actual-sync` builds from this repo — and
-  `/home/alien/dev-github-personal/Actual-sync` is the SAME checkout as the Sync path, not a copy.
+- **Local env:** see `.claude/commands/local-env.md` — the stack under `$LOCAL_ENV/actual-sync`
+  builds from this repo. Note the repo is reachable at two paths on the dev machine (a `Sync/…`
+  one and a `dev-github-personal/…` one) that resolve to the **same checkout**, not copies.
   Its config holds **live** credentials: email + telegram are enabled and `notifyOnSuccess` is
   unset (so `always`), meaning a forced sync sends real notifications.
 - **A real bank rate limit is expected.** `Main's Budget` fails on

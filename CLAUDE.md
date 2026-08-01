@@ -280,6 +280,7 @@ Notes:
 - Forgetting `actual.shutdown()` in finally blocks
 - Accessing `server.sync.*` directly instead of using `getSyncConfig(server)`
 - Skipping documentation updates when changing observable behavior
+- **Hardcoding a machine-specific absolute path** — a host home directory (`/home/<user>/…`, `/Users/<user>/…`, a Windows profile) is true on exactly one machine: in docs it is an instruction nobody else can follow, in a script it is a silent breakage on every other checkout. Use `$HOME`, `~`, `$(git rev-parse --show-toplevel)`, or a named variable. Container-absolute paths (`/app/data`, `/app/logs`) are fine and deliberate. Enforced two ways: a guard over every tracked file in `src/__tests__/docDriftGuards.test.js` (so CI fails), and a `PreToolUse` hook (`.claude/hooks/no-host-paths.sh`, wired in `.claude/settings.json`) that blocks the write at authoring time.
 - Forcing transitive versions via `overrides`/`resolutions` (see Dependency Policy)
 - Manually patch-bumping for a routine release (the auto-release patch-bumps; only bump manually on `development` for a minor/major, see Git Workflow)
 
