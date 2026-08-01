@@ -176,7 +176,7 @@ Create `actual-sync/config.json`:
   "notifications": {
     "telegram": {
       "enabled": true,
-      "botToken": "YOUR_BOT_TOKEN",
+      "botToken": "123456789:YOUR-BOT-TOKEN",
       "chatId": "YOUR_CHAT_ID"
     }
   }
@@ -362,7 +362,7 @@ docker logs -f actual-sync-service
      "notifications": {
        "telegram": {
          "enabled": true,
-         "botToken": "YOUR_BOT_TOKEN",
+         "botToken": "123456789:YOUR-BOT-TOKEN",
          "chatId": "YOUR_CHAT_ID"
        }
      }

@@ -18,6 +18,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
+    "test:mutation": "node scripts/mutationTest.js",
     "dead:check": "knip",
     "knip": "knip --no-exit-code",
     "prepare": "git config core.hooksPath .githooks || true"
