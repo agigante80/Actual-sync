@@ -385,6 +385,50 @@ module.exports = [
         tests: 'mutationRunner'
     },
 
+    // ---- #178/#179/#180: round-8 deferrables --------------------------------
+    {
+        id: '178-predictable-report-path', ticket: '#178',
+        desc: 'the jest report goes back to a pid-named path a stale file can occupy',
+        file: 'scripts/mutationTest.js',
+        anchor: "    return fs.mkdtempSync(path.join(os.tmpdir(), 'actual-sync-mutation-'));",
+        mutant: '    const dir = path.join(os.tmpdir(), `mutation-report-${process.pid}`);\n'
+            + '    fs.mkdirSync(dir, { recursive: true });\n'
+            + '    return dir;',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '178-report-dir-unwired', ticket: '#178',
+        desc: 'runSuite stops allocating a fresh directory and writes into a shared one',
+        file: 'scripts/mutationTest.js',
+        anchor: '    const reportDir = makeReportDir();',
+        mutant: '    const reportDir = os.tmpdir();',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '179-fast-baselines-full-suite', ticket: '#179',
+        desc: '--fast scores scoped runs while baselining only the full suite',
+        file: 'scripts/mutationTest.js',
+        anchor: '    if (!fast) return [null];',
+        mutant: '    return [null];',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '179-baseline-targets-unwired', ticket: '#179',
+        desc: 'main ignores the chosen baseline targets and assumes the full suite',
+        file: 'scripts/mutationTest.js',
+        anchor: '        for (const target of baselineTargets(selected, fast)) {',
+        mutant: '        for (const target of [null]) {',
+        tests: 'mutationRunner'
+    },
+    {
+        id: '180-runner-ships-in-image', ticket: '#180',
+        desc: 'the file-mutating runner is shipped inside the production image again',
+        file: '.dockerignore',
+        anchor: 'scripts/mutationTest.js\nscripts/mutations.js',
+        mutant: '# scripts/mutationTest.js\n# scripts/mutations.js',
+        tests: 'docDriftGuards'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',

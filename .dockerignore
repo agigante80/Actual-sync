@@ -71,6 +71,13 @@ docker-compose*.yml
 # Scripts not needed in production
 scripts/test*.js
 
+# Mutation testing tooling (#180). validateConfig.js DOES ship — `npm run
+# validate-config` in the container is the documented pre-upgrade check (#177) —
+# so scripts/ cannot be excluded wholesale. These two rewrite source files in
+# place and have no business in a production image.
+scripts/mutationTest.js
+scripts/mutations.js
+
 # Backup files
 *.backup
 *.bak
