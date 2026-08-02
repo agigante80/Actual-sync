@@ -78,6 +78,17 @@ scripts/test*.js
 scripts/mutationTest.js
 scripts/mutations.js
 
+# Build-time and release-time only (#183). listAccounts.js and viewHistory.js
+# stay — they back `npm run list-accounts` and `npm run history`, which
+# operators run inside the container.
+#   generateDashboardScreenshots.js needs puppeteer, a devDependency the image
+#     omits, so it can only crash.
+#   generate-badges.js writes to .github/badges, absent from the image.
+#   version-bump.js rewrites VERSION, package.json and package-lock.json.
+scripts/generateDashboardScreenshots.js
+scripts/generate-badges.js
+scripts/version-bump.js
+
 # Backup files
 *.backup
 *.bak
