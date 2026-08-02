@@ -625,6 +625,20 @@ This test verifies that notifications are configured correctly and can reach the
           }
         };
 
+        // One representative sync notification, built via the unified formatter
+        // so a test looks like the real thing rather than a divergent ad-hoc
+        // message (#110). Built once: three channels were assembling identical
+        // copies, which is how they drift apart.
+        const buildTestNotification = () => MessageFormatter.formatSyncNotification({
+          status: 'success',
+          serverName: '🧪 Test Notification',
+          duration: 1234,
+          accountsProcessed: 2,
+          accountsFailed: 0,
+          succeededAccounts: ['Checking', 'Savings'],
+          skippedAccounts: [{ name: 'Old Loan', reason: 'closed' }]
+        });
+
         let result;
 
         switch (channel) {
@@ -729,27 +743,67 @@ This test verifies that notifications are configured correctly and can reach the
                 (!this.telegramBot.config?.chatId && !this.telegramBot.config?.chatIds?.length)) {
               return res.status(400).json({ error: 'Telegram bot not configured' });
             }
-            const os = require('os');
-            const packageJson = require('../../package.json');
-            // Build a representative sync notification via the unified formatter so
-            // the test matches what real notifications look like (incl. the skipped
-            // section), instead of a divergent old-format message. (#110)
-            const testNotification = MessageFormatter.formatSyncNotification({
-              status: 'success',
-              serverName: '🧪 Test Notification',
-              duration: 1234,
-              accountsProcessed: 2,
-              accountsFailed: 0,
-              succeededAccounts: ['Checking', 'Savings'],
-              skippedAccounts: [{ name: 'Old Loan', reason: 'closed' }]
-            });
-            const testFooter = `\n\nThis is a test from Actual-sync (v${packageJson.version} on ${os.hostname()}, ${os.platform()} ${os.arch()}, Node.js ${process.version}). It verifies that Telegram notifications are working.`;
+            const tgOs = require('os');
+            const tgPackageJson = require('../../package.json');
+            const testNotification = buildTestNotification();
+            const testFooter = `\n\nThis is a test from Actual-sync (v${tgPackageJson.version} on ${tgOs.hostname()}, ${tgOs.platform()} ${tgOs.arch()}, Node.js ${process.version}). It verifies that Telegram notifications are working.`;
             await this.telegramBot.sendMessage(testNotification.text + testFooter);
             result = { success: true, message: 'Test Telegram message sent successfully' };
             break;
 
+          case 'ntfy': {
+            // ntfy is a first-class channel in the schema and the README, but
+            // had no test path — so a typo'd topic URL stayed invisible until a
+            // real failure needed to reach it (#182).
+            const ntfyCfg = this.notificationService?.config?.ntfy;
+            if (!ntfyCfg?.enabled || !ntfyCfg?.url) {
+              return res.status(400).json({ error: 'ntfy not configured' });
+            }
+            const ntfyResult = await this.notificationService.sendNtfy(buildTestNotification().ntfy);
+            if (!ntfyResult?.success) {
+              return res.status(500).json({ error: 'Failed to send ntfy notification', details: ntfyResult?.error });
+            }
+            result = { success: true, message: 'Test ntfy notification sent successfully' };
+            break;
+          }
+
+          case 'generic': {
+            // Same as Slack/Discord above: an all-disabled array is NOT
+            // configured, and must not report success (#169).
+            const genericEntries = (this.notificationService?.config?.webhooks?.generic || [])
+              .filter(w => w.url && w.enabled !== false);
+            if (!genericEntries.length) {
+              return res.status(400).json({ error: 'Generic webhooks not configured' });
+            }
+            // No `allow` predicate on purpose: this route proves delivery works,
+            // so a per-entry errors_only must not silently skip the send and
+            // still let us report success (#169).
+            const genericResults = await this.notificationService
+              .sendGenericWebhooks(buildTestNotification().generic);
+            const genericDelivered = (genericResults || []).filter(r => r.success).length;
+            if (!genericDelivered) {
+              return res.status(500).json({
+                error: 'Failed to send generic webhook',
+                details: (genericResults || []).map(r => r.error).filter(Boolean).join('; ') || undefined
+              });
+            }
+            // Report what actually happened. "Sent successfully" while two of
+            // three endpoints refused is the dishonest-reporting bug #171 fixed
+            // on the sync path; the same claim is no more true here.
+            result = genericDelivered === genericResults.length
+              ? { success: true, message: `Test generic webhook sent successfully (${genericDelivered}/${genericResults.length})` }
+              : {
+                success: true,
+                message: `Test generic webhook partially delivered (${genericDelivered}/${genericResults.length})`,
+                failed: genericResults.filter(r => !r.success).map(r => ({ name: r.name, error: r.error }))
+              };
+            break;
+          }
+
           default:
-            return res.status(400).json({ error: 'Invalid channel. Use: email, discord, slack, or telegram' });
+            return res.status(400).json({
+              error: 'Invalid channel. Use: email, discord, slack, telegram, ntfy, or generic'
+            });
         }
 
         this.logger.info('Test notification sent via dashboard', {

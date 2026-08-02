@@ -481,6 +481,66 @@ module.exports = [
         tests: 'deadMethodGuard'
     },
 
+    // ---- #182: every channel testable from the dashboard --------------------
+    {
+        id: '182-ntfy-untestable-again', ticket: '#182',
+        desc: 'the ntfy case is unreachable, so a misconfigured topic cannot be verified',
+        file: 'src/services/healthCheck.js',
+        anchor: "          case 'ntfy': {",
+        mutant: "          case 'ntfy-unreachable': {",
+        tests: 'healthCheck'
+    },
+    {
+        id: '182-ntfy-disabled-counted', ticket: '#182',
+        desc: 'a disabled ntfy channel is treated as configured and reports success',
+        file: 'src/services/healthCheck.js',
+        anchor: '            if (!ntfyCfg?.enabled || !ntfyCfg?.url) {',
+        mutant: '            if (false) {',
+        tests: 'healthCheck'
+    },
+    {
+        id: '182-generic-all-disabled-counted', ticket: '#182',
+        desc: 'an all-disabled generic webhook array counts as configured (#169 regression)',
+        file: 'src/services/healthCheck.js',
+        anchor: '              .filter(w => w.url && w.enabled !== false);',
+        mutant: '              .filter(w => w.url);',
+        tests: 'healthCheck'
+    },
+    {
+        id: '182-generic-gate-applied', ticket: '#182',
+        desc: 'the test send is gated by notifyOnSuccess, so errors_only silently skips it',
+        file: 'src/services/healthCheck.js',
+        anchor: '              .sendGenericWebhooks(buildTestNotification().generic);',
+        mutant: '              .sendGenericWebhooks(buildTestNotification().generic, () => true);',
+        tests: 'healthCheck'
+    },
+    {
+        id: '182-parity-gate-blind', ticket: '#182',
+        desc: 'the channel-parity gate derives no channels, so it passes on anything',
+        file: 'src/__tests__/docDriftGuards.test.js',
+        anchor: "        ...['email', 'telegram', 'ntfy'].filter((k) => notif[k]),",
+        mutant: '        ...[].filter((k) => notif[k]),',
+        tests: 'docDriftGuards'
+    },
+
+    // ---- #183: release-time scripts stay out of the image -------------------
+    {
+        id: '183-version-bump-ships', ticket: '#183',
+        desc: 'version-bump.js ships again, able to rewrite the container package manifests',
+        file: '.dockerignore',
+        anchor: 'scripts/version-bump.js',
+        mutant: '# scripts/version-bump.js',
+        tests: 'docDriftGuards'
+    },
+    {
+        id: '183-scripts-excluded-wholesale', ticket: '#183',
+        desc: 'scripts/ is ignored wholesale, taking validate-config and the operator tools with it',
+        file: '.dockerignore',
+        anchor: 'scripts/generateDashboardScreenshots.js\nscripts/generate-badges.js\nscripts/version-bump.js',
+        mutant: 'scripts',
+        tests: 'docDriftGuards'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
