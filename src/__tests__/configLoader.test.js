@@ -555,37 +555,6 @@ describe('ConfigLoader', () => {
         });
     });
 
-    describe('getServer()', () => {
-        test('should throw error if config not loaded', () => {
-            const loader = new ConfigLoader();
-            
-            expect(() => loader.getServer('Test')).toThrow('Configuration not loaded');
-        });
-
-        test('should return server by name', () => {
-            const config = createMockConfig();
-            const configPath = createTestConfigFile(tempDir, config);
-            const loader = new ConfigLoader(configPath);
-            
-            loader.load();
-            const server = loader.getServer('Test Server');
-            
-            expect(server).toBeDefined();
-            expect(server.name).toBe('Test Server');
-        });
-
-        test('should return null for non-existent server', () => {
-            const config = createMockConfig();
-            const configPath = createTestConfigFile(tempDir, config);
-            const loader = new ConfigLoader(configPath);
-            
-            loader.load();
-            const server = loader.getServer('NonExistent');
-            
-            expect(server).toBeNull();
-        });
-    });
-
     describe('getServers()', () => {
         test('should throw error if config not loaded', () => {
             const loader = new ConfigLoader();

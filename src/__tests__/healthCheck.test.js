@@ -1075,6 +1075,63 @@ describe('HealthCheckService', () => {
   });
 
   /**
+   * Notification statistics on the dashboard (#188).
+   *
+   * `getStats()` existed but nothing called it, so rate limiting was invisible:
+   * a user whose failure alerts were being suppressed had no surface that said
+   * so. Wiring it up is the point of the endpoint.
+   */
+  describe('GET /api/dashboard/notifications (#188)', () => {
+    const url = () => `http://127.0.0.1:${testPort}/api/dashboard/notifications`;
+
+    beforeEach(async () => {
+      await healthCheck.start();
+    });
+
+    it('returns 503 when no notification service is wired', () => {
+      healthCheck.notificationService = null;
+      return httpGet(url()).then((res) => expect(res.statusCode).toBe(503));
+    });
+
+    it('serves the stats the service reports', async () => {
+      healthCheck.notificationService = {
+        getStats: () => ({
+          notificationsSentLastHour: 4,
+          rateLimitRemaining: 6,
+          perServerStats: { Main: { notificationsSentLastHour: 4, rateLimitRemaining: 6, lastNotificationTime: null } },
+          consecutiveFailuresByServer: { Main: 2 },
+          recentSyncsByServer: { Main: { total: 5, failures: 2, successes: 3 } }
+        })
+      };
+      const res = await httpGet(url());
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.notificationsSentLastHour).toBe(4);
+      expect(res.body.rateLimitRemaining).toBe(6);
+      expect(res.body.perServerStats.Main.rateLimitRemaining).toBe(6);
+    });
+
+    it('surfaces the configured rate limit, so "remaining" has a denominator', () => {
+      // Remaining is meaningless without the ceiling it counts down from.
+      healthCheck.notificationService = {
+        config: { rateLimit: { maxPerHour: 10, minIntervalMinutes: 5 } },
+        getStats: () => ({ notificationsSentLastHour: 1, rateLimitRemaining: 9, perServerStats: {} })
+      };
+      return httpGet(url()).then((res) => {
+        expect(res.body.rateLimit).toEqual({ maxPerHour: 10, minIntervalMinutes: 5 });
+      });
+    });
+
+    it('returns 500 rather than crashing when the service throws', async () => {
+      healthCheck.notificationService = {
+        getStats: () => { throw new Error('boom'); }
+      };
+      const res = await httpGet(url());
+      expect(res.statusCode).toBe(500);
+    });
+  });
+
+  /**
    * The dashboard's test-notification route (#182).
    *
    * It used to handle four channels while the service advertised six, so a

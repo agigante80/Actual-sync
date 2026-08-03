@@ -3,6 +3,7 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { Logger, createLogger, LOG_LEVELS, LEVEL_NAMES } = require('../lib/logger');
 const {
@@ -10,6 +11,27 @@ const {
     cleanupTempDir,
     suppressConsole
 } = require('./helpers/testHelpers');
+
+/**
+ * Log through the REAL entry point and return the line the console writer
+ * actually emitted.
+ *
+ * These assertions used to call `logger.formatLog(...)`, a parallel wrapper no
+ * log line went through (#187). The redaction logic was the same — `maskSecrets`
+ * and `redact` are shared — but a masking guarantee is only worth what the
+ * writing path does, so they now assert on that. `format` is the console
+ * serialization format the writer reads from `this.format`.
+ */
+const emit = (logger, message, meta, format) => {
+    if (format) logger.format = format;
+    const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+        logger.info(message, meta);
+        return spy.mock.calls.at(-1)[0];
+    } finally {
+        spy.mockRestore();
+    }
+};
 
 describe('Logger', () => {
     let tempDir;
@@ -154,7 +176,7 @@ describe('Logger', () => {
     describe('Format Logging', () => {
         test('should format log in pretty format', () => {
             const logger = new Logger({ format: 'pretty' });
-            const formatted = logger.formatLog('INFO', 'Test message', { key: 'value' });
+            const formatted = emit(logger, 'Test message', { key: 'value' });
             
             expect(formatted).toContain('[INFO]');
             expect(formatted).toContain('Test message');
@@ -164,7 +186,7 @@ describe('Logger', () => {
 
         test('should format log in JSON format', () => {
             const logger = new Logger({ format: 'json' });
-            const formatted = logger.formatLog('INFO', 'Test message', { key: 'value' });
+            const formatted = emit(logger, 'Test message', { key: 'value' });
             const parsed = JSON.parse(formatted);
             
             expect(parsed.level).toBe('INFO');
@@ -178,7 +200,7 @@ describe('Logger', () => {
             const logger = new Logger({ format: 'json' });
             logger.setCorrelationId('test-correlation-id');
             
-            const formatted = logger.formatLog('INFO', 'Test message');
+            const formatted = emit(logger, 'Test message');
             const parsed = JSON.parse(formatted);
             
             expect(parsed.correlationId).toBe('test-correlation-id');
@@ -187,7 +209,7 @@ describe('Logger', () => {
         test('should not include correlation ID if not set', () => {
             const logger = new Logger({ format: 'json' });
             
-            const formatted = logger.formatLog('INFO', 'Test message');
+            const formatted = emit(logger, 'Test message');
             const parsed = JSON.parse(formatted);
             
             expect(parsed.correlationId).toBeUndefined();
@@ -432,7 +454,7 @@ describe('Logger', () => {
 
         test('masks a top-level secret key in JSON format', () => {
             const logger = new Logger({ format: 'json', logDir: null });
-            const line = logger.formatLog('INFO', 'auth', { password: 'hunter2', user: 'bob' }, 'json');
+            const line = emit(logger, 'auth', { password: 'hunter2', user: 'bob' }, 'json');
             const parsed = JSON.parse(line);
             expect(parsed.password).toBe('[REDACTED]');
             expect(parsed.user).toBe('bob');
@@ -441,7 +463,7 @@ describe('Logger', () => {
 
         test('masks a secret key in pretty format', () => {
             const logger = new Logger({ format: 'pretty', logDir: null });
-            const line = logger.formatLog('INFO', 'auth', { password: 'hunter2' }, 'pretty');
+            const line = emit(logger, 'auth', { password: 'hunter2' }, 'pretty');
             expect(line).toContain('"password": "[REDACTED]"');
             expect(line).not.toContain('hunter2');
         });
@@ -449,7 +471,7 @@ describe('Logger', () => {
         test('masks nested secrets without mutating the input object', () => {
             const logger = new Logger({ logDir: null });
             const meta = { server: { name: 'A', encryptionPassword: 'e2e-secret' } };
-            const line = logger.formatLog('INFO', 'x', meta, 'json');
+            const line = emit(logger, 'x', meta, 'json');
             expect(line).not.toContain('e2e-secret');
             expect(line).toContain('[REDACTED]');
             expect(meta.server.encryptionPassword).toBe('e2e-secret'); // original untouched
@@ -457,7 +479,7 @@ describe('Logger', () => {
 
         test('masks bot-token URLs embedded in string values', () => {
             const logger = new Logger({ logDir: null });
-            const line = logger.formatLog('INFO', 'x', {
+            const line = emit(logger, 'x', {
                 url: 'https://api.telegram.org/bot123456:ABC-def_77/getUpdates'
             }, 'json');
             expect(JSON.parse(line).url).toBe('https://api.telegram.org/bot[REDACTED]/getUpdates');
@@ -465,7 +487,7 @@ describe('Logger', () => {
 
         test('honors custom logging.redact keys while keeping the defaults', () => {
             const logger = new Logger({ logDir: null, redact: ['ssn'] });
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { ssn: '123-45', password: 'p' }, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', { ssn: '123-45', password: 'p' }, 'json'));
             expect(parsed.ssn).toBe('[REDACTED]');
             expect(parsed.password).toBe('[REDACTED]');
         });
@@ -480,16 +502,88 @@ describe('Logger', () => {
         test('preserves Date values instead of flattening them to {}', () => {
             const logger = new Logger({ logDir: null });
             const when = new Date('2026-06-10T00:00:00.000Z');
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { when }, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', { when }, 'json'));
             expect(parsed.when).toBe('2026-06-10T00:00:00.000Z');
         });
 
         test('does not mark a shared (non-circular) reference as [Circular]', () => {
             const logger = new Logger({ logDir: null });
             const shared = { v: 1 };
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { a: shared, b: shared }, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', { a: shared, b: shared }, 'json'));
             expect(parsed.a).toEqual({ v: 1 });
             expect(parsed.b).toEqual({ v: 1 });
+        });
+
+        test('masks a secret embedded in the MESSAGE, not only in metadata', () => {
+            // Every redaction test here operated on `meta`. Removing
+            // maskSecrets(message) from the write path broke nothing — a secret
+            // interpolated into the message string was unguarded. (#187)
+            const logger = new Logger({ level: 'INFO', logDir: null });
+            const line = emit(logger, 'calling https://api.telegram.org/bot123456:ABC-def_77/getUpdates', {}, 'json');
+
+            expect(line).not.toContain('ABC-def_77');
+            expect(JSON.parse(line).message).toContain('bot[REDACTED]');
+        });
+
+        test('masks a key=value secret written into the message', () => {
+            const logger = new Logger({ level: 'INFO', logDir: null });
+            const line = emit(logger, 'retrying with password=hunter2 for bob', {}, 'json');
+
+            expect(line).not.toContain('hunter2');
+            expect(JSON.parse(line).message).toContain('password=[REDACTED]');
+        });
+
+        test('redacts the logger CONTEXT, which child loggers carry', () => {
+            // Context is attached to every line a child logger emits, so an
+            // unredacted context leaks on each one. Dropping redact(this.context)
+            // from the write path also broke nothing. (#187)
+            const logger = new Logger({
+                level: 'INFO', logDir: null, context: { server: 'Main', encryptionPassword: 'e2e-secret' }
+            });
+            const line = emit(logger, 'sync', {}, 'json');
+
+            expect(line).not.toContain('e2e-secret');
+            expect(JSON.parse(line).encryptionPassword).toBe('[REDACTED]');
+            expect(JSON.parse(line).server).toBe('Main');
+        });
+
+        test('redacts context inherited through child()', () => {
+            const parent = new Logger({ level: 'INFO', logDir: null });
+            const child = parent.child({ botToken: 'abc123secret', server: 'Main' });
+            const line = emit(child, 'sync', {}, 'json');
+
+            expect(line).not.toContain('abc123secret');
+            expect(JSON.parse(line).botToken).toBe('[REDACTED]');
+        });
+
+        test('redacts what is written to the log FILE, not just the console', () => {
+            // The file uses `fileFormat`, a separate serialization from the
+            // console's `format` — and fileFormat was unreachable once already
+            // (#116). A secret reaching disk is the durable version of this bug,
+            // so assert on the bytes actually written.
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'logger-redact-file-'));
+            try {
+                // Rotation off so the writer takes the synchronous appendFileSync
+                // branch: the rotating stream flushes async and would make this
+                // racy. Both branches serialize through the same
+                // safeSerialize(..., this.fileFormat) call, which is what is
+                // under test here.
+                const logger = new Logger({
+                    level: 'INFO', logDir: dir, fileFormat: 'json', rotation: { enabled: false }
+                });
+                logger.info('auth', { password: 'hunter2', token: 'tok-abc', user: 'bob' });
+
+                const files = fs.readdirSync(dir).filter((f) => f.endsWith('.log'));
+                expect(files).toHaveLength(1);
+                const written = fs.readFileSync(path.join(dir, files[0]), 'utf8');
+
+                expect(written).not.toContain('hunter2');
+                expect(written).not.toContain('tok-abc');
+                expect(written).toContain('[REDACTED]');
+                expect(JSON.parse(written.trim()).user).toBe('bob');
+            } finally {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
         });
 
         test('redacts the metadata passed to the broadcast callback', () => {
@@ -514,14 +608,14 @@ describe('Logger', () => {
             const logger = new Logger({ logDir: null });
             const meta = { get boom() { throw new Error('getter exploded'); } };
             expect(() => logger.info('x', meta)).not.toThrow();
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', meta, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', meta, 'json'));
             expect(parsed.boom).toBe('[unreadable]');
         });
 
         test('a BigInt in metadata does not crash and serializes as a string', () => {
             const logger = new Logger({ logDir: null });
             expect(() => logger.info('x', { big: 10n })).not.toThrow();
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { big: 42n }, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', { big: 42n }, 'json'));
             expect(parsed.big).toBe('42');
         });
 
@@ -533,25 +627,25 @@ describe('Logger', () => {
 
         test('masks Authorization Bearer tokens in string values (H3)', () => {
             const logger = new Logger({ logDir: null });
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { h: 'Authorization: Bearer abc.def.ghi' }, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', { h: 'Authorization: Bearer abc.def.ghi' }, 'json'));
             expect(parsed.h).toBe('Authorization: Bearer [REDACTED]');
         });
 
         test('masks credentials embedded in URL userinfo (H3)', () => {
             const logger = new Logger({ logDir: null });
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { u: 'https://admin:S3cr3t@host:5006/budget' }, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', { u: 'https://admin:S3cr3t@host:5006/budget' }, 'json'));
             expect(parsed.u).toBe('https://admin:[REDACTED]@host:5006/budget');
         });
 
         test('masks a bare password= even without a query-string prefix (H3)', () => {
             const logger = new Logger({ logDir: null });
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { b: 'user=bob password=hunter2 done' }, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', { b: 'user=bob password=hunter2 done' }, 'json'));
             expect(parsed.b).toBe('user=bob password=[REDACTED] done');
         });
 
         test('redacts token/secret key variants (refreshToken, accessToken, clientSecret) (H3)', () => {
             const logger = new Logger({ logDir: null });
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', {
+            const parsed = JSON.parse(emit(logger, 'x', {
                 refreshToken: 'rt', accessToken: 'at', clientSecret: 's'
             }, 'json'));
             expect(parsed.refreshToken).toBe('[REDACTED]');
@@ -562,7 +656,7 @@ describe('Logger', () => {
         test('preserves an Error value in metadata (name/message/stack) (M4)', () => {
             const logger = new Logger({ logDir: null });
             const err = Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' });
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { cause: err }, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', { cause: err }, 'json'));
             expect(parsed.cause.name).toBe('Error');
             expect(parsed.cause.message).toBe('connection refused');
             expect(parsed.cause.code).toBe('ECONNREFUSED');
@@ -599,13 +693,13 @@ describe('Logger', () => {
                 statusCode: 429, errno: -111, syscall: 'connect'
             });
             err.cause = Object.assign(new Error('root'), { code: 'EROOT' });
-            const e = JSON.parse(logger.formatLog('INFO', 'x', { err }, 'json')).err;
+            const e = JSON.parse(emit(logger, 'x', { err }, 'json')).err;
             expect(e.statusCode).toBe(429);
             expect(e.errno).toBe(-111);
             expect(e.syscall).toBe('connect');
             expect(e.cause.message).toBe('root');
 
-            const masked = JSON.parse(logger.formatLog('INFO', 'x', {
+            const masked = JSON.parse(emit(logger, 'x', {
                 err: Object.assign(new Error('x'), { code: 'token=leak123' })
             }, 'json')).err;
             expect(masked.code).toBe('token=[REDACTED]');
@@ -622,13 +716,13 @@ describe('Logger', () => {
 
         test('masks quoted key="value" secrets in strings (M-H3+)', () => {
             const logger = new Logger({ logDir: null });
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { s: 'password="hunter2" ok' }, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', { s: 'password="hunter2" ok' }, 'json'));
             expect(parsed.s).toBe('password=[REDACTED] ok');
         });
 
         test('masks JSON-style "key":"value" secrets in stringified blobs (M-H3+)', () => {
             const logger = new Logger({ logDir: null });
-            const parsed = JSON.parse(logger.formatLog('INFO', 'x', { s: '{"refreshToken":"rt123","keep":1}' }, 'json'));
+            const parsed = JSON.parse(emit(logger, 'x', { s: '{"refreshToken":"rt123","keep":1}' }, 'json'));
             expect(parsed.s).toBe('{"refreshToken":"[REDACTED]","keep":1}');
         });
 

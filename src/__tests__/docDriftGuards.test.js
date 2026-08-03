@@ -378,6 +378,53 @@ describe('every notification channel is testable from the dashboard (#182)', () 
 });
 
 /**
+ * A dashboard panel that is never loaded (#188).
+ *
+ * #182 shipped an endpoint the UI could not reach — four hardcoded buttons
+ * against six supported channels — and the API fix alone left the reported
+ * symptom unchanged. The same mistake in the other direction is a `load*()`
+ * function that is defined and never called: the card sits on "Loading…"
+ * forever and nobody notices, because nothing errors.
+ */
+describe('every dashboard loader is actually invoked (#188)', () => {
+    const DASHBOARD = read('src/services/dashboard.html');
+    const defined = [...DASHBOARD.matchAll(/async function (load[A-Za-z0-9_]*)\s*\(/g)].map((m) => m[1]);
+
+    it('found the loaders', () => {
+        // An empty list would make the assertion below vacuously true.
+        expect(defined.length).toBeGreaterThan(5);
+    });
+
+    it.each(defined.map((n) => [n]))('%s is called somewhere', (name) => {
+        // Its own definition is the one occurrence that does not count.
+        const calls = [...DASHBOARD.matchAll(new RegExp(`\\b${name}\\s*\\(`, 'g'))].length;
+        expect(calls).toBeGreaterThan(1);
+    });
+});
+
+/**
+ * Documented dashboard endpoints must exist as routes (#188).
+ *
+ * docs/HEALTH_CHECK.md carries the API table people integrate against. An entry
+ * with no route 404s for anyone who follows the docs — the same forward-only
+ * check the README endpoint guard already applies to the public endpoints.
+ */
+describe('documented dashboard endpoints exist (#188)', () => {
+    const DOC = read('docs/HEALTH_CHECK.md');
+    const documented = [...DOC.matchAll(/\|\s*(GET|POST)\s*\|\s*`(\/api\/dashboard\/[a-z-]+)`/g)]
+        .map((m) => ({ method: m[1].toLowerCase(), path: m[2] }));
+
+    it('found the documented endpoint table', () => {
+        expect(documented.length).toBeGreaterThanOrEqual(10);
+    });
+
+    it.each(documented.map((e) => [`${e.method.toUpperCase()} ${e.path}`, e]))(
+        '%s is a real route', (_label, endpoint) => {
+            expect(HEALTHCHECK).toContain(`this.app.${endpoint.method}('${endpoint.path}'`);
+        });
+});
+
+/**
  * No host-absolute paths anywhere in the repo.
  *
  * A path like /home/<someone>/projects/thing is true on exactly one machine. In

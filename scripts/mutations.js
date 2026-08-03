@@ -476,7 +476,7 @@ module.exports = [
         id: '176-allowlist-swallows-findings', ticket: '#176',
         desc: 'the reviewed-kept list is treated as matching everything, hiding real findings',
         file: 'src/__tests__/deadMethodGuard.test.js',
-        anchor: '    return found.filter((m) => !REVIEWED_KEPT.has(m.key));',
+        anchor: '    return found.filter((m) => !reviewed.has(m.key));',
         mutant: '    return found.filter(() => false);',
         tests: 'deadMethodGuard'
     },
@@ -539,6 +539,69 @@ module.exports = [
         anchor: 'scripts/generateDashboardScreenshots.js\nscripts/generate-badges.js\nscripts/version-bump.js',
         mutant: 'scripts',
         tests: 'docDriftGuards'
+    },
+
+    // ---- #188: notification activity on the dashboard -----------------------
+    {
+        id: '188-stats-endpoint-blind', ticket: '#188',
+        desc: 'the notifications endpoint stops reporting what the service measured',
+        file: 'src/services/healthCheck.js',
+        anchor: '          ...this.notificationService.getStats(),',
+        mutant: '          ...{},',
+        tests: 'healthCheck'
+    },
+    {
+        id: '188-ratelimit-denominator-lost', ticket: '#188',
+        desc: 'the configured ceiling is dropped, so "remaining" has nothing to count down from',
+        file: 'src/services/healthCheck.js',
+        anchor: '          rateLimit: this.notificationService.config?.rateLimit',
+        mutant: '          rateLimit: undefined',
+        tests: 'healthCheck'
+    },
+    {
+        id: '188-panel-never-loads', ticket: '#188',
+        desc: 'the endpoint exists but the dashboard never calls it — the #182 mistake again',
+        file: 'src/services/dashboard.html',
+        anchor: '            loadNotificationStats();\n            try {',
+        mutant: '            try {',
+        tests: 'docDriftGuards'
+    },
+
+    // ---- #187: secret redaction on the path that actually writes ------------
+    // There were no redaction mutations at all before this. Breaking secret
+    // masking is the one failure here that puts a credential in a log file, so
+    // it is the last thing that should rely on tests nobody has scored.
+    {
+        id: '187-message-not-masked', ticket: '#187',
+        desc: 'a secret embedded in the log MESSAGE reaches console and file unmasked',
+        file: 'src/lib/logger.js',
+        anchor: '            safeMessage = this.maskSecrets(message);',
+        mutant: '            safeMessage = message;',
+        tests: 'logger'
+    },
+    {
+        id: '187-meta-not-redacted', ticket: '#187',
+        desc: 'metadata is written without redaction, so a password field lands in the log',
+        file: 'src/lib/logger.js',
+        anchor: '            safeMeta = this.redact(meta);',
+        mutant: '            safeMeta = meta;',
+        tests: 'logger'
+    },
+    {
+        id: '187-context-not-redacted', ticket: '#187',
+        desc: 'the logger context bypasses redaction',
+        file: 'src/lib/logger.js',
+        anchor: '            safeContext = this.redact(this.context);',
+        mutant: '            safeContext = this.context;',
+        tests: 'logger'
+    },
+    {
+        id: '187-file-line-unredacted', ticket: '#187',
+        desc: 'the FILE line is serialized from raw values while the console stays masked',
+        file: 'src/lib/logger.js',
+        anchor: '                const fileLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.fileFormat);',
+        mutant: '                const fileLine = this.safeSerialize(level, message, this.context, meta, this.fileFormat);',
+        tests: 'logger'
     },
 
     // ---- #169: the README claim that started #168 ---------------------------

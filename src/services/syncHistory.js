@@ -246,25 +246,6 @@ class SyncHistoryService {
   }
 
   /**
-   * Get the stored account snapshot for one server.
-   * @param {string} serverName
-   * @returns {Array<{id:string,name:string,classification:string,updatedAt:string}>}
-   *   empty array when nothing is stored for that server
-   */
-  getAccountMetadata(serverName) {
-    try {
-      return this.db.prepare(`
-        SELECT account_id AS id, account_name AS name, classification, updated_at AS updatedAt
-        FROM account_metadata WHERE server_name = ?
-        ORDER BY COALESCE(account_name, account_id)
-      `).all(serverName);
-    } catch (error) {
-      this.logger.error('Failed to read account metadata', { error: error.message, serverName });
-      throw error;
-    }
-  }
-
-  /**
    * Get the stored account snapshots for every server, grouped by server.
    * @returns {Array<{server:string, accounts:Array}>}
    */
@@ -716,12 +697,6 @@ class SyncHistoryService {
     }
   }
 
-  /**
-   * Get database path (for testing)
-   */
-  getDbPath() {
-    return this.dbPath;
-  }
 }
 
 module.exports = { SyncHistoryService };
