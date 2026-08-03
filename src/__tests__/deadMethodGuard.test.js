@@ -27,21 +27,26 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..', '..');
 
 /**
- * Methods that are unreferenced in production and are STAYING, each with a
- * reason. Anything not listed here must be deleted or justified — that is the
- * whole point of the gate.
+ * Methods that are unreferenced in production and have not been dealt with yet,
+ * each naming the ticket that owns the decision. Anything not listed here must
+ * be deleted or justified — that is the whole point of the gate.
  *
- * These predate the guard. #181 tracks triaging them; they are recorded rather
- * than silently tolerated, and rather than expanded into #176's scope.
+ * These predate the guard and are recorded rather than silently tolerated.
+ * Tracked by #181, split into #186 (mechanical deletions), #187 (formatLog and
+ * its redaction tests) and #188 (a product call on getStats).
+ *
+ * Note this project is NOT a library — no `bin`, no `files`, not on npm — so
+ * "public accessor" is not a reason to keep an uncalled method. Nothing outside
+ * this repository can reach them.
  */
 const REVIEWED_KEPT = new Map([
-    ['src/lib/configLoader.js:getServer', 'public accessor on a library-style class, documented in docs/TESTING.md'],
-    ['src/lib/logger.js:formatLog', 'core formatting seam; 22 tests pin its output contract'],
-    ['src/lib/logger.js:logWithContext', 'no reference at all, not even a test — strongest deletion candidate'],
-    ['src/services/notificationService.js:getStats', 'public stats accessor'],
-    ['src/services/notificationService.js:reset', 'test/reset affordance on a long-lived service'],
-    ['src/services/syncHistory.js:getAccountMetadata', 'public query method'],
-    ['src/services/syncHistory.js:getDbPath', 'public accessor']
+    ['src/lib/logger.js:logWithContext', '#186 — no reference at all, not even a test'],
+    ['src/services/syncHistory.js:getAccountMetadata', '#186 — superseded by getAllAccountMetadata(), which the dashboard calls'],
+    ['src/services/syncHistory.js:getDbPath', '#186 — unused accessor'],
+    ['src/lib/configLoader.js:getServer', '#186 — unused accessor'],
+    ['src/lib/logger.js:formatLog', '#187 — 13 redaction tests reach masking through this dead wrapper; re-point them first'],
+    ['src/services/notificationService.js:reset', '#186 — reset affordance with no production caller'],
+    ['src/services/notificationService.js:getStats', '#188 — unwired rather than dead; wire to the dashboard or delete']
 ]);
 
 // The body may start on the same line; a guard that only saw multi-line
