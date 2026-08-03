@@ -1,6 +1,6 @@
 {
   "name": "actual-sync",
-  "version": "1.11.5",
+  "version": "1.11.6",
   "description": "Automated bank synchronization service for Actual Budget",
   "main": "index.js",
   "scripts": {
@@ -65,7 +65,7 @@
     "url": ""
   },
   "dependencies": {
-    "@actual-app/api": "^26.7.0",
+    "@actual-app/api": "^26.8.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-sqlite3": "^13.0.2",
