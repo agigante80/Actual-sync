@@ -488,18 +488,6 @@ class ConfigLoader {
     }
 
     /**
-     * Get specific server configuration by name
-     * @param {string} name - Server name
-     * @returns {Object|null} Server configuration or null if not found
-     */
-    getServer(name) {
-        if (!this.config) {
-            throw new Error('Configuration not loaded. Call load() first.');
-        }
-        return this.config.servers.find(s => s.name === name) || null;
-    }
-
-    /**
      * Get all server configurations
      * @returns {Array} Array of server configurations
      */

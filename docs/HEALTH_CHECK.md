@@ -152,10 +152,21 @@ match the code, not as an integration surface:
 | GET  | `/api/dashboard/metrics` | Aggregated metrics for the Analytics tab |
 | GET  | `/api/dashboard/history` | Sync history records |
 | GET  | `/api/dashboard/accounts` | Discovered bank accounts |
+| GET  | `/api/dashboard/notifications` | Failure-alert rate-limit usage + recent sync outcomes per server |
 | POST | `/api/dashboard/sync` | Trigger a manual sync |
 | POST | `/api/dashboard/dismiss-error` | Clear a server's last error |
 | POST | `/api/dashboard/reset-history` | Reset stored sync history |
-| POST | `/api/dashboard/test-notification` | Send a test notification |
+| POST | `/api/dashboard/test-notification` | Send a test notification (`email`, `discord`, `slack`, `telegram`, `ntfy`, `generic`) |
+
+`GET /api/dashboard/notifications` exposes rate-limit headroom and recent sync outcomes per
+server. Rate limiting is otherwise invisible: a server at zero remaining is having its failure
+alerts suppressed, and this is the surface that says so. The configured `rateLimit` is echoed
+back, because "remaining" means nothing without the ceiling it counts down from.
+
+**`notificationsSentLastHour` counts FAILURE notifications only.** Rate limiting is failure-only
+by design — a successful sync never consumes budget — so this is not a count of all
+notifications sent. `recentSyncsByServer` reports every outcome (total / successes / failures)
+and `consecutiveFailuresByServer` the current streak.
 
 ## Integration Examples
 

@@ -1401,15 +1401,6 @@ Please investigate and resolve the issue.
     }
   }
 
-  /**
-   * Reset tracking state (mainly for testing)
-   */
-  reset() {
-    this.lastNotificationTime = {};
-    this.notificationHistory = {};
-    this.consecutiveFailures = {};
-    this.recentSyncs = {};
-  }
 }
 
 module.exports = { NotificationService };
