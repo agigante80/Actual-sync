@@ -240,30 +240,140 @@ describe('README does not claim notifications are failure-only (#169)', () => {
  * without building an image, and the both-directions form below has real teeth:
  * excluding all of `scripts/` to satisfy the first half breaks the second.
  */
-describe('the mutation tooling stays out of the production image (#180)', () => {
+describe('only operator tooling ships in the production image (#180, #183)', () => {
     const DOCKERIGNORE = read('.dockerignore');
     const entries = DOCKERIGNORE.split('\n')
         .map(l => l.trim())
         .filter(l => l && !l.startsWith('#'));
 
-    it.each(['scripts/mutationTest.js', 'scripts/mutations.js'])(
-        'excludes %s, which rewrites source files', (file) => {
-            expect(entries).toContain(file);
-        });
+    /** Build-time or release-time only; useless or actively confusing in a container. */
+    const MUST_NOT_SHIP = [
+        ['scripts/mutationTest.js', 'rewrites source files in place'],
+        ['scripts/mutations.js', 'the catalog of source edits that runner applies'],
+        ['scripts/generateDashboardScreenshots.js', 'requires puppeteer, a devDependency the image omits'],
+        ['scripts/generate-badges.js', 'writes to .github/badges, which does not exist in the image'],
+        ['scripts/version-bump.js', 'rewrites VERSION, package.json and package-lock.json']
+    ];
 
-    it('still ships validateConfig.js, which the container genuinely needs', () => {
-        // Guards the lazy fix: ignoring `scripts` wholesale would satisfy the
-        // check above and break `npm run validate-config` in the container.
-        expect(entries).not.toContain('scripts');
-        expect(entries).not.toContain('scripts/');
-        expect(entries).not.toContain('scripts/*');
-        expect(entries).not.toContain('scripts/validateConfig.js');
+    /** Genuinely useful inside the container; excluding these breaks documented commands. */
+    const MUST_SHIP = [
+        ['scripts/validateConfig.js', 'npm run validate-config, the documented pre-upgrade check (#177)'],
+        ['scripts/listAccounts.js', 'npm run list-accounts'],
+        ['scripts/viewHistory.js', 'npm run history']
+    ];
+
+    it.each(MUST_NOT_SHIP)('excludes %s — %s', (file) => {
+        expect(entries).toContain(file);
     });
 
-    it('names files that actually exist, so the exclusions cannot rot', () => {
-        for (const f of ['scripts/mutationTest.js', 'scripts/mutations.js', 'scripts/validateConfig.js']) {
+    it.each(MUST_SHIP)('does not exclude %s — %s', (file) => {
+        // The other direction, and the one with teeth: it is what stops the
+        // lazy "ignore all of scripts/" fix from satisfying the checks above.
+        expect(entries).not.toContain(file);
+    });
+
+    it('never excludes the scripts directory wholesale', () => {
+        for (const pattern of ['scripts', 'scripts/', 'scripts/*', 'scripts/**']) {
+            expect(entries).not.toContain(pattern);
+        }
+    });
+
+    it('names files that actually exist, so the lists cannot rot', () => {
+        for (const [f] of [...MUST_NOT_SHIP, ...MUST_SHIP]) {
             expect(fs.existsSync(path.join(ROOT, f))).toBe(true);
         }
+    });
+
+    it('accounts for every script in the tree, so a new one is a deliberate choice', () => {
+        // Without this a script added later is silently neither listed nor
+        // considered, and the next over-broad COPY goes unnoticed.
+        const onDisk = fs.readdirSync(path.join(ROOT, 'scripts'))
+            .filter((f) => f.endsWith('.js'))
+            .map((f) => `scripts/${f}`)
+            .sort();
+        const classified = [...MUST_NOT_SHIP, ...MUST_SHIP].map(([f]) => f).sort();
+        expect(onDisk).toEqual(classified);
+    });
+});
+
+/**
+ * Every advertised notification channel must be testable from the dashboard (#182).
+ *
+ * The route handled four channels while the schema defined six, so a
+ * misconfigured ntfy topic or generic webhook could not be verified at all —
+ * the only thing that would exercise it was the real failure it existed to
+ * report. Adding the two cases fixes today; this stops the next channel from
+ * repeating it.
+ *
+ * Derived from the schema rather than a hardcoded list, so a channel added to
+ * `config.schema.json` without a matching `case` fails here.
+ */
+describe('every notification channel is testable from the dashboard (#182)', () => {
+    const schema = JSON.parse(read('config/config.schema.json'));
+    const notif = schema.properties.notifications.properties;
+
+    // `webhooks.telegram` is a legacy alias for the top-level telegram channel
+    // (#174), not a channel of its own, so it needs no case of its own.
+    const LEGACY_ALIASES = new Set(['telegram']);
+
+    const channels = [
+        ...['email', 'telegram', 'ntfy'].filter((k) => notif[k]),
+        ...Object.keys(notif.webhooks?.properties || {}).filter((k) => !LEGACY_ALIASES.has(k))
+    ];
+
+    // The `case 'x':` labels in the test-notification switch.
+    const route = HEALTHCHECK.slice(HEALTHCHECK.indexOf("post('/api/dashboard/test-notification'"));
+    const handled = [...route.slice(0, route.indexOf('\n    });')).matchAll(/case '([a-z]+)'/g)].map((m) => m[1]);
+
+    it('derives a plausible channel list from the schema', () => {
+        // Guards the guard: an empty list would make the assertions below vacuous.
+        expect(channels).toEqual(expect.arrayContaining(['email', 'telegram', 'ntfy', 'slack', 'discord', 'generic']));
+    });
+
+    it('found the route and its case labels', () => {
+        expect(handled.length).toBeGreaterThanOrEqual(6);
+    });
+
+    it.each(['email', 'telegram', 'ntfy', 'slack', 'discord', 'generic'])(
+        'handles the %s channel', (channel) => {
+            expect(handled).toContain(channel);
+        });
+
+    it('has a case for every channel the schema defines', () => {
+        expect(channels.filter((c) => !handled.includes(c))).toEqual([]);
+    });
+
+    it('names every supported channel in the invalid-channel message', () => {
+        // Otherwise the error tells a user their channel is unsupported when it
+        // is merely absent from the switch.
+        const message = route.match(/Invalid channel\. Use: ([^'"]+)/)?.[1] || '';
+        for (const channel of channels) expect(message).toContain(channel);
+    });
+
+    // The route is only half of it. "Testable from the dashboard" means a user
+    // can click something — an endpoint nobody can reach from the UI leaves the
+    // reported symptom exactly as it was.
+    describe('the dashboard UI offers a button per channel', () => {
+        const DASHBOARD = read('src/services/dashboard.html');
+        const buttons = [...DASHBOARD.matchAll(/testNotification\('([a-z]+)'\)/g)].map((m) => m[1]);
+
+        it('found the test-notification buttons at all', () => {
+            expect(buttons.length).toBeGreaterThanOrEqual(6);
+        });
+
+        it.each(['email', 'telegram', 'ntfy', 'slack', 'discord', 'generic'])(
+            'has a %s button', (channel) => {
+                expect(buttons).toContain(channel);
+            });
+
+        it('has a button for every channel the schema defines', () => {
+            expect(channels.filter((c) => !buttons.includes(c))).toEqual([]);
+        });
+
+        it('offers no button for a channel the route cannot handle', () => {
+            // The inverse rot: a button that always 400s is worse than none.
+            expect(buttons.filter((b) => !handled.includes(b))).toEqual([]);
+        });
     });
 });
 

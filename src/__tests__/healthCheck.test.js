@@ -36,6 +36,34 @@ function httpGet(url) {
   });
 }
 
+// Helper to POST JSON
+function httpPostJson(url, payload) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const target = new URL(url);
+    const req = http.request({
+      hostname: target.hostname,
+      port: target.port,
+      path: target.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          resolve({ statusCode: res.statusCode, body: JSON.parse(data) });
+        } catch (error) {
+          resolve({ statusCode: res.statusCode, body: data });
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 describe('HealthCheckService', () => {
   let healthCheck;
   let testPort = 3456; // Use non-standard port for testing
@@ -1043,6 +1071,171 @@ describe('HealthCheckService', () => {
           hc.broadcastLog('INFO', 'Test broadcast', {});
         }, 100);
       });
+    });
+  });
+
+  /**
+   * The dashboard's test-notification route (#182).
+   *
+   * It used to handle four channels while the service advertised six, so a
+   * misconfigured ntfy topic or generic webhook could not be verified at all —
+   * the only thing that would exercise it was the real failure it was meant to
+   * report.
+   */
+  describe('POST /api/dashboard/test-notification — ntfy and generic (#182)', () => {
+    const url = () => `http://127.0.0.1:${testPort}/api/dashboard/test-notification`;
+
+    /** A notificationService stub recording what the route asked it to send. */
+    const stubNotifier = (config, overrides = {}) => ({
+      config,
+      sendNtfy: jest.fn().mockResolvedValue({ success: true }),
+      sendGenericWebhooks: jest.fn().mockResolvedValue([{ name: 'hook', success: true }]),
+      ...overrides
+    });
+
+    beforeEach(async () => {
+      await healthCheck.start();
+    });
+
+    describe('ntfy', () => {
+      it('sends and reports success when configured', async () => {
+        healthCheck.notificationService = stubNotifier({ ntfy: { enabled: true, url: 'https://ntfy.sh/topic' } });
+        const res = await httpPostJson(url(), { channel: 'ntfy' });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.body.success).toBe(true);
+        expect(healthCheck.notificationService.sendNtfy).toHaveBeenCalledTimes(1);
+      });
+
+      it('passes a real formatted ntfy payload, not an ad-hoc one', async () => {
+        // #110: a test notification must look like a real one, or it verifies
+        // formatting that no live path produces.
+        healthCheck.notificationService = stubNotifier({ ntfy: { enabled: true, url: 'https://ntfy.sh/topic' } });
+        await httpPostJson(url(), { channel: 'ntfy' });
+
+        const [payload] = healthCheck.notificationService.sendNtfy.mock.calls[0];
+        expect(payload).toEqual(expect.objectContaining({
+          title: expect.any(String), message: expect.any(String), level: expect.any(String)
+        }));
+        expect(Array.isArray(payload.tags)).toBe(true);
+      });
+
+      it('reports not-configured rather than claiming success when disabled', async () => {
+        healthCheck.notificationService = stubNotifier({ ntfy: { enabled: false, url: 'https://ntfy.sh/topic' } });
+        const res = await httpPostJson(url(), { channel: 'ntfy' });
+
+        expect(res.statusCode).toBe(400);
+        expect(res.body.error).toMatch(/ntfy/i);
+        expect(healthCheck.notificationService.sendNtfy).not.toHaveBeenCalled();
+      });
+
+      it('reports not-configured when there is no url', async () => {
+        healthCheck.notificationService = stubNotifier({ ntfy: { enabled: true } });
+        expect((await httpPostJson(url(), { channel: 'ntfy' })).statusCode).toBe(400);
+      });
+
+      it('surfaces a send failure as an error, not a success', async () => {
+        healthCheck.notificationService = stubNotifier(
+          { ntfy: { enabled: true, url: 'https://ntfy.sh/topic' } },
+          { sendNtfy: jest.fn().mockResolvedValue({ success: false, error: 'topic gone' }) }
+        );
+        const res = await httpPostJson(url(), { channel: 'ntfy' });
+        expect(res.statusCode).toBe(500);
+      });
+    });
+
+    describe('generic webhooks', () => {
+      const oneHook = { webhooks: { generic: [{ name: 'hook', url: 'https://example.test/h' }] } };
+
+      it('sends and reports success when configured', async () => {
+        healthCheck.notificationService = stubNotifier(oneHook);
+        const res = await httpPostJson(url(), { channel: 'generic' });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.body.success).toBe(true);
+        expect(healthCheck.notificationService.sendGenericWebhooks).toHaveBeenCalledTimes(1);
+      });
+
+      it('bypasses the notifyOnSuccess gate, as the other channels do', async () => {
+        // The route exists to prove delivery works. Passing an `allow` predicate
+        // would let a per-entry errors_only silently skip the send and still
+        // report success (#169).
+        healthCheck.notificationService = stubNotifier(oneHook);
+        await httpPostJson(url(), { channel: 'generic' });
+
+        const [, allow] = healthCheck.notificationService.sendGenericWebhooks.mock.calls[0];
+        expect(allow).toBeUndefined();
+      });
+
+      it('reports not-configured when every entry is disabled', async () => {
+        // An all-disabled array must not read as configured (#169).
+        healthCheck.notificationService = stubNotifier({
+          webhooks: { generic: [{ name: 'off', url: 'https://example.test/h', enabled: false }] }
+        });
+        const res = await httpPostJson(url(), { channel: 'generic' });
+
+        expect(res.statusCode).toBe(400);
+        expect(healthCheck.notificationService.sendGenericWebhooks).not.toHaveBeenCalled();
+      });
+
+      it('reports not-configured when the array is empty', async () => {
+        healthCheck.notificationService = stubNotifier({ webhooks: { generic: [] } });
+        expect((await httpPostJson(url(), { channel: 'generic' })).statusCode).toBe(400);
+      });
+
+      it('surfaces a delivery failure as an error', async () => {
+        healthCheck.notificationService = stubNotifier(oneHook, {
+          sendGenericWebhooks: jest.fn().mockResolvedValue([{ name: 'hook', success: false, error: 'refused' }])
+        });
+        expect((await httpPostJson(url(), { channel: 'generic' })).statusCode).toBe(500);
+      });
+
+      it('says "partially delivered" when only some endpoints accepted', async () => {
+        // "Sent successfully" while two of three refused is the dishonest
+        // reporting #171 fixed on the sync path. The claim is no truer here.
+        healthCheck.notificationService = stubNotifier(
+          { webhooks: { generic: [{ name: 'a', url: 'u' }, { name: 'b', url: 'u' }, { name: 'c', url: 'u' }] } },
+          {
+            sendGenericWebhooks: jest.fn().mockResolvedValue([
+              { name: 'a', success: true },
+              { name: 'b', success: false, error: 'refused' },
+              { name: 'c', success: false, error: 'timeout' }
+            ])
+          }
+        );
+        const res = await httpPostJson(url(), { channel: 'generic' });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.body.message).toMatch(/partially delivered \(1\/3\)/);
+        expect(res.body.failed).toEqual([
+          { name: 'b', error: 'refused' },
+          { name: 'c', error: 'timeout' }
+        ]);
+      });
+
+      it('reports the full count when every endpoint accepted', async () => {
+        healthCheck.notificationService = stubNotifier(
+          { webhooks: { generic: [{ name: 'a', url: 'u' }, { name: 'b', url: 'u' }] } },
+          {
+            sendGenericWebhooks: jest.fn().mockResolvedValue([
+              { name: 'a', success: true }, { name: 'b', success: true }
+            ])
+          }
+        );
+        const res = await httpPostJson(url(), { channel: 'generic' });
+        expect(res.body.message).toMatch(/sent successfully \(2\/2\)/);
+        expect(res.body.failed).toBeUndefined();
+      });
+    });
+
+    it('lists every supported channel when given an unknown one', async () => {
+      healthCheck.notificationService = stubNotifier({});
+      const res = await httpPostJson(url(), { channel: 'carrier-pigeon' });
+
+      expect(res.statusCode).toBe(400);
+      for (const ch of ['email', 'discord', 'slack', 'telegram', 'ntfy', 'generic']) {
+        expect(res.body.error).toContain(ch);
+      }
     });
   });
 });
