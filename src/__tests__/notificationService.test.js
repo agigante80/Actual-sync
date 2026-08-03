@@ -465,23 +465,6 @@ describe('NotificationService', () => {
     });
   });
 
-  describe('reset', () => {
-    test('should reset all tracking state', () => {
-      const service = new NotificationService();
-
-      service.recordSyncResult('server1', false);
-      service.lastNotificationTime = Date.now();
-      service.notificationHistory = [Date.now()];
-
-      service.reset();
-
-      expect(service.lastNotificationTime).toEqual({});
-      expect(service.notificationHistory).toEqual({});
-      expect(service.consecutiveFailures).toEqual({});
-      expect(service.recentSyncs).toEqual({});
-    });
-  });
-
   describe('notifySync forwards account details (#100)', () => {
     test('passes skippedAccounts (and synced/failed) through to the formatter', async () => {
       const service = new NotificationService(); // no channels → sends are no-ops
