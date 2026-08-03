@@ -626,6 +626,18 @@
             </div>
 
             <div class="card" style="margin-top: 20px;">
+                <h2>Notification Activity</h2>
+                <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
+                    How many notifications have been sent in the last hour, and how much of the
+                    rate-limit budget is left. If alerts have gone quiet, check here first — a
+                    server at zero remaining is being suppressed.
+                </p>
+                <div id="notification-stats">
+                    <div class="loading">Loading…</div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 20px;">
                 <h2>Date Format Preferences</h2>
                 <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
                     Choose how timestamps are displayed throughout the dashboard. Changes are saved automatically.
@@ -1063,34 +1075,6 @@
                 }
             } catch (error) {
                 messageDiv.innerHTML = `<div class="error-message">✗ Error: ${error.message}</div>`;
-            }
-        }
-
-        async function loadHistory() {
-            try {
-                const response = await fetch('/api/dashboard/history?limit=10', getFetchOptions());
-                const history = await response.json();
-
-                const tbody = document.getElementById('history-body');
-                if (history.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No sync history available</td></tr>';
-                    return;
-                }
-
-                tbody.innerHTML = history.map(record => `
-                    <tr>
-                        <td>${formatTime(record.timestamp)}</td>
-                        <td>${record.server_name}</td>
-                        <td>
-                            <span class="status-icon ${record.status}"></span>
-                            ${record.status}
-                        </td>
-                        <td>${record.duration_ms}ms</td>
-                        <td>${formatAccountCounts(record.accounts_succeeded, record.accounts_failed, record.accounts_skipped)}</td>
-                    </tr>
-                `).join('');
-            } catch (error) {
-                console.error('Failed to load history:', error);
             }
         }
 
@@ -1637,7 +1621,56 @@
         }
 
         // Load Settings Tab
+        // Notification activity + remaining rate-limit budget (#188). Rate
+        // limiting was previously invisible: a user whose failure alerts were
+        // being suppressed had nothing telling them so.
+        async function loadNotificationStats() {
+            const el = document.getElementById('notification-stats');
+            if (!el) return;
+            try {
+                const response = await fetch('/api/dashboard/notifications', getFetchOptions());
+                if (!response.ok) {
+                    // Don't leave the card on "Loading…" forever (e.g. 503 when
+                    // notifications are not configured at all).
+                    el.innerHTML = '<div style="color: #94a3b8;">Notification statistics unavailable.</div>';
+                    return;
+                }
+                const data = await response.json();
+                const max = data.rateLimit?.maxPerHour;
+                const servers = Object.entries(data.perServerStats || {});
+
+                const summary = `
+                    <div style="margin-bottom: 12px;">
+                        <strong>${data.notificationsSentLastHour ?? 0}</strong> sent in the last hour
+                        ${max ? ` &middot; <strong>${data.rateLimitRemaining ?? 0}</strong> of ${max} remaining` : ''}
+                    </div>`;
+
+                const rows = servers.length === 0
+                    ? '<div style="color: #94a3b8;">No notifications sent yet.</div>'
+                    : servers.map(([name, s]) => {
+                        const exhausted = (s.rateLimitRemaining ?? 1) === 0;
+                        const failures = data.consecutiveFailuresByServer?.[name] || 0;
+                        return `
+                            <div style="display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid #1e293b;">
+                                <span>${name}</span>
+                                <span style="color: ${exhausted ? '#f87171' : '#94a3b8'};">
+                                    ${s.notificationsSentLastHour ?? 0} sent
+                                    ${max ? ` &middot; ${s.rateLimitRemaining ?? 0} left` : ''}
+                                    ${exhausted ? ' &middot; suppressed' : ''}
+                                    ${failures ? ` &middot; ${failures} consecutive failures` : ''}
+                                </span>
+                            </div>`;
+                    }).join('');
+
+                el.innerHTML = summary + rows;
+            } catch (error) {
+                console.error('Failed to load notification stats:', error);
+                el.innerHTML = '<div style="color: #94a3b8;">Notification statistics unavailable.</div>';
+            }
+        }
+
         async function loadSettingsTab() {
+            loadNotificationStats();
             try {
                 const response = await fetch('/api/dashboard/status', getFetchOptions());
                 const data = await response.json();

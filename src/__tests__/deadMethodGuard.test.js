@@ -40,7 +40,6 @@ const ROOT = path.resolve(__dirname, '..', '..');
  * this repository can reach them.
  */
 const REVIEWED_KEPT = new Map([
-    ['src/services/notificationService.js:getStats', '#188 — unwired rather than dead; wire to the dashboard or delete']
 ]);
 
 // The body may start on the same line; a guard that only saw multi-line
@@ -130,8 +129,8 @@ function productionFiles() {
  * @param {Array<{key: string}>} found
  * @returns {Array<{key: string}>} findings that nobody has signed off
  */
-function unreviewed(found) {
-    return found.filter((m) => !REVIEWED_KEPT.has(m.key));
+function unreviewed(found, reviewed = REVIEWED_KEPT) {
+    return found.filter((m) => !reviewed.has(m.key));
 }
 
 describe('no class method is dead in production (knip cannot see these)', () => {
@@ -173,14 +172,20 @@ describe('no class method is dead in production (knip cannot see these)', () => 
 describe('the reviewed-kept allowlist', () => {
     it('drops a reviewed entry but keeps a novel one', () => {
         // A filter widened to match everything would make the production
-        // assertion pass with zero findings — green, and worthless.
-        const someReviewed = [...REVIEWED_KEPT.keys()][0];
-        const kept = unreviewed([{ key: someReviewed }, { key: 'src/lib/brandNew.js:orphan' }]);
+        // assertion pass with zero findings — green, and worthless. Tested
+        // against a synthetic map so this holds when the real one is empty,
+        // which is the desired end state (#181).
+        const reviewed = new Map([['src/lib/known.js:signedOff', '#123 — kept on purpose']]);
+        const kept = unreviewed(
+            [{ key: 'src/lib/known.js:signedOff' }, { key: 'src/lib/brandNew.js:orphan' }],
+            reviewed
+        );
         expect(kept.map((m) => m.key)).toEqual(['src/lib/brandNew.js:orphan']);
     });
 
-    it('is not empty, so the entries above are real sign-offs', () => {
-        expect(REVIEWED_KEPT.size).toBeGreaterThan(0);
+    it('keeps nothing back when nothing has been signed off', () => {
+        const found = [{ key: 'src/lib/a.js:x' }, { key: 'src/lib/b.js:y' }];
+        expect(unreviewed(found, new Map())).toHaveLength(2);
     });
 
     it('gives a reason for every entry', () => {
