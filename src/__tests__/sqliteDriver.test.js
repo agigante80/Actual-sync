@@ -201,17 +201,27 @@ describe('better-sqlite3 driver boundary (#185)', () => {
     });
 
     describe('error surfaces', () => {
-        it('throws a readable Error for a bad statement, not an opaque native failure', () => {
-            // Every catch block in syncHistory logs error.message; a driver that
-            // changed the error shape would degrade those to noise.
+        // NOT `toBeInstanceOf(Error)`. The native addon can be loaded in a
+        // different realm from the test file, so SqliteError's prototype chain
+        // does not always reach *this* realm's Error — it failed roughly one run
+        // in five. That assertion tests realm identity, which nothing depends
+        // on. What the code actually needs is a usable message and code, since
+        // every catch block in syncHistory logs `error.message`.
+        const assertUsableError = (caught) => {
+            expect(caught).toBeTruthy();
+            expect(typeof caught.message).toBe('string');
+            expect(caught.message.length).toBeGreaterThan(0);
+            expect(typeof caught.stack).toBe('string');
+        };
+
+        it('throws a readable error for a bad statement, not an opaque native failure', () => {
             let caught;
             try {
                 db.db.prepare('SELECT * FROM table_that_does_not_exist').all();
             } catch (err) {
                 caught = err;
             }
-            expect(caught).toBeInstanceOf(Error);
-            expect(typeof caught.message).toBe('string');
+            assertUsableError(caught);
             expect(caught.message).toMatch(/no such table/i);
         });
 
@@ -223,7 +233,7 @@ describe('better-sqlite3 driver boundary (#185)', () => {
             } catch (err) {
                 caught = err;
             }
-            expect(caught).toBeInstanceOf(Error);
+            assertUsableError(caught);
             expect(String(caught.code || '')).toMatch(/SQLITE_CONSTRAINT/);
         });
 
