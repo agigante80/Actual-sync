@@ -40,12 +40,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
  * this repository can reach them.
  */
 const REVIEWED_KEPT = new Map([
-    ['src/lib/logger.js:logWithContext', '#186 — no reference at all, not even a test'],
-    ['src/services/syncHistory.js:getAccountMetadata', '#186 — superseded by getAllAccountMetadata(), which the dashboard calls'],
-    ['src/services/syncHistory.js:getDbPath', '#186 — unused accessor'],
-    ['src/lib/configLoader.js:getServer', '#186 — unused accessor'],
     ['src/lib/logger.js:formatLog', '#187 — 13 redaction tests reach masking through this dead wrapper; re-point them first'],
-    ['src/services/notificationService.js:reset', '#186 — reset affordance with no production caller'],
     ['src/services/notificationService.js:getStats', '#188 — unwired rather than dead; wire to the dashboard or delete']
 ]);
 

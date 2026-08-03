@@ -589,14 +589,6 @@ class Logger {
     }
 
     /**
-     * Log with context included
-     */
-    logWithContext(level, message, meta = {}) {
-        const contextMeta = { ...this.context, ...meta };
-        this.log(level, message, contextMeta);
-    }
-    
-    /**
      * Start performance timer
      */
     startTimer(operationName) {
