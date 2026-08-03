@@ -374,20 +374,6 @@ class Logger {
     }
 
     /**
-     * Format a log entry: redact dynamic data (#103) then serialize in the given
-     * format (defaults to the console format). (#104)
-     */
-    formatLog(level, message, meta = {}, format = this.format) {
-        return this.serialize(
-            level,
-            this.maskSecrets(message),
-            this.redact(this.context),
-            this.redact(meta),
-            format
-        );
-    }
-    
-    /**
      * Format syslog message (RFC 5424)
      */
     formatSyslog(level, safeMessage, safeContext = {}, safeMeta = {}) {
