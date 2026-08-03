@@ -541,6 +541,43 @@ module.exports = [
         tests: 'docDriftGuards'
     },
 
+    // ---- #187: secret redaction on the path that actually writes ------------
+    // There were no redaction mutations at all before this. Breaking secret
+    // masking is the one failure here that puts a credential in a log file, so
+    // it is the last thing that should rely on tests nobody has scored.
+    {
+        id: '187-message-not-masked', ticket: '#187',
+        desc: 'a secret embedded in the log MESSAGE reaches console and file unmasked',
+        file: 'src/lib/logger.js',
+        anchor: '            safeMessage = this.maskSecrets(message);',
+        mutant: '            safeMessage = message;',
+        tests: 'logger'
+    },
+    {
+        id: '187-meta-not-redacted', ticket: '#187',
+        desc: 'metadata is written without redaction, so a password field lands in the log',
+        file: 'src/lib/logger.js',
+        anchor: '            safeMeta = this.redact(meta);',
+        mutant: '            safeMeta = meta;',
+        tests: 'logger'
+    },
+    {
+        id: '187-context-not-redacted', ticket: '#187',
+        desc: 'the logger context bypasses redaction',
+        file: 'src/lib/logger.js',
+        anchor: '            safeContext = this.redact(this.context);',
+        mutant: '            safeContext = this.context;',
+        tests: 'logger'
+    },
+    {
+        id: '187-file-line-unredacted', ticket: '#187',
+        desc: 'the FILE line is serialized from raw values while the console stays masked',
+        file: 'src/lib/logger.js',
+        anchor: '                const fileLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.fileFormat);',
+        mutant: '                const fileLine = this.safeSerialize(level, message, this.context, meta, this.fileFormat);',
+        tests: 'logger'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
