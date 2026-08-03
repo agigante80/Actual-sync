@@ -152,10 +152,17 @@ match the code, not as an integration surface:
 | GET  | `/api/dashboard/metrics` | Aggregated metrics for the Analytics tab |
 | GET  | `/api/dashboard/history` | Sync history records |
 | GET  | `/api/dashboard/accounts` | Discovered bank accounts |
+| GET  | `/api/dashboard/notifications` | Notifications sent per hour + remaining rate-limit budget |
 | POST | `/api/dashboard/sync` | Trigger a manual sync |
 | POST | `/api/dashboard/dismiss-error` | Clear a server's last error |
 | POST | `/api/dashboard/reset-history` | Reset stored sync history |
-| POST | `/api/dashboard/test-notification` | Send a test notification |
+| POST | `/api/dashboard/test-notification` | Send a test notification (`email`, `discord`, `slack`, `telegram`, `ntfy`, `generic`) |
+
+`GET /api/dashboard/notifications` reports how many notifications each server has sent in the
+last hour and how much of `notifications.rateLimit.maxPerHour` remains, alongside consecutive
+failure counts. Rate limiting is otherwise invisible: a server at zero remaining is having its
+alerts suppressed, and this is the surface that says so. The configured `rateLimit` is echoed
+back, because "remaining" means nothing without the ceiling it counts down from.
 
 ## Integration Examples
 

@@ -937,6 +937,27 @@ This test verifies that notifications are configured correctly and can reach the
       }
     });
 
+    // Notification activity and how much rate-limit budget is left (#188).
+    // Rate limiting was otherwise invisible: a user whose failure alerts were
+    // being suppressed had no surface telling them so. `rateLimit` is echoed
+    // alongside the counts because "remaining" means nothing without the
+    // ceiling it counts down from.
+    this.app.get('/api/dashboard/notifications', this.dashboardAuth(), (req, res) => {
+      if (!this.notificationService) {
+        return res.status(503).json({ error: 'Notification service not available' });
+      }
+
+      try {
+        res.json({
+          ...this.notificationService.getStats(),
+          rateLimit: this.notificationService.config?.rateLimit
+        });
+      } catch (error) {
+        this.logger.error('Failed to get notification stats', { error: error.message });
+        res.status(500).json({ error: 'Failed to retrieve notification statistics' });
+      }
+    });
+
     // 404 handler
     this.app.use((req, res) => {
       this.logger.warn('Unknown endpoint requested', { 

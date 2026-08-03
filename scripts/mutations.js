@@ -476,7 +476,7 @@ module.exports = [
         id: '176-allowlist-swallows-findings', ticket: '#176',
         desc: 'the reviewed-kept list is treated as matching everything, hiding real findings',
         file: 'src/__tests__/deadMethodGuard.test.js',
-        anchor: '    return found.filter((m) => !REVIEWED_KEPT.has(m.key));',
+        anchor: '    return found.filter((m) => !reviewed.has(m.key));',
         mutant: '    return found.filter(() => false);',
         tests: 'deadMethodGuard'
     },
@@ -538,6 +538,32 @@ module.exports = [
         file: '.dockerignore',
         anchor: 'scripts/generateDashboardScreenshots.js\nscripts/generate-badges.js\nscripts/version-bump.js',
         mutant: 'scripts',
+        tests: 'docDriftGuards'
+    },
+
+    // ---- #188: notification activity on the dashboard -----------------------
+    {
+        id: '188-stats-endpoint-blind', ticket: '#188',
+        desc: 'the notifications endpoint stops reporting what the service measured',
+        file: 'src/services/healthCheck.js',
+        anchor: '          ...this.notificationService.getStats(),',
+        mutant: '          ...{},',
+        tests: 'healthCheck'
+    },
+    {
+        id: '188-ratelimit-denominator-lost', ticket: '#188',
+        desc: 'the configured ceiling is dropped, so "remaining" has nothing to count down from',
+        file: 'src/services/healthCheck.js',
+        anchor: '          rateLimit: this.notificationService.config?.rateLimit',
+        mutant: '          rateLimit: undefined',
+        tests: 'healthCheck'
+    },
+    {
+        id: '188-panel-never-loads', ticket: '#188',
+        desc: 'the endpoint exists but the dashboard never calls it — the #182 mistake again',
+        file: 'src/services/dashboard.html',
+        anchor: '            loadNotificationStats();\n            try {',
+        mutant: '            try {',
         tests: 'docDriftGuards'
     },
 
