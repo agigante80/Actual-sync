@@ -1,6 +1,16 @@
 version: 2
 updates:
-  # Monitor npm dependencies
+  # ---------------------------------------------------------------------------
+  # 1. npm VERSION updates -> development
+  #
+  # Scope: direct dependencies only, on the integration branch.
+  #
+  # This entry sets `target-branch`, and that has a consequence worth knowing:
+  # a non-default `target-branch` makes the entry apply to VERSION updates only.
+  # Dependabot SECURITY updates ignore `target-branch` entirely and always open
+  # against the default branch (main) — see entry 2 below, which exists solely to
+  # govern them. (dependabot/dependabot-core#2767, open since 2020.)
+  # ---------------------------------------------------------------------------
   - package-ecosystem: "npm"
     directory: "/"
     # Target the integration branch, not the default branch (main). main is
@@ -12,6 +22,17 @@ updates:
       time: "01:00"
       timezone: "Europe/Madrid"
     open-pull-requests-limit: 5
+    # Direct dependencies only — never transitives.
+    #
+    # A transitive fix cannot be applied here anyway: the Dependency Policy in
+    # CLAUDE.md forbids `overrides`/`resolutions`, and a lockfile-only bump is
+    # the same manoeuvre in another spelling. A transitive clears only when its
+    # DIRECT PARENT publishes a range whose floor moves above the vulnerable
+    # version, which is a `package.json` change to the parent — i.e. a direct
+    # update, which this rule still allows. PR #192 was the counterexample: four
+    # lockfile-only transitive bumps, closed on policy, retracked as #200-#203.
+    allow:
+      - dependency-type: "direct"
     reviewers:
       - "agigante80"
     labels:
@@ -41,7 +62,56 @@ updates:
     # major produce BOTH a Dependabot PR and an auto-published release.
     ignore:
       - dependency-name: "@actual-app/api"
-        
+
+  # ---------------------------------------------------------------------------
+  # 2. npm SECURITY updates -> main (unavoidably)
+  #
+  # Security updates cannot be pointed at development: Dependabot raises them
+  # against the DEFAULT branch only, and an entry that sets `target-branch` is
+  # not consulted for them at all. So this second entry deliberately OMITS
+  # `target-branch` — that omission is what makes these rules reach security
+  # updates — and sets `open-pull-requests-limit: 0` to switch its own version
+  # updates off, leaving entry 1 as the only source of version-update PRs.
+  #
+  # Do not "tidy" this by merging it into entry 1. Merging the two would restore
+  # exactly the hole that produced PR #192.
+  #
+  # WHERE these land is fixed separately: a security PR opens against main (no
+  # config can change that), and .github/workflows/retarget-dependabot.yml then
+  # moves its base to development. The two are complementary — this entry
+  # controls WHAT gets a security PR, the workflow controls WHERE it goes.
+  # Neither is redundant; removing either reopens a different half of the gap.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "01:00"
+      timezone: "Europe/Madrid"
+    # Version updates off for this entry — entry 1 owns those. Only the security
+    # customization below stays live.
+    open-pull-requests-limit: 0
+    # The rule that matters: a vulnerable TRANSITIVE package no longer produces a
+    # lockfile-only PR. Advisories on transitives still surface via Dependabot
+    # alerts and `npm audit`, and get tracked as parent-dependency tickets
+    # (#200-#203) per the Dependency Policy.
+    allow:
+      - dependency-type: "direct"
+    reviewers:
+      - "agigante80"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    # Same release-train rationale as entry 1. Repeated deliberately: entry 1's
+    # `ignore` does not carry over, and @actual-app/api is a DIRECT dependency,
+    # so without this an advisory on it would open a security PR straight onto
+    # main and collide with the train.
+    ignore:
+      - dependency-name: "@actual-app/api"
+
   # Monitor GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
