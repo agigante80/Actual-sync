@@ -22,8 +22,8 @@
  * ALWAYS EXITS 0. Drift between development and main is the normal steady state
  * of this branch model, not an error — a blocking check would fail on every
  * healthy tree and be trained away within a week. The signal is the report.
- * The genuinely invariant half (the catalogue cannot silently omit a workflow)
- * is enforced by the hermetic guard in src/__tests__/defaultBranchDrift.test.js.
+ * Every failure path here degrades to an honest message and exit 0; it must
+ * never report "no drift" for a run that did not actually establish that.
  */
 'use strict';
 
@@ -32,6 +32,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const DEFAULT_BASE = 'origin/main';
+const WORKFLOW_PREFIX = '.github/workflows/';
 
 /**
  * Workflow triggers that GitHub resolves against the default branch. A workflow
@@ -44,8 +45,9 @@ const DEFAULT_BRANCH_ONLY_TRIGGERS = ['schedule', 'pull_request_target', 'workfl
  * Non-workflow surfaces GitHub reads only from the default branch.
  *
  * Hand-maintained on purpose: these are platform behaviours, not facts derivable
- * from the tree, so a new one needs a human to notice it. The workflow entries
- * ARE derivable, and the guard keeps those honest automatically.
+ * from the tree, so a new one needs a human to notice it. Workflow paths are NOT
+ * listed here — they are resolved per-run from their triggers, on both sides of
+ * the diff (see collectWorkflowReasons).
  *
  * `pattern` is an exact repo-relative path, or a prefix ending in `/*`.
  */
@@ -66,6 +68,8 @@ const CATALOGUE = [
         docs: 'https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository'
     }
 ];
+
+const WORKFLOW_DOCS = 'https://docs.github.com/actions/using-workflows/events-that-trigger-workflows';
 
 /** True when `relPath` is matched by a catalogue `pattern`. */
 function matchesPattern(relPath, pattern) {
@@ -96,97 +100,6 @@ function classifyDrift(changedPaths, catalogue) {
 }
 
 /**
- * Pure. Returns the workflow file names (not paths) that declare a
- * default-branch-only trigger, given [{ name, triggers }].
- */
-function defaultBranchOnlyWorkflows(workflows) {
-    return workflows
-        .filter((w) => w.triggers.some((t) => DEFAULT_BRANCH_ONLY_TRIGGERS.includes(t)))
-        .map((w) => w.name);
-}
-
-/**
- * Thin git edge. Isolated so the pure core above stays testable.
- *
- * stderr is captured rather than inherited: git writes its own "unknown
- * revision" text to the terminal AND execFileSync copies it into err.message,
- * so inheriting prints the same failure twice around our explanation of it.
- */
-function git(args, cwd) {
-    return execFileSync('git', args, {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe']
-    }).trim();
-}
-
-function main(argv) {
-    const root = path.resolve(__dirname, '..');
-    const baseIdx = argv.indexOf('--base');
-    const base = baseIdx !== -1 && argv[baseIdx + 1] ? argv[baseIdx + 1] : DEFAULT_BASE;
-    const asJson = argv.includes('--json');
-
-    let changed;
-    try {
-        // Two-dot: what differs between the effective (default-branch) copy and
-        // this branch right now. Three-dot would hide changes made on main since
-        // the merge base, and it is precisely "what main is serving" we want.
-        changed = git(['diff', '--name-only', base, 'HEAD'], root).split('\n').filter(Boolean);
-    } catch (err) {
-        // A missing ref is the common case on a fresh clone or a stale fetch.
-        // Say so plainly rather than reporting a clean tree, which would be a
-        // false all-clear — the same silent-no-op failure this script exists for.
-        // Keep git's actual reason (usually a single `fatal:` line) and drop its
-        // multi-line usage hint, which is noise in a report whose only job is to
-        // be read at a glance.
-        const reason = (err.stderr || err.message || '')
-            .split('\n')
-            .map((l) => l.trim())
-            .find((l) => l.startsWith('fatal:') || l.startsWith('error:'))
-            || 'git diff failed';
-        const message = `Could not diff against ${base} — ${reason} `
-            + 'Run `git fetch origin` and retry. NOT reporting "no drift" — this run proved nothing.';
-        if (asJson) {
-            console.log(JSON.stringify({ base, error: message, drifted: [] }, null, 2));
-        } else {
-            console.error(`\n  ${message}\n`);
-        }
-        return 0;
-    }
-
-    // Workflow entries are derived, not hand-listed, so a new scheduled workflow
-    // is covered the moment it exists.
-    const workflowEntries = readWorkflowCatalogue(root);
-    const catalogue = CATALOGUE.concat(workflowEntries);
-    const drifted = classifyDrift(changed, catalogue);
-
-    if (asJson) {
-        console.log(JSON.stringify({ base, drifted }, null, 2));
-        return 0;
-    }
-
-    if (drifted.length === 0) {
-        console.log(`\n  No default-branch-only config differs from ${base}.\n`);
-        return 0;
-    }
-
-    console.log(`\n  ${drifted.length} file(s) written here but NOT IN EFFECT until merged to ${base}:\n`);
-    for (const d of drifted) {
-        let age = '';
-        try {
-            const when = git(['log', '-1', '--format=%cs', '--', d.path], root);
-            if (when) age = `  (last changed here ${when})`;
-        } catch {
-            // Age is a nicety; never let it break the report.
-        }
-        console.log(`  - ${d.path}${age}`);
-        console.log(`      ${d.reason}`);
-    }
-    console.log('\n  These take effect only when development is merged to main.\n');
-    return 0;
-}
-
-/**
  * Pure. Returns the default-branch-only trigger names declared by one workflow's
  * YAML text.
  *
@@ -199,6 +112,8 @@ function main(argv) {
  * field deeper in a file, and a whole-text scan would report a workflow that
  * merely mentions it. Both block styles GitHub accepts are handled: the mapping
  * form (`on:` then indented keys) and the inline/sequence forms (`on: [push]`).
+ * The `on:` key is located by name, never by position — ci-cd.yml puts a
+ * top-level `permissions:` block first, so "the second block" is not `on:`.
  */
 function extractDefaultBranchOnlyTriggers(text) {
     const lines = text.split('\n');
@@ -226,28 +141,183 @@ function extractDefaultBranchOnlyTriggers(text) {
     );
 }
 
-/** Builds catalogue entries for every workflow declaring a default-branch-only trigger. */
-function readWorkflowCatalogue(root) {
-    const dir = path.join(root, '.github', 'workflows');
-    if (!fs.existsSync(dir)) return [];
-    const entries = [];
-    for (const name of fs.readdirSync(dir).sort()) {
-        if (!/\.ya?ml$/.test(name)) continue;
-        const text = fs.readFileSync(path.join(dir, name), 'utf8');
-        const triggers = extractDefaultBranchOnlyTriggers(text);
-        if (triggers.length > 0) {
-            entries.push({
-                pattern: `.github/workflows/${name}`,
-                reason: `${triggers.join(', ')} runs the default-branch copy of the workflow`,
-                docs: 'https://docs.github.com/actions/using-workflows/events-that-trigger-workflows'
-            });
+/**
+ * Pure. Argument parsing, split out so its edge cases are testable.
+ *
+ * `--base` must be followed by a ref, not another flag: `--base --json` used to
+ * set the ref to "--json" and silently drop JSON mode, which is the class of
+ * quiet wrongness this whole script exists to complain about.
+ */
+function parseArgs(argv) {
+    const out = { base: DEFAULT_BASE, json: false, errors: [] };
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === '--json') {
+            out.json = true;
+        } else if (arg === '--base') {
+            const next = argv[i + 1];
+            if (!next || next.startsWith('--')) {
+                out.errors.push('--base requires a git ref, e.g. --base origin/main');
+            } else {
+                out.base = next;
+                i++;
+            }
+        } else {
+            out.errors.push(`unrecognised argument: ${arg}`);
         }
     }
-    return entries;
+    return out;
+}
+
+/** Thin git edge. Isolated so the pure core above stays testable. */
+function git(args, cwd) {
+    // stderr is captured rather than inherited: git writes its own "unknown
+    // revision" text to the terminal AND execFileSync copies it into err.message,
+    // so inheriting prints the same failure twice around our explanation of it.
+    return execFileSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe']
+    }).trim();
+}
+
+/** Keeps git's actual reason and drops its multi-line usage hint. */
+function gitReason(err) {
+    return (err.stderr || err.message || '')
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => l.startsWith('fatal:') || l.startsWith('error:'))
+        || 'git command failed';
+}
+
+/**
+ * Reasons a changed workflow path is default-branch-only, considering BOTH sides
+ * of the diff.
+ *
+ * The base side is not optional. Deleting a scheduled workflow here, or removing
+ * just its `schedule:` key, leaves nothing in the working tree to detect — while
+ * main's copy keeps firing on its old schedule. Looking only at the current tree
+ * would print "no drift" for exactly that case, which is the false all-clear the
+ * error paths above are careful never to produce.
+ */
+function collectWorkflowReasons(relPath, base, root) {
+    const sides = [];
+
+    let headText = null;
+    try {
+        headText = fs.readFileSync(path.join(root, relPath), 'utf8');
+    } catch {
+        headText = null; // deleted on this branch
+    }
+    if (headText !== null) {
+        const triggers = extractDefaultBranchOnlyTriggers(headText);
+        if (triggers.length) sides.push(`${triggers.join(', ')} runs the default-branch copy`);
+    }
+
+    let baseText = null;
+    try {
+        baseText = git(['show', `${base}:${relPath}`], root);
+    } catch {
+        baseText = null; // not on the base branch yet
+    }
+    if (baseText !== null) {
+        const triggers = extractDefaultBranchOnlyTriggers(baseText);
+        if (triggers.length) {
+            const note = headText === null
+                ? `deleted here, but ${base} still fires it on ${triggers.join(', ')}`
+                : `${base}'s copy fires on ${triggers.join(', ')}`;
+            sides.push(note);
+        }
+    }
+
+    return sides;
+}
+
+function report(drifted, base, asJson, root) {
+    if (asJson) {
+        console.log(JSON.stringify({ base, drifted }, null, 2));
+        return;
+    }
+    if (drifted.length === 0) {
+        console.log(`\n  No default-branch-only config differs from ${base}.\n`);
+        return;
+    }
+    console.log(`\n  ${drifted.length} file(s) written here but NOT IN EFFECT until merged to ${base}:\n`);
+    for (const d of drifted) {
+        let age = '';
+        try {
+            const when = git(['log', '-1', '--format=%cs', '--', d.path], root);
+            if (when) age = `  (last changed here ${when})`;
+        } catch {
+            // Age is a nicety; never let it break the report.
+        }
+        console.log(`  - ${d.path}${age}`);
+        console.log(`      ${d.reason}`);
+    }
+    console.log(`\n  These take effect only when this branch is merged to ${base}.\n`);
+}
+
+/** Prints an honest failure and returns 0. Never claims "no drift". */
+function bail(message, base, asJson) {
+    if (asJson) {
+        console.log(JSON.stringify({ base, error: message, drifted: [] }, null, 2));
+    } else {
+        console.error(`\n  ${message}\n`);
+    }
+    return 0;
+}
+
+function main(argv) {
+    const root = path.resolve(__dirname, '..');
+    const { base, json: asJson, errors } = parseArgs(argv);
+
+    if (errors.length) {
+        return bail(`${errors.join('; ')}. NOT reporting "no drift" — this run proved nothing.`, base, asJson);
+    }
+
+    let changed;
+    try {
+        // No `HEAD`: comparing the base ref to the WORKING TREE also catches an
+        // uncommitted edit to a catalogued file, which is still config that is
+        // not in effect.
+        changed = git(['diff', '--name-only', base], root).split('\n').filter(Boolean);
+    } catch (err) {
+        return bail(
+            `Could not diff against ${base} — ${gitReason(err)} `
+            + 'Run `git fetch origin` and retry. NOT reporting "no drift" — this run proved nothing.',
+            base, asJson
+        );
+    }
+
+    const drifted = [];
+    for (const relPath of changed) {
+        if (relPath.startsWith(WORKFLOW_PREFIX)) {
+            const reasons = collectWorkflowReasons(relPath, base, root);
+            if (reasons.length) {
+                drifted.push({ path: relPath, reason: reasons.join('; '), docs: WORKFLOW_DOCS });
+            }
+            continue;
+        }
+        drifted.push(...classifyDrift([relPath], CATALOGUE));
+    }
+
+    report(drifted, base, asJson, root);
+    return 0;
 }
 
 if (require.main === module) {
-    process.exitCode = main(process.argv.slice(2));
+    // Any unexpected throw (an unreadable workflow, a git binary that is not
+    // there) must still leave a report-only tool at exit 0.
+    try {
+        process.exitCode = main(process.argv.slice(2));
+    } catch (err) {
+        process.exitCode = bail(
+            `drift:check failed unexpectedly: ${err && err.message}. `
+            + 'NOT reporting "no drift" — this run proved nothing.',
+            DEFAULT_BASE,
+            process.argv.includes('--json')
+        );
+    }
 }
 
 module.exports = {
@@ -255,7 +325,7 @@ module.exports = {
     DEFAULT_BRANCH_ONLY_TRIGGERS,
     classifyDrift,
     matchesPattern,
-    defaultBranchOnlyWorkflows,
     extractDefaultBranchOnlyTriggers,
-    readWorkflowCatalogue
+    parseArgs,
+    collectWorkflowReasons
 };

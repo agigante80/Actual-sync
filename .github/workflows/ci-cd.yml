@@ -20,6 +20,13 @@ on:
       - 'docs/**'
       - 'LICENSE'
   pull_request:
+    # `edited` is here for retargeted PRs (#204). Changing a PR's base fires
+    # `edited`, not `synchronize` — without it, a PR moved from main to
+    # development by retarget-dependabot.yml keeps the green check it earned
+    # against MAIN and can be merged into development never having been tested
+    # against it. The cost is a re-run when a title or body is edited, which is
+    # cheap next to merging an untested dependency bump.
+    types: [opened, synchronize, reopened, edited]
     branches:
       - main
       - develop
