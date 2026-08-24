@@ -32,6 +32,20 @@ npm run test:coverage
 npm run dead:check     # blocking (exit 1 on findings); CI runs this in the lint job
 npm run knip           # report-only (always exit 0); for local diffing
 
+# Report config that is written here but NOT YET IN EFFECT, because GitHub reads
+# it only from the default branch (#204). Report-only, always exits 0.
+npm run drift:check
+
+# Mutation testing — the verification bar here. Reintroduces each shipped
+# defect one at a time and asserts the suite FAILS. Not in CI (it runs the
+# whole suite once per mutation); run it before a release and after any
+# change the catalog covers.
+npm run test:mutation                       # all of them, full suite each
+npm run test:mutation -- --fast             # only each mutation's hinted test file
+npm run test:mutation -- --ticket '#177'    # one ticket's mutations
+npm run test:mutation -- --list             # what is covered, without running anything
+npm run test:mutation -- --recover          # restore a file after a hard kill
+
 # Start the scheduled sync service
 npm start
 
@@ -113,7 +127,7 @@ Scheduler (node-schedule) or manual trigger
 - `lib/configLoader.js` — AJV schema validation against `config/config.schema.json`
 - `lib/logger.js` — Custom structured logger (no Winston/Pino); supports file rotation and correlation IDs
 - `services/syncHistory.js` — SQLite-backed sync history via `better-sqlite3`
-- `services/healthCheck.js` — Express HTTP server. Public (no auth): `/health`, `/ready`, `/metrics`, `/metrics/prometheus`, `/icon.png`, and a WebSocket log stream at `/ws/logs`. Behind `dashboardAuth()`: `/dashboard` and the `/api/dashboard/*` REST API (`status`, `servers`, `orphaned-servers`, `schedules`, `metrics`, `history`, `accounts`, plus POST `sync`, `dismiss-error`, `reset-history`, `test-notification`). A global `express-rate-limit` (60 req/min/IP) covers every route except `/icon.png`, which is exempt so the dashboard's favicon/logo fetch doesn't eat the API budget (#113)
+- `services/healthCheck.js` — Express HTTP server. Public (no auth): `/health`, `/ready`, `/metrics`, `/metrics/prometheus`, `/icon.png`, and a WebSocket log stream at `/ws/logs`. Behind `dashboardAuth()`: `/dashboard` and the `/api/dashboard/*` REST API (`status`, `servers`, `orphaned-servers`, `schedules`, `metrics`, `history`, `accounts`, `notifications`, plus POST `sync`, `dismiss-error`, `reset-history`, `test-notification`). `notifications` (#188) reports failure-alert rate-limit headroom and recent sync outcomes per server — note `notificationsSentLastHour` counts **failure** notifications only, because rate limiting is failure-only by design. `test-notification` accepts all six channels: `email`, `discord`, `slack`, `telegram`, `ntfy`, `generic` (#182). A global `express-rate-limit` (60 req/min/IP) covers every route except `/icon.png`, which is exempt so the dashboard's favicon/logo fetch doesn't eat the API budget (#113)
 - `services/prometheusService.js` — Prometheus metrics via `prom-client`
 - `services/notificationService.js` — Routes alerts to Email, Telegram, ntfy, and webhooks (Slack / Discord / generic). Config keys under `notifications`: `email`, `telegram`, `ntfy`, `webhooks`, plus `branding`, `notifyOnSuccess`, `thresholds`, `rateLimit`. Note there is **no** Teams channel — see the advertised-channels drift guard below before adding one to the README.
   **`notifyOnSuccess`** (`always`/`errors_only`/`never`, #169) is resolved by `shouldNotifyChannel(channel, status, entry)` with precedence *webhook entry → channel → global → `always`* (the channel tier exists only for the object-shaped `email`/`telegram`/`ntfy`; the webhook arrays resolve entry → global). `partial` counts as an error; `never` mutes the channel entirely (failures included) while `bypassThresholds` test notifications always send. `thresholds` and `rateLimit` remain **failure-only** — never gate success/partial through them, and never let `always`/`errors_only` suppress a `failure`
@@ -214,6 +228,33 @@ Coverage thresholds enforced by Jest: 61% branches, 70% functions/lines/statemen
 
 Note: `src/syncService.js` and `index.js` are excluded from coverage collection (see `package.json` jest config).
 
+### Mutation testing (`scripts/mutations.js` + `scripts/mutationTest.js`)
+
+A green suite does not prove a test would catch the bug it was written for. **When you fix a
+bug, add a catalog entry and confirm it is caught.** Rules that are not obvious from the code:
+
+- **Guards for mutations of the runner itself must NOT live in `mutationCatalog.test.js`.**
+  The runner excludes that file from the scored suite (it asserts anchors exist, which every
+  mutant breaks), so a guard placed there scores every such mutation as SURVIVED regardless
+  of the truth. Use `mutationRunner.test.js`.
+- **A pure, unit-tested helper needs an *unwiring* mutation too.** Deleting its call site
+  leaves every unit test green. Pair each extracted decision with a mutation that removes the
+  call, backed by a source-reading wiring test.
+- **Repeat-run the suite before trusting a score.** The runner takes a *single* green
+  baseline, so one flaky test scores a false "caught". This has happened: a full pass was
+  recorded against an unstable baseline and had to be discarded. Run `npm test` five to eight
+  times after adding tests that touch native modules, timers, ports or the filesystem.
+- Do not assert `toBeInstanceOf(Error)` on a native module's error — jest can load the addon
+  in a different realm, so the prototype chain does not always reach the test's `Error`.
+  Assert the message/code the production code actually uses.
+- Never touch the working tree while a run is in progress; it mutates files in place. A killed
+  run leaves a stale `.mutation-test.lock` — `--recover` reports honestly and the next
+  `acquireLock()` clears it. Long full runs can exceed a background-task limit; run them
+  per-ticket (`--fast --ticket '#NNN'`) if one gets killed.
+
+`docs/TESTING.md` documents the runner's flags, exit codes, and every false-green trap it has
+produced.
+
 ## Code Health (dead code + doc drift)
 
 - **Dead code**: `knip` is configured in `knip.json` (explicit `entry` points, no
@@ -225,6 +266,23 @@ Note: `src/syncService.js` and `index.js` are excluded from coverage collection 
   routes, advertised notification channels have implementations (the #128/Teams class),
   no rotting hardcoded metrics, and the README node badge matches `engines.node`. When you
   change observable surface, keep these green (or extend them) rather than deleting them.
+  **Forward-direction only, deliberately**: everything the docs advertise must exist in
+  code, never the reverse — the README is curated, not an exhaustive mirror, so a
+  bidirectional guard would fail on a healthy tree. The same file also guards that every
+  schema-defined notification channel has a route case **and** a dashboard button (#182),
+  that every dashboard `load*()` is actually invoked (#188), that documented dashboard
+  endpoints are real routes, that release-time scripts stay out of the image (#180/#183),
+  and that no machine-specific absolute path is committed.
+- **knip's blind spot: class methods** (`src/__tests__/deadMethodGuard.test.js`). knip flags
+  unused files and exports but not an unused **method on a class it can see is used** — the
+  gap that let `notifyError()` (#175) and then the whole `formatErrorNotification` family
+  (#176) survive sweeps. The scan iterates to a fixpoint so a dead *family* collapses rather
+  than propping itself up, and tests do not count as references. `REVIEWED_KEPT` is an
+  allowlist of acknowledged exceptions, each naming an owning ticket; it also asserts every
+  entry is *still* unreferenced, so a stale one fails the build. It is currently **empty** —
+  keep it that way, or the allowlist becomes where findings hide.
+- This project is **not a library** (no `bin`, no `files`, unpublished), so "public API" is
+  never a reason to keep an uncalled method. Unused in-repo means unused.
 - **Periodic audit**: the manual `/code-health-auditor` skill (agent
   `.claude/agents/code-health-auditor.md`, cache `docs/audit/deadcode-audit-cache.json`)
   runs knip + the guards, triages, and files gate-ready tickets. It owns dead code + doc
@@ -241,6 +299,18 @@ Note: `src/syncService.js` and `index.js` are excluded from coverage collection 
 ## Git Workflow
 
 **Branch model:** `development` is the active integration branch; `main` holds production-ready releases. Feature work lands on `development`.
+
+**Default-branch-only config (#204).** GitHub reads some surfaces *only* from the
+default branch (`main`), so a change to one of them on `development` is committed,
+green, and **completely inert** until the merge — with nothing reporting it. This has
+already bitten: #199 dropped `buy_me_a_coffee` from `.github/FUNDING.yml` on
+`development` and the Sponsor button kept serving `main`'s copy. The surfaces are
+`.github/FUNDING.yml`, `.github/dependabot.yml`, `.github/ISSUE_TEMPLATE/*`, and any
+workflow triggered by `schedule`, `pull_request_target`, or `workflow_run`.
+Run **`npm run drift:check`** to see what is currently written but not in effect.
+Drift is the *normal* steady state here, so the report is advisory and never blocks;
+the invariant that is genuinely enforceable — a default-branch-only workflow trigger
+cannot go uncatalogued — is a hermetic guard in `src/__tests__/defaultBranchDrift.test.js`.
 
 **Auto-release:** every successful CI run on `main` triggers `.github/workflows/auto-release.yml`, which tags `vX.Y.Z` and publishes a GitHub Release. It decides the version by comparing the version on `main` (after the merge) against the latest released tag:
 - **Version unchanged** (no manual bump): it **patch-bumps** (1.4.7 to 1.4.8), commits, tags, releases. This is the routine path, so for a normal patch release you just merge `development` to `main` and let it bump.
@@ -284,9 +354,18 @@ Notes:
 - Forcing transitive versions via `overrides`/`resolutions` (see Dependency Policy)
 - Manually patch-bumping for a routine release (the auto-release patch-bumps; only bump manually on `development` for a minor/major, see Git Workflow)
 
+## Project memory
+
+`.claude/memory/` is the **tracked, canonical** record of decisions, traps and context that is
+not derivable from the code or git history — `MEMORY.md` is its index, one line per entry.
+`.claude/handoffs/` holds dated resume notes (what shipped, what is unfinished, what to
+reload). Both are committed, so read them before starting non-trivial work and add to them
+when you learn something a future session would otherwise rediscover the hard way.
+
 ## Documentation
 
 Comprehensive guides live in `docs/`. Key references:
 - `docs/ARCHITECTURE.md` — deeper architectural detail
 - `docs/TESTING.md` — testing patterns and conventions
 - `docs/CONFIG.md` — full configuration reference
+- `docs/HEALTH_CHECK.md` — the endpoint reference, including the internal `/api/dashboard/*` table
