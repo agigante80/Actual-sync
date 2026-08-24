@@ -106,6 +106,18 @@ jobs:
       - name: Leave a note on the PR
         # A Dependabot PR whose base moved under it is confusing to walk into
         # cold. One line of context costs nothing and saves a re-investigation.
+        #
+        # NON-FATAL on purpose (#206). By this point the retarget has already
+        # happened AND been verified, so the job's actual work is done. This step
+        # posts to the issue-comments endpoint, which GitHub scopes by target
+        # type — `pull_requests: write` for a PR — and it is the one call here
+        # not already proven by the release train's own use of this App. If that
+        # inference is wrong, the right outcome is "retargeted, no note", not a
+        # red job that reads as though the retarget failed when it did not.
+        #
+        # The verify step above stays fatal. That one SHOULD go red: it is what
+        # catches a silent no-op.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
