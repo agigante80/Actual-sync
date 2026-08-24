@@ -1,0 +1,93 @@
+name: Retarget Dependabot PRs
+
+# WHY THIS EXISTS
+#
+# `target-branch` in dependabot.yml is honoured for VERSION updates only.
+# Dependabot SECURITY updates ignore it and always open against the DEFAULT
+# branch — here, `main`. That is not a misconfiguration we can fix in YAML; it
+# is a documented platform limitation (dependabot/dependabot-core#2767, open
+# since 2020; GitHub's own changelog for the 2024 private-registry fix restates
+# that "security updates still does not support target-branch configuration").
+#
+# It matters here more than in most repos: every green CI run on `main` triggers
+# auto-release.yml, which tags and publishes. A security PR landing on `main` is
+# therefore one click away from cutting an unplanned release. PR #192 arrived
+# exactly this way.
+#
+# So we fix it after the fact: when Dependabot opens a PR against `main`, move
+# its base to `development`, where every other dependency update already lands.
+#
+# NOTE ON ACTIVATION: `pull_request_target` workflows run from the version of
+# this file on the DEFAULT branch. This has no effect until it is merged to
+# `main`.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+# Least privilege. This job never checks out the PR's code — it only calls the
+# API — so `pull_request_target` carries no untrusted-code risk here.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  retarget:
+    # Three conditions, all required:
+    #   1. Dependabot's own PR    — never touch a human's PR.
+    #   2. Aimed at main          — version-update PRs already target development.
+    #   3. Not the release train  — dependency-update.yml opens `deps/actual-api-*`
+    #      against main with an App token and MUST stay there: retargeting it to
+    #      development would break the train's merge-to-main-then-publish chain.
+    #      The train is App-authored so condition 1 already excludes it; this is
+    #      belt and braces, because silently breaking the train would be costly
+    #      and the guard costs one line.
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.base.ref == 'main' &&
+      !startsWith(github.event.pull_request.head.ref, 'deps/actual-api-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Move the PR base to development
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          echo "Retargeting PR #${PR} from main to development"
+          gh pr edit "$PR" --repo "$REPO" --base development
+
+      - name: Verify the retarget actually took
+        # Without this the job can exit green on a no-op and we would be back to
+        # a security PR sitting on main believing it had moved. Same reasoning as
+        # the release train's "Verify the release chain actually started" step:
+        # an automation that silently does nothing is worse than one that fails.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          BASE=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName)
+          if [ "$BASE" != "development" ]; then
+            echo "::error::PR #${PR} is still based on '${BASE}' — retarget failed."
+            exit 1
+          fi
+          echo "PR #${PR} is now based on '${BASE}'."
+
+      - name: Leave a note on the PR
+        # A Dependabot PR whose base moved under it is confusing to walk into
+        # cold. One line of context costs nothing and saves a re-investigation.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR" --repo "$REPO" --body \
+            "Retargeted \`main\` → \`development\` automatically by \`.github/workflows/retarget-dependabot.yml\`.
+
+          Dependabot security updates always open against the default branch and cannot be configured otherwise. \`main\` is production here — a green CI run on it auto-cuts a release — so dependency updates are landed on \`development\` and promoted deliberately.
+
+          If this is a transitive-only change (\`package-lock.json\` with no \`package.json\` edit), it should be closed rather than merged: see the Dependency Policy in \`CLAUDE.md\`."
