@@ -114,6 +114,35 @@ const WORKFLOW_DOCS = 'https://docs.github.com/actions/using-workflows/events-th
  * purpose — a `#` inside a quoted YAML string would be over-trimmed, but the
  * `on:` header of a workflow does not carry quoted strings.
  */
+/**
+ * For a YAML flow mapping (`{push: {...}, schedule: [...]}`), returns its
+ * TOP-LEVEL keys space-separated. Returns null when the text is not a flow
+ * mapping, so callers fall through to the sequence/scalar handling.
+ *
+ * Depth tracking is the whole point: a naive scan of
+ * `{push: {branches: [main]}}` reports `main` as a trigger.
+ */
+function flowMappingKeys(text) {
+    const t = text.trim();
+    if (!t.startsWith('{')) return null;
+    const keys = [];
+    let depth = 0;
+    let token = '';
+    for (const ch of t) {
+        if (ch === '{' || ch === '[') { depth++; token = ''; continue; }
+        if (ch === '}' || ch === ']') { depth--; token = ''; continue; }
+        if (depth === 1 && ch === ':') {
+            const k = token.trim();
+            if (/^[a-z_]+$/.test(k)) keys.push(k);
+            token = '';
+            continue;
+        }
+        if (depth === 1 && ch === ',') { token = ''; continue; }
+        token += ch;
+    }
+    return keys.join(' ');
+}
+
 function stripComment(line) {
     const i = line.indexOf('#');
     return i === -1 ? line : line.slice(0, i);
@@ -177,7 +206,11 @@ function extractDefaultBranchOnlyTriggers(text) {
     const header = stripComment(lines[startIdx]);
     const inline = header.slice(header.indexOf(':') + 1).trim();
     const block = [];
-    if (inline) block.push(inline); // `on: [push, schedule]` / `on: push`
+    // `on: {schedule: [...]}` — a flow mapping. Reduced to its top-level keys so
+    // the trigger scan below sees `schedule` and not the nested config. Without
+    // this both parsers missed it entirely (false all-clear) while
+    // `on: {push: {branches: [main]}}` yielded a bogus `main` trigger.
+    if (inline) block.push(flowMappingKeys(inline) || inline);
 
     // Indented continuation lines belong to the `on:` mapping; the first line at
     // column 0 that is not blank or a comment ends it.
@@ -205,8 +238,13 @@ function extractAllTriggers(text) {
     const found = new Set();
 
     if (inline) {
-        for (const t of inline.replace(/[[\]]/g, ' ').split(/[\s,]+/)) {
-            if (/^[a-z_]+$/.test(t)) found.add(t);
+        const flow = flowMappingKeys(inline);
+        if (flow !== null) {
+            for (const k of flow.split(/\s+/)) if (k) found.add(k);
+        } else {
+            for (const t of inline.replace(/[[\]]/g, ' ').split(/[\s,]+/)) {
+                if (/^[a-z_]+$/.test(t)) found.add(t);
+            }
         }
     }
 
@@ -416,7 +454,26 @@ function collectWorkflowReasons(relPath, base, root) {
         return [];
     }
 
-    return sides;
+    // A modified workflow carrying the same trigger on both branches produced the
+    // reason twice. Same information, printed twice, reads as two problems.
+    return [...new Set(sides)];
+}
+
+/**
+ * How old the local copy of the base ref is.
+ *
+ * The whole report is computed against the LOCAL copy of `origin/main` and local
+ * tags. If those are stale, every answer here is stale too — and silently so,
+ * which is the one thing this tool is not allowed to be. Printing the date makes
+ * "I last fetched three weeks ago" visible instead of assumed.
+ */
+function baseFreshness(base, root) {
+    try {
+        const when = git(['log', '-1', '--format=%cs', base], root);
+        return when ? `comparing against local ${base} (last commit ${when}); run \`git fetch --tags origin\` if that looks old` : null;
+    } catch {
+        return null;
+    }
 }
 
 function report(drifted, base, asJson, root, version) {
@@ -424,12 +481,20 @@ function report(drifted, base, asJson, root, version) {
         // `ok` is not decoration: without it a consumer checking
         // `drifted.length === 0` reads a FAILED run as a clean one, which is the
         // machine-readable version of the false all-clear this tool exists for.
-        console.log(JSON.stringify({ ok: true, base, drifted, version: version || null }, null, 2));
+        console.log(JSON.stringify({
+            ok: true,
+            base,
+            baseFreshness: baseFreshness(base, root),
+            drifted,
+            version: version || null
+        }, null, 2));
         return;
     }
     if (drifted.length === 0) {
         console.log(`\n  No default-branch-only config differs from ${base}.`);
         printVersion(version);
+        const fresh = baseFreshness(base, root);
+        if (fresh) console.log(`\n  (${fresh})`);
         console.log('');
         return;
     }
@@ -466,6 +531,8 @@ function report(drifted, base, asJson, root, version) {
     }
     console.log(`\n  These take effect only when this branch is merged to ${base}.`);
     printVersion(version);
+    const fresh = baseFreshness(base, root);
+    if (fresh) console.log(`\n  (${fresh})`);
     console.log('');
 }
 
@@ -546,7 +613,12 @@ function versionDrift(root) {
     try {
         localVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
     } catch {
-        return { error: 'could not read package.json version' };
+        return { error: 'could not read package.json' };
+    }
+    // An absent or malformed version used to fall through compareVersions as
+    // null and print nothing — indistinguishable from "you are up to date".
+    if (!/^\d+\.\d+\.\d+/.test(String(localVersion || ''))) {
+        return { error: `package.json version is missing or unparseable (${localVersion})` };
     }
 
     let latestTag;
@@ -601,5 +673,6 @@ module.exports = {
     parseArgs,
     collectWorkflowReasons,
     compareVersions,
-    versionDriftMessage
+    versionDriftMessage,
+    flowMappingKeys
 };

@@ -76,7 +76,10 @@ jobs:
           # break the merge-to-main-then-publish chain. The author filter
           # already excludes it; this is belt and braces because silently
           # breaking the train would be expensive and the guard costs a line.
-          PRS=$(gh pr list --repo "$REPO" --base main --state open \
+          # --limit is explicit: the default is 30, and silently processing the
+          # first 30 while exiting 0 is the false all-clear this repo keeps
+          # getting bitten by. 100 is far above any plausible backlog.
+          PRS=$(gh pr list --repo "$REPO" --base main --state open --limit 100 \
                   --json number,author,headRefName \
                   --jq '.[]
                         | select(.author.login == "app/dependabot"
@@ -103,7 +106,15 @@ jobs:
             # silently does nothing is worse than one that fails — same
             # reasoning as the release train's "Verify the release chain
             # actually started" step.
-            BASE=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName)
+            # Guarded assignment: under `set -e` a bare `BASE=$(...)` that fails
+            # aborts the entire loop, stranding every remaining PR on main —
+            # while the two adjacent failure paths deliberately `continue`.
+            if ! BASE=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName); then
+              echo "::error::Could not read the base of PR #${PR} after retargeting it"
+              FAILED=1
+              echo "::endgroup::"
+              continue
+            fi
             if [ "$BASE" != "development" ]; then
               echo "::error::PR #${PR} is still based on '${BASE}' — retarget failed."
               FAILED=1
