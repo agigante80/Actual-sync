@@ -29,10 +29,13 @@ name: Retarget Dependabot PRs
 # needs the App token. Same reason auto-release.yml and dependency-update.yml
 # use one.
 #
-# NOTE ON RE-TESTING: changing a PR's base fires `pull_request` `edited`, NOT
-# `synchronize`. ci-cd.yml lists `edited` in its `types` for exactly this reason
-# — without it a retargeted PR would keep the green check it earned against
-# `main` and could be merged into `development` never having been tested there.
+# KNOWN GAP — the retargeted PR is NOT automatically re-tested. Changing a base
+# fires `pull_request` `edited`, which ci-cd.yml does not listen for, so the
+# PR keeps the check it earned against `main`. Adding `edited` was tried and
+# REVERTED: it let a plain title edit start a run where every job skips, and
+# skipped checks supersede real ones as passing — turning a red PR green. That
+# is worse than the gap it closed. Tracked in #205; until then, re-run CI on a
+# retargeted PR before merging it.
 
 on:
   pull_request_target:

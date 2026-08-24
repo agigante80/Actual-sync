@@ -20,16 +20,6 @@ on:
       - 'docs/**'
       - 'LICENSE'
   pull_request:
-    # `edited` is here for retargeted PRs (#204). Changing a PR's base fires
-    # `edited`, not `synchronize` — without it, a PR moved from main to
-    # development by retarget-dependabot.yml keeps the green check it earned
-    # against MAIN and can be merged into development never having been tested
-    # against it. The `version` job below filters `edited` down to base changes,
-    # so an ordinary title or body edit still costs nothing.
-    #
-    # This only works because retarget-dependabot.yml uses an App token: events
-    # generated with the default GITHUB_TOKEN do not start workflow runs.
-    types: [opened, synchronize, reopened, edited]
     branches:
       - main
       - develop
@@ -75,15 +65,6 @@ jobs:
   version:
     name: Generate Version
     runs-on: ubuntu-latest
-    # `edited` is in the triggers above only so a RETARGETED PR gets re-tested
-    # against its new base. It also fires on every title and body edit, which
-    # would otherwise start a full pipeline for a typo fix. Gate it here: every
-    # other job needs `version` directly or transitively, so skipping it skips
-    # the pipeline. `changes.base` is present only when the base actually moved.
-    if: >-
-      github.event_name != 'pull_request'
-      || github.event.action != 'edited'
-      || github.event.changes.base != null
     outputs:
       version: ${{ steps.version.outputs.version }}
       docker_version: ${{ steps.version.outputs.docker_version }}
