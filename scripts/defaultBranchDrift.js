@@ -35,10 +35,33 @@ const DEFAULT_BASE = 'origin/main';
 const WORKFLOW_PREFIX = '.github/workflows/';
 
 /**
- * Workflow triggers that GitHub resolves against the default branch. A workflow
- * fired by any of these runs the copy of the file on the default branch, so
- * editing it anywhere else has no effect on the next run.
+ * Triggers that resolve the workflow file from a REF rather than from the
+ * default branch.
+ *
+ * Deliberately an allow-list, because the previous deny-list
+ * (schedule/pull_request_target/workflow_run) silently under-reported: GitHub
+ * resolves essentially every other event from the default branch, so an
+ * `issue_comment`, `release`, `label` or `repository_dispatch` workflow added on
+ * `development` is fully inert and was reported clean. Inverting means a GitHub
+ * event nobody here has heard of is treated as default-branch-only by default,
+ * which is the safe direction for a tool whose whole job is not emitting false
+ * all-clears.
+ *
+ * `workflow_dispatch` is ref-scoped (you pick the branch), but GitHub only
+ * OFFERS it for workflows on the default branch — handled as a special case in
+ * workflowDriftReasons rather than listed here.
  */
+const REF_SCOPED_TRIGGERS = ['push', 'pull_request', 'merge_group', 'workflow_dispatch'];
+
+/**
+ * `pull_request_target` resolves from the pull request's BASE branch, not
+ * unconditionally from the default branch. It is still called out, because the
+ * case that matters here is a PR based on `main` — but the reason says base
+ * branch so nobody mistakes it for a blanket rule.
+ */
+const BASE_REF_TRIGGERS = ['pull_request_target'];
+
+/** Kept for the guard and for reporting: the historically-known offenders. */
 const DEFAULT_BRANCH_ONLY_TRIGGERS = ['schedule', 'pull_request_target', 'workflow_run'];
 
 /**
@@ -66,10 +89,35 @@ const CATALOGUE = [
         pattern: '.github/ISSUE_TEMPLATE/*',
         reason: 'issue templates are served from the default branch',
         docs: 'https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository'
+    },
+    {
+        pattern: '.github/badges/*',
+        // Not a GitHub platform rule, unlike the entries above — this one is
+        // self-inflicted and there is no GitHub doc to cite. The README points
+        // Shields at raw.githubusercontent.com/.../main/.github/badges/*.json,
+        // so a regenerated badge is inert until merge purely because the URL
+        // pins `main`. Say so, or the next reader hunts for a doc that does not
+        // exist.
+        reason: 'README pins these badge URLs to /main/, so regenerated badges are stale until merge',
+        source: 'README.md'
     }
 ];
 
 const WORKFLOW_DOCS = 'https://docs.github.com/actions/using-workflows/events-that-trigger-workflows';
+
+/**
+ * Drops a trailing `# ...` comment from a YAML line.
+ *
+ * `on:  # replaces the old schedule: job` used to parse as content: the word
+ * `schedule:` inside the comment made a push-only workflow look scheduled, and
+ * `on:  # manual only` injected `manual` and `only` as trigger names. Naive on
+ * purpose — a `#` inside a quoted YAML string would be over-trimmed, but the
+ * `on:` header of a workflow does not carry quoted strings.
+ */
+function stripComment(line) {
+    const i = line.indexOf('#');
+    return i === -1 ? line : line.slice(0, i);
+}
 
 /** True when `relPath` is matched by a catalogue `pattern`. */
 function matchesPattern(relPath, pattern) {
@@ -93,7 +141,12 @@ function classifyDrift(changedPaths, catalogue) {
     for (const relPath of changedPaths) {
         const entry = catalogue.find((c) => matchesPattern(relPath, c.pattern));
         if (entry) {
-            out.push({ path: relPath, reason: entry.reason, docs: entry.docs });
+            out.push({
+                path: relPath,
+                reason: entry.reason,
+                docs: entry.docs,
+                source: entry.source
+            });
         }
     }
     return out;
@@ -121,7 +174,7 @@ function extractDefaultBranchOnlyTriggers(text) {
     const startIdx = lines.findIndex((l) => /^(on|'on'|"on")\s*:/.test(l));
     if (startIdx === -1) return [];
 
-    const header = lines[startIdx];
+    const header = stripComment(lines[startIdx]);
     const inline = header.slice(header.indexOf(':') + 1).trim();
     const block = [];
     if (inline) block.push(inline); // `on: [push, schedule]` / `on: push`
@@ -132,7 +185,7 @@ function extractDefaultBranchOnlyTriggers(text) {
         const line = lines[i];
         if (/^\s*$/.test(line) || /^\s*#/.test(line)) continue;
         if (!/^\s/.test(line)) break;
-        block.push(line);
+        block.push(stripComment(line));
     }
 
     const blockText = block.join('\n');
@@ -147,7 +200,7 @@ function extractAllTriggers(text) {
     const startIdx = lines.findIndex((l) => /^(on|'on'|"on")\s*:/.test(l));
     if (startIdx === -1) return [];
 
-    const header = lines[startIdx];
+    const header = stripComment(lines[startIdx]);
     const inline = header.slice(header.indexOf(':') + 1).trim();
     const found = new Set();
 
@@ -184,14 +237,37 @@ function extractAllTriggers(text) {
  * — five of seven carry one — would bury the real signal.
  */
 function workflowDriftReasons(text) {
-    const specific = extractDefaultBranchOnlyTriggers(text);
-    if (specific.length) return [`${specific.join(', ')} runs the default-branch copy`];
-
     const all = extractAllTriggers(text);
-    if (all.length === 1 && all[0] === 'workflow_dispatch') {
-        return ['workflow_dispatch is only offered for workflows on the default branch'];
+    if (all.length === 0) return [];
+
+    const reasons = [];
+
+    // Anything not ref-scoped resolves from the default branch. Allow-list, so a
+    // GitHub event this code has never heard of lands on the safe side.
+    const defaultBranchOnly = all.filter(
+        (t) => !REF_SCOPED_TRIGGERS.includes(t) && !BASE_REF_TRIGGERS.includes(t)
+    );
+    if (defaultBranchOnly.length) {
+        reasons.push(`${defaultBranchOnly.sort().join(', ')} runs the default-branch copy`);
     }
-    return [];
+
+    const baseRef = all.filter((t) => BASE_REF_TRIGGERS.includes(t));
+    if (baseRef.length) {
+        reasons.push(
+            `${baseRef.join(', ')} runs the copy on the pull request's BASE branch `
+            + '(the default-branch copy for PRs based on main)'
+        );
+    }
+
+    // Ref-scoped, but GitHub only offers the Run workflow button for a workflow
+    // on the default branch — so a dispatch-ONLY workflow added here is simply
+    // unrunnable. Not reported alongside other triggers: five of seven workflows
+    // here carry a workflow_dispatch and flagging them all would bury the signal.
+    if (all.length === 1 && all[0] === 'workflow_dispatch') {
+        reasons.push('workflow_dispatch is only offered for workflows on the default branch');
+    }
+
+    return reasons;
 }
 
 /**
@@ -220,6 +296,45 @@ function parseArgs(argv) {
         }
     }
     return out;
+}
+
+/**
+ * Pure. -1 / 0 / 1 comparing two `x.y.z` strings, numerically per component.
+ *
+ * String comparison is the trap here: "1.10.0" < "1.9.0" lexically, which would
+ * report a NEWER branch as behind and send someone to back-merge over their own
+ * release. Returns null when either side is not parseable, so callers can say
+ * "could not tell" rather than guess.
+ */
+function compareVersions(a, b) {
+    const parse = (v) => {
+        const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v || '').trim());
+        return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+    };
+    const pa = parse(a);
+    const pb = parse(b);
+    if (!pa || !pb) return null;
+    for (let i = 0; i < 3; i++) {
+        if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
+    }
+    return 0;
+}
+
+/**
+ * Pure. The message for a branch sitting behind the latest released tag, or
+ * null when it is level, ahead, or undeterminable.
+ *
+ * This is the same question as the rest of the file — something here is not in
+ * effect — asked about the version rather than a config file. It exists because
+ * the drift is otherwise discovered during a release: `version:bump` refuses to
+ * run, or auto-release aborts flagging a regression (#208).
+ */
+function versionDriftMessage(localVersion, latestTag) {
+    const cmp = compareVersions(localVersion, latestTag);
+    if (cmp === null || cmp >= 0) return null;
+    return `This branch is on ${localVersion} but the latest release is ${latestTag}. `
+        + 'Back-merge before bumping or merging to main: `git merge origin/main` '
+        + '(auto-release patch-bumps on main only, so development is left behind).';
 }
 
 /** Thin git edge. Isolated so the pure core above stays testable. */
@@ -289,31 +404,60 @@ function collectWorkflowReasons(relPath, base, root) {
     return sides;
 }
 
-function report(drifted, base, asJson, root) {
+function report(drifted, base, asJson, root, version) {
     if (asJson) {
         // `ok` is not decoration: without it a consumer checking
         // `drifted.length === 0` reads a FAILED run as a clean one, which is the
         // machine-readable version of the false all-clear this tool exists for.
-        console.log(JSON.stringify({ ok: true, base, drifted }, null, 2));
+        console.log(JSON.stringify({ ok: true, base, drifted, version: version || null }, null, 2));
         return;
     }
     if (drifted.length === 0) {
-        console.log(`\n  No default-branch-only config differs from ${base}.\n`);
+        console.log(`\n  No default-branch-only config differs from ${base}.`);
+        printVersion(version);
+        console.log('');
         return;
     }
     console.log(`\n  ${drifted.length} file(s) written here but NOT IN EFFECT until merged to ${base}:\n`);
     for (const d of drifted) {
+        // The changed set deliberately includes working-tree and untracked files,
+        // so a commit date is often the WRONG answer: an uncommitted edit would
+        // be stamped with the previous commit's date, and an untracked file has
+        // no commit at all. Say which it is instead of implying a stale date.
         let age = '';
         try {
-            const when = git(['log', '-1', '--format=%cs', '--', d.path], root);
-            if (when) age = `  (last changed here ${when})`;
+            const tracked = git(['ls-files', '--error-unmatch', '--', d.path], root);
+            if (!tracked) {
+                age = '  (untracked — never committed)';
+            } else if (git(['diff', '--name-only', '--', d.path], root)) {
+                age = '  (uncommitted change)';
+            } else {
+                const when = git(['log', '-1', '--format=%cs', '--', d.path], root);
+                if (when) age = `  (last changed here ${when})`;
+            }
         } catch {
-            // Age is a nicety; never let it break the report.
+            // `ls-files --error-unmatch` exits non-zero for an untracked path.
+            age = '  (untracked — never committed)';
         }
         console.log(`  - ${d.path}${age}`);
         console.log(`      ${d.reason}`);
+        // Collected and guarded, so print it: the difference between "this is
+        // inert" and "this is inert, and here is where that rule is written".
+        if (d.docs || d.source) console.log(`      see: ${d.docs || d.source}`);
     }
-    console.log(`\n  These take effect only when this branch is merged to ${base}.\n`);
+    console.log(`\n  These take effect only when this branch is merged to ${base}.`);
+    printVersion(version);
+    console.log('');
+}
+
+/** Renders the version-drift line, including an honest "could not tell". */
+function printVersion(version) {
+    if (!version) return;
+    if (version.error) {
+        console.log(`\n  Version check inconclusive: ${version.error}`);
+        return;
+    }
+    console.log(`\n  ${version.message}`);
 }
 
 /** Prints an honest failure and returns 0. Never claims "no drift". */
@@ -370,8 +514,32 @@ function main(argv) {
         drifted.push(...classifyDrift([relPath], CATALOGUE));
     }
 
-    report(drifted, base, asJson, root);
+    report(drifted, base, asJson, root, versionDrift(root));
     return 0;
+}
+
+/**
+ * Git/fs edge for the version check. Returns null (silent) when it cannot tell —
+ * except that "cannot tell" is reported by the caller, never swallowed as clean.
+ */
+function versionDrift(root) {
+    let localVersion;
+    try {
+        localVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+    } catch {
+        return { error: 'could not read package.json version' };
+    }
+
+    let latestTag;
+    try {
+        // --tags so a lightweight tag counts; auto-release creates those.
+        latestTag = git(['describe', '--tags', '--abbrev=0', '--match', 'v*'], root);
+    } catch {
+        return { error: 'no v* tag found — run `git fetch --tags` before trusting this' };
+    }
+
+    const message = versionDriftMessage(localVersion, latestTag);
+    return message ? { message } : null;
 }
 
 if (require.main === module) {
@@ -392,11 +560,16 @@ if (require.main === module) {
 module.exports = {
     CATALOGUE,
     DEFAULT_BRANCH_ONLY_TRIGGERS,
+    REF_SCOPED_TRIGGERS,
+    BASE_REF_TRIGGERS,
+    stripComment,
     classifyDrift,
     matchesPattern,
     extractDefaultBranchOnlyTriggers,
     extractAllTriggers,
     workflowDriftReasons,
     parseArgs,
-    collectWorkflowReasons
+    collectWorkflowReasons,
+    compareVersions,
+    versionDriftMessage
 };

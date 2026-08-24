@@ -24,7 +24,11 @@ const {
     extractDefaultBranchOnlyTriggers,
     extractAllTriggers,
     workflowDriftReasons,
-    parseArgs
+    parseArgs,
+    compareVersions,
+    versionDriftMessage,
+    stripComment,
+    REF_SCOPED_TRIGGERS
 } = require('../../scripts/defaultBranchDrift.js');
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -125,6 +129,73 @@ describe('workflowDriftReasons — including the workflow_dispatch special case'
     });
 });
 
+describe('stripComment — YAML inline comments are not content', () => {
+    it('drops a trailing comment', () => {
+        expect(stripComment('on:  # replaces the old schedule: job').trim()).toBe('on:');
+    });
+
+    it('leaves a comment-free line alone', () => {
+        expect(stripComment('  schedule:')).toBe('  schedule:');
+    });
+});
+
+describe('inline comments cannot fake or hide a trigger', () => {
+    it('does not read a trigger name out of a comment on the on: line', () => {
+        // Regression: this made a push-only workflow look scheduled, which both
+        // over-reported AND broke the EXPECTED guard on a correct tree.
+        const yaml = 'on:  # replaces the old schedule: job\n  push:\n    branches: [x]\n';
+        expect(extractDefaultBranchOnlyTriggers(yaml)).toEqual([]);
+    });
+
+    it('does not inject comment words as trigger names', () => {
+        // `on:  # manual only` used to yield ['manual','only'], which defeated
+        // the dispatch-only detection by making the trigger set look larger.
+        const yaml = 'on:  # manual only\n  workflow_dispatch:\n';
+        expect(extractAllTriggers(yaml)).toEqual(['workflow_dispatch']);
+        expect(workflowDriftReasons(yaml)).toHaveLength(1);
+    });
+
+    it('ignores a comment on an indented trigger line', () => {
+        const yaml = 'on:\n  push:  # only main\n    branches: [main]\n';
+        expect(extractDefaultBranchOnlyTriggers(yaml)).toEqual([]);
+    });
+});
+
+describe('non-ref-scoped events are default-branch-only by default', () => {
+    it.each([
+        ['issue_comment'],
+        ['repository_dispatch'],
+        ['release'],
+        ['label'],
+        ['discussion']
+    ])('reports a %s workflow', (trigger) => {
+        // The old deny-list knew only schedule/pull_request_target/workflow_run,
+        // so all of these were reported clean while being completely inert.
+        const r = workflowDriftReasons(`on:\n  ${trigger}:\n    types: [created]\n`);
+        expect(r.join(' ')).toMatch(trigger);
+    });
+
+    it('reports an event this code has never heard of', () => {
+        // The point of inverting to an allow-list: unknown means unsafe.
+        expect(workflowDriftReasons('on:\n  some_future_event:\n')).toHaveLength(1);
+    });
+
+    it('stays silent for purely ref-scoped triggers', () => {
+        expect(workflowDriftReasons('on:\n  push:\n  pull_request:\n  merge_group:\n')).toEqual([]);
+    });
+
+    it('describes pull_request_target by its BASE branch, not the default branch', () => {
+        // It resolves from the PR's base ref. Saying "default branch" flatly
+        // over-reports for PRs based on development.
+        const r = workflowDriftReasons('on:\n  pull_request_target:\n    types: [opened]\n');
+        expect(r.join(' ')).toMatch(/BASE branch/);
+    });
+
+    it('keeps push and pull_request ref-scoped', () => {
+        expect(REF_SCOPED_TRIGGERS).toEqual(expect.arrayContaining(['push', 'pull_request']));
+    });
+});
+
 describe('matchesPattern — exact and prefix entries', () => {
     it('matches an exact path', () => {
         expect(matchesPattern('.github/FUNDING.yml', '.github/FUNDING.yml')).toBe(true);
@@ -201,11 +272,29 @@ describe('catalogue integrity guards (hermetic — tracked files only)', () => {
         }
     });
 
-    it('every catalogue entry carries a reason and a docs link', () => {
+    it('every catalogue entry carries a reason and points at where the rule is written', () => {
         for (const entry of CATALOGUE) {
             expect(entry.reason && entry.reason.length).toBeGreaterThan(0);
-            expect(entry.docs).toMatch(/^https:\/\/docs\.github\.com\//);
+            // Most entries cite a GitHub doc. `.github/badges/*` cannot: it is
+            // default-branch-only because OUR README pins /main/ in the badge
+            // URL, and there is no GitHub doc for that. Requiring a docs.github
+            // .com link would have forced a wrong URL to satisfy the guard's
+            // shape, which is worse than a guard that accepts either.
+            expect(Boolean(entry.docs || entry.source)).toBe(true);
+            if (entry.docs) expect(entry.docs).toMatch(/^https:\/\/docs\.github\.com\//);
         }
+    });
+
+    it('catalogues .github/badges, which the README pins to /main/', () => {
+        expect(CATALOGUE.map((c) => c.pattern)).toContain('.github/badges/*');
+    });
+
+    it('the badge entry names a real README pin, so the reason is checkable', () => {
+        const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+        // If the README ever stops pinning /main/, the entry's justification is
+        // gone and it should be re-examined rather than left asserting a
+        // constraint that no longer exists.
+        expect(readme).toMatch(/raw\.githubusercontent\.com\/[^)\s"]*\/main\/\.github\/badges\//);
     });
 
     it('catalogues the two surfaces that have already bitten this repo', () => {
@@ -272,6 +361,46 @@ describe('catalogue integrity guards (hermetic — tracked files only)', () => {
         // so the guard is that derivation actually fires for a new file shape.
         const yaml = 'name: new\non:\n  schedule:\n    - cron: "0 2 * * *"\njobs: {}\n';
         expect(extractDefaultBranchOnlyTriggers(yaml)).toContain('schedule');
+    });
+});
+
+describe('compareVersions — numeric, not lexical', () => {
+    it('orders by numeric component, not string', () => {
+        // The trap: "1.10.0" < "1.9.0" lexically. Getting this wrong would
+        // report a newer branch as behind and send someone to back-merge over
+        // their own release.
+        expect(compareVersions('1.10.0', '1.9.0')).toBe(1);
+        expect(compareVersions('1.9.0', '1.10.0')).toBe(-1);
+    });
+
+    it('treats equal versions as equal, with or without a v prefix', () => {
+        expect(compareVersions('1.13.0', 'v1.13.0')).toBe(0);
+    });
+
+    it('returns null rather than guessing on unparseable input', () => {
+        expect(compareVersions('not-a-version', 'v1.0.0')).toBeNull();
+        expect(compareVersions('1.0.0', '')).toBeNull();
+    });
+});
+
+describe('versionDriftMessage', () => {
+    it('reports a branch behind the latest release and names the fix', () => {
+        const msg = versionDriftMessage('1.12.0', 'v1.12.1');
+        expect(msg).toMatch(/1\.12\.0/);
+        expect(msg).toMatch(/v1\.12\.1/);
+        expect(msg).toMatch(/git merge origin\/main/);
+    });
+
+    it('is silent when level with the latest release', () => {
+        expect(versionDriftMessage('1.13.0', 'v1.13.0')).toBeNull();
+    });
+
+    it('is silent when ahead — the normal state after a manual minor bump', () => {
+        expect(versionDriftMessage('1.13.0', 'v1.12.1')).toBeNull();
+    });
+
+    it('is silent rather than wrong when the tag is unparseable', () => {
+        expect(versionDriftMessage('1.13.0', 'not-a-tag')).toBeNull();
     });
 });
 
