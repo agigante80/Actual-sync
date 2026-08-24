@@ -22,6 +22,8 @@ const {
     classifyDrift,
     matchesPattern,
     extractDefaultBranchOnlyTriggers,
+    extractAllTriggers,
+    workflowDriftReasons,
     parseArgs
 } = require('../../scripts/defaultBranchDrift.js');
 
@@ -78,6 +80,48 @@ describe('extractDefaultBranchOnlyTriggers — pure trigger parsing', () => {
 
     it('returns nothing when there is no on: block at all', () => {
         expect(extractDefaultBranchOnlyTriggers('name: x\njobs: {}\n')).toEqual([]);
+    });
+});
+
+describe('extractAllTriggers — every declared trigger', () => {
+    it('lists mapping-form triggers and ignores their config keys', () => {
+        const yaml = 'on:\n  push:\n    branches: [main]\n    types: [x]\n  workflow_dispatch:\njobs: {}\n';
+        expect(extractAllTriggers(yaml).sort()).toEqual(['push', 'workflow_dispatch']);
+    });
+
+    it('lists inline sequence triggers', () => {
+        expect(extractAllTriggers('on: [push, workflow_dispatch]\n').sort())
+            .toEqual(['push', 'workflow_dispatch']);
+    });
+
+    it('returns nothing without an on: block', () => {
+        expect(extractAllTriggers('name: x\n')).toEqual([]);
+    });
+});
+
+describe('workflowDriftReasons — including the workflow_dispatch special case', () => {
+    it('reports a schedule-triggered workflow', () => {
+        const r = workflowDriftReasons('on:\n  schedule:\n    - cron: "0 1 * * *"\n');
+        expect(r).toHaveLength(1);
+        expect(r[0]).toMatch(/schedule/);
+    });
+
+    it('reports a workflow whose ONLY trigger is workflow_dispatch', () => {
+        // GitHub only offers "Run workflow" for a workflow on the default
+        // branch, so a dispatch-only workflow added here is simply unrunnable.
+        const r = workflowDriftReasons('on:\n  workflow_dispatch:\njobs: {}\n');
+        expect(r).toHaveLength(1);
+        expect(r[0]).toMatch(/workflow_dispatch/);
+    });
+
+    it('does NOT report workflow_dispatch when other triggers exist', () => {
+        // Five of seven workflows here carry a workflow_dispatch. Reporting all
+        // of them would bury the real signal, and they run on this branch fine.
+        expect(workflowDriftReasons('on:\n  push:\n    branches: [x]\n  workflow_dispatch:\n')).toEqual([]);
+    });
+
+    it('reports nothing for an ordinary push/PR workflow', () => {
+        expect(workflowDriftReasons('on:\n  push:\n  pull_request:\n')).toEqual([]);
     });
 });
 
@@ -203,6 +247,16 @@ describe('catalogue integrity guards (hermetic — tracked files only)', () => {
         }
 
         expect(actual).toEqual(EXPECTED);
+    });
+
+    it('no workflow is dispatch-only today, so adding one is a deliberate choice', () => {
+        const dispatchOnly = fs.readdirSync(WORKFLOW_DIR)
+            .filter((n) => /\.ya?ml$/.test(n))
+            .filter((n) => {
+                const t = extractAllTriggers(fs.readFileSync(path.join(WORKFLOW_DIR, n), 'utf8'));
+                return t.length === 1 && t[0] === 'workflow_dispatch';
+            });
+        expect(dispatchOnly).toEqual([]);
     });
 
     it('does not mistake ci-cd.yml for a default-branch-only workflow', () => {

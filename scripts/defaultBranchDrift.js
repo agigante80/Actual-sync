@@ -141,6 +141,59 @@ function extractDefaultBranchOnlyTriggers(text) {
     );
 }
 
+/** Pure. Every trigger name declared in a workflow's `on:` block. */
+function extractAllTriggers(text) {
+    const lines = text.split('\n');
+    const startIdx = lines.findIndex((l) => /^(on|'on'|"on")\s*:/.test(l));
+    if (startIdx === -1) return [];
+
+    const header = lines[startIdx];
+    const inline = header.slice(header.indexOf(':') + 1).trim();
+    const found = new Set();
+
+    if (inline) {
+        for (const t of inline.replace(/[[\]]/g, ' ').split(/[\s,]+/)) {
+            if (/^[a-z_]+$/.test(t)) found.add(t);
+        }
+    }
+
+    // Only keys at the block's own indent level are triggers; anything deeper is
+    // a trigger's config (`branches:`, `types:`, `cron:`).
+    let indent = null;
+    for (let i = startIdx + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (/^\s*$/.test(line) || /^\s*#/.test(line)) continue;
+        if (!/^\s/.test(line)) break;
+        const m = line.match(/^(\s+)([a-z_]+)\s*:/);
+        if (!m) continue;
+        if (indent === null) indent = m[1].length;
+        if (m[1].length === indent) found.add(m[2]);
+    }
+
+    return [...found];
+}
+
+/**
+ * Pure. Why a workflow is default-branch-only, or [] if it is not.
+ *
+ * `workflow_dispatch` is a special case worth the extra rule. GitHub only offers
+ * the "Run workflow" button for a workflow present on the default branch, so a
+ * dispatch-ONLY workflow added on development is simply unrunnable. It is not
+ * treated as default-branch-only when other triggers exist, because then the
+ * workflow still runs here and reporting every `workflow_dispatch:` in the repo
+ * — five of seven carry one — would bury the real signal.
+ */
+function workflowDriftReasons(text) {
+    const specific = extractDefaultBranchOnlyTriggers(text);
+    if (specific.length) return [`${specific.join(', ')} runs the default-branch copy`];
+
+    const all = extractAllTriggers(text);
+    if (all.length === 1 && all[0] === 'workflow_dispatch') {
+        return ['workflow_dispatch is only offered for workflows on the default branch'];
+    }
+    return [];
+}
+
 /**
  * Pure. Argument parsing, split out so its edge cases are testable.
  *
@@ -210,8 +263,7 @@ function collectWorkflowReasons(relPath, base, root) {
         headText = null; // deleted on this branch
     }
     if (headText !== null) {
-        const triggers = extractDefaultBranchOnlyTriggers(headText);
-        if (triggers.length) sides.push(`${triggers.join(', ')} runs the default-branch copy`);
+        sides.push(...workflowDriftReasons(headText));
     }
 
     let baseText = null;
@@ -229,13 +281,20 @@ function collectWorkflowReasons(relPath, base, root) {
             sides.push(note);
         }
     }
+    if (headText === null && baseText === null) {
+        // Neither side readable: say nothing rather than guess.
+        return [];
+    }
 
     return sides;
 }
 
 function report(drifted, base, asJson, root) {
     if (asJson) {
-        console.log(JSON.stringify({ base, drifted }, null, 2));
+        // `ok` is not decoration: without it a consumer checking
+        // `drifted.length === 0` reads a FAILED run as a clean one, which is the
+        // machine-readable version of the false all-clear this tool exists for.
+        console.log(JSON.stringify({ ok: true, base, drifted }, null, 2));
         return;
     }
     if (drifted.length === 0) {
@@ -260,7 +319,7 @@ function report(drifted, base, asJson, root) {
 /** Prints an honest failure and returns 0. Never claims "no drift". */
 function bail(message, base, asJson) {
     if (asJson) {
-        console.log(JSON.stringify({ base, error: message, drifted: [] }, null, 2));
+        console.log(JSON.stringify({ ok: false, base, error: message, drifted: null }, null, 2));
     } else {
         console.error(`\n  ${message}\n`);
     }
@@ -277,10 +336,20 @@ function main(argv) {
 
     let changed;
     try {
-        // No `HEAD`: comparing the base ref to the WORKING TREE also catches an
-        // uncommitted edit to a catalogued file, which is still config that is
-        // not in effect.
-        changed = git(['diff', '--name-only', base], root).split('\n').filter(Boolean);
+        // Compare against the MERGE BASE, not the base tip, and include the
+        // working tree and untracked files:
+        //
+        //  - merge base, because a two-dot diff against the tip also surfaces
+        //    changes made only on main (a web-UI issue-template edit always
+        //    commits to the default branch) as "written here but not in
+        //    effect" — backwards, and the implied action would revert main.
+        //  - working tree, because an uncommitted edit is still not in effect.
+        //  - untracked, because a BRAND-NEW FUNDING.yml or scheduled workflow is
+        //    the most inert case of all, and `git diff` never lists it.
+        const mergeBase = git(['merge-base', base, 'HEAD'], root);
+        const tracked = git(['diff', '--name-only', mergeBase], root).split('\n');
+        const untracked = git(['ls-files', '--others', '--exclude-standard'], root).split('\n');
+        changed = [...new Set([...tracked, ...untracked])].filter(Boolean);
     } catch (err) {
         return bail(
             `Could not diff against ${base} — ${gitReason(err)} `
@@ -326,6 +395,8 @@ module.exports = {
     classifyDrift,
     matchesPattern,
     extractDefaultBranchOnlyTriggers,
+    extractAllTriggers,
+    workflowDriftReasons,
     parseArgs,
     collectWorkflowReasons
 };
