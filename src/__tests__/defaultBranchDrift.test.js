@@ -476,6 +476,41 @@ describe('versionDriftMessage', () => {
     });
 });
 
+describe('wiring guards — the pure cores are tested, the CALL SITES are not', () => {
+    // Mutation testing caught both of these: the fixes below live in the git/fs
+    // edge, which no unit test reaches, so reverting either left every test
+    // green. docs/TESTING.md calls this out — a pure, unit-tested helper needs
+    // a source-reading wiring test or its call site is unguarded.
+    const SRC = fs.readFileSync(path.join(ROOT, 'scripts', 'defaultBranchDrift.js'), 'utf8');
+
+    it('resolves the latest tag by listing tags, never by `git describe`', () => {
+        // `git describe` only sees tags REACHABLE FROM HEAD. auto-release tags a
+        // commit that lives only on main, so from development it returns the
+        // PREVIOUS tag and the version check goes silent in the one scenario it
+        // exists for.
+        expect(SRC).toMatch(/git\(\[\s*'tag',\s*'--list',\s*'v\*',\s*'--sort=-v:refname'\s*\]/);
+        expect(SRC).not.toMatch(/git\(\[\s*'describe'/);
+    });
+
+    it('scans the BASE side with the same allow-list logic as the head side', () => {
+        // Reverting this to extractDefaultBranchOnlyTriggers means deleting an
+        // issue_comment or release workflow here leaves main's copy firing,
+        // unreported — the exact case collectWorkflowReasons exists for.
+        const fn = SRC.slice(SRC.indexOf('function collectWorkflowReasons'));
+        const body = fn.slice(0, fn.indexOf('\nfunction '));
+        expect(body).toMatch(/workflowDriftReasons\(baseText\)/);
+        expect(body).not.toMatch(/extractDefaultBranchOnlyTriggers\(baseText\)/);
+    });
+
+    it('reduces a flow mapping before scanning it for triggers', () => {
+        expect(SRC).toMatch(/block\.push\(flowMappingKeys\(inline\)/);
+    });
+
+    it('reads the YAML block-sequence form', () => {
+        expect(SRC).toMatch(/const sequence = line\.match\(/);
+    });
+});
+
 describe('npm wiring', () => {
     it('exposes the report as `npm run drift:check`', () => {
         const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));

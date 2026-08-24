@@ -604,6 +604,45 @@ module.exports = [
         tests: 'logger'
     },
 
+    // ---- #207/#208: the drift reporter's false all-clears -------------------
+    //
+    // Every one of these was a real defect found in review AFTER the tool
+    // shipped, and every one made it report "no drift" for something inert.
+    // That is the single failure mode this tool is not allowed to have, so each
+    // fix gets a mutation proving a test would notice it coming back.
+    {
+        id: '208-describe-blind-to-unreachable-tags', ticket: '#208',
+        desc: 'the latest tag is resolved with `git describe`, which only sees tags reachable from HEAD',
+        file: 'scripts/defaultBranchDrift.js',
+        anchor: "        latestTag = git(['tag', '--list', 'v*', '--sort=-v:refname'], root)",
+        mutant: "        latestTag = git(['describe', '--tags', '--abbrev=0', '--match', 'v*'], root)",
+        tests: 'defaultBranchDrift'
+    },
+    {
+        id: '207-block-sequence-triggers-unread', ticket: '#207',
+        desc: 'extractAllTriggers stops reading the YAML block-sequence form, so the two parsers disagree again',
+        file: 'scripts/defaultBranchDrift.js',
+        anchor: "        const sequence = line.match(/^(\\s+)-\\s+([a-z_]+)\\s*$/);",
+        mutant: "        const sequence = null;",
+        tests: 'defaultBranchDrift'
+    },
+    {
+        id: '207-flow-mapping-unwired', ticket: '#207',
+        desc: 'the flow-mapping reducer is unwired, so `on: {schedule: ...}` is invisible and nested values look like triggers',
+        file: 'scripts/defaultBranchDrift.js',
+        anchor: '    if (inline) block.push(flowMappingKeys(inline) || inline);',
+        mutant: '    if (inline) block.push(inline);',
+        tests: 'defaultBranchDrift'
+    },
+    {
+        id: '207-base-side-denylist-again', ticket: '#207',
+        desc: 'the base-side scan reverts to the three-name deny-list while the head side uses the allow-list',
+        file: 'scripts/defaultBranchDrift.js',
+        anchor: '        const reasons = workflowDriftReasons(baseText);',
+        mutant: '        const reasons = extractDefaultBranchOnlyTriggers(baseText);',
+        tests: 'defaultBranchDrift'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
