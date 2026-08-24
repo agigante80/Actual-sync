@@ -105,9 +105,19 @@ function defaultBranchOnlyWorkflows(workflows) {
         .map((w) => w.name);
 }
 
-/** Thin git edge. Isolated so the pure core above stays testable. */
+/**
+ * Thin git edge. Isolated so the pure core above stays testable.
+ *
+ * stderr is captured rather than inherited: git writes its own "unknown
+ * revision" text to the terminal AND execFileSync copies it into err.message,
+ * so inheriting prints the same failure twice around our explanation of it.
+ */
 function git(args, cwd) {
-    return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    return execFileSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe']
+    }).trim();
 }
 
 function main(argv) {
@@ -126,7 +136,15 @@ function main(argv) {
         // A missing ref is the common case on a fresh clone or a stale fetch.
         // Say so plainly rather than reporting a clean tree, which would be a
         // false all-clear — the same silent-no-op failure this script exists for.
-        const message = `Could not diff against ${base}: ${err.message.trim()}. `
+        // Keep git's actual reason (usually a single `fatal:` line) and drop its
+        // multi-line usage hint, which is noise in a report whose only job is to
+        // be read at a glance.
+        const reason = (err.stderr || err.message || '')
+            .split('\n')
+            .map((l) => l.trim())
+            .find((l) => l.startsWith('fatal:') || l.startsWith('error:'))
+            || 'git diff failed';
+        const message = `Could not diff against ${base} — ${reason} `
             + 'Run `git fetch origin` and retry. NOT reporting "no drift" — this run proved nothing.';
         if (asJson) {
             console.log(JSON.stringify({ base, error: message, drifted: [] }, null, 2));
