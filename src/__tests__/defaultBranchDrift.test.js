@@ -28,6 +28,7 @@ const {
     compareVersions,
     versionDriftMessage,
     stripComment,
+    flowMappingKeys,
     REF_SCOPED_TRIGGERS
 } = require('../../scripts/defaultBranchDrift.js');
 
@@ -219,6 +220,38 @@ describe('the two trigger parsers must agree', () => {
     it('reads every trigger in a block sequence, not just the first', () => {
         expect(extractAllTriggers('on:\n  - schedule\n  - push\n').sort())
             .toEqual(['push', 'schedule']);
+    });
+});
+
+describe('flow-mapping form — missed by BOTH parsers before', () => {
+    it('extracts top-level keys from a flow mapping', () => {
+        expect(flowMappingKeys('{push: {branches: [main]}, schedule: [{cron: "x"}]}').split(' ').sort())
+            .toEqual(['push', 'schedule']);
+    });
+
+    it('returns null for text that is not a flow mapping', () => {
+        expect(flowMappingKeys('[push, schedule]')).toBeNull();
+        expect(flowMappingKeys('push')).toBeNull();
+    });
+
+    it('does not report nested values as triggers', () => {
+        // `on: {push: {branches: [main]}}` used to yield `main` as a trigger,
+        // which is a false POSITIVE on an ordinary push-only workflow.
+        expect(extractAllTriggers('on: {push: {branches: [main]}}')).toEqual(['push']);
+    });
+
+    it('finds a flow-mapping schedule in both parsers', () => {
+        const yaml = 'on: {schedule: [{cron: "0 1 * * *"}]}';
+        expect(extractAllTriggers(yaml)).toContain('schedule');
+        expect(extractDefaultBranchOnlyTriggers(yaml)).toContain('schedule');
+        expect(workflowDriftReasons(yaml)).not.toEqual([]);
+    });
+});
+
+describe('versionDriftMessage refuses to be silently wrong', () => {
+    it('is silent rather than wrong when the local version is unparseable', () => {
+        expect(versionDriftMessage('', 'v1.0.0')).toBeNull();
+        expect(versionDriftMessage(undefined, 'v1.0.0')).toBeNull();
     });
 });
 

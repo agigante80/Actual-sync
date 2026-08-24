@@ -307,7 +307,9 @@ already bitten: #199 dropped `buy_me_a_coffee` from `.github/FUNDING.yml` on
 `development` and the Sponsor button kept serving `main`'s copy. The surfaces are
 `.github/FUNDING.yml`, `.github/dependabot.yml`, `.github/ISSUE_TEMPLATE/*`,
 `.github/badges/*` (the README pins those Shields URLs to `/main/`), and any workflow
-**not** triggered solely by `push` / `pull_request` / `merge_group` / `workflow_call`.
+**not** triggered solely by `push` / `pull_request` / `merge_group` / `workflow_call` /
+`workflow_dispatch` (a workflow whose ONLY trigger is `workflow_dispatch` still counts,
+because GitHub only offers the Run button for workflows on the default branch).
 That last one is an allow-list on purpose: GitHub resolves essentially every other event
 from the default branch, so `schedule`, `workflow_run`, `issue_comment`, `release`,
 `label` and `repository_dispatch` are all equally inert here — listing only the three
