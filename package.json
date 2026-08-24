@@ -87,7 +87,7 @@
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "jest": "^30.4.2",
-    "knip": "^6.29.0",
-    "puppeteer": "^25.4.0"
+    "knip": "^6.32.2",
+    "puppeteer": "^25.8.0"
   }
 }
