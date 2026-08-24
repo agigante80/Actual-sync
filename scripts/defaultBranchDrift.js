@@ -106,15 +106,6 @@ const CATALOGUE = [
 
 const WORKFLOW_DOCS = 'https://docs.github.com/actions/using-workflows/events-that-trigger-workflows';
 
-/**
- * Drops a trailing `# ...` comment from a YAML line.
- *
- * `on:  # replaces the old schedule: job` used to parse as content: the word
- * `schedule:` inside the comment made a push-only workflow look scheduled, and
- * `on:  # manual only` injected `manual` and `only` as trigger names. Naive on
- * purpose — a `#` inside a quoted YAML string would be over-trimmed, but the
- * `on:` header of a workflow does not carry quoted strings.
- */
 /** True when `relPath` is matched by a catalogue `pattern`. */
 function matchesPattern(relPath, pattern) {
     if (pattern.endsWith('/*')) {
@@ -369,9 +360,16 @@ function collectWorkflowReasons(relPath, base, root) {
         const reasons = workflowDriftReasons(baseText);
         if (reasons.length) {
             const why = reasons.join('; ');
-            sides.push(headText === null
-                ? `deleted here, but ${base} still has it: ${why}`
-                : `${base}'s copy: ${why}`);
+            if (headText === null) {
+                sides.push(`deleted here, but ${base} still has it: ${why}`);
+            } else if (!sides.includes(why)) {
+                // Only worth saying when the base DIFFERS from the head. A
+                // modified workflow carrying the same trigger on both sides
+                // printed the identical reason twice, and deduping the FINAL
+                // strings could never catch it — the base copy is prefixed, so
+                // the two strings were never equal.
+                sides.push(`${base}'s copy: ${why}`);
+            }
         }
     }
     if (headText === null && baseText === null) {
@@ -379,8 +377,6 @@ function collectWorkflowReasons(relPath, base, root) {
         return [];
     }
 
-    // A modified workflow carrying the same trigger on both branches produced the
-    // reason twice. Same information, printed twice, reads as two problems.
     return [...new Set(sides)];
 }
 
