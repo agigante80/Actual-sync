@@ -196,6 +196,42 @@ describe('non-ref-scoped events are default-branch-only by default', () => {
     });
 });
 
+describe('the two trigger parsers must agree', () => {
+    // They disagreed: extractDefaultBranchOnlyTriggers found `schedule` in the
+    // block-sequence form while extractAllTriggers returned [], so
+    // workflowDriftReasons trusted the blind one and emitted a false all-clear
+    // for an inert scheduled workflow.
+    const FORMS = [
+        ['mapping', 'on:\n  schedule:\n    - cron: "0 1 * * *"\njobs: {}\n'],
+        ['inline sequence', 'on: [schedule, push]\njobs: {}\n'],
+        ['block sequence', 'on:\n  - schedule\n  - push\njobs: {}\n']
+    ];
+
+    it.each(FORMS)('finds schedule in the %s form via both parsers', (_name, yaml) => {
+        expect(extractDefaultBranchOnlyTriggers(yaml)).toContain('schedule');
+        expect(extractAllTriggers(yaml)).toContain('schedule');
+    });
+
+    it.each(FORMS)('reports drift for the %s form', (_name, yaml) => {
+        expect(workflowDriftReasons(yaml)).not.toEqual([]);
+    });
+
+    it('reads every trigger in a block sequence, not just the first', () => {
+        expect(extractAllTriggers('on:\n  - schedule\n  - push\n').sort())
+            .toEqual(['push', 'schedule']);
+    });
+});
+
+describe('workflow_call is resolved from the caller ref, not the default branch', () => {
+    it('does not report a reusable workflow', () => {
+        expect(workflowDriftReasons('on:\n  workflow_call:\n    inputs: {}\n')).toEqual([]);
+    });
+
+    it('is listed as ref-scoped', () => {
+        expect(REF_SCOPED_TRIGGERS).toContain('workflow_call');
+    });
+});
+
 describe('matchesPattern — exact and prefix entries', () => {
     it('matches an exact path', () => {
         expect(matchesPattern('.github/FUNDING.yml', '.github/FUNDING.yml')).toBe(true);

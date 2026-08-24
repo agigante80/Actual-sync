@@ -117,14 +117,22 @@ jobs:
             # not the job. This posts to the issue-comments endpoint, which
             # GitHub scopes by target type — the one call not already proven by
             # the release train's own use of this App.
-            gh pr comment "$PR" --repo "$REPO" --body \
-              "Retargeted \`main\` → \`development\` automatically by \`.github/workflows/retarget-dependabot.yml\`.
-
-            Dependabot security updates always open against the default branch and cannot be configured otherwise. \`main\` is production here — a green CI run on it auto-cuts a release — so dependency updates are landed on \`development\` and promoted deliberately.
-
-            **Re-run CI before merging.** Changing the base does not re-trigger the pipeline, so the check on this PR was computed against \`main\` (#205).
-
-            If this is a transitive-only change (\`package-lock.json\` with no \`package.json\` edit), it should be closed rather than merged: see the Dependency Policy in \`CLAUDE.md\`." || echo "::warning::Could not comment on PR #${PR}; retarget itself succeeded."
+            # Body is piped in, one argument per line, rather than written as
+            # an indented multi-line string. Continuation lines used to keep
+            # their YAML indentation, and GitHub Markdown renders an indented
+            # line following a blank one as a CODE BLOCK — so the "Re-run CI"
+            # warning posted as preformatted text instead of a readable
+            # sentence. printf with one %s per line has no indentation to strip.
+            printf '%s\n' \
+              "Retargeted \`main\` → \`development\` automatically by \`.github/workflows/retarget-dependabot.yml\`." \
+              "" \
+              "Dependabot security updates always open against the default branch and cannot be configured otherwise. \`main\` is production here — a green CI run on it auto-cuts a release — so dependency updates are landed on \`development\` and promoted deliberately." \
+              "" \
+              "**Re-run CI before merging.** Changing the base does not re-trigger the pipeline, so the check on this PR was computed against \`main\` (#205)." \
+              "" \
+              "If this is a transitive-only change (\`package-lock.json\` with no \`package.json\` edit), it should be closed rather than merged: see the Dependency Policy in \`CLAUDE.md\`." \
+              | gh pr comment "$PR" --repo "$REPO" --body-file - \
+              || echo "::warning::Could not comment on PR #${PR}; retarget itself succeeded."
 
             echo "::endgroup::"
           done

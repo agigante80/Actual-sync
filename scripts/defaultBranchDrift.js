@@ -51,7 +51,7 @@ const WORKFLOW_PREFIX = '.github/workflows/';
  * OFFERS it for workflows on the default branch — handled as a special case in
  * workflowDriftReasons rather than listed here.
  */
-const REF_SCOPED_TRIGGERS = ['push', 'pull_request', 'merge_group', 'workflow_dispatch'];
+const REF_SCOPED_TRIGGERS = ['push', 'pull_request', 'merge_group', 'workflow_dispatch', 'workflow_call'];
 
 /**
  * `pull_request_target` resolves from the pull request's BASE branch, not
@@ -210,14 +210,25 @@ function extractAllTriggers(text) {
         }
     }
 
-    // Only keys at the block's own indent level are triggers; anything deeper is
-    // a trigger's config (`branches:`, `types:`, `cron:`).
+    // Only entries at the block's own indent level are triggers; anything deeper
+    // is a trigger's config (`branches:`, `types:`, `cron:`).
+    //
+    // Two shapes at that level, both valid YAML for `on:` and both used in the
+    // wild:
+    //   mapping   `  schedule:`            (with nested config)
+    //   sequence  `  - schedule`           (bare list, no config)
+    // Missing the sequence form made this disagree with
+    // extractDefaultBranchOnlyTriggers on the same text — one parser saw the
+    // trigger and the other did not, and the caller trusted the blind one.
     let indent = null;
     for (let i = startIdx + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (/^\s*$/.test(line) || /^\s*#/.test(line)) continue;
+        const line = stripComment(lines[i]);
+        if (/^\s*$/.test(line) || /^\s*#/.test(lines[i])) continue;
         if (!/^\s/.test(line)) break;
-        const m = line.match(/^(\s+)([a-z_]+)\s*:/);
+
+        const mapping = line.match(/^(\s+)([a-z_]+)\s*:/);
+        const sequence = line.match(/^(\s+)-\s+([a-z_]+)\s*$/);
+        const m = mapping || sequence;
         if (!m) continue;
         if (indent === null) indent = m[1].length;
         if (m[1].length === indent) found.add(m[2]);
@@ -388,12 +399,16 @@ function collectWorkflowReasons(relPath, base, root) {
         baseText = null; // not on the base branch yet
     }
     if (baseText !== null) {
-        const triggers = extractDefaultBranchOnlyTriggers(baseText);
-        if (triggers.length) {
-            const note = headText === null
-                ? `deleted here, but ${base} still fires it on ${triggers.join(', ')}`
-                : `${base}'s copy fires on ${triggers.join(', ')}`;
-            sides.push(note);
+        // Same allow-list logic as the head side. These used to differ — the base
+        // side kept the old three-name deny-list — so deleting an issue_comment
+        // or release workflow here left main's copy firing, unreported. That is
+        // precisely the case this function exists for.
+        const reasons = workflowDriftReasons(baseText);
+        if (reasons.length) {
+            const why = reasons.join('; ');
+            sides.push(headText === null
+                ? `deleted here, but ${base} still has it: ${why}`
+                : `${base}'s copy: ${why}`);
         }
     }
     if (headText === null && baseText === null) {
@@ -429,7 +444,11 @@ function report(drifted, base, asJson, root, version) {
             const tracked = git(['ls-files', '--error-unmatch', '--', d.path], root);
             if (!tracked) {
                 age = '  (untracked — never committed)';
-            } else if (git(['diff', '--name-only', '--', d.path], root)) {
+            } else if (git(['diff', '--name-only', 'HEAD', '--', d.path], root)) {
+                // Against HEAD, not the index: a STAGED edit is still
+                // uncommitted, and plain `git diff` does not list it — so it
+                // used to be stamped with the previous commit's date, the exact
+                // stale date this branch exists to avoid.
                 age = '  (uncommitted change)';
             } else {
                 const when = git(['log', '-1', '--format=%cs', '--', d.path], root);
@@ -532,10 +551,21 @@ function versionDrift(root) {
 
     let latestTag;
     try {
-        // --tags so a lightweight tag counts; auto-release creates those.
-        latestTag = git(['describe', '--tags', '--abbrev=0', '--match', 'v*'], root);
+        // NOT `git describe`: it only sees tags REACHABLE FROM HEAD, which makes
+        // this blind in the exact scenario it exists for. auto-release tags a
+        // commit that lives only on main, so from development `describe` returns
+        // the PREVIOUS tag, compares equal to package.json, and reports nothing.
+        // Verified: describe from 684d5c7 gives v1.12.0 while v1.12.1 is latest.
+        //
+        // `--sort=-v:refname` is a version sort, so v1.10.0 ranks above v1.9.0.
+        latestTag = git(['tag', '--list', 'v*', '--sort=-v:refname'], root)
+            .split('\n')[0]
+            .trim();
     } catch {
-        return { error: 'no v* tag found — run `git fetch --tags` before trusting this' };
+        latestTag = '';
+    }
+    if (!latestTag) {
+        return { error: 'no v* tag found locally — run `git fetch --tags` before trusting this' };
     }
 
     const message = versionDriftMessage(localVersion, latestTag);
