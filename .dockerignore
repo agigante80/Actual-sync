@@ -85,9 +85,12 @@ scripts/mutations.js
 #     omits, so it can only crash.
 #   generate-badges.js writes to .github/badges, absent from the image.
 #   version-bump.js rewrites VERSION, package.json and package-lock.json.
+#   defaultBranchDrift.js diffs the checkout against origin/main; there is no
+#     git repository in the image, so it can only fail (#204).
 scripts/generateDashboardScreenshots.js
 scripts/generate-badges.js
 scripts/version-bump.js
+scripts/defaultBranchDrift.js
 
 # Backup files
 *.backup

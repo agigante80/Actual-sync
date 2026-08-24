@@ -20,6 +20,7 @@
     "test:coverage": "jest --coverage",
     "test:mutation": "node scripts/mutationTest.js",
     "dead:check": "knip",
+    "drift:check": "node scripts/defaultBranchDrift.js",
     "knip": "knip --no-exit-code",
     "prepare": "git config core.hooksPath .githooks || true"
   },
