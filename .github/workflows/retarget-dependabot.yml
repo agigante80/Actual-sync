@@ -68,8 +68,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Dependabot's login appears as `app/dependabot` via gh and as
-          # `dependabot[bot]` via the raw API; accept both.
+          # Dependabot's login appears as `app/dependabot` via gh and
+          # `dependabot[bot]` via the raw API — and matching an exact list meant
+          # a third spelling would yield an empty result, "Nothing to do", and
+          # exit 0. Substring match instead: over-matching here would only
+          # retarget a PR that already belongs on development.
           #
           # `deps/actual-api-*` is the Actual API release train, which is
           # App-authored and MUST keep targeting main — retargeting it would
@@ -82,8 +85,7 @@ jobs:
           PRS=$(gh pr list --repo "$REPO" --base main --state open --limit 100 \
                   --json number,author,headRefName \
                   --jq '.[]
-                        | select(.author.login == "app/dependabot"
-                              or .author.login == "dependabot[bot]")
+                        | select(.author.login | ascii_downcase | contains("dependabot"))
                         | select((.headRefName | startswith("deps/actual-api-")) | not)
                         | .number')
 
@@ -122,6 +124,16 @@ jobs:
               continue
             fi
             echo "PR #${PR} is now based on '${BASE}'."
+
+            # Retargeting can leave the PR unmergeable: it was branched from
+            # main, and development is usually ahead on VERSION/package.json.
+            # Dependabot cannot rebase a PR whose base it did not choose, so
+            # without this the job exits 0 while the fix quietly stalls.
+            # Non-fatal — the retarget itself succeeded and is still correct.
+            MERGEABLE=$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq .mergeable || echo UNKNOWN)
+            if [ "$MERGEABLE" = "CONFLICTING" ]; then
+              echo "::warning::PR #${PR} conflicts with development after retargeting — it needs a manual rebase before it can merge."
+            fi
 
             # Non-fatal (#206): the retarget has already happened and been
             # verified, so a permission gap here should cost the courtesy note,

@@ -130,16 +130,6 @@ describe('workflowDriftReasons — including the workflow_dispatch special case'
     });
 });
 
-describe('stripComment — YAML inline comments are not content', () => {
-    it('drops a trailing comment', () => {
-        expect(stripComment('on:  # replaces the old schedule: job').trim()).toBe('on:');
-    });
-
-    it('leaves a comment-free line alone', () => {
-        expect(stripComment('  schedule:')).toBe('  schedule:');
-    });
-});
-
 describe('inline comments cannot fake or hide a trigger', () => {
     it('does not read a trigger name out of a comment on the on: line', () => {
         // Regression: this made a push-only workflow look scheduled, which both
@@ -223,28 +213,39 @@ describe('the two trigger parsers must agree', () => {
     });
 });
 
-describe('flow-mapping form — missed by BOTH parsers before', () => {
-    it('extracts top-level keys from a flow mapping', () => {
-        expect(flowMappingKeys('{push: {branches: [main]}, schedule: [{cron: "x"}]}').split(' ').sort())
-            .toEqual(['push', 'schedule']);
+describe('every YAML `on:` shape parses — the class the regexes kept missing', () => {
+    // Each of these was a real miss found by a separate review round while this
+    // was hand-rolled with regexes. They are kept as a set so a future change to
+    // the parsing strategy has to satisfy all of them at once.
+    const SHAPES = [
+        ['mapping', 'on:\n  schedule:\n    - cron: "0 1 * * *"\n', ['schedule']],
+        ['block sequence', 'on:\n  - schedule\n', ['schedule']],
+        ['zero-indent sequence', 'on:\n- schedule\n- push\n', ['push', 'schedule']],
+        ['inline sequence', 'on: [push, schedule]\n', ['push', 'schedule']],
+        ['flow mapping', 'on: {schedule: [{cron: "x"}]}\n', ['schedule']],
+        ['scalar', 'on: schedule\n', ['schedule']],
+        ['quoted key', "'on':\n  schedule:\n    - cron: x\n", ['schedule']]
+    ];
+
+    it.each(SHAPES)('reads the %s form', (_name, yaml, expected) => {
+        expect(extractAllTriggers(yaml).sort()).toEqual(expected);
     });
 
-    it('returns null for text that is not a flow mapping', () => {
-        expect(flowMappingKeys('[push, schedule]')).toBeNull();
-        expect(flowMappingKeys('push')).toBeNull();
+    it.each(SHAPES)('reports drift for the %s form', (_name, yaml) => {
+        expect(workflowDriftReasons(yaml)).not.toEqual([]);
     });
 
-    it('does not report nested values as triggers', () => {
-        // `on: {push: {branches: [main]}}` used to yield `main` as a trigger,
-        // which is a false POSITIVE on an ordinary push-only workflow.
+    it('does not mistake nested config for a trigger', () => {
+        // `on: {push: {branches: [main]}}` once yielded `main` as a trigger.
         expect(extractAllTriggers('on: {push: {branches: [main]}}')).toEqual(['push']);
     });
 
-    it('finds a flow-mapping schedule in both parsers', () => {
-        const yaml = 'on: {schedule: [{cron: "0 1 * * *"}]}';
-        expect(extractAllTriggers(yaml)).toContain('schedule');
-        expect(extractDefaultBranchOnlyTriggers(yaml)).toContain('schedule');
-        expect(workflowDriftReasons(yaml)).not.toEqual([]);
+    it('distinguishes "cannot parse" from "no triggers"', () => {
+        // Returning [] for unparseable YAML would clear a workflow nobody can
+        // read — the false all-clear this whole tool exists to avoid.
+        expect(extractAllTriggers('on:\n  push:\n   bad: [unclosed')).toBeNull();
+        expect(workflowDriftReasons('on:\n  push:\n   bad: [unclosed')[0]).toMatch(/could not parse/);
+        expect(extractAllTriggers('name: x\njobs: {}\n')).toEqual([]);
     });
 });
 
@@ -389,22 +390,26 @@ describe('catalogue integrity guards (hermetic — tracked files only)', () => {
         // the same "a new one is a deliberate choice" shape as the #180/#183
         // script guard. The runtime catalogue is still derived, so the tool
         // itself needs no update.
+        // Scanned with workflowDriftReasons — the SAME function the report
+        // uses. It previously scanned with the legacy three-name deny-list, so
+        // an issue_comment/release/label-only workflow passed silently while
+        // CLAUDE.md advertised this as "the invariant that is genuinely
+        // enforceable". It was not enforcing it.
         const EXPECTED = {
             'auto-release.yml': ['workflow_run'],
             'codeql-analysis.yml': ['schedule'],
             'dependency-update.yml': ['schedule'],
-            // Was pull_request_target; changed to schedule because a
-            // Dependabot-initiated run gets no Actions secrets, so the App
-            // token step could not run on the PRs it exists for (#206).
             'retarget-dependabot.yml': ['schedule']
         };
 
         const actual = {};
         for (const name of fs.readdirSync(WORKFLOW_DIR).filter((n) => /\.ya?ml$/.test(n))) {
-            const triggers = extractDefaultBranchOnlyTriggers(
-                fs.readFileSync(path.join(WORKFLOW_DIR, name), 'utf8')
-            );
-            if (triggers.length) actual[name] = triggers.sort();
+            const text = fs.readFileSync(path.join(WORKFLOW_DIR, name), 'utf8');
+            if (workflowDriftReasons(text).length === 0) continue;
+            const all = extractAllTriggers(text) || [];
+            actual[name] = all
+                .filter((t) => !REF_SCOPED_TRIGGERS.includes(t))
+                .sort();
         }
 
         expect(actual).toEqual(EXPECTED);
@@ -502,12 +507,12 @@ describe('wiring guards — the pure cores are tested, the CALL SITES are not', 
         expect(body).not.toMatch(/extractDefaultBranchOnlyTriggers\(baseText\)/);
     });
 
-    it('reduces a flow mapping before scanning it for triggers', () => {
-        expect(SRC).toMatch(/block\.push\(flowMappingKeys\(inline\)/);
-    });
-
-    it('reads the YAML block-sequence form', () => {
-        expect(SRC).toMatch(/const sequence = line\.match\(/);
+    it('parses workflow YAML with a real parser, not regexes', () => {
+        // The regression that matters most: four review rounds each found
+        // another `on:` shape a regex parser got wrong, every miss a false
+        // all-clear. Going back to hand-rolled parsing reopens the whole class.
+        expect(SRC).toMatch(/require\('js-yaml'\)/);
+        expect(SRC).toMatch(/yaml\.load\(text\)/);
     });
 });
 
@@ -525,7 +530,13 @@ describe('npm wiring', () => {
         // for a literal process.exit(1) proved nothing: a `return 1` added to
         // main() would make it blocking with this guard still green.
         expect(src).not.toMatch(/process\.exit\(\s*[1-9]/);
-        expect(src).not.toMatch(/\breturn\s+[1-9]\d*\s*;/);
+        // Scoped to main()'s returns, not the whole file: the old whole-file ban
+        // on any `return <positive int>;` would fail an ordinary refactor of
+        // compareVersions to `if (a > b) return 1;` with a misleading
+        // "script is blocking" message.
+        const mainFn = src.slice(src.indexOf('function main(argv)'));
+        const mainBody = mainFn.slice(0, mainFn.indexOf('\nfunction '));
+        expect(mainBody).not.toMatch(/\breturn\s+[1-9]\d*\s*;/);
         expect(src).toMatch(/ALWAYS EXITS 0/);
     });
 });
