@@ -298,6 +298,49 @@ describe('only operator tooling ships in the production image (#180, #183)', () 
 });
 
 /**
+ * Funding routes must not drift apart across published surfaces (#199).
+ *
+ * GitHub Sponsors is the single funding route. Buy Me a Coffee was dropped from
+ * FUNDING.yml and the README — and survived in the Docker Hub long description,
+ * which ci-cd.yml publishes, so the stale link stayed live for every image user.
+ * That is the same shape as the /prometheus typo the endpoint guard exists for:
+ * a published surface nobody re-read.
+ *
+ * Scoped to PUBLISHED surfaces on purpose. CLAUDE.md and .claude/memory discuss
+ * `buy_me_a_coffee` as history, and a repo-wide ban would fail on those.
+ */
+describe('funding routes do not drift across published surfaces (#199)', () => {
+    const SURFACES = ['README.md', 'docker/description/long.md', 'docker/description/short.md', '.github/FUNDING.yml']
+        .filter((rel) => fs.existsSync(path.join(ROOT, rel)));
+
+    it.each(SURFACES)('%s does not advertise a retired funding route', (rel) => {
+        const text = read(rel);
+        expect(text).not.toMatch(/buymeacoffee\.com/i);
+        expect(text).not.toMatch(/buy_me_a_coffee/i);
+    });
+
+    it('FUNDING.yml names GitHub Sponsors, which is what renders the Sponsor button', () => {
+        expect(read('.github/FUNDING.yml')).toMatch(/^github:\s*\S+/m);
+    });
+
+    it('every sponsor link points at the one funding route', () => {
+        for (const rel of SURFACES) {
+            for (const m of read(rel).matchAll(/https:\/\/github\.com\/sponsors\/([A-Za-z0-9-]+)/g)) {
+                expect(m[1]).toBe('agigante80');
+            }
+        }
+    });
+
+    it('the README Sponsor section is reachable from the table of contents', () => {
+        // It was appended after the centred footer's closing </div> and left out
+        // of the ToC, so the one section asking for nothing was also the one
+        // section you could not navigate to.
+        expect(README).toMatch(/^## Sponsor$/m);
+        expect(README).toMatch(/^- \[Sponsor\]\(#sponsor\)$/m);
+    });
+});
+
+/**
  * Every advertised notification channel must be testable from the dashboard (#182).
  *
  * The route handled four channels while the schema defined six, so a

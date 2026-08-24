@@ -324,7 +324,10 @@ describe('catalogue integrity guards (hermetic — tracked files only)', () => {
             'auto-release.yml': ['workflow_run'],
             'codeql-analysis.yml': ['schedule'],
             'dependency-update.yml': ['schedule'],
-            'retarget-dependabot.yml': ['pull_request_target']
+            // Was pull_request_target; changed to schedule because a
+            // Dependabot-initiated run gets no Actions secrets, so the App
+            // token step could not run on the PRs it exists for (#206).
+            'retarget-dependabot.yml': ['schedule']
         };
 
         const actual = {};

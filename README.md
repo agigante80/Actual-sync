@@ -40,6 +40,7 @@
 - [Contributing](#-contributing)
 - [License](#-license)
 - [Acknowledgments](#-acknowledgments)
+- [Sponsor](#sponsor)
 
 ---
 
@@ -1140,6 +1141,14 @@ You are free to use, modify, and distribute this software for any purpose, inclu
 
 ---
 
+## Sponsor
+
+I build and maintain this in my own time. It is free, it stays free, and it gets maintained either way.
+
+If it saved you some time and you feel like saying thanks, you can do that at [github.com/sponsors/agigante80](https://github.com/sponsors/agigante80). Entirely optional, and nothing about the project changes either way.
+
+---
+
 <div align="center">
 
 **Made with ❤️ for the Actual Budget community**
@@ -1147,9 +1156,3 @@ You are free to use, modify, and distribute this software for any purpose, inclu
 [⬆ Back to Top](#-actual-sync)
 
 </div>
-
-## Sponsor
-
-I build and maintain this in my own time. It is free, it stays free, and it gets maintained either way.
-
-If it saved you some time and you feel like saying thanks, you can do that at [github.com/sponsors/agigante80](https://github.com/sponsors/agigante80). Entirely optional, and nothing about the project changes either way.

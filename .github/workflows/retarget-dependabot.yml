@@ -4,68 +4,54 @@ name: Retarget Dependabot PRs
 #
 # `target-branch` in dependabot.yml is honoured for VERSION updates only.
 # Dependabot SECURITY updates ignore it and always open against the DEFAULT
-# branch — here, `main`. That is not a misconfiguration we can fix in YAML; it
-# is a documented platform limitation (dependabot/dependabot-core#2767, open
-# since 2020; GitHub's own changelog for the 2024 private-registry fix restates
-# that "security updates still does not support target-branch configuration").
+# branch — here, `main`. That is a documented platform limitation
+# (dependabot/dependabot-core#2767, open since 2020), not something fixable in
+# YAML. It matters more here than in most repos: every green CI run on `main`
+# triggers auto-release.yml, which tags and publishes. PR #192 arrived this way.
 #
-# It matters here more than in most repos: every green CI run on `main` triggers
-# auto-release.yml, which tags and publishes. A security PR landing on `main` is
-# therefore one click away from cutting an unplanned release. PR #192 arrived
-# exactly this way.
+# So we move them afterwards: any open Dependabot PR based on `main` gets its
+# base changed to `development`, where every other dependency update lands.
 #
-# So we fix it after the fact: when Dependabot opens a PR against `main`, move
-# its base to `development`, where every other dependency update already lands.
+# WHY A SCHEDULE AND NOT pull_request_target
 #
-# NOTE ON ACTIVATION: `pull_request_target` workflows run from the version of
-# this file on the DEFAULT branch. This has no effect until it is merged to
-# `main`. (`npm run drift:check` reports that, see #204.)
+# The obvious design is `pull_request_target` on PR open. It was written that
+# way and changed, because it cannot get the token it needs.
 #
-# NOTE ON THE TOKEN: this uses a GitHub App token, not the default one. Events
-# generated with the default `GITHUB_TOKEN` never start workflow runs, so the
-# `edited` event described below would fire into the void: the re-test would
-# silently not happen and the check would stay green from `main`. CLAUDE.md
-# already states the rule — any action that must trigger a downstream workflow
-# needs the App token. Same reason auto-release.yml and dependency-update.yml
-# use one.
+# A Dependabot-initiated run gets a read-only GITHUB_TOKEN and no access to
+# Actions secrets, so `secrets.APP_ID` would resolve empty and the App token
+# step would fail — on exactly the PRs this exists for. GitHub's own docs are
+# self-contradictory about whether `pull_request_target` is included: it is
+# absent from the read-only event list, but the separate `pull_request_target`
+# clause is glossed as `github.event.pull_request.user.login ==
+# 'dependabot[bot]'`, which is every Dependabot PR. Rather than depend on which
+# reading is operative — or require someone to duplicate the App secrets into
+# the separate Dependabot secrets store — this runs on a schedule.
 #
-# KNOWN GAP — the retargeted PR is NOT automatically re-tested. Changing a base
-# fires `pull_request` `edited`, which ci-cd.yml does not listen for, so the
-# PR keeps the check it earned against `main`. Adding `edited` was tried and
-# REVERTED: it let a plain title edit start a run where every job skips, and
-# skipped checks supersede real ones as passing — turning a red PR green. That
-# is worse than the gap it closed. Tracked in #205; until then, re-run CI on a
-# retargeted PR before merging it.
+# A scheduled run is not Dependabot-initiated, so it gets normal Actions secrets
+# and a normal token. The cost is latency: a security PR may sit on `main` for
+# up to an hour. Nothing merges it in that window, and `main` is protected by
+# the same review as any other branch.
+#
+# NOTE ON ACTIVATION: scheduled workflows only run from the DEFAULT branch. This
+# does nothing until merged to `main`. `npm run drift:check` reports that (#204).
 
 on:
-  pull_request_target:
-    types: [opened, reopened]
+  schedule:
+    # Hourly. Dependabot itself runs daily, but a security advisory can land at
+    # any time and the job is a couple of API calls.
+    - cron: '17 * * * *'
+  workflow_dispatch:
 
-# Least privilege for the DEFAULT token. The API calls below use the App token
-# minted in the job; this block still matters because a workflow with no
-# `permissions:` key inherits the broader repository default.
-#
-# This job never checks out the PR's code — it only calls the API — so
-# `pull_request_target` carries no untrusted-code risk here.
 permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: retarget-dependabot
+  cancel-in-progress: false
+
 jobs:
   retarget:
-    # Three conditions, all required:
-    #   1. Dependabot's own PR    — never touch a human's PR.
-    #   2. Aimed at main          — version-update PRs already target development.
-    #   3. Not the release train  — dependency-update.yml opens `deps/actual-api-*`
-    #      against main with an App token and MUST stay there: retargeting it to
-    #      development would break the train's merge-to-main-then-publish chain.
-    #      The train is App-authored so condition 1 already excludes it; this is
-    #      belt and braces, because silently breaking the train would be costly
-    #      and the guard costs one line.
-    if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
-      github.event.pull_request.base.ref == 'main' &&
-      !startsWith(github.event.pull_request.head.ref, 'deps/actual-api-')
     runs-on: ubuntu-latest
     steps:
       - name: Generate GitHub App token
@@ -75,58 +61,72 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - name: Move the PR base to development
+      - name: Retarget any Dependabot PR sitting on main
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          echo "Retargeting PR #${PR} from main to development"
-          gh pr edit "$PR" --repo "$REPO" --base development
 
-      - name: Verify the retarget actually took
-        # Without this the job can exit green on a no-op and we would be back to
-        # a security PR sitting on main believing it had moved. Same reasoning as
-        # the release train's "Verify the release chain actually started" step:
-        # an automation that silently does nothing is worse than one that fails.
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          BASE=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName)
-          if [ "$BASE" != "development" ]; then
-            echo "::error::PR #${PR} is still based on '${BASE}' — retarget failed."
-            exit 1
+          # Dependabot's login appears as `app/dependabot` via gh and as
+          # `dependabot[bot]` via the raw API; accept both.
+          #
+          # `deps/actual-api-*` is the Actual API release train, which is
+          # App-authored and MUST keep targeting main — retargeting it would
+          # break the merge-to-main-then-publish chain. The author filter
+          # already excludes it; this is belt and braces because silently
+          # breaking the train would be expensive and the guard costs a line.
+          PRS=$(gh pr list --repo "$REPO" --base main --state open \
+                  --json number,author,headRefName \
+                  --jq '.[]
+                        | select(.author.login == "app/dependabot"
+                              or .author.login == "dependabot[bot]")
+                        | select((.headRefName | startswith("deps/actual-api-")) | not)
+                        | .number')
+
+          if [ -z "$PRS" ]; then
+            echo "No Dependabot PRs based on main. Nothing to do."
+            exit 0
           fi
-          echo "PR #${PR} is now based on '${BASE}'."
 
-      - name: Leave a note on the PR
-        # A Dependabot PR whose base moved under it is confusing to walk into
-        # cold. One line of context costs nothing and saves a re-investigation.
-        #
-        # NON-FATAL on purpose (#206). By this point the retarget has already
-        # happened AND been verified, so the job's actual work is done. This step
-        # posts to the issue-comments endpoint, which GitHub scopes by target
-        # type — `pull_requests: write` for a PR — and it is the one call here
-        # not already proven by the release train's own use of this App. If that
-        # inference is wrong, the right outcome is "retargeted, no note", not a
-        # red job that reads as though the retarget failed when it did not.
-        #
-        # The verify step above stays fatal. That one SHOULD go red: it is what
-        # catches a silent no-op.
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          gh pr comment "$PR" --repo "$REPO" --body \
-            "Retargeted \`main\` → \`development\` automatically by \`.github/workflows/retarget-dependabot.yml\`.
+          FAILED=0
+          for PR in $PRS; do
+            echo "::group::PR #${PR}"
+            if ! gh pr edit "$PR" --repo "$REPO" --base development; then
+              echo "::error::Failed to retarget PR #${PR}"
+              FAILED=1
+              echo "::endgroup::"
+              continue
+            fi
 
-          Dependabot security updates always open against the default branch and cannot be configured otherwise. \`main\` is production here — a green CI run on it auto-cuts a release — so dependency updates are landed on \`development\` and promoted deliberately.
+            # Verify rather than trust the exit code. An automation that
+            # silently does nothing is worse than one that fails — same
+            # reasoning as the release train's "Verify the release chain
+            # actually started" step.
+            BASE=$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName)
+            if [ "$BASE" != "development" ]; then
+              echo "::error::PR #${PR} is still based on '${BASE}' — retarget failed."
+              FAILED=1
+              echo "::endgroup::"
+              continue
+            fi
+            echo "PR #${PR} is now based on '${BASE}'."
 
-          If this is a transitive-only change (\`package-lock.json\` with no \`package.json\` edit), it should be closed rather than merged: see the Dependency Policy in \`CLAUDE.md\`."
+            # Non-fatal (#206): the retarget has already happened and been
+            # verified, so a permission gap here should cost the courtesy note,
+            # not the job. This posts to the issue-comments endpoint, which
+            # GitHub scopes by target type — the one call not already proven by
+            # the release train's own use of this App.
+            gh pr comment "$PR" --repo "$REPO" --body \
+              "Retargeted \`main\` → \`development\` automatically by \`.github/workflows/retarget-dependabot.yml\`.
+
+            Dependabot security updates always open against the default branch and cannot be configured otherwise. \`main\` is production here — a green CI run on it auto-cuts a release — so dependency updates are landed on \`development\` and promoted deliberately.
+
+            **Re-run CI before merging.** Changing the base does not re-trigger the pipeline, so the check on this PR was computed against \`main\` (#205).
+
+            If this is a transitive-only change (\`package-lock.json\` with no \`package.json\` edit), it should be closed rather than merged: see the Dependency Policy in \`CLAUDE.md\`." || echo "::warning::Could not comment on PR #${PR}; retarget itself succeeded."
+
+            echo "::endgroup::"
+          done
+
+          exit "$FAILED"

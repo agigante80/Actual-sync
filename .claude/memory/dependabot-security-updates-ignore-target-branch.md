@@ -14,7 +14,7 @@ There is a second, sharper edge to the same rule: **an entry that sets a non-def
 **How it is now solved — two mechanisms, deliberately not one:**
 
 - *What* gets a PR: `allow: dependency-type: "direct"` on both npm entries. The second npm entry exists solely to reach security updates — it **omits** `target-branch` (that omission is the mechanism) and sets `open-pull-requests-limit: 0` so it contributes no version updates, and it repeats the `@actual-app/api` ignore because entry 1's does not carry over.
-- *Where* it lands: `.github/workflows/retarget-dependabot.yml` moves the base `main` → `development` on `pull_request_target`, excluding `deps/actual-api-*` so the release train keeps targeting `main`.
+- *Where* it lands: `.github/workflows/retarget-dependabot.yml` moves the base `main` → `development`, excluding `deps/actual-api-*` so the release train keeps targeting `main`. It runs on an **hourly schedule**, NOT `pull_request_target`: a Dependabot-initiated run gets a read-only token and no Actions secrets, so the App-token step would fail on exactly the PRs it exists for. GitHub's docs are self-contradictory on whether `pull_request_target` is included — it is absent from the read-only event list, but its own clause is glossed as `pull_request.user.login == 'dependabot[bot]'`, which is every Dependabot PR. A schedule sidesteps the question entirely.
 
 Neither is redundant. Removing either reopens a different half of the gap, and "tidying" the two npm entries into one restores exactly the hole that produced #192.
 

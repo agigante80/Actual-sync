@@ -352,10 +352,13 @@ lockfile-only PR. `@actual-app/api` is ignored in **both**; entry 1's `ignore` d
 carry over, and it is a direct dependency.
 
 Security PRs still open against `main` (GitHub allows no alternative), so
-`.github/workflows/retarget-dependabot.yml` moves them to `development`. It uses the
-**App token**, because events made with the default `GITHUB_TOKEN` never start workflow
-runs. **A retargeted PR is not automatically re-tested** — it keeps the check it earned
-against `main`, so re-run CI before merging one (#205).
+`.github/workflows/retarget-dependabot.yml` moves them to `development`. It runs on an
+**hourly schedule**, not `pull_request_target`: a Dependabot-initiated run gets a
+read-only token and no Actions secrets, so the App-token step would fail on exactly the
+PRs it exists for. A scheduled run is not Dependabot-initiated and gets normal secrets.
+The trade is up to an hour of latency, which costs nothing because nothing merges those
+PRs in that window. **A retargeted PR is not automatically re-tested** — it keeps the
+check it earned against `main`, so re-run CI before merging one (#205).
 
 ## Anti-Patterns to Avoid
 
