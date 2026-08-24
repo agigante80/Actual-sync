@@ -164,6 +164,6 @@ Full documentation available at:
 - 📖 Documentation: https://github.com/agigante80/Actual-sync/tree/main/docs
 - 🐛 Issues: https://github.com/agigante80/Actual-sync/issues
 - 💬 Discussions: https://github.com/agigante80/Actual-sync/discussions
-- ☕ Support: https://buymeacoffee.com/agigante80
+- ❤️ Sponsor: https://github.com/sponsors/agigante80
 
 Built with ❤️ for the Actual Budget community
