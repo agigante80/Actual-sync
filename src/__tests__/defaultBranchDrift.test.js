@@ -27,8 +27,6 @@ const {
     parseArgs,
     compareVersions,
     versionDriftMessage,
-    stripComment,
-    flowMappingKeys,
     REF_SCOPED_TRIGGERS
 } = require('../../scripts/defaultBranchDrift.js');
 
@@ -419,7 +417,10 @@ describe('catalogue integrity guards (hermetic — tracked files only)', () => {
         const dispatchOnly = fs.readdirSync(WORKFLOW_DIR)
             .filter((n) => /\.ya?ml$/.test(n))
             .filter((n) => {
-                const t = extractAllTriggers(fs.readFileSync(path.join(WORKFLOW_DIR, n), 'utf8'));
+                // `|| []` matters: extractAllTriggers returns null for
+                // unparseable YAML, and dereferencing .length would throw a
+                // TypeError instead of letting the parse failure be reported.
+                const t = extractAllTriggers(fs.readFileSync(path.join(WORKFLOW_DIR, n), 'utf8')) || [];
                 return t.length === 1 && t[0] === 'workflow_dispatch';
             });
         expect(dispatchOnly).toEqual([]);

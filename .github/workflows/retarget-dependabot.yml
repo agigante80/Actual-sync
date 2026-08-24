@@ -125,15 +125,14 @@ jobs:
             fi
             echo "PR #${PR} is now based on '${BASE}'."
 
-            # Retargeting can leave the PR unmergeable: it was branched from
-            # main, and development is usually ahead on VERSION/package.json.
-            # Dependabot cannot rebase a PR whose base it did not choose, so
-            # without this the job exits 0 while the fix quietly stalls.
-            # Non-fatal — the retarget itself succeeded and is still correct.
-            MERGEABLE=$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq .mergeable || echo UNKNOWN)
-            if [ "$MERGEABLE" = "CONFLICTING" ]; then
-              echo "::warning::PR #${PR} conflicts with development after retargeting — it needs a manual rebase before it can merge."
-            fi
+            # NOTE: no mergeability check here. A retargeted PR CAN be
+            # unmergeable — it branched from main while development is ahead on
+            # VERSION/package.json, and Dependabot cannot rebase a base it did
+            # not choose. But GitHub computes mergeability asynchronously, so
+            # reading it immediately after the edit returns UNKNOWN and a
+            # CONFLICTING check would essentially never fire. A check that
+            # cannot fire is worse than none: it reads as coverage. Tracked in
+            # #210.
 
             # Non-fatal (#206): the retarget has already happened and been
             # verified, so a permission gap here should cost the courtesy note,

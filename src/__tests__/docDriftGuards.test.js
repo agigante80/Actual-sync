@@ -310,8 +310,16 @@ describe('only operator tooling ships in the production image (#180, #183)', () 
  * `buy_me_a_coffee` as history, and a repo-wide ban would fail on those.
  */
 describe('funding routes do not drift across published surfaces (#199)', () => {
-    const SURFACES = ['README.md', 'docker/description/long.md', 'docker/description/short.md', '.github/FUNDING.yml']
-        .filter((rel) => fs.existsSync(path.join(ROOT, rel)));
+    // NOT filtered by existsSync. Dropping a missing file from the list would
+    // silently shrink coverage when a surface is renamed or deleted — and would
+    // make the sponsor-link assertion pass vacuously on an empty list. In the
+    // one file dedicated to preventing false all-clears, that is the wrong
+    // failure mode: assert they exist instead.
+    const SURFACES = ['README.md', 'docker/description/long.md', 'docker/description/short.md', '.github/FUNDING.yml'];
+
+    it.each(SURFACES)('%s still exists, so its guards are not vacuous', (rel) => {
+        expect(fs.existsSync(path.join(ROOT, rel))).toBe(true);
+    });
 
     it.each(SURFACES)('%s does not advertise a retired funding route', (rel) => {
         const text = read(rel);
