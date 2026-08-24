@@ -252,7 +252,8 @@ describe('only operator tooling ships in the production image (#180, #183)', () 
         ['scripts/mutations.js', 'the catalog of source edits that runner applies'],
         ['scripts/generateDashboardScreenshots.js', 'requires puppeteer, a devDependency the image omits'],
         ['scripts/generate-badges.js', 'writes to .github/badges, which does not exist in the image'],
-        ['scripts/version-bump.js', 'rewrites VERSION, package.json and package-lock.json']
+        ['scripts/version-bump.js', 'rewrites VERSION, package.json and package-lock.json'],
+        ['scripts/defaultBranchDrift.js', 'diffs against origin/main; the image has no git repository (#204)']
     ];
 
     /** Genuinely useful inside the container; excluding these breaks documented commands. */
