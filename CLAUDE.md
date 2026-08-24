@@ -305,8 +305,13 @@ default branch (`main`), so a change to one of them on `development` is committe
 green, and **completely inert** until the merge — with nothing reporting it. This has
 already bitten: #199 dropped `buy_me_a_coffee` from `.github/FUNDING.yml` on
 `development` and the Sponsor button kept serving `main`'s copy. The surfaces are
-`.github/FUNDING.yml`, `.github/dependabot.yml`, `.github/ISSUE_TEMPLATE/*`, and any
-workflow triggered by `schedule`, `pull_request_target`, or `workflow_run`.
+`.github/FUNDING.yml`, `.github/dependabot.yml`, `.github/ISSUE_TEMPLATE/*`,
+`.github/badges/*` (the README pins those Shields URLs to `/main/`), and any workflow
+**not** triggered solely by `push` / `pull_request` / `merge_group` / `workflow_call`.
+That last one is an allow-list on purpose: GitHub resolves essentially every other event
+from the default branch, so `schedule`, `workflow_run`, `issue_comment`, `release`,
+`label` and `repository_dispatch` are all equally inert here — listing only the three
+best-known ones is how the detector under-reported before (#207).
 Run **`npm run drift:check`** to see what is currently written but not in effect.
 Drift is the *normal* steady state here, so the report is advisory and never blocks;
 the invariant that is genuinely enforceable — a default-branch-only workflow trigger
