@@ -21,6 +21,14 @@ name: Retarget Dependabot PRs
 # this file on the DEFAULT branch. This has no effect until it is merged to
 # `main`. (`npm run drift:check` reports that, see #204.)
 #
+# NOTE ON THE TOKEN: this uses a GitHub App token, not the default one. Events
+# generated with the default `GITHUB_TOKEN` never start workflow runs, so the
+# `edited` event described below would fire into the void: the re-test would
+# silently not happen and the check would stay green from `main`. CLAUDE.md
+# already states the rule — any action that must trigger a downstream workflow
+# needs the App token. Same reason auto-release.yml and dependency-update.yml
+# use one.
+#
 # NOTE ON RE-TESTING: changing a PR's base fires `pull_request` `edited`, NOT
 # `synchronize`. ci-cd.yml lists `edited` in its `types` for exactly this reason
 # — without it a retargeted PR would keep the green check it earned against
@@ -30,11 +38,15 @@ on:
   pull_request_target:
     types: [opened, reopened]
 
-# Least privilege. This job never checks out the PR's code — it only calls the
-# API — so `pull_request_target` carries no untrusted-code risk here.
+# Least privilege for the DEFAULT token. The API calls below use the App token
+# minted in the job; this block still matters because a workflow with no
+# `permissions:` key inherits the broader repository default.
+#
+# This job never checks out the PR's code — it only calls the API — so
+# `pull_request_target` carries no untrusted-code risk here.
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: read
 
 jobs:
   retarget:
@@ -53,9 +65,16 @@ jobs:
       !startsWith(github.event.pull_request.head.ref, 'deps/actual-api-')
     runs-on: ubuntu-latest
     steps:
+      - name: Generate GitHub App token
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Move the PR base to development
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
@@ -69,7 +88,7 @@ jobs:
         # the release train's "Verify the release chain actually started" step:
         # an automation that silently does nothing is worse than one that fails.
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
@@ -85,7 +104,7 @@ jobs:
         # A Dependabot PR whose base moved under it is confusing to walk into
         # cold. One line of context costs nothing and saves a re-investigation.
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
