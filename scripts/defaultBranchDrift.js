@@ -30,6 +30,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const yaml = require('js-yaml');
 
 const DEFAULT_BASE = 'origin/main';
 const WORKFLOW_PREFIX = '.github/workflows/';
@@ -114,40 +115,6 @@ const WORKFLOW_DOCS = 'https://docs.github.com/actions/using-workflows/events-th
  * purpose — a `#` inside a quoted YAML string would be over-trimmed, but the
  * `on:` header of a workflow does not carry quoted strings.
  */
-/**
- * For a YAML flow mapping (`{push: {...}, schedule: [...]}`), returns its
- * TOP-LEVEL keys space-separated. Returns null when the text is not a flow
- * mapping, so callers fall through to the sequence/scalar handling.
- *
- * Depth tracking is the whole point: a naive scan of
- * `{push: {branches: [main]}}` reports `main` as a trigger.
- */
-function flowMappingKeys(text) {
-    const t = text.trim();
-    if (!t.startsWith('{')) return null;
-    const keys = [];
-    let depth = 0;
-    let token = '';
-    for (const ch of t) {
-        if (ch === '{' || ch === '[') { depth++; token = ''; continue; }
-        if (ch === '}' || ch === ']') { depth--; token = ''; continue; }
-        if (depth === 1 && ch === ':') {
-            const k = token.trim();
-            if (/^[a-z_]+$/.test(k)) keys.push(k);
-            token = '';
-            continue;
-        }
-        if (depth === 1 && ch === ',') { token = ''; continue; }
-        token += ch;
-    }
-    return keys.join(' ');
-}
-
-function stripComment(line) {
-    const i = line.indexOf('#');
-    return i === -1 ? line : line.slice(0, i);
-}
-
 /** True when `relPath` is matched by a catalogue `pattern`. */
 function matchesPattern(relPath, pattern) {
     if (pattern.endsWith('/*')) {
@@ -182,97 +149,52 @@ function classifyDrift(changedPaths, catalogue) {
 }
 
 /**
- * Pure. Returns the default-branch-only trigger names declared by one workflow's
- * YAML text.
+ * Pure. Every trigger name a workflow declares, or null when the YAML will not
+ * parse.
  *
- * Deliberately not a YAML parse: js-yaml reaches this repo only as a transitive
- * of jest, and the Dependency Policy forbids require()ing transitive-only
- * packages. So this isolates the `on:` block and scans it, which is enough
- * because it only ever answers "which of three known keys appear as triggers".
+ * Uses a real YAML parser. This was hand-rolled with regexes at first, reasoning
+ * that js-yaml reached this repo only as a transitive of jest and the Dependency
+ * Policy forbids requiring transitive-only packages. The fact was right and the
+ * conclusion was wrong: the answer was to DECLARE js-yaml, not to write a parser.
  *
- * Isolating the block matters — `workflow_run` also appears as a `github.event`
- * field deeper in a file, and a whole-text scan would report a workflow that
- * merely mentions it. Both block styles GitHub accepts are handled: the mapping
- * form (`on:` then indented keys) and the inline/sequence forms (`on: [push]`).
- * The `on:` key is located by name, never by position — ci-cd.yml puts a
- * top-level `permissions:` block first, so "the second block" is not `on:`.
+ * Four consecutive reviews each found another `on:` shape the regexes got wrong
+ * — inline comments, block sequences, flow mappings, zero-indent sequences — and
+ * every miss was a false all-clear for an inert workflow. Parsing YAML with
+ * regexes is a defect generator; this ends the class instead of patching the
+ * next instance.
+ *
+ * `on` is the YAML 1.1 boolean true, so a bare `on:` key parses as `true`. Both
+ * spellings are accepted.
+ *
+ * Returns null rather than [] on a parse failure: "no triggers" and "could not
+ * read it" must not look the same to the caller.
  */
-function extractDefaultBranchOnlyTriggers(text) {
-    const lines = text.split('\n');
-    // `on` is the YAML 1.1 boolean `true`, so it is often quoted. Accept all forms.
-    const startIdx = lines.findIndex((l) => /^(on|'on'|"on")\s*:/.test(l));
-    if (startIdx === -1) return [];
-
-    const header = stripComment(lines[startIdx]);
-    const inline = header.slice(header.indexOf(':') + 1).trim();
-    const block = [];
-    // `on: {schedule: [...]}` — a flow mapping. Reduced to its top-level keys so
-    // the trigger scan below sees `schedule` and not the nested config. Without
-    // this both parsers missed it entirely (false all-clear) while
-    // `on: {push: {branches: [main]}}` yielded a bogus `main` trigger.
-    if (inline) block.push(flowMappingKeys(inline) || inline);
-
-    // Indented continuation lines belong to the `on:` mapping; the first line at
-    // column 0 that is not blank or a comment ends it.
-    for (let i = startIdx + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (/^\s*$/.test(line) || /^\s*#/.test(line)) continue;
-        if (!/^\s/.test(line)) break;
-        block.push(stripComment(line));
+function extractAllTriggers(text) {
+    let doc;
+    try {
+        doc = yaml.load(text);
+    } catch {
+        return null;
     }
+    if (!doc || typeof doc !== 'object') return [];
 
-    const blockText = block.join('\n');
-    return DEFAULT_BRANCH_ONLY_TRIGGERS.filter((t) =>
-        new RegExp(`(^|[\\s,[])${t}\\s*(:|,|\\]|$)`, 'm').test(blockText)
-    );
+    const on = doc.on !== undefined ? doc.on : doc[true];
+    if (on === undefined || on === null) return [];
+    if (typeof on === 'string') return [on];
+    if (Array.isArray(on)) return on.filter((t) => typeof t === 'string');
+    if (typeof on === 'object') return Object.keys(on);
+    return [];
 }
 
-/** Pure. Every trigger name declared in a workflow's `on:` block. */
-function extractAllTriggers(text) {
-    const lines = text.split('\n');
-    const startIdx = lines.findIndex((l) => /^(on|'on'|"on")\s*:/.test(l));
-    if (startIdx === -1) return [];
-
-    const header = stripComment(lines[startIdx]);
-    const inline = header.slice(header.indexOf(':') + 1).trim();
-    const found = new Set();
-
-    if (inline) {
-        const flow = flowMappingKeys(inline);
-        if (flow !== null) {
-            for (const k of flow.split(/\s+/)) if (k) found.add(k);
-        } else {
-            for (const t of inline.replace(/[[\]]/g, ' ').split(/[\s,]+/)) {
-                if (/^[a-z_]+$/.test(t)) found.add(t);
-            }
-        }
-    }
-
-    // Only entries at the block's own indent level are triggers; anything deeper
-    // is a trigger's config (`branches:`, `types:`, `cron:`).
-    //
-    // Two shapes at that level, both valid YAML for `on:` and both used in the
-    // wild:
-    //   mapping   `  schedule:`            (with nested config)
-    //   sequence  `  - schedule`           (bare list, no config)
-    // Missing the sequence form made this disagree with
-    // extractDefaultBranchOnlyTriggers on the same text — one parser saw the
-    // trigger and the other did not, and the caller trusted the blind one.
-    let indent = null;
-    for (let i = startIdx + 1; i < lines.length; i++) {
-        const line = stripComment(lines[i]);
-        if (/^\s*$/.test(line) || /^\s*#/.test(lines[i])) continue;
-        if (!/^\s/.test(line)) break;
-
-        const mapping = line.match(/^(\s+)([a-z_]+)\s*:/);
-        const sequence = line.match(/^(\s+)-\s+([a-z_]+)\s*$/);
-        const m = mapping || sequence;
-        if (!m) continue;
-        if (indent === null) indent = m[1].length;
-        if (m[1].length === indent) found.add(m[2]);
-    }
-
-    return [...found];
+/**
+ * Pure. The default-branch-only triggers a workflow declares.
+ *
+ * Named export because the mutation catalog and the guards both reference it.
+ */
+function extractDefaultBranchOnlyTriggers(text) {
+    const all = extractAllTriggers(text);
+    if (all === null) return [];
+    return DEFAULT_BRANCH_ONLY_TRIGGERS.filter((t) => all.includes(t));
 }
 
 /**
@@ -287,6 +209,9 @@ function extractAllTriggers(text) {
  */
 function workflowDriftReasons(text) {
     const all = extractAllTriggers(text);
+    // null means the YAML would not parse. An unreadable workflow is not a
+    // workflow known to be fine, so say so rather than returning [].
+    if (all === null) return ['could not parse this workflow\'s `on:` block — check it by hand'];
     if (all.length === 0) return [];
 
     const reasons = [];
@@ -505,8 +430,17 @@ function report(drifted, base, asJson, root, version) {
         // be stamped with the previous commit's date, and an untracked file has
         // no commit at all. Say which it is instead of implying a stale date.
         let age = '';
+        // `ls-files --error-unmatch` is checked on its own: it is the ONLY call
+        // here whose failure means "untracked". Wrapping all three together
+        // meant a git log or git diff failure printed "(untracked — never
+        // committed)" for a perfectly ordinary committed file.
+        let tracked;
         try {
-            const tracked = git(['ls-files', '--error-unmatch', '--', d.path], root);
+            tracked = Boolean(git(['ls-files', '--error-unmatch', '--', d.path], root));
+        } catch {
+            tracked = false;
+        }
+        try {
             if (!tracked) {
                 age = '  (untracked — never committed)';
             } else if (git(['diff', '--name-only', 'HEAD', '--', d.path], root)) {
@@ -520,8 +454,10 @@ function report(drifted, base, asJson, root, version) {
                 if (when) age = `  (last changed here ${when})`;
             }
         } catch {
-            // `ls-files --error-unmatch` exits non-zero for an untracked path.
-            age = '  (untracked — never committed)';
+            // A git log/diff failure says nothing about tracking status, so say
+            // nothing rather than guessing. The annotation is a nicety; the
+            // drift finding above it is the point.
+            age = '';
         }
         console.log(`  - ${d.path}${age}`);
         console.log(`      ${d.reason}`);
@@ -664,7 +600,6 @@ module.exports = {
     DEFAULT_BRANCH_ONLY_TRIGGERS,
     REF_SCOPED_TRIGGERS,
     BASE_REF_TRIGGERS,
-    stripComment,
     classifyDrift,
     matchesPattern,
     extractDefaultBranchOnlyTriggers,
@@ -674,5 +609,4 @@ module.exports = {
     collectWorkflowReasons,
     compareVersions,
     versionDriftMessage,
-    flowMappingKeys
 };

@@ -619,19 +619,11 @@ module.exports = [
         tests: 'defaultBranchDrift'
     },
     {
-        id: '207-block-sequence-triggers-unread', ticket: '#207',
-        desc: 'extractAllTriggers stops reading the YAML block-sequence form, so the two parsers disagree again',
+        id: '207-parse-failure-reads-as-clean', ticket: '#207',
+        desc: 'an unparseable workflow returns [] instead of null, so "cannot read it" is indistinguishable from "no triggers"',
         file: 'scripts/defaultBranchDrift.js',
-        anchor: "        const sequence = line.match(/^(\\s+)-\\s+([a-z_]+)\\s*$/);",
-        mutant: "        const sequence = null;",
-        tests: 'defaultBranchDrift'
-    },
-    {
-        id: '207-flow-mapping-unwired', ticket: '#207',
-        desc: 'the flow-mapping reducer is unwired, so `on: {schedule: ...}` is invisible and nested values look like triggers',
-        file: 'scripts/defaultBranchDrift.js',
-        anchor: '    if (inline) block.push(flowMappingKeys(inline) || inline);',
-        mutant: '    if (inline) block.push(inline);',
+        anchor: '        return null;\n    }\n    if (!doc || typeof doc !== \'object\') return [];',
+        mutant: '        return [];\n    }\n    if (!doc || typeof doc !== \'object\') return [];',
         tests: 'defaultBranchDrift'
     },
     {
