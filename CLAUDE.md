@@ -339,6 +339,23 @@ Notes:
 - **Direct dependencies** (in `package.json`): upgrade these to fix advisories. Dependabot PRs for direct deps + GitHub Actions are fine to merge.
 - **Transitive dependencies** (not in `package.json`): do **not** bump them directly. Wait for the **direct parent** to release a version that pulls the fix. Close standalone transitive-upgrade issues and Dependabot PRs (`@dependabot ignore this dependency`) rather than overriding.
 - A transitive only clears if the parent's range *floor* moves above the vulnerable version. Bumping a parent whose range still admits the old version (e.g. `ajv ^3.0.1` still allowing the old `fast-uri`) won't help — that one waits.
+
+**How Dependabot is scoped (#192, #204).** `dependabot.yml` has **two** npm entries and
+merging them reopens a real hole. Entry 1 sets `target-branch: development` and covers
+**version** updates. Entry 2 deliberately **omits** `target-branch` — that omission is the
+only thing that makes its rules reach **security** updates, because an entry with a
+non-default `target-branch` is not consulted for them — and sets
+`open-pull-requests-limit: 0` so it adds no version updates. Both use
+`allow: dependency-type: "direct"`, so a vulnerable *transitive* no longer produces a
+lockfile-only PR. `@actual-app/api` is ignored in **both**; entry 1's `ignore` does not
+carry over, and it is a direct dependency.
+
+Security PRs still open against `main` (GitHub allows no alternative), so
+`.github/workflows/retarget-dependabot.yml` moves them to `development`. It uses the
+**App token** — events made with the default `GITHUB_TOKEN` never start workflow runs, so
+the `edited` event that re-tests a retargeted PR would not fire and the PR would keep the
+check it earned against `main`. `ci-cd.yml` lists `edited` in its PR types for that
+re-test, filtered down to actual base changes by the `version` job.
 - The app's own code must only `require()` declared direct dependencies, never transitive-only packages.
 
 ## Anti-Patterns to Avoid
