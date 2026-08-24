@@ -19,7 +19,12 @@ name: Retarget Dependabot PRs
 #
 # NOTE ON ACTIVATION: `pull_request_target` workflows run from the version of
 # this file on the DEFAULT branch. This has no effect until it is merged to
-# `main`.
+# `main`. (`npm run drift:check` reports that, see #204.)
+#
+# NOTE ON RE-TESTING: changing a PR's base fires `pull_request` `edited`, NOT
+# `synchronize`. ci-cd.yml lists `edited` in its `types` for exactly this reason
+# — without it a retargeted PR would keep the green check it earned against
+# `main` and could be merged into `development` never having been tested there.
 
 on:
   pull_request_target:

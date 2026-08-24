@@ -21,9 +21,8 @@ const {
     DEFAULT_BRANCH_ONLY_TRIGGERS,
     classifyDrift,
     matchesPattern,
-    defaultBranchOnlyWorkflows,
     extractDefaultBranchOnlyTriggers,
-    readWorkflowCatalogue
+    parseArgs
 } = require('../../scripts/defaultBranchDrift.js');
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -119,13 +118,31 @@ describe('classifyDrift — which changed paths are inert until merged', () => {
     });
 });
 
-describe('defaultBranchOnlyWorkflows', () => {
-    it('selects only workflows carrying a default-branch-only trigger', () => {
-        const workflows = [
-            { name: 'ci.yml', triggers: ['push', 'pull_request'] },
-            { name: 'nightly.yml', triggers: ['schedule'] }
-        ];
-        expect(defaultBranchOnlyWorkflows(workflows)).toEqual(['nightly.yml']);
+describe('parseArgs', () => {
+    it('defaults to origin/main and prose output', () => {
+        expect(parseArgs([])).toMatchObject({ base: 'origin/main', json: false, errors: [] });
+    });
+
+    it('reads a base ref and the json flag in any order', () => {
+        expect(parseArgs(['--json', '--base', 'upstream/main']))
+            .toMatchObject({ base: 'upstream/main', json: true, errors: [] });
+    });
+
+    it('rejects --base followed by another flag instead of silently eating it', () => {
+        // Regression: this used to set base to "--json" AND drop json mode, so
+        // the tool quietly did something other than what was asked — the exact
+        // class of quiet wrongness it exists to report.
+        const out = parseArgs(['--base', '--json']);
+        expect(out.errors).toHaveLength(1);
+        expect(out.base).toBe('origin/main');
+    });
+
+    it('rejects --base with nothing after it', () => {
+        expect(parseArgs(['--base']).errors).toHaveLength(1);
+    });
+
+    it('rejects an unknown argument rather than ignoring it', () => {
+        expect(parseArgs(['--wat']).errors).toHaveLength(1);
     });
 });
 
@@ -156,26 +173,44 @@ describe('catalogue integrity guards (hermetic — tracked files only)', () => {
         expect(patterns).toContain('.github/dependabot.yml');
     });
 
-    it('detects every workflow that declares a default-branch-only trigger', () => {
-        // Independent oracle: re-scan the directory here rather than trusting the
-        // module's own result, so a detector that silently stopped matching fails.
-        const expected = fs
-            .readdirSync(WORKFLOW_DIR)
-            .filter((n) => /\.ya?ml$/.test(n))
-            .filter((n) => {
-                const text = fs.readFileSync(path.join(WORKFLOW_DIR, n), 'utf8');
-                const onBlock = text.split(/\n(?=[A-Za-z"'])/)[1] || text;
-                return DEFAULT_BRANCH_ONLY_TRIGGERS.some((t) =>
-                    new RegExp(`^\\s+${t}\\s*:`, 'm').test(onBlock)
-                );
-            })
-            .sort();
+    it('accounts for every workflow, so a default-branch-only trigger is a deliberate choice', () => {
+        // Explicit expectations, NOT a re-implementation of the detector.
+        //
+        // This started life as an "independent oracle" that re-scanned the
+        // directory — and it was wrong: it took the SECOND top-level YAML block
+        // as `on:`, which for ci-cd.yml is `permissions:`. It would have gone red
+        // on correct code and could never have caught a regression in that file.
+        // A guard that reimplements the thing it guards inherits its bugs.
+        //
+        // Listing the answer means adding a schedule/pull_request_target/
+        // workflow_run workflow fails here until someone says so on purpose —
+        // the same "a new one is a deliberate choice" shape as the #180/#183
+        // script guard. The runtime catalogue is still derived, so the tool
+        // itself needs no update.
+        const EXPECTED = {
+            'auto-release.yml': ['workflow_run'],
+            'codeql-analysis.yml': ['schedule'],
+            'dependency-update.yml': ['schedule'],
+            'retarget-dependabot.yml': ['pull_request_target']
+        };
 
-        const detected = readWorkflowCatalogue(ROOT)
-            .map((e) => path.basename(e.pattern))
-            .sort();
+        const actual = {};
+        for (const name of fs.readdirSync(WORKFLOW_DIR).filter((n) => /\.ya?ml$/.test(n))) {
+            const triggers = extractDefaultBranchOnlyTriggers(
+                fs.readFileSync(path.join(WORKFLOW_DIR, name), 'utf8')
+            );
+            if (triggers.length) actual[name] = triggers.sort();
+        }
 
-        expect(detected).toEqual(expected);
+        expect(actual).toEqual(EXPECTED);
+    });
+
+    it('does not mistake ci-cd.yml for a default-branch-only workflow', () => {
+        // ci-cd.yml declares `permissions:` before `on:` and references
+        // github.event.workflow_run in a job body. Both have already fooled a
+        // positional or whole-text scan.
+        const text = fs.readFileSync(path.join(WORKFLOW_DIR, 'ci-cd.yml'), 'utf8');
+        expect(extractDefaultBranchOnlyTriggers(text)).toEqual([]);
     });
 
     it('a workflow added with a default-branch-only trigger cannot escape the catalogue', () => {
@@ -196,7 +231,11 @@ describe('npm wiring', () => {
         // Drift is the normal steady state of this branch model. If this ever
         // becomes blocking it will fail on every healthy tree and be disabled.
         const src = fs.readFileSync(path.join(ROOT, 'scripts', 'defaultBranchDrift.js'), 'utf8');
-        expect(src).not.toMatch(/process\.exit\(\s*1\s*\)/);
+        // The script exits via `process.exitCode = main(...)`, so grepping only
+        // for a literal process.exit(1) proved nothing: a `return 1` added to
+        // main() would make it blocking with this guard still green.
+        expect(src).not.toMatch(/process\.exit\(\s*[1-9]/);
+        expect(src).not.toMatch(/\breturn\s+[1-9]\d*\s*;/);
         expect(src).toMatch(/ALWAYS EXITS 0/);
     });
 });
