@@ -205,6 +205,10 @@ describe('retarget-dependabot.yml re-tests against the new base (#205)', () => {
         const elseBranch = elseBranchOf(text);
         expect(elseBranch).toMatch(/post_status "failure"/);
         expect(elseBranch).toMatch(/::warning::/);
+        // Presence of the red one is not enough: the last status write for a
+        // context wins, so an else branch posting BOTH ends green on the PR
+        // while satisfying the assertion above (#216 round 1).
+        expect(elseBranch).not.toMatch(/post_status "success"/);
     });
 
     it('reports what was observed rather than asserting a conflict', () => {
