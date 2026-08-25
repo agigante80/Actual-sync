@@ -228,7 +228,20 @@ async function retestPullRequest({
         gh(['pr', 'close', String(pr), '--repo', repo]);
     } catch {
         warn('could not close it to re-trigger CI; it keeps its stale check and the red status.');
-        return { outcome: null, closed: false, reopened: false, failed: true };
+        // A note even here. Before annotations moved to stderr, this path's
+        // ::warning:: reached the PR comment by accident; losing that removed
+        // the only PR-VISIBLE signal on a failure path (#217 round 2). Whoever
+        // reads the PR must not be shown a comment with a blank middle.
+        return {
+            outcome: null,
+            closed: false,
+            reopened: false,
+            failed: true,
+            note:
+                'This PR was retargeted, but the job **could not close and reopen it** to '
+                + 're-trigger CI (#205). **The checks shown here were computed against `main`.** '
+                + 'Re-run CI by hand before merging.'
+        };
     }
 
     let reopened = false;
@@ -248,7 +261,18 @@ async function retestPullRequest({
         // Dependabot may decline to recreate. Must never exit 0.
         log(`::error::PR #${pr} was closed to re-trigger CI and could NOT be reopened. `
             + 'Reopen it by hand — a closed security PR may not be recreated by Dependabot.');
-        return { outcome: null, closed: true, reopened: false, failed: true };
+        // The worst outcome must be visible where a human is looking, which is
+        // the PR — not only in a scheduled job's log.
+        return {
+            outcome: null,
+            closed: true,
+            reopened: false,
+            failed: true,
+            note:
+                '⚠️ This PR was **closed to re-trigger CI and could NOT be reopened** (#205). '
+                + '**Reopen it by hand** — Dependabot may not recreate a closed security PR, '
+                + 'and the fix would then be silently lost.'
+        };
     }
 
     let newRunFound = false;

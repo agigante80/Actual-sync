@@ -703,8 +703,8 @@ module.exports = [
         id: "205-closed-pr-exits-green", ticket: "#205",
         desc: "a PR left closed after a failed reopen no longer fails the job, so a security PR can be silently abandoned",
         file: "scripts/retargetRetest.js",
-        anchor: "        return { outcome: null, closed: true, reopened: false, failed: true };",
-        mutant: "        return { outcome: null, closed: true, reopened: false, failed: false };",
+        anchor: "            closed: true,\n            reopened: false,\n            failed: true,",
+        mutant: "            closed: true,\n            reopened: false,\n            failed: false,",
         tests: 'retargetRetest'
     },
     {

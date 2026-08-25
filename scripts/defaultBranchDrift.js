@@ -126,7 +126,11 @@ const CATALOGUE = [
         // belongs here too.
         pattern: 'scripts/retargetRetest.js',
         reason: 'called by retarget-dependabot.yml, which is schedule-only and so runs the default-branch copy',
-        docs: 'https://docs.github.com/actions/using-workflows/events-that-trigger-workflows',
+        // `source`, not `docs`: report() renders `docs || source`, so setting
+        // both made `source` dead and printed a generic GitHub URL instead of
+        // the workflow the rule actually comes from. Same shape as the
+        // `.github/badges/*` entry — this is not a documented platform rule
+        // about this path, so there is no doc to cite.
         source: '.github/workflows/retarget-dependabot.yml'
     }
 ];

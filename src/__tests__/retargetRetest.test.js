@@ -282,6 +282,35 @@ describe('stdout carries the note and nothing else (#217)', () => {
         expect(writes).toEqual(['result.note']);
     });
 
+    it('nothing anywhere in the module writes to stdout by another route', () => {
+        // The describe block above claimed this and did not enforce it: adding
+        // `console.log('progress')` inside retestPullRequest left all 30 tests
+        // green, and that string would then be captured into the public PR
+        // comment and lost from the Actions log — #217, reintroduced (round 2).
+        const executable = fs.readFileSync(CLI, 'utf8')
+            .split('\n')
+            .filter((line) => {
+                const t = line.trim();
+                return t && !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+            })
+            .join('\n');
+
+        expect(executable).not.toMatch(/console\.log\s*\(/);
+        // Every stdout reference must be the sanctioned note write.
+        const stdoutRefs = [...executable.matchAll(/process\.stdout[.\w]*/g)].map((m) => m[0]);
+        for (const ref of stdoutRefs) expect(ref).toBe('process.stdout.write');
+    });
+
+    it('every failure path still gives the PR a note to show', () => {
+        // Moving annotations to stderr removed the PR-visible signal that used
+        // to arrive by accident. A comment with a blank middle section, on a PR
+        // that is closed and could not be reopened, is the worst case.
+        const src = fs.readFileSync(CLI, 'utf8');
+        const returns = [...src.matchAll(/return \{\s*outcome: null[\s\S]*?\};/g)].map((m) => m[0]);
+        expect(returns.length).toBeGreaterThan(0);
+        for (const r of returns) expect(r).toMatch(/note:/);
+    });
+
     it('does not exit() out from under a pending stdout write', () => {
         // process.exit() can truncate a pending write when stdout is a pipe,
         // which is exactly what `$(...)` makes it.
