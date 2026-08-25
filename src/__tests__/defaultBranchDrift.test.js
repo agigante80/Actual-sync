@@ -27,7 +27,9 @@ const {
     parseArgs,
     compareVersions,
     versionDriftMessage,
-    REF_SCOPED_TRIGGERS
+    REF_SCOPED_TRIGGERS,
+    isWorkflowFile,
+    sameReasons
 } = require('../../scripts/defaultBranchDrift.js');
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -539,5 +541,73 @@ describe('npm wiring', () => {
         const mainBody = mainFn.slice(0, mainFn.indexOf('\nfunction '));
         expect(mainBody).not.toMatch(/\breturn\s+[1-9]\d*\s*;/);
         expect(src).toMatch(/ALWAYS EXITS 0/);
+    });
+});
+
+/**
+ * #213: two residual defects in the reporter, both "something stays silent or
+ * speaks when it should not" — the same class the tool exists to prevent.
+ */
+describe('#213 — non-YAML files under .github/workflows/ are not workflows', () => {
+    it.each([
+        '.github/workflows/README.md',
+        '.github/workflows/notes.txt',
+        '.github/workflows/helper.sh'
+    ])('%s is not treated as a workflow', (rel) => {
+        // The runtime scan YAML-parsed EVERY changed path under the prefix, so a
+        // README placed there was reported as "could not parse this workflow's
+        // `on:` block". A message that fires on non-workflows means less when it
+        // fires on a real one.
+        expect(isWorkflowFile(rel)).toBe(false);
+    });
+
+    it.each([
+        '.github/workflows/ci-cd.yml',
+        '.github/workflows/auto-release.yaml'
+    ])('%s IS treated as a workflow', (rel) => {
+        expect(isWorkflowFile(rel)).toBe(true);
+    });
+
+    it('does not claim files outside the workflows directory', () => {
+        expect(isWorkflowFile('.github/dependabot.yml')).toBe(false);
+        expect(isWorkflowFile('docs/ci.yml')).toBe(false);
+    });
+});
+
+describe('#213 — the base-side dedupe compares reason ARRAYS', () => {
+    // Third attempt at this dedupe. The first compared fully-prefixed strings,
+    // which could never match. The second compared the base's JOINED reasons
+    // against a list of INDIVIDUAL ones, so it worked only when the head
+    // produced exactly one — and a workflow carrying BOTH a default-branch-only
+    // trigger and a base-ref trigger produces two, printing them twice.
+    //
+    // Note the repro condition: two DEFAULT-BRANCH-ONLY triggers do NOT
+    // reproduce it, because they are grouped into a single joined reason. It
+    // takes two different reason CATEGORIES.
+    const TWO_CATEGORIES = [
+        'schedule runs the default-branch copy',
+        "pull_request_target runs the copy on the pull request's BASE branch"
+    ];
+
+    it('a two-category workflow really does produce two reasons', () => {
+        const wf = 'name: x\non:\n  schedule:\n    - cron: "0 2 * * *"\n'
+            + '  pull_request_target:\n    types: [opened]\njobs: {}\n';
+        expect(workflowDriftReasons(wf)).toHaveLength(2);
+    });
+
+    it('identical reason lists are equal, so the base copy is not repeated', () => {
+        expect(sameReasons(TWO_CATEGORIES, [...TWO_CATEGORIES])).toBe(true);
+    });
+
+    it('order does not matter — the two sides are parsed independently', () => {
+        expect(sameReasons(TWO_CATEGORIES, [...TWO_CATEGORIES].reverse())).toBe(true);
+    });
+
+    it('a genuinely different base is still reported (not over-deduped)', () => {
+        // The bad-fix this ticket warns about: suppressing real drift while
+        // fixing the duplicate. Losing this direction would be worse than the
+        // noise it replaced.
+        expect(sameReasons(TWO_CATEGORIES, [TWO_CATEGORIES[0]])).toBe(false);
+        expect(sameReasons(TWO_CATEGORIES, [TWO_CATEGORIES[0], 'something else'])).toBe(false);
     });
 });
