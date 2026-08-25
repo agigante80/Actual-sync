@@ -34,6 +34,7 @@ npm run knip           # report-only (always exit 0); for local diffing
 
 # Report config that is written here but NOT YET IN EFFECT, because GitHub reads
 # it only from the default branch (#204). Report-only, always exits 0.
+# CI runs this in the lint job too (#211), so this is a convenience.
 npm run drift:check
 
 # Mutation testing — the verification bar here. Reintroduces each shipped
@@ -314,7 +315,11 @@ That last one is an allow-list on purpose: GitHub resolves essentially every oth
 from the default branch, so `schedule`, `workflow_run`, `issue_comment`, `release`,
 `label` and `repository_dispatch` are all equally inert here — listing only the three
 best-known ones is how the detector under-reported before (#207).
-Run **`npm run drift:check`** to see what is currently written but not in effect.
+**CI reports this on every run (#211)** — the `lint` job runs `drift:check` after knip,
+so you do not have to remember to. `npm run drift:check` locally is a convenience, not
+the only route. That job's checkout carries `fetch-depth: 0` *specifically* for this: on
+the default shallow checkout the script cannot see `origin/main` or the tags and reports
+"this run proved nothing" — honest, and useless — so do not trim that depth.
 Drift is the *normal* steady state here, so the report is advisory and never blocks;
 the invariant that is genuinely enforceable — a default-branch-only workflow trigger
 cannot go uncatalogued — is a hermetic guard in `src/__tests__/defaultBranchDrift.test.js`.

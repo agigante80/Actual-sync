@@ -123,6 +123,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          # Needed by the drift report at the end of this job (#211): it diffs
+          # against origin/main and reads the v* tags, and neither exists in the
+          # default shallow, single-branch checkout — the script would report
+          # "this run proved nothing" on every run, forever. Verified against a
+          # simulated `--depth 1 --no-tags` clone before adding it.
+          #
+          # The report lives HERE rather than in `version`, whose checkout
+          # already has this depth, because `version` never runs `npm ci` and
+          # the script needs js-yaml.
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -145,6 +156,20 @@ jobs:
         # (`npm run dead:check` exits 0) — keep it that way, or suppress a
         # legitimate exception at the source (never a blanket ignore). (#134)
         run: npm run dead:check
+
+      # #211: report config written here but NOT YET IN EFFECT, because GitHub
+      # reads some surfaces only from the default branch. #204 was filed on the
+      # reasoning that documentation is not a control — and the report it
+      # produced was itself reachable only by someone remembering to type it.
+      # This closes that loop.
+      #
+      # NON-BLOCKING BY DESIGN, not a compromise. Drift between `development`
+      # and `main` is the normal steady state of this branch model, so a gate
+      # here would fail on every healthy tree and be disabled within a week. The
+      # script always exits 0 by design; `|| true` guards only the case where it
+      # fails to START (a missing dependency), which must not fail the lint job.
+      - name: Report default-branch-only config not yet in effect
+        run: npm run drift:check || true
 
       - name: Lint summary
         if: always()
