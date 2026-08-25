@@ -548,10 +548,19 @@ earlier attempt added `edited` to `ci-cd.yml`, and on a title edit every real jo
 skipped while the `if: always()` summary passed — turning a **red PR green** with no
 code change (reverted in `5aaf131`).
 
-The red commit status is posted *before* the close and cleared only after the reopen is
-confirmed, so every failure path in between leaves the PR visibly not-green instead of
-showing `main`'s stale check. A PR left closed fails the job loudly, because Dependabot
-may decline to recreate a closed security PR.
+The red commit status is posted *before* the close and cleared only on **evidence that a
+new run started** — a run id greater than a snapshot taken before the close, since the
+PR's original `main`-based runs carry the same head SHA and mere existence would prove
+nothing. Every failure path in between leaves the PR visibly not-green instead of showing
+`main`'s stale check. A PR left closed fails the job loudly, because Dependabot may
+decline to recreate a closed security PR.
+
+**A conflicting PR gets no CI run at all (#210)** — GitHub cannot compute
+`refs/pull/N/merge`, so `ci-cd.yml` never fires, and close/reopen does not change that.
+This is the *normal* state of a retargeted PR: it branches from `main` while
+`development` is ahead on `VERSION`/`package.json`. The job leaves the status red and
+emits a warning saying a conflict is the likely cause — hedged deliberately, because no
+run can also mean `paths-ignore`, a disabled workflow, or a stuck queue.
 
 **Transitive dependencies produce no PR.** Both entries carry
 `allow: dependency-type: "direct"`, so a vulnerable transitive never yields a

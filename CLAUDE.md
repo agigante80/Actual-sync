@@ -376,11 +376,20 @@ listen for — hence the close/reopen. This needs no change to `ci-cd.yml`, and 
 deliberate: the earlier attempt added `edited` there and an all-skipped run turned a
 **red PR green** (reverted in `5aaf131`). Do not reintroduce it.
 
-The red commit status is posted **before** the close and cleared only after a confirmed
-reopen, so any failure in between leaves the PR visibly not-green rather than showing
-`main`'s stale check. If a PR is ever left closed, the job fails loudly — a closed
-security PR may not be recreated by Dependabot. Ordering is guarded by
-`src/__tests__/retargetRetest.test.js`.
+The red commit status is posted **before** the close and cleared only on **evidence that
+a new run actually started** — a run id greater than a snapshot taken before the close.
+Mere existence is not evidence: the PR's original `main`-based runs carry the same head
+SHA. If a PR is ever left closed, the job fails loudly — a closed security PR may not be
+recreated by Dependabot. All of this is guarded by `src/__tests__/retargetRetest.test.js`.
+
+**A conflicting PR cannot be re-tested at all, and that is the normal case (#210).** When
+a PR conflicts, GitHub cannot compute `refs/pull/N/merge`, so `ci-cd.yml` never fires —
+**no run at all, not a failing one** — and close/reopen does not change that (verified on
+scratch PR #215). A retargeted PR branches from `main` while `development` is ahead on
+`VERSION`/`package.json`, so it conflicts on those alone. The job then leaves the status
+red and warns. Resolve the conflict, then re-run CI. The warning says "most likely a
+conflict" rather than asserting one, because no run can also mean `paths-ignore`, a
+disabled workflow, or a stuck queue.
 
 **A retargeted security PR recurs until `main` is promoted, and that is correct
 behaviour, not a loop (#209).** Dependabot opens security PRs against the branch it
