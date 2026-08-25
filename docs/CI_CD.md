@@ -510,11 +510,48 @@ returns the tag, not the highest published version).
 | Update type | Owned by | Mechanism |
 |---|---|---|
 | `@actual-app/api` (**any** forward move, incl. majors) | `dependency-update.yml` | auto-publishes to `main` after full CI passes |
-| Everything else | Dependabot | PR to `development`, promoted manually |
+| Direct dependency — **version** update | Dependabot entry 1 | PR to `development`, promoted manually |
+| Direct dependency — **security** update | Dependabot entry 2 | opens on **`main`**, retargeted hourly to `development` |
+| **Transitive** dependency (either kind) | nobody — **no PR is opened** | see below |
+| GitHub Actions versions | Dependabot, `github-actions` entry | PR to `development`, promoted manually |
 
 `dependabot.yml` carries a bare `dependency-name: "@actual-app/api"` ignore rule
-with **no** `update-types` filter. Narrowing it back to patch/minor would make
-every major produce *both* a Dependabot PR and an auto-published release.
+with **no** `update-types` filter, in **both** npm entries (entry 1's `ignore` does
+not carry over). Narrowing it back to patch/minor would make every major produce
+*both* a Dependabot PR and an auto-published release.
+
+**Why security updates land on `main` and not `development`.** `target-branch` is
+honoured for *version* updates only; security updates always open against the
+**default branch**. That is a platform limitation
+([dependabot-core#2767](https://github.com/dependabot/dependabot-core/issues/2767)),
+not something fixable in YAML. It is also why entry 2 deliberately **omits**
+`target-branch` — an entry with a non-default one is not consulted for security
+updates at all — and sets `open-pull-requests-limit: 0` so it contributes no
+version updates. See the Dependency Policy in `CLAUDE.md` for the full rationale;
+it is not restated here.
+
+**`.github/workflows/retarget-dependabot.yml`** moves those PRs to `development`.
+It runs on an **hourly schedule** (`cron: '17 * * * *'`), *not* `pull_request_target`:
+a Dependabot-initiated run gets a read-only token and no access to Actions secrets,
+so the App-token step would fail on exactly the PRs the workflow exists for. A
+scheduled run is not Dependabot-initiated and gets normal secrets. The trade is up
+to an hour of latency, which costs nothing because nothing merges those PRs in that
+window. The job skips `deps/actual-api-*` so it can never retarget the release
+train's own PR away from `main`.
+
+**A retargeted PR is not automatically re-tested** — changing a base fires
+`pull_request` `edited`, which `ci-cd.yml` does not listen for, so the PR keeps the
+check it earned against `main`. Re-run CI before merging one; the workflow posts a
+comment on each PR saying so (#205).
+
+**Transitive dependencies produce no PR.** Both entries carry
+`allow: dependency-type: "direct"`, so a vulnerable transitive never yields a
+lockfile-only PR. Clearing one is a `npm update`: npm resolves to the highest
+version the parent's **existing** range admits, and a patched release is usually
+already inside it — the vulnerable copy is held by the lockfile, not by the range.
+Only a fix the parent's range *excludes* genuinely waits for the parent. `overrides`
+and `resolutions` remain forbidden either way. See the Dependency Policy in
+`CLAUDE.md`.
 
 **Why the version is not bumped in the train:** `auto-release.yml` patch-bumps
 precisely when the version on `main` equals the latest tag. Bumping in the PR

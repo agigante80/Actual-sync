@@ -372,7 +372,20 @@ The trade is up to an hour of latency, which costs nothing because nothing merge
 PRs in that window. **A retargeted PR is not automatically re-tested** — it keeps the
 check it earned against `main`, so re-run CI before merging one (#205).
 
-## Anti-Patterns to Avoid
+**A retargeted security PR recurs until `main` is promoted, and that is correct
+behaviour, not a loop (#209).** Dependabot opens security PRs against the branch it
+sees as vulnerable — the default branch. Merging the retargeted PR fixes
+`development`, but `main` still carries the vulnerable lockfile, so Dependabot
+re-detects the same advisory and opens the PR again; the hourly job dutifully
+retargets the new one. Expect one new PR per Dependabot run, each retargeted and each
+carrying the workflow's explanatory comment. The cycle stops when `development`
+reaches `main`.
+
+Do not suppress it. `main` genuinely *is* still vulnerable until promoted, and
+Dependabot saying so is Dependabot working — silencing it would suppress a true alert
+about production. The real cost is that a recurring PR trains someone to close these
+reflexively, which is how a genuinely new advisory gets closed unread. **Read the
+package and advisory before closing any of them**; promoting `main` is the actual fix.
 
 - Adding external logging libraries — use the custom logger
 - Modifying retry logic without updating tests
