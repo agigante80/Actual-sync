@@ -757,6 +757,28 @@ module.exports = [
         tests: 'retargetRetest'
     },
 
+    // Two mutants for the ELSE branch. Deleting 210-comment-asserts-retest
+    // (#216) removed the only entry that mutated it, which left this file's
+    // own guard fix unbacked — the substitute named at the time scores the
+    // same against a broken guard as a working one. These replace that
+    // coverage with valid shell.
+    {
+        id: '216-else-posts-success', ticket: '#216',
+        desc: 'the else branch posts a GREEN status when no run appeared',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: "              post_status \"failure\" \"No CI run appeared after retargeting \u2014 most likely a merge conflict with development. Resolve it, then re-run CI.\"",
+        mutant: "              post_status \"success\" \"No CI run appeared after retargeting \u2014 most likely a merge conflict with development. Resolve it, then re-run CI.\"",
+        tests: 'retargetRetest'
+    },
+    {
+        id: '216-else-posts-both', ticket: '#216',
+        desc: 'the else branch posts red AND green; the last write wins, so the PR ends green',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: "              post_status \"failure\" \"No CI run appeared after retargeting \u2014 most likely a merge conflict with development. Resolve it, then re-run CI.\"",
+        mutant: "              post_status \"failure\" \"No CI run appeared after retargeting \u2014 most likely a merge conflict with development. Resolve it, then re-run CI.\"\n              post_status \"success\" \"Looks fine.\"",
+        tests: 'retargetRetest'
+    },
+
     // NOTE: there is deliberately no mutant for the PR comment's wording.
     // `210-comment-asserts-retest` was deleted (#216): it embedded bare
     // backticks in a double-quoted bash string, so the mutant would have run
