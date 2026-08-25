@@ -111,6 +111,23 @@ const CATALOGUE = [
         // exist.
         reason: 'README pins these badge URLs to /main/, so regenerated badges are stale until merge',
         source: 'README.md'
+    },
+    {
+        // Not a GitHub rule about this path — a consequence of who calls it.
+        // retarget-dependabot.yml is schedule-only, so it runs from the DEFAULT
+        // branch's checkout, and therefore so does every file it executes. #217
+        // moved the re-test decision out of that workflow's YAML and into this
+        // script, which quietly moved a chunk of default-branch-only surface out
+        // of the reporter's sight: edit it on `development` and the change is
+        // inert, with nothing saying so. That is exactly #204's failure mode,
+        // reintroduced by an otherwise good refactor.
+        //
+        // If another default-branch-only workflow ever calls a script, it
+        // belongs here too.
+        pattern: 'scripts/retargetRetest.js',
+        reason: 'called by retarget-dependabot.yml, which is schedule-only and so runs the default-branch copy',
+        docs: 'https://docs.github.com/actions/using-workflows/events-that-trigger-workflows',
+        source: '.github/workflows/retarget-dependabot.yml'
     }
 ];
 
