@@ -20,5 +20,12 @@ Note `git worktree add <path> development` fails when `development` is already c
 
 Tell every review subagent explicitly: use your own worktree, never revert files you did not modify, and confirm the tree is clean at the end. Before editing shared files mid-round, check `git status --porcelain` for someone else’s in-flight mutation.
 
+**Recurred on 2026-08-25, because the `/code-review` skill runs in the MAIN checkout** — the memory existed and was not applied. Two fresh instances in one session: a reviewer edited a workflow file mid-run and `git checkout`-ed it back, then removed and *restored* `.mutation-test.lock` with a pid that was already dead; another raced `npx jest` against a live runner and reported phantom anchor failures on a different file each run. Both times the run's scores had to be discarded and re-taken on a quiet tree.
+
+Practical rules that followed:
+- **Never start a mutation run while a review agent is live**, and never launch a review while one is running. They are mutually exclusive in this checkout.
+- After any review that touched the tree, re-run the affected mutations before believing a score, and check for a **stale lock** (`ls .mutation-test.lock`, then `ps -p <pid>`) — a dead pid means it is stale.
+- A reviewer reporting "a concurrent session is working here" is usually describing *us*.
+
 **Why:** concurrent mutation produced corrupted trees and false review findings, which cost a whole round to untangle.
 **How to apply:** isolate first, and include the coordination note in every review-agent prompt. Related: [[mutation-testing-standard]].

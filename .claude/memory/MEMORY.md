@@ -15,3 +15,4 @@
 - [Hermeticity: a guard that can go red with no commit is misplaced](hermetic-guards.md) - Blocking tests must read only tracked repo files; sqliteDriver.test.js is our known exception
 - [Dependabot security updates ignore target-branch](dependabot-security-updates-ignore-target-branch.md) - Security PRs always open on main; fixed with a direct-only allow rule plus a retarget workflow, not with YAML alone
 - [Default-branch-only config is silently inert](default-branch-only-config.md) - FUNDING.yml, dependabot.yml, ISSUE_TEMPLATE and scheduled/pull_request_target workflows do nothing until merged to main; run npm run drift:check
+- [Guards that slice YAML text never converge — extract the logic](extract-logic-out-of-workflow-yaml.md) - Three rounds each narrowed a text slice and the defect moved one indent out; extraction ended it in two
