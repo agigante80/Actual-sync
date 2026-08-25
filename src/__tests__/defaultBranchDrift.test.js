@@ -517,6 +517,25 @@ describe('wiring guards — the pure cores are tested, the CALL SITES are not', 
         expect(SRC).toMatch(/require\('js-yaml'\)/);
         expect(SRC).toMatch(/yaml\.load\(text\)/);
     });
+
+    it('dedupes the base side via sameReasons(), not by string containment (#213)', () => {
+        // Caught by a SURVIVING mutation: sameReasons() is unit-tested four ways
+        // above, and reverting its CALL SITE to `!sides.includes(why)` left
+        // every one of those green. The helper stays correct; it just stops
+        // being consulted. This is the unwiring case docs/TESTING.md describes.
+        const fn = SRC.slice(SRC.indexOf('function collectWorkflowReasons'));
+        const body = fn.slice(0, fn.indexOf('\nfunction ') === -1 ? undefined : fn.indexOf('\nfunction '));
+        expect(body).toMatch(/sameReasons\(headReasons, reasons\)/);
+        expect(body).not.toMatch(/sides\.includes\(why\)/);
+    });
+
+    it('filters the runtime workflow scan through isWorkflowFile() (#213)', () => {
+        // Same unwiring shape: isWorkflowFile() is unit-tested, but the scan
+        // reverting to a bare `startsWith(WORKFLOW_PREFIX)` leaves those green
+        // while non-YAML files are reported as unparseable workflows again.
+        expect(SRC).toMatch(/if \(isWorkflowFile\(relPath\)\) \{/);
+        expect(SRC).not.toMatch(/if \(relPath\.startsWith\(WORKFLOW_PREFIX\)\) \{/);
+    });
 });
 
 describe('npm wiring', () => {
