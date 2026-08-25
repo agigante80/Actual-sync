@@ -539,10 +539,19 @@ to an hour of latency, which costs nothing because nothing merges those PRs in t
 window. The job skips `deps/actual-api-*` so it can never retarget the release
 train's own PR away from `main`.
 
-**A retargeted PR is not automatically re-tested** — changing a base fires
-`pull_request` `edited`, which `ci-cd.yml` does not listen for, so the PR keeps the
-check it earned against `main`. Re-run CI before merging one; the workflow posts a
-comment on each PR saying so (#205).
+**A retargeted PR is re-tested against its new base (#205).** Changing a base fires
+`pull_request` `edited`, which `ci-cd.yml` does not listen for — so the job closes and
+reopens the PR, firing `reopened` and re-running the pipeline against `development`.
+That works without touching `ci-cd.yml`, which declares no `types:` and so receives
+GitHub's default set (`opened`, `synchronize`, `reopened`). Keep it that way: the
+earlier attempt added `edited` to `ci-cd.yml`, and on a title edit every real job
+skipped while the `if: always()` summary passed — turning a **red PR green** with no
+code change (reverted in `5aaf131`).
+
+The red commit status is posted *before* the close and cleared only after the reopen is
+confirmed, so every failure path in between leaves the PR visibly not-green instead of
+showing `main`'s stale check. A PR left closed fails the job loudly, because Dependabot
+may decline to recreate a closed security PR.
 
 **Transitive dependencies produce no PR.** Both entries carry
 `allow: dependency-type: "direct"`, so a vulnerable transitive never yields a

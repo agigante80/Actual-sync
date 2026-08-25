@@ -125,6 +125,81 @@ jobs:
             fi
             echo "PR #${PR} is now based on '${BASE}'."
 
+            # ---------------------------------------------------------------
+            # RE-TEST AGAINST THE NEW BASE (#205)
+            #
+            # Changing a base fires `pull_request` `edited`, which ci-cd.yml
+            # does not listen for — so without this the PR keeps the check it
+            # earned against `main` and can be merged into `development` having
+            # never been tested there.
+            #
+            # Verified on scratch PR #214 before shipping: retargeting alone
+            # fired NO run; close+reopen fired a fresh `pull_request` run whose
+            # `pull_requests[0].base.ref` was `development`, and a deliberately
+            # failing PR stayed RED across it. `reopened` works because
+            # ci-cd.yml declares no `types:`, so it gets GitHub's default
+            # (opened, synchronize, reopened) — this needs no change to
+            # ci-cd.yml, which matters: the previous attempt at #205 DID edit
+            # that file, and an all-skipped run turned a red PR green (5aaf131).
+            #
+            # FAIL-SAFE ORDERING. The red status is posted BEFORE the close, and
+            # only cleared after the reopen is confirmed. Every failure path in
+            # between therefore leaves the PR visibly not-green rather than
+            # showing the stale green from `main`. Do not reorder these.
+            # ---------------------------------------------------------------
+            if ! HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid); then
+              echo "::error::Could not read the head SHA of PR #${PR}; not touching its state."
+              FAILED=1
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Best-effort like the comment below (#206): the App may lack
+            # `statuses: write`. Losing the marker must not cost the retarget,
+            # which has already happened and been verified.
+            post_status() {
+              gh api -X POST "repos/${REPO}/statuses/${HEAD_SHA}" \
+                -f state="$1" \
+                -f context="retarget/re-tested-against-development" \
+                -f description="$2" >/dev/null \
+                || echo "::warning::Could not post commit status '$1' on PR #${PR}."
+            }
+
+            post_status "failure" "Base moved to development; awaiting a re-run. The existing check was computed against main."
+
+            # Close+reopen is the trigger. The risk is that Dependabot reads a
+            # close as "do not recreate this version" — unverifiable here
+            # without a live security PR, so it is engineered around rather than
+            # assumed away: the reopen is retried, and a PR left closed fails
+            # the job loudly instead of being silently abandoned.
+            if ! gh pr close "$PR" --repo "$REPO" >/dev/null; then
+              echo "::warning::Could not close PR #${PR} to re-trigger CI; it keeps its stale check and the red status above."
+              FAILED=1
+              echo "::endgroup::"
+              continue
+            fi
+
+            REOPENED=0
+            for attempt in 1 2 3; do
+              if gh pr reopen "$PR" --repo "$REPO" >/dev/null; then
+                REOPENED=1
+                break
+              fi
+              echo "::warning::Reopen attempt ${attempt} for PR #${PR} failed; retrying."
+              sleep 5
+            done
+
+            if [ "$REOPENED" -ne 1 ]; then
+              # The one genuinely bad outcome: a security PR left closed.
+              echo "::error::PR #${PR} was closed to re-trigger CI and could NOT be reopened. Reopen it by hand — a closed security PR may not be recreated by Dependabot."
+              FAILED=1
+              echo "::endgroup::"
+              continue
+            fi
+
+            post_status "success" "Reopened after retargeting; CI re-runs against development."
+            echo "PR #${PR} closed and reopened; CI will re-run against '${BASE}'."
+
             # NOTE: no mergeability check here. A retargeted PR CAN be
             # unmergeable — it branched from main while development is ahead on
             # VERSION/package.json, and Dependabot cannot rebase a base it did
@@ -150,9 +225,9 @@ jobs:
               "" \
               "Dependabot security updates always open against the default branch and cannot be configured otherwise. \`main\` is production here — a green CI run on it auto-cuts a release — so dependency updates are landed on \`development\` and promoted deliberately." \
               "" \
-              "**Re-run CI before merging.** Changing the base does not re-trigger the pipeline, so the check on this PR was computed against \`main\` (#205)." \
+              "This PR was **closed and reopened** to re-trigger CI, because changing a base does not do so on its own (#205). The checks now on it were computed against \`development\`. If you see it briefly closed, that is this workflow, not a human." \
               "" \
-              "If this is a transitive-only change (\`package-lock.json\` with no \`package.json\` edit), it should be closed rather than merged: see the Dependency Policy in \`CLAUDE.md\`." \
+              "If this is a transitive-only change (\`package-lock.json\` with no \`package.json\` edit), do not merge it: both npm entries in \`dependabot.yml\` allow direct dependencies only, so it should not exist. Clear the advisory with \`npm update\` instead — a patched release is usually already inside the parent's declared range. See the Dependency Policy in \`CLAUDE.md\`." \
               | gh pr comment "$PR" --repo "$REPO" --body-file - \
               || echo "::warning::Could not comment on PR #${PR}; retarget itself succeeded."
 
