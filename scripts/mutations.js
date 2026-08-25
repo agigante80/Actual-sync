@@ -667,6 +667,22 @@ module.exports = [
         tests: 'retargetRetest'
     },
 
+    // ---- #213: a funding guard that could not fail --------------------------
+    //
+    // The guard asserted every sponsor link it FOUND was correct, and found none
+    // on three of four surfaces — so deleting the link from the Docker Hub
+    // description left the suite green (verified: 108/108). That is the exact
+    // regression it was written for: #199 shipped a stale Buy Me a Coffee link
+    // to every image user.
+    {
+        id: '213-sponsor-link-deleted', ticket: '#213',
+        desc: 'the sponsor link is dropped from the published Docker Hub description again',
+        file: 'docker/description/long.md',
+        anchor: '- ❤️ Sponsor: https://github.com/sponsors/agigante80',
+        mutant: '- ❤️ Sponsor: (removed)',
+        tests: 'docDriftGuards'
+    },
+
     // ---- #210: the re-test must be proven, not assumed ----------------------
     //
     // Shipped as part of #205 and immediately wrong: the green "re-tested"

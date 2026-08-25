@@ -339,6 +339,29 @@ describe('funding routes do not drift across published surfaces (#199)', () => {
         }
     });
 
+    // The assertion above is CORRECT-where-present and therefore vacuous where
+    // absent: three of the four surfaces carry no sponsor link, so it asserts
+    // nothing for them — and deleting the link from long.md left the whole file
+    // green (verified: 108/108 passing with the line removed). A guard that
+    // cannot fail for the regression it was written for is worse than no guard,
+    // because it is counted as coverage. Assert PRESENCE, not just correctness
+    // where present (#213).
+    it('docker/description/long.md still carries the sponsor link', () => {
+        // This surface specifically: ci-cd.yml publishes it to Docker Hub, and
+        // it is the one that already regressed once — the stale Buy Me a Coffee
+        // link stayed live for every image user until #199 (v1.12.0).
+        expect(read('docker/description/long.md'))
+            .toMatch(/https:\/\/github\.com\/sponsors\/agigante80/);
+    });
+
+    it('at least one published surface advertises the funding route', () => {
+        // Backstop for the whole set: if every link were deleted at once, the
+        // per-surface assertions above would all still pass.
+        const withLink = SURFACES.filter((rel) =>
+            /https:\/\/github\.com\/sponsors\//.test(read(rel)));
+        expect(withLink.length).toBeGreaterThan(0);
+    });
+
     it('the README Sponsor section is reachable from the table of contents', () => {
         // It was appended after the centred footer's closing </div> and left out
         // of the ToC, so the one section asking for nothing was also the one
