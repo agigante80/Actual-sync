@@ -176,7 +176,13 @@ async function retestPullRequest({
     headSha,
     gh = runGh,
     sleep = wait,
-    log = console.log,
+    // STDERR, not stdout. The workflow captures stdout as the PR comment body
+    // (`RETEST_NOTE=$(node scripts/retargetRetest.js ...)`), so annotations
+    // written to stdout would be swallowed from the Actions log AND pasted
+    // verbatim into a public comment — including the "could NOT be reopened"
+    // error that exists to be loud. Verified: the reopen-failure path emitted
+    // four ::warning::/::error:: lines straight into the captured note (#217).
+    log = console.error,
     pollAttempts = POLL_ATTEMPTS,
     pollIntervalMs = POLL_INTERVAL_MS
 }) {
@@ -279,11 +285,12 @@ async function main(argv) {
         pr: args.pr, repo: args.repo, headSha: args.sha
     });
 
-    // The note is emitted on stdout for the workflow to post as a PR comment,
-    // so the wording lives with the decision that produced it rather than being
-    // rebuilt in shell.
+    // The note is the ONLY thing on stdout — the workflow captures it as the PR
+    // comment body. Everything else goes to stderr; see `log` above.
     if (result.note) process.stdout.write(result.note);
-    process.exit(result.failed ? 1 : 0);
+    // exitCode, not exit(): process.exit() can truncate a pending stdout write
+    // when stdout is a pipe, which is exactly what `$(...)` makes it.
+    process.exitCode = result.failed ? 1 : 0;
 }
 
 /* istanbul ignore next */

@@ -135,35 +135,6 @@ jobs:
             echo "PR #${PR} is now based on '${BASE}'."
 
             # ---------------------------------------------------------------
-            # RE-TEST AGAINST THE NEW BASE (#205)
-            #
-            # Changing a base fires `pull_request` `edited`, which ci-cd.yml
-            # does not listen for — so without this the PR keeps the check it
-            # earned against `main` and can be merged into `development` having
-            # never been tested there.
-            #
-            # Verified on scratch PR #214 before shipping: retargeting alone
-            # fired NO run; close+reopen fired a fresh `pull_request` run whose
-            # `pull_requests[0].base.ref` was `development`, and a deliberately
-            # failing PR stayed RED across it. `reopened` works because
-            # ci-cd.yml declares no `types:`, so it gets GitHub's default
-            # (opened, synchronize, reopened) — this needs no change to
-            # ci-cd.yml, which matters: the previous attempt at #205 DID edit
-            # that file, and an all-skipped run turned a red PR green (5aaf131).
-            #
-            # FAIL-SAFE ORDERING. The red status is posted BEFORE the close, and
-            # only cleared after the reopen is confirmed. Every failure path in
-            # between therefore leaves the PR visibly not-green rather than
-            # showing the stale green from `main`. Do not reorder these.
-            # ---------------------------------------------------------------
-            if ! HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid); then
-              echo "::error::Could not read the head SHA of PR #${PR}; not touching its state."
-              FAILED=1
-              echo "::endgroup::"
-              continue
-            fi
-
-            # ---------------------------------------------------------------
             # RE-TEST AGAINST THE NEW BASE (#205, #210) — delegated (#217)
             #
             # Changing a base fires `pull_request` `edited`, which ci-cd.yml does

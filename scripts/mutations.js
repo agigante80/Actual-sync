@@ -635,14 +635,6 @@ module.exports = [
         tests: 'defaultBranchDrift'
     },
 
-    // ---- #205: re-testing a retargeted PR against its new base --------------
-    //
-    // The defect is a stale green: a PR retargeted from main to development
-    // keeps the check it earned against main and can be merged untested. The
-    // runtime behaviour was verified by hand on scratch PR #214; what these
-    // mutations protect is the wiring that can rot silently afterwards, since
-    // the happy path still looks fine with any of them applied.
-
     // ---- #213: a funding guard that could not fail --------------------------
     //
     // The guard asserted every sponsor link it FOUND was correct, and found none
@@ -683,37 +675,6 @@ module.exports = [
         mutant: '    return true;',
         tests: 'defaultBranchDrift'
     },
-
-    // ---- #210: the re-test must be proven, not assumed ----------------------
-    //
-    // Shipped as part of #205 and immediately wrong: the green "re-tested"
-    // status was posted on a successful reopen alone. A CONFLICTING PR produces
-    // no CI run at all, and conflicting is the normal state of a retargeted PR
-    // — so the marker claimed a re-test that had not happened.
-
-
-
-    // Two mutants for the ELSE branch. Deleting 210-comment-asserts-retest
-    // (#216) removed the only entry that mutated it, which left this file's
-    // own guard fix unbacked — the substitute named at the time scores the
-    // same against a broken guard as a working one. These replace that
-    // coverage with valid shell.
-
-
-    // NOTE: there is deliberately no mutant for the PR comment's wording.
-    // `210-comment-asserts-retest` was deleted (#216): it embedded bare
-    // backticks in a double-quoted bash string, so the mutant would have run
-    // `development` as a command rather than emitting a Markdown code span —
-    // and `bash -n` cannot catch that, since command substitution is valid
-    // syntax. One fewer fragile escaped string beats one more correctly-escaped
-    // one.
-    //
-    // The deletion's cost was real and is paid above, not waved away: it removed
-    // the only entry mutating the else branch. `216-else-posts-success` and
-    // `216-else-posts-both` replace that cover. The substitute originally named
-    // here — 210-status-cleared-without-evidence — does NOT discriminate: its
-    // mutant trips elseBranchOf()'s own chain assertion, so it scores the same
-    // against a broken guard as a working one.
 
     // ---- #205/#210/#216: the retarget re-test ------------------------------
     //
@@ -816,6 +777,15 @@ module.exports = [
         file: "scripts/retargetRetest.js",
         anchor: "+ '**could not verify** whether a run started \u2014 the run snapshot was unusable, '",
         mutant: "+ '**could not verify** whether a run started \u2014 the GitHub API call failed, '",
+        tests: 'retargetRetest'
+    },
+
+    {
+        id: '217-annotations-on-stdout', ticket: '#217',
+        desc: 'annotations go to stdout, which the workflow captures as the PR comment body — losing them from the log and pasting them publicly',
+        file: 'scripts/retargetRetest.js',
+        anchor: "    log = console.error,",
+        mutant: "    log = console.log,",
         tests: 'retargetRetest'
     },
 

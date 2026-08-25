@@ -260,6 +260,52 @@ describe('retestPullRequest — what status actually gets written', () => {
     });
 });
 
+describe('stdout carries the note and nothing else (#217)', () => {
+    // The workflow captures stdout as the PR comment body
+    // (`RETEST_NOTE=$(node scripts/retargetRetest.js ...)`), so anything else
+    // written there is both LOST from the Actions log and pasted into a public
+    // comment. Found in review: the reopen-failure path emitted four
+    // ::warning::/::error:: lines straight into the captured note — including
+    // the "could NOT be reopened" error that exists to be loud.
+    const CLI = path.join(ROOT, 'scripts', 'retargetRetest.js');
+
+    it('writes annotations to stderr, never stdout', () => {
+        const src = fs.readFileSync(CLI, 'utf8');
+        // console.log would be stdout; the default must be the stderr channel.
+        expect(src).toMatch(/log = console\.error/);
+        expect(src).not.toMatch(/log = console\.log/);
+    });
+
+    it('the only stdout write is the note', () => {
+        const src = fs.readFileSync(CLI, 'utf8');
+        const writes = [...src.matchAll(/process\.stdout\.write\(([^)]*)\)/g)].map((m) => m[1]);
+        expect(writes).toEqual(['result.note']);
+    });
+
+    it('does not exit() out from under a pending stdout write', () => {
+        // process.exit() can truncate a pending write when stdout is a pipe,
+        // which is exactly what `$(...)` makes it.
+        //
+        // Scoped to main()'s tail and to EXECUTABLE lines. A whole-file match
+        // catches this rule's own explanatory comment and the top-level catch
+        // handler — which is legitimate, because that path has written nothing
+        // to stdout. Broad text matching is what #217 exists to get away from.
+        const src = fs.readFileSync(CLI, 'utf8');
+        const from = src.indexOf('process.stdout.write(result.note)');
+        expect(from).toBeGreaterThan(-1);
+        const endOfMain = src.indexOf('\n}', from);
+        expect(endOfMain).toBeGreaterThan(from);
+
+        const tail = src.slice(from, endOfMain)
+            .split('\n')
+            .filter((line) => !line.trim().startsWith('//'))
+            .join('\n');
+
+        expect(tail).toMatch(/process\.exitCode\s*=/);
+        expect(tail).not.toMatch(/process\.exit\(/);
+    });
+});
+
 describe('wiring — the workflow must actually call the extracted logic', () => {
     // The unwiring case: every behavioural test above passes if the workflow
     // stops calling this script and keeps its old inline copy.
