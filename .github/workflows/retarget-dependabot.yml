@@ -167,6 +167,15 @@ jobs:
 
             post_status "failure" "Base moved to development; awaiting a re-run. The existing check was computed against main."
 
+            # Snapshot the highest run id already attached to this head SHA.
+            # The PR's ORIGINAL main-based runs carry the same head SHA, so
+            # "a run exists" proves nothing — only "a run NEWER than this one
+            # exists" does. Run ids increase monotonically, which makes a single
+            # integer enough. Verified: `gh run list --commit <sha>` returns the
+            # pre- and post-reopen runs together.
+            RUNS_BEFORE=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" --limit 100 \
+                            --json databaseId --jq '[.[].databaseId] | max // 0' 2>/dev/null || echo 0)
+
             # Close+reopen is the trigger. The risk is that Dependabot reads a
             # close as "do not recreate this version" — unverifiable here
             # without a live security PR, so it is engineered around rather than
@@ -197,8 +206,45 @@ jobs:
               continue
             fi
 
-            post_status "success" "Reopened after retargeting; CI re-runs against development."
-            echo "PR #${PR} closed and reopened; CI will re-run against '${BASE}'."
+            # ---------------------------------------------------------------
+            # PROVE THE RE-TEST HAPPENED (#210)
+            #
+            # A CONFLICTING PR produces NO CI run at all — GitHub cannot compute
+            # refs/pull/N/merge, so ci-cd.yml never fires, and close+reopen does
+            # NOT change that. Verified on scratch PR #215: zero runs across ~7
+            # minutes, then zero more across ~3.5 minutes after a close+reopen.
+            #
+            # That is the normal case here, not the edge case: a retargeted PR
+            # branched from `main` while `development` is ahead on VERSION and
+            # package.json, so it conflicts on those alone.
+            #
+            # Clearing the status on the strength of a successful reopen would
+            # therefore post a GREEN "re-tested" marker on a PR with no CI
+            # whatsoever, while main's stale checks sit on the same SHA. Assert
+            # the evidence instead of the intention.
+            # ---------------------------------------------------------------
+            RETESTED=0
+            for _ in $(seq 1 12); do
+              sleep 5
+              LATEST=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" --limit 100 \
+                         --json databaseId --jq '[.[].databaseId] | max // 0' 2>/dev/null || echo 0)
+              if [ "$LATEST" -gt "$RUNS_BEFORE" ]; then
+                RETESTED=1
+                break
+              fi
+            done
+
+            if [ "$RETESTED" -eq 1 ]; then
+              post_status "success" "Re-tested against development after retargeting."
+              echo "PR #${PR} closed and reopened; a new CI run started against '${BASE}'."
+            else
+              # Deliberately does NOT assert "conflict". No run can also mean
+              # paths-ignore, a disabled workflow, or a stuck queue. Report what
+              # was observed and name the likely cause — overclaiming here would
+              # be the same false-confidence error in a new coat.
+              post_status "failure" "No CI run appeared after retargeting — most likely a merge conflict with development. Resolve it, then re-run CI."
+              echo "::warning::PR #${PR} was retargeted, but no CI run appeared within 60s. Most likely it conflicts with '${BASE}' — a conflicting PR cannot be tested at all. Its commit status is left red."
+            fi
 
             # NOTE: no mergeability check here. A retargeted PR CAN be
             # unmergeable — it branched from main while development is ahead on
