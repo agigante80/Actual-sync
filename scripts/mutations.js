@@ -635,6 +635,38 @@ module.exports = [
         tests: 'defaultBranchDrift'
     },
 
+    // ---- #205: re-testing a retargeted PR against its new base --------------
+    //
+    // The defect is a stale green: a PR retargeted from main to development
+    // keeps the check it earned against main and can be merged untested. The
+    // runtime behaviour was verified by hand on scratch PR #214; what these
+    // mutations protect is the wiring that can rot silently afterwards, since
+    // the happy path still looks fine with any of them applied.
+    {
+        id: '205-no-retest-trigger', ticket: '#205',
+        desc: 'the close/reopen that re-triggers CI is removed, so a retargeted PR keeps main\'s check',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: 'if ! gh pr close "$PR" --repo "$REPO" >/dev/null; then',
+        mutant: 'if ! true; then',
+        tests: 'retargetRetest'
+    },
+    {
+        id: '205-failsafe-order-inverted', ticket: '#205',
+        desc: 'the red status is posted after the close instead of before it, so a crash mid-way leaves the stale green showing',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: '            post_status "failure" "Base moved to development; awaiting a re-run. The existing check was computed against main."\n',
+        mutant: '',
+        tests: 'retargetRetest'
+    },
+    {
+        id: '205-closed-pr-exits-green', ticket: '#205',
+        desc: 'a PR left closed after a failed reopen no longer fails the job, so a security PR can be silently abandoned',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: 'reopened. Reopen it by hand — a closed security PR may not be recreated by Dependabot."\n              FAILED=1',
+        mutant: 'reopened. Reopen it by hand — a closed security PR may not be recreated by Dependabot."\n              FAILED=0',
+        tests: 'retargetRetest'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',

@@ -369,8 +369,18 @@ Security PRs still open against `main` (GitHub allows no alternative), so
 read-only token and no Actions secrets, so the App-token step would fail on exactly the
 PRs it exists for. A scheduled run is not Dependabot-initiated and gets normal secrets.
 The trade is up to an hour of latency, which costs nothing because nothing merges those
-PRs in that window. **A retargeted PR is not automatically re-tested** — it keeps the
-check it earned against `main`, so re-run CI before merging one (#205).
+PRs in that window. **A retargeted PR IS re-tested against its new base (#205):** the job
+closes and reopens it, which fires `pull_request` `reopened` and re-runs `ci-cd.yml`
+against `development`. Changing a base only fires `edited`, which `ci-cd.yml` does not
+listen for — hence the close/reopen. This needs no change to `ci-cd.yml`, and that is
+deliberate: the earlier attempt added `edited` there and an all-skipped run turned a
+**red PR green** (reverted in `5aaf131`). Do not reintroduce it.
+
+The red commit status is posted **before** the close and cleared only after a confirmed
+reopen, so any failure in between leaves the PR visibly not-green rather than showing
+`main`'s stale check. If a PR is ever left closed, the job fails loudly — a closed
+security PR may not be recreated by Dependabot. Ordering is guarded by
+`src/__tests__/retargetRetest.test.js`.
 
 **A retargeted security PR recurs until `main` is promoted, and that is correct
 behaviour, not a loop (#209).** Dependabot opens security PRs against the branch it
