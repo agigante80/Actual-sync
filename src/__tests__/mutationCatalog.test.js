@@ -61,6 +61,38 @@ describe('mutation catalog integrity', () => {
             expect(res.status).toBe(0);
         });
 
+        // The same trap, for workflow mutants. A mutation that breaks the YAML
+        // or the shell inside a `run:` block scores "caught" because the guard
+        // reading it goes red — proving nothing about whether the DEFECT is
+        // covered. Two of the #210 mutants shipped exactly that way: one ended
+        // in `# \`, which is not a line continuation and stranded two argument
+        // lines, and one embedded bare backticks that would have run
+        // `development` as a command instead of emitting literal Markdown.
+        // Found in review; this closes the class rather than the instances.
+        it('produces a workflow that still parses, with valid shell in every run block', () => {
+            if (!/\.ya?ml$/.test(mutation.file)) return;
+            const src = fs.readFileSync(path.join(ROOT, mutation.file), 'utf8');
+            const mutated = src.replace(mutation.anchor, () => mutation.mutant);
+
+            const doc = require('js-yaml').load(mutated);
+            expect(doc).toBeTruthy();
+
+            const runs = [];
+            for (const job of Object.values(doc.jobs || {})) {
+                for (const step of job.steps || []) {
+                    if (typeof step.run === 'string') runs.push(step.run);
+                }
+            }
+            expect(runs.length).toBeGreaterThan(0);
+
+            for (const script of runs) {
+                const res = require('child_process').spawnSync(
+                    'bash', ['-n'], { input: script, encoding: 'utf8' });
+                expect(res.stderr || '').toBe('');
+                expect(res.status).toBe(0);
+            }
+        });
+
         // String.replace() interprets $&, $1 etc. in the replacement. A mutant
         // containing them would silently produce something else entirely.
         it('has no accidental String.replace substitution patterns', () => {

@@ -119,6 +119,33 @@ describe('retarget-dependabot.yml re-tests against the new base (#205)', () => {
         expect(text).toMatch(/\*\[!0-9\]\*/);
     });
 
+    it('distinguishes "could not check" from "checked and found nothing"', () => {
+        // Review finding on the fail-closed fix itself: with the snapshot
+        // failed, control fell through to the else, which told the maintainer in
+        // a PUBLIC comment that no run appeared and a conflict needed resolving
+        // — when nothing had been observed and CI may have run green. A
+        // transient 502, or an App without `actions: read`, produced a confident
+        // false diagnosis.
+        const branchAt = text.indexOf('elif [ "$SNAPSHOT_OK" -ne 1 ]; then');
+        expect(branchAt).toBeGreaterThan(-1);
+
+        const successAt = text.indexOf('if [ "$RETESTED" -eq 1 ]; then');
+        const elseAt = text.indexOf('\n            else\n', branchAt);
+        expect(successAt).toBeLessThan(branchAt);
+        expect(elseAt).toBeGreaterThan(branchAt);
+
+        // Its wording must not assert an observation it did not make. Scanned
+        // over EXECUTABLE lines only: the branch's own comment explains the bug
+        // it fixes and necessarily quotes the wording being ruled out, so a
+        // whole-slice match tests the prose rather than the behaviour.
+        const branch = text.slice(branchAt, elseAt)
+            .split('\n')
+            .filter((line) => !line.trim().startsWith('#'))
+            .join('\n');
+        expect(branch).toMatch(/could not verify/i);
+        expect(branch).not.toMatch(/no CI run appeared/i);
+    });
+
     it('accepts only a ci-cd.yml run as evidence, not any run on the SHA', () => {
         // codeql-analysis.yml also fires on pull_request and carries no
         // paths-ignore, while ci-cd.yml's does. Without this scoping, a

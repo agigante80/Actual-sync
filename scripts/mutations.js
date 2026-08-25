@@ -735,8 +735,8 @@ module.exports = [
         id: '210-snapshot-fails-open', ticket: '#210',
         desc: 'a failed run-snapshot defaults to 0, so the PR\'s original main-based run passes as evidence',
         file: '.github/workflows/retarget-dependabot.yml',
-        anchor: "            if ! RUNS_BEFORE=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\",
-        mutant: "            RUNS_BEFORE=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" 2>/dev/null || echo 0) # \\",
+        anchor: "            SNAPSHOT_OK=1\n            if ! RUNS_BEFORE=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\\n                                 --workflow ci-cd.yml --limit 100 \\\n                                 --json databaseId --jq '[.[].databaseId] | max // 0'); then\n              SNAPSHOT_OK=0\n              echo \"::warning::Could not snapshot existing runs for PR #${PR}; the re-test cannot be verified and its status stays red.\"\n            fi",
+        mutant: "            SNAPSHOT_OK=1\n            RUNS_BEFORE=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\\n                                 --workflow ci-cd.yml --limit 100 \\\n                                 --json databaseId --jq '[.[].databaseId] | max // 0' 2>/dev/null || echo 0)",
         tests: 'retargetRetest'
     },
     {
@@ -753,6 +753,15 @@ module.exports = [
         file: '.github/workflows/retarget-dependabot.yml',
         anchor: '              "$RETEST_NOTE" \\',
         mutant: '              "The checks now on it were computed against `development`." \\',
+        tests: 'retargetRetest'
+    },
+
+    {
+        id: '210-unverified-reported-as-conflict', ticket: '#210',
+        desc: 'a failed snapshot falls through to the conflict message, asserting an observation that was never made',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: "            elif [ \"$SNAPSHOT_OK\" -ne 1 ]; then",
+        mutant: "            elif false; then",
         tests: 'retargetRetest'
     },
 
