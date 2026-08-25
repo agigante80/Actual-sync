@@ -683,6 +683,31 @@ module.exports = [
         tests: 'docDriftGuards'
     },
 
+    {
+        id: '213-nonyaml-treated-as-workflow', ticket: '#213',
+        desc: 'the runtime scan drops its .yml filter, so a README under .github/workflows/ is reported as unparseable',
+        file: 'scripts/defaultBranchDrift.js',
+        anchor: "    relPath.startsWith(WORKFLOW_PREFIX) && /\\.ya?ml$/.test(relPath);",
+        mutant: "    relPath.startsWith(WORKFLOW_PREFIX);",
+        tests: 'defaultBranchDrift'
+    },
+    {
+        id: '213-dedupe-compares-joined', ticket: '#213',
+        desc: 'the base-side dedupe compares joined strings again, so a two-category workflow prints its reasons twice',
+        file: 'scripts/defaultBranchDrift.js',
+        anchor: '            } else if (!sameReasons(headReasons, reasons)) {',
+        mutant: '            } else if (!sides.includes(why)) {',
+        tests: 'defaultBranchDrift'
+    },
+    {
+        id: '213-dedupe-suppresses-real-drift', ticket: '#213',
+        desc: 'the dedupe over-matches and hides a genuinely different base copy',
+        file: 'scripts/defaultBranchDrift.js',
+        anchor: '    if (a.length !== b.length) return false;',
+        mutant: '    return true;',
+        tests: 'defaultBranchDrift'
+    },
+
     // ---- #210: the re-test must be proven, not assumed ----------------------
     //
     // Shipped as part of #205 and immediately wrong: the green "re-tested"

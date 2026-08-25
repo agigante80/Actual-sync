@@ -35,6 +35,16 @@ const yaml = require('js-yaml');
 const DEFAULT_BASE = 'origin/main';
 const WORKFLOW_PREFIX = '.github/workflows/';
 
+// A path under .github/workflows/ is only a WORKFLOW if GitHub would parse it as
+// one. Without this the runtime scan YAML-parsed every changed path there, so a
+// README or helper script placed alongside the workflows was reported as "could
+// not parse this workflow's `on:` block" (#213). Harmless, but it devalues a
+// message that is supposed to mean something. The hermetic guard in
+// defaultBranchDrift.test.js already filters this way; this is the runtime path
+// catching up.
+const isWorkflowFile = (relPath) =>
+    relPath.startsWith(WORKFLOW_PREFIX) && /\.ya?ml$/.test(relPath);
+
 /**
  * Triggers that resolve the workflow file from a REF rather than from the
  * default branch.
@@ -333,6 +343,22 @@ function gitReason(err) {
  * would print "no drift" for exactly that case, which is the false all-clear the
  * error paths above are careful never to produce.
  */
+/**
+ * Order-insensitive equality for two reason lists.
+ *
+ * Deliberately compares the reason ARRAYS rather than their joined forms: the
+ * joined string is what gets prefixed for display, and comparing prefixed or
+ * joined strings is what defeated the two previous attempts at this dedupe
+ * (#213). Order-insensitive because the two sides are produced by independent
+ * parses and a reordered `on:` block is not a drift.
+ */
+function sameReasons(a, b) {
+    if (a.length !== b.length) return false;
+    const left = [...a].sort();
+    const right = [...b].sort();
+    return left.every((reason, i) => reason === right[i]);
+}
+
 function collectWorkflowReasons(relPath, base, root) {
     const sides = [];
 
@@ -357,17 +383,25 @@ function collectWorkflowReasons(relPath, base, root) {
         // side kept the old three-name deny-list — so deleting an issue_comment
         // or release workflow here left main's copy firing, unreported. That is
         // precisely the case this function exists for.
+        const headReasons = headText === null ? [] : workflowDriftReasons(headText);
         const reasons = workflowDriftReasons(baseText);
         if (reasons.length) {
             const why = reasons.join('; ');
             if (headText === null) {
                 sides.push(`deleted here, but ${base} still has it: ${why}`);
-            } else if (!sides.includes(why)) {
+            } else if (!sameReasons(headReasons, reasons)) {
                 // Only worth saying when the base DIFFERS from the head. A
                 // modified workflow carrying the same trigger on both sides
                 // printed the identical reason twice, and deduping the FINAL
                 // strings could never catch it — the base copy is prefixed, so
                 // the two strings were never equal.
+                //
+                // Third attempt (#213). The second compared the base's JOINED
+                // reasons against `sides`, which holds INDIVIDUAL reason
+                // strings, so it matched only when the head produced exactly
+                // one. A workflow with both a default-branch-only trigger and a
+                // base-ref trigger yields two, and printed them twice. Compare
+                // the ARRAYS, before any prefixing.
                 sides.push(`${base}'s copy: ${why}`);
             }
         }
@@ -522,7 +556,7 @@ function main(argv) {
 
     const drifted = [];
     for (const relPath of changed) {
-        if (relPath.startsWith(WORKFLOW_PREFIX)) {
+        if (isWorkflowFile(relPath)) {
             const reasons = collectWorkflowReasons(relPath, base, root);
             if (reasons.length) {
                 drifted.push({ path: relPath, reason: reasons.join('; '), docs: WORKFLOW_DOCS });
@@ -603,6 +637,8 @@ module.exports = {
     workflowDriftReasons,
     parseArgs,
     collectWorkflowReasons,
+    isWorkflowFile,
+    sameReasons,
     compareVersions,
     versionDriftMessage,
 };
