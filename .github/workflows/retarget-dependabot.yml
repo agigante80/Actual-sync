@@ -173,8 +173,31 @@ jobs:
             # exists" does. Run ids increase monotonically, which makes a single
             # integer enough. Verified: `gh run list --commit <sha>` returns the
             # pre- and post-reopen runs together.
-            RUNS_BEFORE=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" --limit 100 \
-                            --json databaseId --jq '[.[].databaseId] | max // 0' 2>/dev/null || echo 0)
+            # Scoped to ci-cd.yml, NOT "any run on this SHA". codeql-analysis.yml
+            # also fires on pull_request and carries no paths-ignore, while
+            # ci-cd.yml's does — so any future skew (a paths-ignore hit,
+            # `development` dropped from ci-cd's branches, an explicit `types:`
+            # that omits `reopened`) would produce a fresh CodeQL run id and a
+            # green marker although the suite never ran. The evidence has to be
+            # the thing being claimed.
+            #
+            # Fails CLOSED. `|| echo 0` here would be a live false-green path: a
+            # transient gh failure (502, secondary rate limit, a missing
+            # `actions: read` scope) would set the baseline to 0, the first poll
+            # would return the max id of the PR's ORIGINAL main-based runs, and
+            # `> 0` would pass. That is mutation 210-existence-not-freshness,
+            # reachable at runtime. An unusable snapshot means the evidence check
+            # cannot be trusted, so it is skipped and the status stays red.
+            SNAPSHOT_OK=1
+            if ! RUNS_BEFORE=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" \
+                                 --workflow ci-cd.yml --limit 100 \
+                                 --json databaseId --jq '[.[].databaseId] | max // 0'); then
+              SNAPSHOT_OK=0
+              echo "::warning::Could not snapshot existing runs for PR #${PR}; the re-test cannot be verified and its status stays red."
+            fi
+            case "$RUNS_BEFORE" in
+              ''|*[!0-9]*) SNAPSHOT_OK=0; RUNS_BEFORE=0 ;;
+            esac
 
             # Close+reopen is the trigger. The risk is that Dependabot reads a
             # close as "do not recreate this version" — unverifiable here
@@ -224,19 +247,33 @@ jobs:
             # the evidence instead of the intention.
             # ---------------------------------------------------------------
             RETESTED=0
-            for _ in $(seq 1 12); do
-              sleep 5
-              LATEST=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" --limit 100 \
-                         --json databaseId --jq '[.[].databaseId] | max // 0' 2>/dev/null || echo 0)
-              if [ "$LATEST" -gt "$RUNS_BEFORE" ]; then
-                RETESTED=1
-                break
-              fi
-            done
+            if [ "$SNAPSHOT_OK" -eq 1 ]; then
+              for _ in $(seq 1 12); do
+                sleep 5
+                # Same fail-closed rule: a failed poll is not evidence of
+                # anything, so it must not be read as a run id.
+                if ! LATEST=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" \
+                                --workflow ci-cd.yml --limit 100 \
+                                --json databaseId --jq '[.[].databaseId] | max // 0'); then
+                  continue
+                fi
+                case "$LATEST" in ''|*[!0-9]*) continue ;; esac
+                if [ "$LATEST" -gt "$RUNS_BEFORE" ]; then
+                  RETESTED=1
+                  break
+                fi
+              done
+            fi
 
+            # The courtesy comment must agree with the status. It used to assert
+            # "the checks now on it were computed against development"
+            # unconditionally — so on the normal conflicting-PR case the status
+            # went red while the comment beside it made exactly the claim the
+            # status was refusing to make.
             if [ "$RETESTED" -eq 1 ]; then
               post_status "success" "Re-tested against development after retargeting."
               echo "PR #${PR} closed and reopened; a new CI run started against '${BASE}'."
+              RETEST_NOTE="This PR was **closed and reopened** to re-trigger CI, because changing a base does not do so on its own (#205). The checks now on it were computed against \`development\`. If you see it briefly closed, that is this workflow, not a human."
             else
               # Deliberately does NOT assert "conflict". No run can also mean
               # paths-ignore, a disabled workflow, or a stuck queue. Report what
@@ -244,6 +281,7 @@ jobs:
               # be the same false-confidence error in a new coat.
               post_status "failure" "No CI run appeared after retargeting — most likely a merge conflict with development. Resolve it, then re-run CI."
               echo "::warning::PR #${PR} was retargeted, but no CI run appeared within 60s. Most likely it conflicts with '${BASE}' — a conflicting PR cannot be tested at all. Its commit status is left red."
+              RETEST_NOTE="This PR was **closed and reopened** to re-trigger CI (#205), but **no CI run appeared** — most likely it now conflicts with \`development\`, and a conflicting PR cannot be tested at all because GitHub never computes its merge ref (#210). **The checks shown here were computed against \`main\`.** Resolve the conflict, then re-run CI before merging."
             fi
 
             # NOTE: no mergeability check here. A retargeted PR CAN be
@@ -252,8 +290,12 @@ jobs:
             # not choose. But GitHub computes mergeability asynchronously, so
             # reading it immediately after the edit returns UNKNOWN and a
             # CONFLICTING check would essentially never fire. A check that
-            # cannot fire is worse than none: it reads as coverage. Tracked in
-            # #210.
+            # cannot fire is worse than none: it reads as coverage.
+            #
+            # #210 is now CLOSED, and not by adding that check back: the
+            # evidence loop above answers the same question by direct
+            # observation ("did a ci-cd run actually start?") instead of the
+            # `mergeable` proxy. Do not reintroduce a mergeability read here.
 
             # Non-fatal (#206): the retarget has already happened and been
             # verified, so a permission gap here should cost the courtesy note,
@@ -271,7 +313,7 @@ jobs:
               "" \
               "Dependabot security updates always open against the default branch and cannot be configured otherwise. \`main\` is production here — a green CI run on it auto-cuts a release — so dependency updates are landed on \`development\` and promoted deliberately." \
               "" \
-              "This PR was **closed and reopened** to re-trigger CI, because changing a base does not do so on its own (#205). The checks now on it were computed against \`development\`. If you see it briefly closed, that is this workflow, not a human." \
+              "$RETEST_NOTE" \
               "" \
               "If this is a transitive-only change (\`package-lock.json\` with no \`package.json\` edit), do not merge it: both npm entries in \`dependabot.yml\` allow direct dependencies only, so it should not exist. Clear the advisory with \`npm update\` instead — a patched release is usually already inside the parent's declared range. See the Dependency Policy in \`CLAUDE.md\`." \
               | gh pr comment "$PR" --repo "$REPO" --body-file - \

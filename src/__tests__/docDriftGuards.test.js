@@ -346,20 +346,27 @@ describe('funding routes do not drift across published surfaces (#199)', () => {
     // cannot fail for the regression it was written for is worse than no guard,
     // because it is counted as coverage. Assert PRESENCE, not just correctness
     // where present (#213).
-    it('docker/description/long.md still carries the sponsor link', () => {
-        // This surface specifically: ci-cd.yml publishes it to Docker Hub, and
-        // it is the one that already regressed once — the stale Buy Me a Coffee
-        // link stayed live for every image user until #199 (v1.12.0).
-        expect(read('docker/description/long.md'))
-            .toMatch(/https:\/\/github\.com\/sponsors\/agigante80/);
+    // Enumerated rather than derived. `long.md` is published to Docker Hub by
+    // ci-cd.yml and is the surface that actually regressed in #199; the README
+    // is the most visible one and was equally unguarded. `short.md` is capped at
+    // 100 characters and FUNDING.yml names the route as `github: <user>` rather
+    // than a URL, so neither is expected to carry the link.
+    const LINK_SURFACES = ['README.md', 'docker/description/long.md'];
+
+    it.each(LINK_SURFACES)('%s still carries the sponsor link', (rel) => {
+        expect(read(rel)).toMatch(/https:\/\/github\.com\/sponsors\/agigante80/);
     });
 
-    it('at least one published surface advertises the funding route', () => {
-        // Backstop for the whole set: if every link were deleted at once, the
-        // per-surface assertions above would all still pass.
+    it('no other published surface is silently expected to carry it', () => {
+        // Keeps LINK_SURFACES honest in the other direction: if a link is added
+        // to a surface nobody guards, this fails and forces it onto the list
+        // rather than leaving it unprotected. Fails independently of the
+        // per-surface assertions above, which the previous "at least one
+        // surface has a link" backstop did not — it was strictly subsumed by
+        // them and could never go red on its own.
         const withLink = SURFACES.filter((rel) =>
             /https:\/\/github\.com\/sponsors\//.test(read(rel)));
-        expect(withLink.length).toBeGreaterThan(0);
+        expect(withLink.sort()).toEqual([...LINK_SURFACES].sort());
     });
 
     it('the README Sponsor section is reachable from the table of contents', () => {

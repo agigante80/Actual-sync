@@ -706,6 +706,31 @@ module.exports = [
         tests: 'retargetRetest'
     },
 
+    {
+        id: '210-snapshot-fails-open', ticket: '#210',
+        desc: 'a failed run-snapshot defaults to 0, so the PR\'s original main-based run passes as evidence',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: "            if ! RUNS_BEFORE=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\",
+        mutant: "            RUNS_BEFORE=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" 2>/dev/null || echo 0) # \\",
+        tests: 'retargetRetest'
+    },
+    {
+        id: '210-any-workflow-counts', ticket: '#210',
+        desc: 'any run on the head SHA counts as evidence, so a CodeQL run passes for a skipped ci-cd run',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: "                if ! LATEST=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\\n                                --workflow ci-cd.yml --limit 100 \\",
+        mutant: "                if ! LATEST=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\\n                                --limit 100 \\",
+        tests: 'retargetRetest'
+    },
+    {
+        id: '210-comment-asserts-retest', ticket: '#210',
+        desc: 'the PR comment claims the checks were computed against development even when no run appeared',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: '              "$RETEST_NOTE" \\',
+        mutant: '              "The checks now on it were computed against `development`." \\',
+        tests: 'retargetRetest'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
