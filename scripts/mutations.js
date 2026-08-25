@@ -642,30 +642,6 @@ module.exports = [
     // runtime behaviour was verified by hand on scratch PR #214; what these
     // mutations protect is the wiring that can rot silently afterwards, since
     // the happy path still looks fine with any of them applied.
-    {
-        id: '205-no-retest-trigger', ticket: '#205',
-        desc: 'the close/reopen that re-triggers CI is removed, so a retargeted PR keeps main\'s check',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: 'if ! gh pr close "$PR" --repo "$REPO" >/dev/null; then',
-        mutant: 'if ! true; then',
-        tests: 'retargetRetest'
-    },
-    {
-        id: '205-failsafe-order-inverted', ticket: '#205',
-        desc: 'the red status is posted after the close instead of before it, so a crash mid-way leaves the stale green showing',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: '            post_status "failure" "Base moved to development; awaiting a re-run. The existing check was computed against main."\n',
-        mutant: '',
-        tests: 'retargetRetest'
-    },
-    {
-        id: '205-closed-pr-exits-green', ticket: '#205',
-        desc: 'a PR left closed after a failed reopen no longer fails the job, so a security PR can be silently abandoned',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: 'reopened. Reopen it by hand — a closed security PR may not be recreated by Dependabot."\n              FAILED=1',
-        mutant: 'reopened. Reopen it by hand — a closed security PR may not be recreated by Dependabot."\n              FAILED=0',
-        tests: 'retargetRetest'
-    },
 
     // ---- #213: a funding guard that could not fail --------------------------
     //
@@ -714,87 +690,15 @@ module.exports = [
     // status was posted on a successful reopen alone. A CONFLICTING PR produces
     // no CI run at all, and conflicting is the normal state of a retargeted PR
     // — so the marker claimed a re-test that had not happened.
-    {
-        id: '210-status-cleared-without-evidence', ticket: '#210',
-        desc: 'the green re-tested status is posted on a successful reopen alone, with no run to back it',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: 'if [ "$RETESTED" -eq 1 ]; then',
-        mutant: 'if true; then',
-        tests: 'retargetRetest'
-    },
-    {
-        id: '210-existence-not-freshness', ticket: '#210',
-        desc: 'any run on the head SHA counts as evidence, including the PR\'s original main-based run',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: 'if [ "$LATEST" -gt "$RUNS_BEFORE" ]; then',
-        mutant: 'if [ "$LATEST" -gt 0 ]; then',
-        tests: 'retargetRetest'
-    },
 
-    {
-        id: '210-snapshot-fails-open', ticket: '#210',
-        desc: 'a failed run-snapshot defaults to 0, so the PR\'s original main-based run passes as evidence',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: "            SNAPSHOT_OK=1\n            if ! RUNS_BEFORE=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\\n                                 --workflow ci-cd.yml --limit 100 \\\n                                 --json databaseId --jq '[.[].databaseId] | max // 0'); then\n              SNAPSHOT_OK=0\n              echo \"::warning::Could not snapshot existing runs for PR #${PR}; the re-test cannot be verified and its status stays red.\"\n            fi",
-        mutant: "            SNAPSHOT_OK=1\n            RUNS_BEFORE=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\\n                                 --workflow ci-cd.yml --limit 100 \\\n                                 --json databaseId --jq '[.[].databaseId] | max // 0' 2>/dev/null || echo 0)",
-        tests: 'retargetRetest'
-    },
-    {
-        id: '210-any-workflow-counts', ticket: '#210',
-        desc: 'any run on the head SHA counts as evidence, so a CodeQL run passes for a skipped ci-cd run',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: "                if ! LATEST=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\\n                                --workflow ci-cd.yml --limit 100 \\",
-        mutant: "                if ! LATEST=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\\n                                --limit 100 \\",
-        tests: 'retargetRetest'
-    },
 
-    {
-        id: '210-unverified-reported-as-conflict', ticket: '#210',
-        desc: 'a failed snapshot falls through to the conflict message, asserting an observation that was never made',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: "            elif [ \"$SNAPSHOT_OK\" -ne 1 ]; then",
-        mutant: "            elif false; then",
-        tests: 'retargetRetest'
-    },
 
     // Two mutants for the ELSE branch. Deleting 210-comment-asserts-retest
     // (#216) removed the only entry that mutated it, which left this file's
     // own guard fix unbacked — the substitute named at the time scores the
     // same against a broken guard as a working one. These replace that
     // coverage with valid shell.
-    {
-        id: '216-else-posts-success', ticket: '#216',
-        desc: 'the else branch posts a GREEN status when no run appeared',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: "              post_status \"failure\" \"No CI run appeared after retargeting \u2014 most likely a merge conflict with development. Resolve it, then re-run CI.\"",
-        mutant: "              post_status \"success\" \"No CI run appeared after retargeting \u2014 most likely a merge conflict with development. Resolve it, then re-run CI.\"",
-        tests: 'retargetRetest'
-    },
-    {
-        id: '216-else-posts-both', ticket: '#216',
-        desc: 'the else branch posts red AND green; the last write wins, so the PR ends green',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: "              post_status \"failure\" \"No CI run appeared after retargeting \u2014 most likely a merge conflict with development. Resolve it, then re-run CI.\"",
-        mutant: "              post_status \"failure\" \"No CI run appeared after retargeting \u2014 most likely a merge conflict with development. Resolve it, then re-run CI.\"\n              post_status \"success\" \"Looks fine.\"",
-        tests: 'retargetRetest'
-    },
 
-    {
-        id: '216-elif-posts-success', ticket: '#216',
-        desc: 'the unverified branch posts a GREEN status although nothing was observed',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: "              post_status \"failure\" \"Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging.\"",
-        mutant: "              post_status \"success\" \"Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging.\"",
-        tests: 'retargetRetest'
-    },
-    {
-        id: '216-elif-posts-both', ticket: '#216',
-        desc: 'the unverified branch posts red AND green; the last write wins, so the PR ends green',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: "              post_status \"failure\" \"Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging.\"",
-        mutant: "              post_status \"failure\" \"Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging.\"\n              post_status \"success\" \"Looks fine.\"",
-        tests: 'retargetRetest'
-    },
 
     // NOTE: there is deliberately no mutant for the PR comment's wording.
     // `210-comment-asserts-retest` was deleted (#216): it embedded bare
@@ -810,6 +714,110 @@ module.exports = [
     // here — 210-status-cleared-without-evidence — does NOT discriminate: its
     // mutant trips elseBranchOf()'s own chain assertion, so it scores the same
     // against a broken guard as a working one.
+
+    // ---- #205/#210/#216: the retarget re-test ------------------------------
+    //
+    // These anchored in the workflow's YAML until #217 moved the decision into
+    // scripts/retargetRetest.js. They now mutate real code, and the guards that
+    // catch them assert the status ACTUALLY WRITTEN rather than which strings sit
+    // near which line — which is what let the previous defects keep moving one
+    // indent level out of reach.
+    {
+        id: "205-no-retest-trigger", ticket: "#205",
+        desc: "the close/reopen that re-triggers CI is removed, so a retargeted PR keeps main's check",
+        file: "scripts/retargetRetest.js",
+        anchor: "        gh(['pr', 'close', String(pr), '--repo', repo]);",
+        mutant: "        void 0;",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "205-failsafe-order-inverted", ticket: "#205",
+        desc: "the red status is no longer posted before the close, so a crash mid-way leaves a stale green showing",
+        file: "scripts/retargetRetest.js",
+        anchor: "    postStatus('failure',\n        'Base moved to development; awaiting a re-run. '\n        + 'The existing check was computed against main.');\n",
+        mutant: "",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "205-closed-pr-exits-green", ticket: "#205",
+        desc: "a PR left closed after a failed reopen no longer fails the job, so a security PR can be silently abandoned",
+        file: "scripts/retargetRetest.js",
+        anchor: "        return { outcome: null, closed: true, reopened: false, failed: true };",
+        mutant: "        return { outcome: null, closed: true, reopened: false, failed: false };",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "210-status-cleared-without-evidence", ticket: "#210",
+        desc: "the decision ignores what was observed, so green is posted on a successful reopen alone",
+        file: "scripts/retargetRetest.js",
+        anchor: "    const decision = decideOutcome({ snapshotOk, newRunFound });",
+        mutant: "    const decision = decideOutcome({ snapshotOk: true, newRunFound: true });",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "210-existence-not-freshness", ticket: "#210",
+        desc: "any run on the head SHA counts as evidence, including the PR's original main-based run",
+        file: "scripts/retargetRetest.js",
+        anchor: "            if (latest !== null && latest > runsBefore) {",
+        mutant: "            if (latest !== null && latest > 0) {",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "210-snapshot-fails-open", ticket: "#210",
+        desc: "an unusable run snapshot defaults to 0 instead of failing closed",
+        file: "scripts/retargetRetest.js",
+        anchor: "    if (!Array.isArray(parsed)) return null;",
+        mutant: "    if (!Array.isArray(parsed)) return 0;",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "210-any-workflow-counts", ticket: "#210",
+        desc: "the run query drops its ci-cd.yml scope, so a CodeQL run passes for a skipped suite",
+        file: "scripts/retargetRetest.js",
+        anchor: "                '--workflow', CI_WORKFLOW, '--limit', '100', '--json', 'databaseId']));",
+        mutant: "                '--limit', '100', '--json', 'databaseId']));",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "210-unverified-reported-as-conflict", ticket: "#210",
+        desc: "a failed snapshot is reported as 'no run appeared' rather than 'could not verify'",
+        file: "scripts/retargetRetest.js",
+        anchor: "    if (!snapshotOk) {\n        return {\n            outcome: OUTCOME.UNVERIFIED,",
+        mutant: "    if (false) {\n        return {\n            outcome: OUTCOME.UNVERIFIED,",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "216-no-run-posts-success", ticket: "#216",
+        desc: "the no-run outcome is written as a GREEN status",
+        file: "scripts/retargetRetest.js",
+        anchor: "        outcome: OUTCOME.NO_RUN,\n        state: 'failure',",
+        mutant: "        outcome: OUTCOME.NO_RUN,\n        state: 'success',",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "216-unverified-posts-success", ticket: "#216",
+        desc: "the could-not-verify outcome is written as a GREEN status",
+        file: "scripts/retargetRetest.js",
+        anchor: "            // diagnosing it would be right half the time.\n            state: 'failure',",
+        mutant: "            // diagnosing it would be right half the time.\n            state: 'success',",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "216-decision-not-written", ticket: "#216",
+        desc: "the decision is computed but never written, so the PR keeps whatever status it had",
+        file: "scripts/retargetRetest.js",
+        anchor: "    postStatus(decision.state, decision.description);",
+        mutant: "    void decision;",
+        tests: 'retargetRetest'
+    },
+    {
+        id: "216-unverified-names-a-cause", ticket: "#216",
+        desc: "the could-not-verify note diagnoses an API failure, which is right only half the time",
+        file: "scripts/retargetRetest.js",
+        anchor: "+ '**could not verify** whether a run started \u2014 the run snapshot was unusable, '",
+        mutant: "+ '**could not verify** whether a run started \u2014 the GitHub API call failed, '",
+        tests: 'retargetRetest'
+    },
 
     // ---- #169: the README claim that started #168 ---------------------------
     {

@@ -253,7 +253,8 @@ describe('only operator tooling ships in the production image (#180, #183)', () 
         ['scripts/generateDashboardScreenshots.js', 'requires puppeteer, a devDependency the image omits'],
         ['scripts/generate-badges.js', 'writes to .github/badges, which does not exist in the image'],
         ['scripts/version-bump.js', 'rewrites VERSION, package.json and package-lock.json'],
-        ['scripts/defaultBranchDrift.js', 'diffs against origin/main; the image has no git repository (#204)']
+        ['scripts/defaultBranchDrift.js', 'diffs against origin/main; the image has no git repository (#204)'],
+        ['scripts/retargetRetest.js', 'drives gh against a PR; CI-only, and the image has no gh or token (#217)']
     ];
 
     /** Genuinely useful inside the container; excluding these breaks documented commands. */

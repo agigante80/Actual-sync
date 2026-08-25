@@ -146,7 +146,7 @@ describe('mutation catalog integrity', () => {
         // mode that produced that ticket.
         const tickets = new Set(MUTATIONS.map(m => m.ticket));
         for (const required of ['#169', '#171', '#172', '#173', '#174', '#177',
-            '#205', '#210', '#216']) {
+            '#205', '#207', '#208', '#210', '#213', '#216']) {
             expect(tickets).toContain(required);
         }
     });

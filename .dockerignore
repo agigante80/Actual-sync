@@ -91,6 +91,9 @@ scripts/generateDashboardScreenshots.js
 scripts/generate-badges.js
 scripts/version-bump.js
 scripts/defaultBranchDrift.js
+# CI-only: drives `gh` against a pull request. No gh binary, no App token and
+# no PR context inside the image (#217).
+scripts/retargetRetest.js
 
 # Backup files
 *.backup

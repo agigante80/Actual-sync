@@ -54,6 +54,15 @@ jobs:
   retarget:
     runs-on: ubuntu-latest
     steps:
+      # Needed since #217 moved the re-test decision into
+      # scripts/retargetRetest.js — without this the job would call a file that
+      # is not there. The script requires only Node builtins, so no npm install:
+      # keep it dependency-free, or this job needs a full setup-node + npm ci.
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Generate GitHub App token
         id: token
         uses: actions/create-github-app-token@v3
@@ -154,150 +163,39 @@ jobs:
               continue
             fi
 
-            # Best-effort like the comment below (#206): the App may lack
-            # `statuses: write`. Losing the marker must not cost the retarget,
-            # which has already happened and been verified.
-            post_status() {
-              gh api -X POST "repos/${REPO}/statuses/${HEAD_SHA}" \
-                -f state="$1" \
-                -f context="retarget/re-tested-against-development" \
-                -f description="$2" >/dev/null \
-                || echo "::warning::Could not post commit status '$1' on PR #${PR}."
-            }
-
-            post_status "failure" "Base moved to development; awaiting a re-run. The existing check was computed against main."
-
-            # Snapshot the highest run id already attached to this head SHA.
-            # The PR's ORIGINAL main-based runs carry the same head SHA, so
-            # "a run exists" proves nothing — only "a run NEWER than this one
-            # exists" does. Run ids increase monotonically, which makes a single
-            # integer enough. Verified: `gh run list --commit <sha>` returns the
-            # pre- and post-reopen runs together.
-            # Scoped to ci-cd.yml, NOT "any run on this SHA". codeql-analysis.yml
-            # also fires on pull_request and carries no paths-ignore, while
-            # ci-cd.yml's does — so any future skew (a paths-ignore hit,
-            # `development` dropped from ci-cd's branches, an explicit `types:`
-            # that omits `reopened`) would produce a fresh CodeQL run id and a
-            # green marker although the suite never ran. The evidence has to be
-            # the thing being claimed.
+            # ---------------------------------------------------------------
+            # RE-TEST AGAINST THE NEW BASE (#205, #210) — delegated (#217)
             #
-            # Fails CLOSED. `|| echo 0` here would be a live false-green path: a
-            # transient gh failure (502, secondary rate limit, a missing
-            # `actions: read` scope) would set the baseline to 0, the first poll
-            # would return the max id of the PR's ORIGINAL main-based runs, and
-            # `> 0` would pass. That is mutation 210-existence-not-freshness,
-            # reachable at runtime. An unusable snapshot means the evidence check
-            # cannot be trusted, so it is skipped and the status stays red.
-            SNAPSHOT_OK=1
-            if ! RUNS_BEFORE=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" \
-                                 --workflow ci-cd.yml --limit 100 \
-                                 --json databaseId --jq '[.[].databaseId] | max // 0'); then
-              SNAPSHOT_OK=0
-              echo "::warning::Could not snapshot existing runs for PR #${PR}; the re-test cannot be verified and its status stays red."
-            fi
-            case "$RUNS_BEFORE" in
-              ''|*[!0-9]*) SNAPSHOT_OK=0; RUNS_BEFORE=0 ;;
-            esac
-
-            # Close+reopen is the trigger. The risk is that Dependabot reads a
-            # close as "do not recreate this version" — unverifiable here
-            # without a live security PR, so it is engineered around rather than
-            # assumed away: the reopen is retried, and a PR left closed fails
-            # the job loudly instead of being silently abandoned.
-            if ! gh pr close "$PR" --repo "$REPO" >/dev/null; then
-              echo "::warning::Could not close PR #${PR} to re-trigger CI; it keeps its stale check and the red status above."
+            # Changing a base fires `pull_request` `edited`, which ci-cd.yml does
+            # not listen for, so without this the PR keeps the check it earned
+            # against `main` and can be merged into `development` untested.
+            #
+            # The DECISION lives in scripts/retargetRetest.js, not here. It used
+            # to be ~90 lines of shell in this block, and the only way to test
+            # shell in a `run:` block is to assert on the workflow's text — which
+            # tripped the bad-fix-injection wire twice, each round finding the
+            # guard's slice did not reach where the defect had moved (wrong
+            # branch, then sibling branch, then outside the chain entirely).
+            #
+            # It now posts a red status first, snapshots the ci-cd runs already
+            # on this head SHA, closes and reopens (which fires `reopened`, a
+            # ci-cd.yml default trigger — so this still needs NO change to that
+            # file), polls for a NEWER run, and clears the status only on that
+            # evidence. It prints the PR comment body on stdout.
+            #
+            # Non-zero means the PR was left closed or could not be closed —
+            # loud on purpose, because an abandoned security PR is the one
+            # genuinely bad outcome.
+            # ---------------------------------------------------------------
+            if ! HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid); then
+              echo "::error::Could not read the head SHA of PR #${PR}; not touching its state."
               FAILED=1
               echo "::endgroup::"
               continue
             fi
 
-            REOPENED=0
-            for attempt in 1 2 3; do
-              if gh pr reopen "$PR" --repo "$REPO" >/dev/null; then
-                REOPENED=1
-                break
-              fi
-              echo "::warning::Reopen attempt ${attempt} for PR #${PR} failed; retrying."
-              sleep 5
-            done
-
-            if [ "$REOPENED" -ne 1 ]; then
-              # The one genuinely bad outcome: a security PR left closed.
-              echo "::error::PR #${PR} was closed to re-trigger CI and could NOT be reopened. Reopen it by hand — a closed security PR may not be recreated by Dependabot."
+            if ! RETEST_NOTE=$(node scripts/retargetRetest.js --pr "$PR" --repo "$REPO" --sha "$HEAD_SHA"); then
               FAILED=1
-              echo "::endgroup::"
-              continue
-            fi
-
-            # ---------------------------------------------------------------
-            # PROVE THE RE-TEST HAPPENED (#210)
-            #
-            # A CONFLICTING PR produces NO CI run at all — GitHub cannot compute
-            # refs/pull/N/merge, so ci-cd.yml never fires, and close+reopen does
-            # NOT change that. Verified on scratch PR #215: zero runs across ~7
-            # minutes, then zero more across ~3.5 minutes after a close+reopen.
-            #
-            # That is the normal case here, not the edge case: a retargeted PR
-            # branched from `main` while `development` is ahead on VERSION and
-            # package.json, so it conflicts on those alone.
-            #
-            # Clearing the status on the strength of a successful reopen would
-            # therefore post a GREEN "re-tested" marker on a PR with no CI
-            # whatsoever, while main's stale checks sit on the same SHA. Assert
-            # the evidence instead of the intention.
-            # ---------------------------------------------------------------
-            RETESTED=0
-            if [ "$SNAPSHOT_OK" -eq 1 ]; then
-              for _ in $(seq 1 12); do
-                sleep 5
-                # Same fail-closed rule: a failed poll is not evidence of
-                # anything, so it must not be read as a run id.
-                if ! LATEST=$(gh run list --repo "$REPO" --commit "$HEAD_SHA" \
-                                --workflow ci-cd.yml --limit 100 \
-                                --json databaseId --jq '[.[].databaseId] | max // 0'); then
-                  continue
-                fi
-                case "$LATEST" in ''|*[!0-9]*) continue ;; esac
-                if [ "$LATEST" -gt "$RUNS_BEFORE" ]; then
-                  RETESTED=1
-                  break
-                fi
-              done
-            fi
-
-            # The courtesy comment must agree with the status. It used to assert
-            # "the checks now on it were computed against development"
-            # unconditionally — so on the normal conflicting-PR case the status
-            # went red while the comment beside it made exactly the claim the
-            # status was refusing to make.
-            if [ "$RETESTED" -eq 1 ]; then
-              post_status "success" "Re-tested against development after retargeting."
-              echo "PR #${PR} closed and reopened; a new CI run started against '${BASE}'."
-              RETEST_NOTE="This PR was **closed and reopened** to re-trigger CI, because changing a base does not do so on its own (#205). The checks now on it were computed against \`development\`. If you see it briefly closed, that is this workflow, not a human."
-            elif [ "$SNAPSHOT_OK" -ne 1 ]; then
-              # Third branch, and it is NOT cosmetic. Without it a failed
-              # snapshot fell through to the else and told the maintainer, in a
-              # public comment, that no CI run appeared and a conflict needed
-              # resolving — when nothing had been observed at all and CI may
-              # well have run green. "I could not check" and "I checked and
-              # found nothing" are different claims; collapsing them is the same
-              # false-confidence error in the opposite direction.
-              post_status "failure" "Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging."
-              # Says only what is known. SNAPSHOT_OK is cleared on TWO paths —
-              # the call failing, and the call SUCCEEDING with output that is
-              # not a run id — so naming a cause here would be right half the
-              # time. Diagnosing the failure was itself an overclaim (#216), in
-              # the branch added to remove overclaiming.
-              echo "::warning::PR #${PR}: the re-test could not be VERIFIED (the run snapshot was unusable) — this is not evidence that CI did or did not run. Check by hand."
-              RETEST_NOTE="This PR was **closed and reopened** to re-trigger CI (#205), but this job **could not verify** whether a run started — the run snapshot was unusable, so nothing was observed either way. **Check this PR's checks by hand before merging**, and treat any check older than the reopen as computed against \`main\`."
-            else
-              # Deliberately does NOT assert "conflict". No run can also mean
-              # paths-ignore, a disabled workflow, or a stuck queue. Report what
-              # was observed and name the likely cause — overclaiming here would
-              # be the same false-confidence error in a new coat.
-              post_status "failure" "No CI run appeared after retargeting — most likely a merge conflict with development. Resolve it, then re-run CI."
-              echo "::warning::PR #${PR} was retargeted, but no CI run appeared within 60s. Most likely it conflicts with '${BASE}' — a conflicting PR cannot be tested at all. Its commit status is left red."
-              RETEST_NOTE="This PR was **closed and reopened** to re-trigger CI (#205), but **no CI run appeared** — most likely it now conflicts with \`development\`, and a conflicting PR cannot be tested at all because GitHub never computes its merge ref (#210). **The checks shown here were computed against \`main\`.** Resolve the conflict, then re-run CI before merging."
             fi
 
             # NOTE: no mergeability check here. A retargeted PR CAN be
