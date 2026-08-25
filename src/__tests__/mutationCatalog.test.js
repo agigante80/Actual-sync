@@ -69,6 +69,13 @@ describe('mutation catalog integrity', () => {
         // lines, and one embedded bare backticks that would have run
         // `development` as a command instead of emitting literal Markdown.
         // Found in review; this closes the class rather than the instances.
+        // KNOWN ASSUMPTION (#216, deferred): this runs `bash -n` over every
+        // `run:` block without consulting the step's `shell:`. No workflow here
+        // sets it, so the assumption holds today. If one ever declares
+        // `shell: python` or `pwsh`, THIS test is what will go red — for every
+        // workflow mutation at once — and the fix is to skip or re-dispatch on
+        // `step.shell`, not to weaken the check. Left as-is deliberately rather
+        // than built for a value nobody uses.
         it('produces a workflow that still parses, with valid shell in every run block', () => {
             if (!/\.ya?ml$/.test(mutation.file)) return;
             const src = fs.readFileSync(path.join(ROOT, mutation.file), 'utf8');

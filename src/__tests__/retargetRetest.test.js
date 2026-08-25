@@ -131,6 +131,10 @@ describe('retarget-dependabot.yml re-tests against the new base (#205)', () => {
 
         const successAt = text.indexOf('if [ "$RETESTED" -eq 1 ]; then');
         const elseAt = text.indexOf('\n            else\n', branchAt);
+        // `-1 < branchAt` holds, so an absent marker would satisfy the ordering
+        // assertion below without the chain existing at all (#216).
+        expect(successAt).toBeGreaterThan(-1);
+        expect(elseAt).toBeGreaterThan(-1);
         expect(successAt).toBeLessThan(branchAt);
         expect(elseAt).toBeGreaterThan(branchAt);
 
@@ -155,6 +159,36 @@ describe('retarget-dependabot.yml re-tests against the new base (#205)', () => {
         expect(occurrences.length).toBeGreaterThanOrEqual(2); // snapshot + poll
     });
 
+    /**
+     * The FINAL `else` of the RETESTED chain — executable lines only (#216).
+     *
+     * These guards used to slice from `if [ "$RETESTED" -eq 1 ]` to end of file,
+     * which spans all THREE branches. Two of the three were then satisfied by
+     * the `elif` no matter what the `else` did, and one of those by the elif's
+     * COMMENT prose rather than its code — the comment quotes "no CI run
+     * appeared" while explaining the bug it fixed.
+     *
+     * Measured, not assumed: an `else` posting an unconditional success with an
+     * unconditional "computed against development" note — the exact #210
+     * false-green — passed all 14 tests, provided it kept the words "most
+     * likely". Comments are stripped for the same reason they were stripped in
+     * the sibling guard: prose that discusses a defect must not satisfy the
+     * assertion that rules it out.
+     */
+    const elseBranchOf = (src) => {
+        const chainAt = src.indexOf('if [ "$RETESTED" -eq 1 ]; then');
+        expect(chainAt).toBeGreaterThan(-1);
+        const elseAt = src.indexOf('\n            else\n', chainAt);
+        expect(elseAt).toBeGreaterThan(-1);
+        const fiAt = src.indexOf('\n            fi\n', elseAt);
+        expect(fiAt).toBeGreaterThan(elseAt);
+
+        return src.slice(elseAt, fiAt)
+            .split('\n')
+            .filter((line) => !line.trim().startsWith('#'))
+            .join('\n');
+    };
+
     it('the PR comment agrees with the status instead of asserting a re-test', () => {
         // It used to state "the checks now on it were computed against
         // development" unconditionally, so on the normal conflicting-PR case
@@ -162,13 +196,13 @@ describe('retarget-dependabot.yml re-tests against the new base (#205)', () => {
         expect(text).toMatch(/RETEST_NOTE=/);
         expect(text).toMatch(/"\$RETEST_NOTE"/);
 
-        const elseBranch = text.slice(text.indexOf('if [ "$RETESTED" -eq 1 ]; then'));
+        const elseBranch = elseBranchOf(text);
         expect(elseBranch).toMatch(/no CI run appeared/i);
         expect(elseBranch).toMatch(/computed against \\`main\\`/);
     });
 
     it('leaves the status red and warns when no run appears', () => {
-        const elseBranch = text.slice(text.indexOf('if [ "$RETESTED" -eq 1 ]; then'));
+        const elseBranch = elseBranchOf(text);
         expect(elseBranch).toMatch(/post_status "failure"/);
         expect(elseBranch).toMatch(/::warning::/);
     });
@@ -176,7 +210,7 @@ describe('retarget-dependabot.yml re-tests against the new base (#205)', () => {
     it('reports what was observed rather than asserting a conflict', () => {
         // No run can also mean paths-ignore, a disabled workflow or a stuck
         // queue. The message must hedge, or it becomes the next false claim.
-        const elseBranch = text.slice(text.indexOf('if [ "$RETESTED" -eq 1 ]; then'));
+        const elseBranch = elseBranchOf(text);
         expect(elseBranch).toMatch(/most likely/i);
     });
 
