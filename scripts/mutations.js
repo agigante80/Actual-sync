@@ -747,14 +747,6 @@ module.exports = [
         mutant: "                if ! LATEST=$(gh run list --repo \"$REPO\" --commit \"$HEAD_SHA\" \\\n                                --limit 100 \\",
         tests: 'retargetRetest'
     },
-    {
-        id: '210-comment-asserts-retest', ticket: '#210',
-        desc: 'the PR comment claims the checks were computed against development even when no run appeared',
-        file: '.github/workflows/retarget-dependabot.yml',
-        anchor: '              "$RETEST_NOTE" \\',
-        mutant: '              "The checks now on it were computed against `development`." \\',
-        tests: 'retargetRetest'
-    },
 
     {
         id: '210-unverified-reported-as-conflict', ticket: '#210',
@@ -764,6 +756,15 @@ module.exports = [
         mutant: "            elif false; then",
         tests: 'retargetRetest'
     },
+
+    // NOTE: there is deliberately no mutant for the PR comment's wording.
+    // `210-comment-asserts-retest` was deleted (#216): it embedded bare
+    // backticks in a double-quoted bash string, so the mutant would have run
+    // `development` as a command rather than emitting a Markdown code span —
+    // and `bash -n` cannot catch that, since command substitution is valid
+    // syntax. The branch-agreement defect it aimed at is already covered by
+    // 210-status-cleared-without-evidence with a valid mutant. One fewer
+    // fragile escaped string beats one more correctly-escaped one.
 
     // ---- #169: the README claim that started #168 ---------------------------
     {

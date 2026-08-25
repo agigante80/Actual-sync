@@ -283,8 +283,13 @@ jobs:
               # found nothing" are different claims; collapsing them is the same
               # false-confidence error in the opposite direction.
               post_status "failure" "Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging."
-              echo "::warning::PR #${PR}: the re-test could not be VERIFIED (the run snapshot failed) — this is not evidence that CI did or did not run. Check by hand."
-              RETEST_NOTE="This PR was **closed and reopened** to re-trigger CI (#205), but this job **could not verify** whether a run started — the GitHub API call failed, so nothing was observed either way. **Check this PR's checks by hand before merging**, and treat any check older than the reopen as computed against \`main\`."
+              # Says only what is known. SNAPSHOT_OK is cleared on TWO paths —
+              # the call failing, and the call SUCCEEDING with output that is
+              # not a run id — so naming a cause here would be right half the
+              # time. Diagnosing the failure was itself an overclaim (#216), in
+              # the branch added to remove overclaiming.
+              echo "::warning::PR #${PR}: the re-test could not be VERIFIED (the run snapshot was unusable) — this is not evidence that CI did or did not run. Check by hand."
+              RETEST_NOTE="This PR was **closed and reopened** to re-trigger CI (#205), but this job **could not verify** whether a run started — the run snapshot was unusable, so nothing was observed either way. **Check this PR's checks by hand before merging**, and treat any check older than the reopen as computed against \`main\`."
             else
               # Deliberately does NOT assert "conflict". No run can also mean
               # paths-ignore, a disabled workflow, or a stuck queue. Report what
