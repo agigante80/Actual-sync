@@ -274,6 +274,17 @@ jobs:
               post_status "success" "Re-tested against development after retargeting."
               echo "PR #${PR} closed and reopened; a new CI run started against '${BASE}'."
               RETEST_NOTE="This PR was **closed and reopened** to re-trigger CI, because changing a base does not do so on its own (#205). The checks now on it were computed against \`development\`. If you see it briefly closed, that is this workflow, not a human."
+            elif [ "$SNAPSHOT_OK" -ne 1 ]; then
+              # Third branch, and it is NOT cosmetic. Without it a failed
+              # snapshot fell through to the else and told the maintainer, in a
+              # public comment, that no CI run appeared and a conflict needed
+              # resolving — when nothing had been observed at all and CI may
+              # well have run green. "I could not check" and "I checked and
+              # found nothing" are different claims; collapsing them is the same
+              # false-confidence error in the opposite direction.
+              post_status "failure" "Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging."
+              echo "::warning::PR #${PR}: the re-test could not be VERIFIED (the run snapshot failed) — this is not evidence that CI did or did not run. Check by hand."
+              RETEST_NOTE="This PR was **closed and reopened** to re-trigger CI (#205), but this job **could not verify** whether a run started — the GitHub API call failed, so nothing was observed either way. **Check this PR's checks by hand before merging**, and treat any check older than the reopen as computed against \`main\`."
             else
               # Deliberately does NOT assert "conflict". No run can also mean
               # paths-ignore, a disabled workflow, or a stuck queue. Report what
