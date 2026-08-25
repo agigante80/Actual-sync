@@ -71,6 +71,45 @@ describe('retarget-dependabot.yml re-tests against the new base (#205)', () => {
         expect(text).toMatch(/for attempt in 1 2 3/);
     });
 
+    it('clears the status only on EVIDENCE that a new run started (#210)', () => {
+        // The defect this replaced: `post_status "success"` fired on a
+        // successful reopen alone. A conflicting PR produces no CI run at all
+        // (verified on scratch PR #215), and conflicting is the NORMAL state of
+        // a retargeted PR — so that posted a green "re-tested" marker on a PR
+        // with no CI whatsoever.
+        const successAt = text.indexOf('post_status "success"');
+        const retestedGuard = text.indexOf('if [ "$RETESTED" -eq 1 ]; then');
+
+        expect(retestedGuard).toBeGreaterThan(-1);
+        expect(successAt).toBeGreaterThan(retestedGuard);
+    });
+
+    it('compares against a pre-close snapshot, not the mere existence of a run', () => {
+        // The subtle trap: the PR's ORIGINAL main-based runs carry the same head
+        // SHA, so `gh run list --commit <sha>` is non-empty before anything is
+        // re-triggered. Only a run id GREATER than the pre-close maximum is
+        // evidence of a new run.
+        expect(text).toMatch(/RUNS_BEFORE=/);
+        expect(text).toMatch(/\[ "\$LATEST" -gt "\$RUNS_BEFORE" \]/);
+
+        const snapshotAt = text.indexOf('RUNS_BEFORE=');
+        const closeAt = text.indexOf('gh pr close "$PR"');
+        expect(snapshotAt).toBeLessThan(closeAt);
+    });
+
+    it('leaves the status red and warns when no run appears', () => {
+        const elseBranch = text.slice(text.indexOf('if [ "$RETESTED" -eq 1 ]; then'));
+        expect(elseBranch).toMatch(/post_status "failure"/);
+        expect(elseBranch).toMatch(/::warning::/);
+    });
+
+    it('reports what was observed rather than asserting a conflict', () => {
+        // No run can also mean paths-ignore, a disabled workflow or a stuck
+        // queue. The message must hedge, or it becomes the next false claim.
+        const elseBranch = text.slice(text.indexOf('if [ "$RETESTED" -eq 1 ]; then'));
+        expect(elseBranch).toMatch(/most likely/i);
+    });
+
     it('keeps the status post non-fatal, like the comment step (#206)', () => {
         // The App may lack `statuses: write`. Losing the marker must not cost
         // the retarget, which has already happened and been verified by then.

@@ -667,6 +667,29 @@ module.exports = [
         tests: 'retargetRetest'
     },
 
+    // ---- #210: the re-test must be proven, not assumed ----------------------
+    //
+    // Shipped as part of #205 and immediately wrong: the green "re-tested"
+    // status was posted on a successful reopen alone. A CONFLICTING PR produces
+    // no CI run at all, and conflicting is the normal state of a retargeted PR
+    // — so the marker claimed a re-test that had not happened.
+    {
+        id: '210-status-cleared-without-evidence', ticket: '#210',
+        desc: 'the green re-tested status is posted on a successful reopen alone, with no run to back it',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: 'if [ "$RETESTED" -eq 1 ]; then',
+        mutant: 'if true; then',
+        tests: 'retargetRetest'
+    },
+    {
+        id: '210-existence-not-freshness', ticket: '#210',
+        desc: 'any run on the head SHA counts as evidence, including the PR\'s original main-based run',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: 'if [ "$LATEST" -gt "$RUNS_BEFORE" ]; then',
+        mutant: 'if [ "$LATEST" -gt 0 ]; then',
+        tests: 'retargetRetest'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
