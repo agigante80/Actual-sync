@@ -779,14 +779,37 @@ module.exports = [
         tests: 'retargetRetest'
     },
 
+    {
+        id: '216-elif-posts-success', ticket: '#216',
+        desc: 'the unverified branch posts a GREEN status although nothing was observed',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: "              post_status \"failure\" \"Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging.\"",
+        mutant: "              post_status \"success\" \"Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging.\"",
+        tests: 'retargetRetest'
+    },
+    {
+        id: '216-elif-posts-both', ticket: '#216',
+        desc: 'the unverified branch posts red AND green; the last write wins, so the PR ends green',
+        file: '.github/workflows/retarget-dependabot.yml',
+        anchor: "              post_status \"failure\" \"Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging.\"",
+        mutant: "              post_status \"failure\" \"Could not verify whether CI re-ran after retargeting. Check this PR's checks by hand before merging.\"\n              post_status \"success\" \"Looks fine.\"",
+        tests: 'retargetRetest'
+    },
+
     // NOTE: there is deliberately no mutant for the PR comment's wording.
     // `210-comment-asserts-retest` was deleted (#216): it embedded bare
     // backticks in a double-quoted bash string, so the mutant would have run
     // `development` as a command rather than emitting a Markdown code span —
     // and `bash -n` cannot catch that, since command substitution is valid
-    // syntax. The branch-agreement defect it aimed at is already covered by
-    // 210-status-cleared-without-evidence with a valid mutant. One fewer
-    // fragile escaped string beats one more correctly-escaped one.
+    // syntax. One fewer fragile escaped string beats one more correctly-escaped
+    // one.
+    //
+    // The deletion's cost was real and is paid above, not waved away: it removed
+    // the only entry mutating the else branch. `216-else-posts-success` and
+    // `216-else-posts-both` replace that cover. The substitute originally named
+    // here — 210-status-cleared-without-evidence — does NOT discriminate: its
+    // mutant trips elseBranchOf()'s own chain assertion, so it scores the same
+    // against a broken guard as a working one.
 
     // ---- #169: the README claim that started #168 ---------------------------
     {
