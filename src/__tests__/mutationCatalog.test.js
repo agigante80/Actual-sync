@@ -140,8 +140,13 @@ describe('mutation catalog integrity', () => {
     // Every fix worth shipping in this train should be represented. A ticket
     // dropping out of the catalog means its protection went unverified.
     it('covers every ticket whose fix the catalog is meant to protect', () => {
+        // #205/#210/#216 added after the round-2 review of #216 noticed their
+        // absence: the entries protecting the retarget re-test could have been
+        // deleted again with a fully green `npm test`, which is the precise rot
+        // mode that produced that ticket.
         const tickets = new Set(MUTATIONS.map(m => m.ticket));
-        for (const required of ['#169', '#171', '#172', '#173', '#174', '#177']) {
+        for (const required of ['#169', '#171', '#172', '#173', '#174', '#177',
+            '#205', '#210', '#216']) {
             expect(tickets).toContain(required);
         }
     });

@@ -148,6 +148,13 @@ describe('retarget-dependabot.yml re-tests against the new base (#205)', () => {
             .join('\n');
         expect(branch).toMatch(/could not verify/i);
         expect(branch).not.toMatch(/no CI run appeared/i);
+
+        // Both assertions above match the DESCRIPTION string, not the state
+        // argument, so this branch could post a green status and still satisfy
+        // them. Same defect the else branch had, same consequence: a GREEN
+        // "re-tested" marker on a PR whose re-test was never observed (#216).
+        expect(branch).toMatch(/post_status "failure"/);
+        expect(branch).not.toMatch(/post_status "success"/);
     });
 
     it('accepts only a ci-cd.yml run as evidence, not any run on the SHA', () => {
