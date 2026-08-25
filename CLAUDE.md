@@ -344,8 +344,13 @@ Notes:
 **Never force transitive versions.** No `npm overrides`, `resolutions`, or `.npmrc` pins — none exist and none should be added.
 
 - **Direct dependencies** (in `package.json`): upgrade these to fix advisories. Dependabot PRs for direct deps + GitHub Actions are fine to merge.
-- **Transitive dependencies** (not in `package.json`): do **not** bump them directly. Wait for the **direct parent** to release a version that pulls the fix. Close standalone transitive-upgrade issues and Dependabot PRs (`@dependabot ignore this dependency`) rather than overriding.
-- A transitive only clears if the parent's range *floor* moves above the vulnerable version. Bumping a parent whose range still admits the old version (e.g. `ajv ^3.0.1` still allowing the old `fast-uri`) won't help — that one waits.
+- **Transitive dependencies** (not in `package.json`): do **not** pin or override them. Close standalone transitive-upgrade issues and Dependabot PRs (`@dependabot ignore this dependency`) rather than overriding.
+- **Before concluding "this one waits", check whether a fixed version is already inside the parent's declared range.** These are two different questions and conflating them cost this repo four rounds of re-triage (#51 → #92 → #127 → #200, and #53 → #126 → #203):
+  - *Is a fixed version reachable today?* — true whenever the parent's range **admits** a patched release. Then **`npm update` clears it**: npm resolves to the highest version satisfying the parent's own range. The vulnerable copy was held only by the **lockfile**, not by the range. This is not forcing anything — no `package.json` edit, no override — and it is what closed #200–#203.
+  - *Is it permanently unreachable?* — only when the parent's range **excludes** every fixed release (e.g. a fix that lands in `fast-uri@4` while `ajv` declares `^3.0.1`). **That** is the case that genuinely waits for the parent.
+  - The parent's *floor* moving above the vulnerable version is what makes a fix **durable** for a fresh resolve. It is not a precondition for fixing it now, and a still-low floor is not a reason to leave an advisory open.
+- Run `npm audit` after `npm update`; if it reaches 0, the advisories were in-range all along.
+- The app's own code must only `require()` declared direct dependencies, never transitive-only packages.
 - The app's own code must only `require()` declared direct dependencies, never transitive-only packages.
 
 **How Dependabot is scoped (#192, #204).** `dependabot.yml` has **two** npm entries and

@@ -19,8 +19,8 @@
       "latestVersion": "8.20.0",
       "installedVersion": "8.20.0",
       "deprecated": false,
-      "note": "Pulls transitive fast-uri@3.1.0 (HIGH: GHSA-q3j6-qgpj-74h6, GHSA-v39h-62p7-jpjc). Transitive per project policy: wait for ajv to raise its fast-uri floor above 3.1.1; do not override.",
-      "priorIssueUrl": "https://github.com/agigante80/Actual-sync/issues/51"
+      "note": "Pulled transitive fast-uri@3.1.0 (HIGH). CLEARED 2026-08-25 by `npm update` alone -> fast-uri@3.1.6, which ajv's existing ^3.0.1 already admitted; no override, no package.json change. The earlier note here ('wait for ajv to raise its floor') was wrong and is what re-triaged this four times (#51 -> #92 -> #127 -> #200). Check for an in-range fix BEFORE concluding a transitive must wait.",
+      "priorIssueUrl": "https://github.com/agigante80/Actual-sync/issues/200"
     },
     "ajv-formats": {
       "lastChecked": "2026-07-05",
