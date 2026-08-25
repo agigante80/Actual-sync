@@ -7,6 +7,7 @@
 - [@actual-app/api release train — PROVEN end-to-end](actual-sync-release-train.md) - Ran the real path unattended on 2026-08-03 (26.8.0 -> v1.11.6); a surprise release commit on main is normal
 - [Mutation testing is the verification bar here](mutation-testing-standard.md) - A green suite proves nothing; reintroduce each defect. npm run test:mutation, plus every false-green trap that bit this tool
 - [Verify the artifact, not the source](verify-the-artifact-not-the-source.md) - Check the shipped image/release and make the checker fail on purpose; "it says valid" is what the bug said too
+- [`[skip ci]` in prose halts the release](skip-ci-in-prose-halts-the-release.md) - GitHub scans the whole commit body; explaining the marker skips CI on main, and auto-release never fires
 - [v1.11.x notification gate: what shipped and its upgrade hazards](notification-gate-1-11.md) - notifyOnSuccess now really gates every channel; four more bugs found en route; three silent upgrade behaviour changes
 - [Isolate concurrent agent work in git worktrees](agent-worktree-isolation.md) - Review agents mutate the working tree; concurrent runs corrupt it and produce phantom findings — use a detached worktree
 - [A flaky test poisons the mutation score](flaky-tests-poison-mutations.md) - One flake scores a false "caught"; repeat-run the suite before trusting 67/67, and never assert toBeInstanceOf on a native error
