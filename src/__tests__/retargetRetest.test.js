@@ -97,6 +97,49 @@ describe('retarget-dependabot.yml re-tests against the new base (#205)', () => {
         expect(snapshotAt).toBeLessThan(closeAt);
     });
 
+    it('fails CLOSED when the run snapshot cannot be taken', () => {
+        // Review finding on 0d5da08, and a live false-green path: `|| echo 0`
+        // on the snapshot meant a transient gh failure set the baseline to 0,
+        // so the first poll returned the max id of the PR's ORIGINAL main-based
+        // runs, `> 0` passed, and a green "re-tested" was posted with no new
+        // run. That is mutation 210-existence-not-freshness, reachable at
+        // runtime rather than only by editing the file.
+        expect(text).toMatch(/SNAPSHOT_OK=1/);
+        expect(text).toMatch(/SNAPSHOT_OK=0/);
+        expect(text).toMatch(/if \[ "\$SNAPSHOT_OK" -eq 1 \]; then/);
+
+        // The snapshot assignment must not swallow a failure into a default.
+        const snapshotBlock = text.slice(
+            text.indexOf('SNAPSHOT_OK=1'),
+            text.indexOf('RETESTED=0')
+        );
+        expect(snapshotBlock).not.toMatch(/\|\| echo 0/);
+
+        // Non-numeric output is not a run id either.
+        expect(text).toMatch(/\*\[!0-9\]\*/);
+    });
+
+    it('accepts only a ci-cd.yml run as evidence, not any run on the SHA', () => {
+        // codeql-analysis.yml also fires on pull_request and carries no
+        // paths-ignore, while ci-cd.yml's does. Without this scoping, a
+        // paths-ignore hit would yield a fresh CodeQL run id and a green marker
+        // although the suite never ran.
+        const occurrences = text.match(/--workflow ci-cd\.yml/g) || [];
+        expect(occurrences.length).toBeGreaterThanOrEqual(2); // snapshot + poll
+    });
+
+    it('the PR comment agrees with the status instead of asserting a re-test', () => {
+        // It used to state "the checks now on it were computed against
+        // development" unconditionally, so on the normal conflicting-PR case
+        // the comment contradicted the red status beside it.
+        expect(text).toMatch(/RETEST_NOTE=/);
+        expect(text).toMatch(/"\$RETEST_NOTE"/);
+
+        const elseBranch = text.slice(text.indexOf('if [ "$RETESTED" -eq 1 ]; then'));
+        expect(elseBranch).toMatch(/no CI run appeared/i);
+        expect(elseBranch).toMatch(/computed against \\`main\\`/);
+    });
+
     it('leaves the status red and warns when no run appears', () => {
         const elseBranch = text.slice(text.indexOf('if [ "$RETESTED" -eq 1 ]; then'));
         expect(elseBranch).toMatch(/post_status "failure"/);
