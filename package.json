@@ -73,7 +73,7 @@
     "cronstrue": "^3.24.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "express-rate-limit": "^8.6.2",
+    "express-rate-limit": "^8.7.0",
     "moment-timezone": "^0.6.3",
     "node-schedule": "^2.1.1",
     "nodemailer": "^9.0.5",
