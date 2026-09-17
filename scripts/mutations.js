@@ -433,7 +433,7 @@ module.exports = [
     {
         id: 'paths-hook-symlink-blind', ticket: '#180',
         desc: 'the write guard stops resolving symlinks, so an aliased repo path escapes it',
-        file: '.claude/hooks/no-host-paths.sh',
+        file: 'scripts/no-host-paths.sh',
         anchor: 'file_r="$(resolve "$(dirname -- "$file")")/$(basename -- "$file")"',
         mutant: 'file_r="$file"',
         tests: 'hostPathHook'
@@ -441,7 +441,7 @@ module.exports = [
     {
         id: 'paths-hook-edit-ignored', ticket: '#180',
         desc: 'the write guard only inspects whole-file writes, so an Edit slips a path through',
-        file: '.claude/hooks/no-host-paths.sh',
+        file: 'scripts/no-host-paths.sh',
         anchor: "content=\"$(jqr '[.tool_input.content, .tool_input.new_string,",
         mutant: "content=\"$(jqr '[.tool_input.content,",
         tests: 'hostPathHook'
