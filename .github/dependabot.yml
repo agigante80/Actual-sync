@@ -22,15 +22,20 @@ updates:
       time: "01:00"
       timezone: "Europe/Madrid"
     open-pull-requests-limit: 5
-    # Direct dependencies only — never transitives.
+    # Direct dependencies only — Dependabot never opens a PR for a transitive.
     #
-    # A transitive fix cannot be applied here anyway: the Dependency Policy in
-    # CLAUDE.md forbids `overrides`/`resolutions`, and a lockfile-only bump is
-    # the same manoeuvre in another spelling. A transitive clears only when its
-    # DIRECT PARENT publishes a range whose floor moves above the vulnerable
-    # version, which is a `package.json` change to the parent — i.e. a direct
-    # update, which this rule still allows. PR #192 was the counterexample: four
-    # lockfile-only transitive bumps, closed on policy, retracked as #200-#203.
+    # That is a statement about WHO moves a transitive, not WHETHER it moves.
+    # The Dependency Policy in CLAUDE.md forbids `overrides`/`resolutions` —
+    # forcing a version the parent's range does not admit. It does NOT forbid
+    # `npm update <pkg>` when the parent's range already admits the fixed
+    # version: that is a lockfile refresh inside the declared range, it is what
+    # closed #200-#203, and it is the route for in-range transitive advisories
+    # (#233: qs 6.16.0 under express's ^6.14.0). Only a fix OUTSIDE the parent's
+    # range waits for the parent. An earlier version of this comment said a
+    # lockfile-only bump was "the same manoeuvre in another spelling"; that
+    # contradicted CLAUDE.md and is withdrawn. Dependabot stays direct-only so
+    # the decision is made by a person reading the parent's range, not by a bot
+    # PR that cannot tell the two cases apart (#192).
     allow:
       - dependency-type: "direct"
     reviewers:
@@ -93,8 +98,9 @@ updates:
     open-pull-requests-limit: 0
     # The rule that matters: a vulnerable TRANSITIVE package no longer produces a
     # lockfile-only PR. Advisories on transitives still surface via Dependabot
-    # alerts and `npm audit`, and get tracked as parent-dependency tickets
-    # (#200-#203) per the Dependency Policy.
+    # alerts and `npm audit`; per the Dependency Policy they are cleared with
+    # `npm update <pkg>` when the parent's range admits the fix, and tracked as
+    # parent-dependency tickets (#200-#203) only when it does not.
     allow:
       - dependency-type: "direct"
     reviewers:
