@@ -531,6 +531,13 @@ describe('no machine-specific absolute paths in the repo', () => {
 
     // This file names the patterns it forbids, so it cannot scan itself.
     const SELF = path.relative(ROOT, __filename);
+    // The leak-guard scanners document the shapes they catch (that's their job);
+    // they skip their own copies for the same reason, and so must this guard.
+    // forge-kit#223 will neutralise the examples upstream.
+    const LEAK_GUARD_SCANNERS = new Set([
+        'scripts/check-public-leaks.sh',
+        'scripts/check-private-leaks.sh'
+    ]);
     // Never worth reading as text, and the biggest files in the tree.
     const BINARY = /\.(png|jpe?g|gif|ico|webp|woff2?|ttf|eot|pdf|zip|gz)$/i;
     // Deliberate exception, for the case this guard is wrong about: a genuine
@@ -548,7 +555,8 @@ describe('no machine-specific absolute paths in the repo', () => {
             .execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
             .split('\0')
             .filter(Boolean)
-            .filter((f) => f !== SELF);
+            .filter((f) => f !== SELF)
+            .filter((f) => !LEAK_GUARD_SCANNERS.has(f));
     } catch (err) {
         listError = err;
     }
@@ -613,7 +621,12 @@ describe('no machine-specific absolute paths in the repo', () => {
     });
 
     it('leaves clean text alone', () => {
-        expect(scanText('docs/fake.md', '/app/data\n$HOME/x\n~/y')).toEqual([]);
+        // Trailing space after the root (and an already-allowlisted root name) keeps this
+        // sample from being read by the leak-guard *scanner* itself as an unterminated,
+        // punctuation-mangled token when this file is staged (docs/superpowers false-positive
+        // note in .leak-guard-allow); the JS guard under test never matches "~/" paths at all,
+        // so this substitution changes nothing about what is being asserted here.
+        expect(scanText('docs/fake.md', '/app/data\n$HOME/x\n~/src ')).toEqual([]);
     });
 
     it('would catch a hardcoded home directory if one were introduced', () => {
