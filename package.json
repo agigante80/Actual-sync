@@ -86,9 +86,9 @@
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
-    "jest": "^30.4.2",
-    "js-yaml": "^5.3.0",
-    "knip": "^6.32.2",
-    "puppeteer": "^25.8.0"
+    "jest": "^30.5.1",
+    "js-yaml": "^5.4.2",
+    "knip": "^6.35.1",
+    "puppeteer": "^25.10.0"
   }
 }
