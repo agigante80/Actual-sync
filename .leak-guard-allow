@@ -1,0 +1,20 @@
+# Things this project has decided it may show. Tracked and public on purpose.
+# Keys: root, prefix, email (public scanner); skip (both).
+# NEVER put a private NAME here — the file is public, and a name would be an index.
+root proj
+# config/config.example.json, docs/NOTIFICATIONS.md: placeholder address in setup examples
+email your-email@gmail.com
+# docs/CI_CD.md:1558: generic tool root in CI documentation
+root .npm
+# src/__tests__/configExamplesGuard.test.js, configLoader.test.js, configSchema.test.js: two-letter fixture address
+email a@b.com
+# src/__tests__/docDriftGuards.test.js: doc-comment fixture describing the guard's own purpose
+prefix /home/<someone>
+# src/__tests__/docDriftGuards.test.js line 616 has a one-letter home-root fixture inside a JS
+# string literal with no following whitespace, so the scanner's word-token includes the rest of
+# the source line (quotes, parens, punctuation) and a `root` entry can never equal that mangled
+# token. Left unallowed; classified placeholder (a "leaves clean text alone" test sample), not
+# machine-identifying, but not suppressible without a file-wide `skip` this repo's file does not
+# warrant (it is a general drift-guard suite, not a samples-only fixture file).
+# src/__tests__/hostPathHook.test.js:82: fixture root for a hook path test
+root docker

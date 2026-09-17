@@ -3,3 +3,7 @@
 # Installed automatically by `npm install` via the prepare script.
 echo "Running tests before push..."
 npm test -- --coverage --ci
+
+# leak-guard: full-tree scan before publishing
+./scripts/check-public-leaks.sh  --all --allow-file .leak-guard-allow || exit 1
+./scripts/check-private-leaks.sh --all --allow-file .leak-guard-allow || exit 1
