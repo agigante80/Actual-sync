@@ -94,6 +94,10 @@ scripts/defaultBranchDrift.js
 # CI-only: drives `gh` against a pull request. No gh binary, no App token and
 # no PR context inside the image (#217).
 scripts/retargetRetest.js
+# Authoring-time Claude Code PreToolUse hook (#180, #227): blocks host-specific paths at
+# write time. Lives in scripts/ so it stays tracked while .claude/ is not; it has no
+# job inside the image.
+scripts/no-host-paths.sh
 
 # Backup files
 *.backup

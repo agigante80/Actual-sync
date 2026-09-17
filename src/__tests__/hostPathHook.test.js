@@ -1,6 +1,6 @@
 /**
  * The PreToolUse guard that refuses to write a machine-specific home directory
- * into a repo file (`.claude/hooks/no-host-paths.sh`).
+ * into a repo file (`scripts/no-host-paths.sh`).
  *
  * It is a shared, tracked artifact that runs on every Write/Edit, so "I piped a
  * few payloads through it once" is not coverage. These drive the real script
@@ -16,7 +16,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const HOOK = path.join(ROOT, '.claude', 'hooks', 'no-host-paths.sh');
+const HOOK = path.join(ROOT, 'scripts', 'no-host-paths.sh');
 
 /** Fragments, so this file never trips the guard it is testing. */
 const LINUX_HOME = '/' + 'home' + '/someuser/proj';
