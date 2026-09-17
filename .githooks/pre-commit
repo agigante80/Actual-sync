@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# leak-guard: the cheap staged scan — fast feedback on what you are about to write down.
+set -uo pipefail
+./scripts/check-public-leaks.sh  --staged --allow-file .leak-guard-allow || exit 1
+./scripts/check-private-leaks.sh --staged --allow-file .leak-guard-allow || exit 1
