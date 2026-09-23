@@ -172,8 +172,10 @@ class HealthCheckService {
       res.json(health);
     });
 
-    // Metrics endpoint - detailed sync metrics
-    this.app.get('/metrics', (req, res) => {
+    // Metrics endpoint - detailed sync metrics (contains internal server
+    // names, sync counts and error details, so it requires authentication
+    // just like the dashboard API, to avoid leaking internal state - CWE-200)
+    this.app.get('/metrics', this.dashboardAuth(), (req, res) => {
       const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
       
       const metrics = {
@@ -205,7 +207,7 @@ class HealthCheckService {
     });
 
     // Readiness endpoint - checks if service is ready to sync
-    this.app.get('/ready', (req, res) => {
+    this.app.get('/ready', this.dashboardAuth(), (req, res) => {
       const isReady = this.status.syncCount > 0 || 
                       (Date.now() - new Date(this.status.startTime).getTime()) < 60000;
       
@@ -221,7 +223,7 @@ class HealthCheckService {
     });
 
     // Prometheus metrics endpoint
-    this.app.get('/metrics/prometheus', async (req, res) => {
+    this.app.get('/metrics/prometheus', this.dashboardAuth(), async (req, res) => {
       if (!this.prometheusService) {
         this.logger.warn('Prometheus metrics requested but service not configured');
         res.status(503).json({
