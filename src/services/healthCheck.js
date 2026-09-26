@@ -30,7 +30,13 @@ class HealthCheckService {
    * @param {boolean|number|string|string[]} options.trustProxy - Express 'trust proxy' value (#245); off when unset
    */
   constructor(options = {}) {
-    this.port = options.port || 3000;
+    // ?? not ||: port 0 asks the OS for a free port (the e2e fixtures, #263);
+    // the real port is read back once listening.
+    this.port = options.port ?? 3000;
+    // Injectable clock and rate limit so the e2e fixtures render stable
+    // timestamps and can drive many requests; production uses the defaults. (#263)
+    this.now = options.now || (() => new Date());
+    this.rateLimitMax = options.rateLimitMax ?? 60;
     this.host = options.host || '0.0.0.0';
     this.prometheusService = options.prometheusService;
     this.syncHistory = options.syncHistory;
@@ -58,7 +64,7 @@ class HealthCheckService {
     
     // Health status tracking
     this.status = {
-      startTime: new Date().toISOString(),
+      startTime: this.now().toISOString(),
       lastSyncTime: null,
       lastSyncStatus: 'pending',
       syncCount: 0,
@@ -154,7 +160,7 @@ class HealthCheckService {
     // Rate limiting middleware - prevent abuse
     const limiter = rateLimit({
       windowMs: 60 * 1000, // 1 minute
-      max: 60, // 60 requests per minute per IP
+      max: this.rateLimitMax, // requests per minute per IP (60 unless a test overrides it)
       standardHeaders: true,
       legacyHeaders: false,
       message: 'Too many requests, please try again later.',
@@ -169,11 +175,11 @@ class HealthCheckService {
 
     // Health endpoint - simple alive check
     this.app.get('/health', (req, res) => {
-      const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
+      const uptime = Math.floor((this.now().getTime() - new Date(this.status.startTime).getTime()) / 1000);
       
       const health = {
         status: 'UP',
-        timestamp: new Date().toISOString(),
+        timestamp: this.now().toISOString(),
         uptime: uptime,
         service: 'actual-sync',
         version: global.APP_VERSION || resolveVersion()
@@ -185,11 +191,11 @@ class HealthCheckService {
 
     // Metrics endpoint - detailed sync metrics
     this.app.get('/metrics', (req, res) => {
-      const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
+      const uptime = Math.floor((this.now().getTime() - new Date(this.status.startTime).getTime()) / 1000);
       
       const metrics = {
         status: this.getOverallStatus(),
-        timestamp: new Date().toISOString(),
+        timestamp: this.now().toISOString(),
         uptime: uptime,
         service: 'actual-sync',
         version: global.APP_VERSION || resolveVersion(),
@@ -218,14 +224,14 @@ class HealthCheckService {
     // Readiness endpoint - checks if service is ready to sync
     this.app.get('/ready', (req, res) => {
       const isReady = this.status.syncCount > 0 || 
-                      (Date.now() - new Date(this.status.startTime).getTime()) < 60000;
+                      (this.now().getTime() - new Date(this.status.startTime).getTime()) < 60000;
       
       if (isReady) {
-        res.json({ status: 'READY', timestamp: new Date().toISOString() });
+        res.json({ status: 'READY', timestamp: this.now().toISOString() });
       } else {
         res.status(503).json({ 
           status: 'NOT_READY', 
-          timestamp: new Date().toISOString(),
+          timestamp: this.now().toISOString(),
           reason: 'No successful syncs yet'
         });
       }
@@ -280,7 +286,7 @@ class HealthCheckService {
 
     // Dashboard API: Get status (with authentication)
     this.app.get('/api/dashboard/status', this.dashboardAuth(), (req, res) => {
-      const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
+      const uptime = Math.floor((this.now().getTime() - new Date(this.status.startTime).getTime()) / 1000);
       
       // Get all configured servers from getServers function
       let allServers = {};
@@ -1053,7 +1059,7 @@ This test verifies that notifications are configured correctly and can reach the
     this.status.serverVersions[serverName] = {
       serverVersion: info.serverVersion || null,
       verdict: info.verdict || 'unknown',
-      checkedAt: new Date().toISOString()
+      checkedAt: this.now().toISOString()
     };
     if (info.testedUpTo) {
       this.testedUpTo = info.testedUpTo;
@@ -1061,7 +1067,13 @@ This test verifies that notifications are configured correctly and can reach the
   }
 
   updateSyncStatus(syncResult) {
-    this.status.lastSyncTime = new Date().toISOString();
+    // syncService passes the error as a string; older callers passed an Error.
+    // Reading only .message dropped the string, so server cards never showed
+    // the failure text and lastError read "Unknown error". (#263)
+    const errorText = typeof syncResult.error === 'string'
+      ? syncResult.error
+      : syncResult.error?.message;
+    this.status.lastSyncTime = this.now().toISOString();
     this.status.syncCount++;
     
     if (syncResult.status === 'success') {
@@ -1084,7 +1096,7 @@ This test verifies that notifications are configured correctly and can reach the
       this.status.lastSyncStatus = 'failure';
       this.status.failureCount++;
       this.status.lastError = {
-        message: syncResult.error?.message || 'Unknown error',
+        message: errorText || 'Unknown error',
         timestamp: this.status.lastSyncTime,
         serverName: syncResult.serverName
       };
@@ -1093,13 +1105,13 @@ This test verifies that notifications are configured correctly and can reach the
       this.status.serverStatuses[syncResult.serverName] = {
         lastSync: this.status.lastSyncTime,
         status: 'failure',
-        error: syncResult.error?.message
+        error: errorText
       };
       
       this.logger.error('Sync status updated', { 
         serverName: syncResult.serverName,
         status: 'failure',
-        error: syncResult.error?.message,
+        error: errorText,
         totalSyncs: this.status.syncCount
       });
     }
@@ -1231,6 +1243,13 @@ This test verifies that notifications are configured correctly and can reach the
         let settled = false;
         const onListening = () => {
           settled = true;
+          // Only port 0 needs the real port read back; calling address() when a
+          // fixed port was requested would also break tests that mock this.server
+          // as a plain EventEmitter with no address() method (#94's fallback
+          // tests). (#263)
+          if (this.port === 0) {
+            this.port = this.server.address().port;
+          }
           this.logger.info('Health check service started', {
             port: this.port,
             host: this.host,

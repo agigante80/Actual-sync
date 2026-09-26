@@ -20,6 +20,10 @@ class SyncHistoryService {
   constructor(options = {}) {
     this.dbPath = options.dbPath || path.join(process.cwd(), 'data', 'sync-history.db');
     this.retentionDays = options.retentionDays || 90;
+    // Injectable clock (#263): the e2e fixtures seed history at fixed dates and
+    // need the day-window queries to agree. Must return a fresh Date each call,
+    // since the cutoff code mutates it.
+    this.now = options.now || (() => new Date());
     this.logger = createLogger(options.loggerConfig || {});
     this.db = null;
     
@@ -178,7 +182,7 @@ class SyncHistoryService {
       `);
 
       const result = stmt.run(
-        new Date().toISOString(),
+        this.now().toISOString(),
         record.serverName,
         record.status,
         record.durationMs || null,
@@ -226,7 +230,7 @@ class SyncHistoryService {
         INSERT OR REPLACE INTO account_metadata (server_name, account_id, account_name, classification, updated_at)
         VALUES (?, ?, ?, ?, ?)
       `);
-      const now = new Date().toISOString();
+      const now = this.now().toISOString();
       const replace = this.db.transaction((rows) => {
         del.run(serverName);
         for (const a of rows) {
@@ -293,7 +297,7 @@ class SyncHistoryService {
       }
 
       if (filters.days) {
-        const cutoffDate = new Date();
+        const cutoffDate = this.now();
         cutoffDate.setDate(cutoffDate.getDate() - filters.days);
         query += ' AND timestamp >= ?';
         params.push(cutoffDate.toISOString());
@@ -360,7 +364,7 @@ class SyncHistoryService {
       }
 
       if (filters.days) {
-        const cutoffDate = new Date();
+        const cutoffDate = this.now();
         cutoffDate.setDate(cutoffDate.getDate() - filters.days);
         query += ' AND timestamp >= ?';
         params.push(cutoffDate.toISOString());
@@ -412,7 +416,7 @@ class SyncHistoryService {
       const params = [];
 
       if (days) {
-        const cutoffDate = new Date();
+        const cutoffDate = this.now();
         cutoffDate.setDate(cutoffDate.getDate() - days);
         query += ' AND timestamp >= ?';
         params.push(cutoffDate.toISOString());
@@ -589,7 +593,7 @@ class SyncHistoryService {
    */
   cleanup() {
     try {
-      const cutoffDate = new Date();
+      const cutoffDate = this.now();
       cutoffDate.setDate(cutoffDate.getDate() - this.retentionDays);
 
       const stmt = this.db.prepare(`

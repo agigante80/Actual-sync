@@ -1,0 +1,73 @@
+[
+  {
+    "file": "dashboard-overview-healthy.png",
+    "state": "healthy",
+    "tab": "overview",
+    "description": "Overview tab, three servers all syncing cleanly, 2-column layout"
+  },
+  {
+    "file": "dashboard-overview-degraded.png",
+    "state": "degraded",
+    "tab": "overview",
+    "description": "Overview tab, degraded system with failing and partial servers"
+  },
+  {
+    "file": "dashboard-overview-multi-server.png",
+    "state": "multi-server",
+    "tab": "overview",
+    "description": "Overview tab, six servers with mixed encryption badges"
+  },
+  {
+    "file": "dashboard-analytics.png",
+    "state": "healthy",
+    "tab": "analytics",
+    "description": "Analytics tab, all-time statistics and charts for a healthy system"
+  },
+  {
+    "file": "dashboard-analytics-degraded.png",
+    "state": "analytics-degraded",
+    "tab": "analytics",
+    "description": "Analytics tab, two days of history with a visibly lower success rate"
+  },
+  {
+    "file": "dashboard-history.png",
+    "state": "healthy",
+    "tab": "history",
+    "description": "History tab, recent syncs table"
+  },
+  {
+    "file": "dashboard-history-errors.png",
+    "state": "history-errors",
+    "tab": "history",
+    "description": "History tab, a longer run with a known number of failure rows"
+  },
+  {
+    "file": "dashboard-settings.png",
+    "state": "settings",
+    "tab": "settings",
+    "scrollToText": "Date Format Preferences",
+    "fullPage": false,
+    "description": "Settings tab, scrolled to date format preferences"
+  },
+  {
+    "file": "dashboard-settings-danger-zone.png",
+    "state": "settings-danger-zone",
+    "tab": "settings",
+    "description": "Settings tab, Danger Zone reset controls and orphaned server cleanup"
+  },
+  {
+    "file": "dashboard-hero.png",
+    "state": "multi-server",
+    "tab": "overview",
+    "fullPage": false,
+    "description": "Full dashboard hero shot, six servers, used for the README gallery"
+  },
+  {
+    "file": "dashboard-accounts.png",
+    "state": "accounts",
+    "tab": "overview",
+    "scrollToText": "Accounts",
+    "fullPage": false,
+    "description": "Accounts card, syncable, manual and closed accounts across three servers"
+  }
+]
