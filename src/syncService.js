@@ -15,7 +15,7 @@ const { enhanceActualApiError, explainBudgetNotOpen } = require('./lib/actualApi
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
 const { SyncQueue } = require('./lib/syncQueue');
-const { timedActual, withTimeout, PhaseTimeoutError, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
+const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -85,6 +85,9 @@ let scheduledJobsRef = []; // Variable to store scheduled jobs (populated during
 // session, so two syncs at once corrupt each other (#265). The logger is read
 // at call time because it is created inside the config block below.
 const syncQueue = new SyncQueue({ logger: { info: (message, context) => logger?.info(message, context) } });
+// Actual API calls that timed out but are still running (#272). They share the
+// one Actual session with every later sync, so the queue waits for them.
+const lateActualCalls = new LateCalls();
 try {
     const configLoader = new ConfigLoader();
     config = configLoader.load();
@@ -347,7 +350,11 @@ async function runSyncBank(server, options = {}) {
     const syncConfig = getSyncConfig(server);
     // Every server-facing Actual API call is bounded, so a server that never
     // answers fails this sync instead of blocking the queue forever. (#272)
-    const api = timedActual(actual, syncConfig.phaseTimeoutSeconds * 1000);
+    const phaseTimeoutMs = syncConfig.phaseTimeoutSeconds * 1000;
+    const api = timedActual(actual, phaseTimeoutMs, lateActualCalls);
+    // Set once this sync touches the session; until then its finally must not
+    // call shutdown(), which would close a session a late call still uses.
+    let sessionOpened = false;
     
     // Create server-specific logger with per-server log level if configured
     const serverLogger = server.logging ? logger.child({
@@ -414,7 +421,17 @@ async function runSyncBank(server, options = {}) {
         await fs.mkdir(dataDir, { recursive: true });
         serverLogger.debug('Data directory ready', { dataDir });
 
+        // A call from an earlier sync that timed out may still be running in the
+        // shared session. Give it one more phase timeout; if it is still busy,
+        // fail this sync rather than mix two budgets. (#272)
+        if (!(await lateActualCalls.drain(phaseTimeoutMs))) {
+            const busy = new Error(`An earlier Actual API call is still running after its timeout; skipped this sync so two budgets are not mixed in one session`);
+            busy.code = 'ACTUAL_SESSION_BUSY';
+            throw busy;
+        }
+
         serverLogger.info(`Connecting to Actual server`, { url });
+        sessionOpened = true;
         await api.init({
             serverURL: url,
             password: password,
@@ -600,7 +617,7 @@ async function runSyncBank(server, options = {}) {
                     
                     // Wrap runBankSync with timeout (60 seconds) to catch hung promises
                     const result = await withTimeout(
-                        actual.runBankSync({ accountId: account.id }), 60000, 'runBankSync'
+                        actual.runBankSync({ accountId: account.id }), 60000, 'runBankSync', lateActualCalls
                     );
                     
                     // Add a small delay to allow any background operations to complete
@@ -934,15 +951,24 @@ async function runSyncBank(server, options = {}) {
             }
         }
     } finally {
-        try {
-            serverLogger.debug('Shutting down Actual API connection');
-            await api.shutdown();
-            serverLogger.debug('Shutdown complete');
-        } catch (shutdownError) {
-            const shutdownErrorMessage = shutdownError?.message || String(shutdownError) || 'Unknown shutdown error';
-            serverLogger.error('Error during shutdown', {
-                error: shutdownErrorMessage
-            });
+        if (sessionOpened) {
+            try {
+                serverLogger.debug('Shutting down Actual API connection');
+                await api.shutdown();
+                serverLogger.debug('Shutdown complete');
+            } catch (shutdownError) {
+                const shutdownErrorMessage = shutdownError?.message || String(shutdownError) || 'Unknown shutdown error';
+                serverLogger.error('Error during shutdown', {
+                    error: shutdownErrorMessage
+                });
+            }
+            // Hold the queue slot while a timed-out call of this sync still runs,
+            // so it cannot land inside the next server's sync. (#272)
+            if (lateActualCalls.size > 0 && !(await lateActualCalls.drain(phaseTimeoutMs))) {
+                serverLogger.error('Actual API calls still running after their timeout; the next sync will wait for them', {
+                    pending: lateActualCalls.size
+                });
+            }
         }
         serverLogger.clearCorrelationId();
     }

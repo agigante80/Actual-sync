@@ -5,6 +5,7 @@ const {
     DEFAULT_PHASE_TIMEOUT_SECONDS,
     TIMED_METHODS,
     PhaseTimeoutError,
+    LateCalls,
     withTimeout,
     timedActual
 } = require('../lib/actualTimeouts');
@@ -88,5 +89,59 @@ describe('timedActual (#272)', () => {
 
     test('the default is five minutes', () => {
         expect(DEFAULT_PHASE_TIMEOUT_SECONDS).toBe(300);
+    });
+});
+
+describe('LateCalls: a timed-out call is still tracked until it settles (#272)', () => {
+    const deferred = () => {
+        let resolve, reject;
+        const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+        return { promise, resolve, reject };
+    };
+
+    test('a call that times out is recorded, and leaves when it finally settles', async () => {
+        const late = new LateCalls();
+        const call = deferred();
+        await expect(withTimeout(call.promise, 10, 'downloadBudget', late)).rejects.toBeInstanceOf(PhaseTimeoutError);
+        expect(late.size).toBe(1);
+        call.resolve('done late');
+        await expect(late.drain(1000)).resolves.toBe(true);
+        expect(late.size).toBe(0);
+    });
+
+    test('a call that finishes in time is never recorded', async () => {
+        const late = new LateCalls();
+        await withTimeout(Promise.resolve(1), 1000, 'init', late);
+        expect(late.size).toBe(0);
+    });
+
+    test('a late rejection also clears it, without an unhandled rejection', async () => {
+        const late = new LateCalls();
+        const call = deferred();
+        await expect(withTimeout(call.promise, 10, 'sync', late)).rejects.toBeInstanceOf(PhaseTimeoutError);
+        call.reject(new Error('socket hang up'));
+        await expect(late.drain(1000)).resolves.toBe(true);
+    });
+
+    test('drain reports false while a call is still running, and does not wait past its limit', async () => {
+        const late = new LateCalls();
+        await expect(withTimeout(never(), 10, 'shutdown', late)).rejects.toBeInstanceOf(PhaseTimeoutError);
+        const started = Date.now();
+        await expect(late.drain(50)).resolves.toBe(false);
+        expect(Date.now() - started).toBeLessThan(1000);
+        expect(late.size).toBe(1);
+    });
+
+    test('drain on an empty tracker is immediate', async () => {
+        await expect(new LateCalls().drain(0)).resolves.toBe(true);
+    });
+
+    test('timedActual records its timed-out calls in the tracker', async () => {
+        const late = new LateCalls();
+        const api = { q: () => ({}) };
+        for (const m of TIMED_METHODS) api[m] = never;
+        const wrapped = timedActual(api, 10, late);
+        await expect(wrapped.downloadBudget('id')).rejects.toBeInstanceOf(PhaseTimeoutError);
+        expect(late.size).toBe(1);
     });
 });

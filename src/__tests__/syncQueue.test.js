@@ -237,7 +237,7 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
     });
 
     test('routes the calls through timedActual with the configured timeout', () => {
-        expect(body[0]).toMatch(/const api = timedActual\(actual, syncConfig\.phaseTimeoutSeconds \* 1000\)/);
+        expect(body[0]).toMatch(/const phaseTimeoutMs = syncConfig\.phaseTimeoutSeconds \* 1000;\s*const api = timedActual\(actual, phaseTimeoutMs, lateActualCalls\)/);
         for (const m of ['init', 'downloadBudget', 'sync', 'shutdown']) {
             expect(body[0]).toMatch(new RegExp(`api\\.${m}\\(`));
         }
@@ -245,5 +245,40 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
 
     test('a download timeout is not retried or swallowed', () => {
         expect(body[0]).toMatch(/if \(error instanceof PhaseTimeoutError\) throw error;/);
+    });
+
+    // Each catch that could swallow a timeout must re-throw it. A missing one
+    // either retries a download that may still be writing, clears dataDir under
+    // it, or carries on with no budget loaded. Pinned one by one, since the
+    // service cannot be imported to drive them. (#272)
+    test('the retry download re-throws a timeout instead of clearing the cache', () => {
+        expect(body[0]).toMatch(/catch \(err\) \{\s*if \(err instanceof PhaseTimeoutError\) throw err;/);
+    });
+
+    test('a loadBudget timeout is not skipped as "not a budget directory"', () => {
+        expect(body[0]).toMatch(/catch \(entryErr\) \{[^}]*if \(entryErr instanceof PhaseTimeoutError\) throw entryErr;/);
+    });
+
+    test('the loadBudget workaround does not swallow a timeout', () => {
+        expect(body[0]).toMatch(/catch \(loadErr\) \{\s*if \(loadErr instanceof PhaseTimeoutError\) throw loadErr;/);
+    });
+
+    test('timed-out calls are tracked, drained before the slot is released, and checked before init', () => {
+        expect(body[0]).toMatch(/timedActual\(actual, phaseTimeoutMs, lateActualCalls\)/);
+        expect(body[0]).toMatch(/withTimeout\(\s*actual\.runBankSync\([^)]*\), 60000, 'runBankSync', lateActualCalls/);
+        const busyCheck = body[0].indexOf('if (!(await lateActualCalls.drain(phaseTimeoutMs)))');
+        const init = body[0].indexOf('await api.init(');
+        expect(busyCheck).toBeGreaterThan(-1);
+        expect(busyCheck).toBeLessThan(init);
+        const fin = body[0].slice(body[0].lastIndexOf('} finally {'));
+        expect(fin).toMatch(/if \(sessionOpened\) \{/);
+        expect(fin).toMatch(/lateActualCalls\.drain\(phaseTimeoutMs\)/);
+    });
+
+    test('a sync that never opened the session does not shut it down', () => {
+        const opened = body[0].indexOf('sessionOpened = true;');
+        expect(opened).toBeGreaterThan(-1);
+        expect(opened).toBeLessThan(body[0].indexOf('await api.init('));
+        expect(opened).toBeGreaterThan(body[0].indexOf("busy.code = 'ACTUAL_SESSION_BUSY'"));
     });
 });

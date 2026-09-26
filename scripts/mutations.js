@@ -851,6 +851,54 @@ module.exports = [
         mutant: '        runningSync: null,',
         tests: 'healthCheck'
     },
+    {
+        id: '272-retry-swallows-timeout', ticket: '#272',
+        desc: 'a timed-out retry download is treated as a corrupt cache and retried again',
+        file: 'src/syncService.js',
+        anchor: '                if (err instanceof PhaseTimeoutError) throw err; // same reason as above (#272)',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-entry-swallows-timeout', ticket: '#272',
+        desc: 'a loadBudget timeout is skipped as "not a budget directory"',
+        file: 'src/syncService.js',
+        anchor: '                    if (entryErr instanceof PhaseTimeoutError) throw entryErr;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-workaround-swallows-timeout', ticket: '#272',
+        desc: 'the loadBudget workaround carries on with no budget after a timeout',
+        file: 'src/syncService.js',
+        anchor: '            if (loadErr instanceof PhaseTimeoutError) throw loadErr;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-late-call-untracked', ticket: '#272',
+        desc: 'a timed-out call is forgotten, so it can land inside the next sync',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '            if (lateCalls) lateCalls.add(call);',
+        mutant: '',
+        tests: 'actualTimeouts'
+    },
+    {
+        id: '272-no-busy-check', ticket: '#272',
+        desc: 'a sync opens the session while an earlier late call still runs',
+        file: 'src/syncService.js',
+        anchor: '        if (!(await lateActualCalls.drain(phaseTimeoutMs))) {',
+        mutant: '        if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-shutdown-unguarded', ticket: '#272',
+        desc: 'a sync refused as busy still shuts down the session the late call is using',
+        file: 'src/syncService.js',
+        anchor: '        if (sessionOpened) {',
+        mutant: '        if (true) {',
+        tests: 'syncQueue'
+    },
 
     // ---- #169: the README claim that started #168 ---------------------------
     {

@@ -387,9 +387,13 @@ their own process with their own API session, so do not run them while the servi
 Hung calls (#272): each Actual API call a sync makes (`init`, `downloadBudget`, `loadBudget`,
 `aqlQuery`, `sync`, `shutdown`) is bounded by `sync.phaseTimeoutSeconds` (default 300), and
 `runBankSync` by 60 seconds per account. A call that runs out of time fails the sync with the
-phase named, `shutdown` is still attempted, and the queue moves on. The queue slot itself has no
-time limit on purpose: releasing it while the old call may still be running would let the next
-sync interleave with it, which is the bug the queue exists to prevent. The dashboard status
+phase named, and `shutdown` is still attempted. A timeout only stops waiting: the call itself
+keeps running inside the one shared Actual session, so the sync keeps its queue slot for up to
+one more phase timeout while that call finishes. If it is still running when the next sync
+starts, that sync waits one more phase timeout and then fails with `ACTUAL_SESSION_BUSY` rather
+than open a second budget in the same session. With the default of 300 seconds, a server that
+never answers holds the queue for up to about 15 minutes (the stuck call, the `shutdown`, and
+the wait). The dashboard status
 (`/api/dashboard/status`, `runningSync`) names the server holding the queue and when it started;
 public `/health` does not, so server names stay private.
 

@@ -132,7 +132,7 @@ Global synchronization behavior configuration. These settings apply to all serve
 - **phaseTimeoutSeconds** (optional, integer, default: 300)
   - Seconds each Actual API call (init, download, load, query, sync, shutdown) may take
   - Range: 30-3600
-  - A call that runs longer fails the sync with the phase named, and the next queued sync runs
+  - A call that runs longer fails the sync with the phase named. The queue waits up to one more timeout for the stuck call to finish before the next sync starts, and that sync fails with `ACTUAL_SESSION_BUSY` if the call is still running
   - Raise it for very large budgets on slow links; bank sync keeps its own 60 second limit per account
   - Can be overridden per server
   - Example: `300` (5 minutes)
