@@ -591,6 +591,8 @@ npm audit --audit-level=high
 
 **Runs**: After Docker test build completes
 
+**Supply chain**: the scanner's own GitHub Action is pinned to a commit SHA, not a branch, so a compromised upstream branch cannot run code in CI. No workflow may reference a branch; a test enforces both rules. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
+
 **Location**: `security-scan` job in CI/CD workflow
 
 **What It Scans**:
