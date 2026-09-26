@@ -446,14 +446,17 @@ class HealthCheckService {
           return res.status(400).json({ error: 'Server name required' });
         }
 
-        // Validate server name exists in serverStatuses (prevents prototype pollution)
-        if (!Object.prototype.hasOwnProperty.call(this.serverStatuses, server)) {
+        // Validate server name exists in serverStatuses (prevents prototype pollution).
+        // Statuses live on this.status; a bare this.serverStatuses is undefined and
+        // made every dismiss a 500 (#264).
+        const serverStatuses = this.status.serverStatuses;
+        if (!Object.prototype.hasOwnProperty.call(serverStatuses, server)) {
           return res.status(404).json({ error: 'Server not found' });
         }
 
         // Clear error from server status (using safer approach)
-        if (this.serverStatuses[server] && Object.prototype.hasOwnProperty.call(this.serverStatuses[server], 'error')) {
-          delete this.serverStatuses[server].error;
+        if (Object.prototype.hasOwnProperty.call(serverStatuses[server], 'error')) {
+          delete serverStatuses[server].error;
           this.logger.info('Server error dismissed via dashboard', {
             server: server,
             remoteAddress: req.ip
