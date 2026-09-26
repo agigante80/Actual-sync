@@ -355,6 +355,12 @@
               "description": "Enable web dashboard access",
               "default": true
             },
+            "allowedOrigins": {
+              "type": "array",
+              "description": "Extra browser origins (scheme://host[:port]) allowed to open the /ws/logs live log stream. Same-origin is always allowed. Needed only when the dashboard is served under a different origin than the one the browser connects to, e.g. behind some reverse proxies.",
+              "items": { "type": "string", "pattern": "^https?://[^/\\s]+$" },
+              "default": []
+            },
             "auth": {
               "type": "object",
               "additionalProperties": false,

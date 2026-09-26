@@ -67,6 +67,16 @@ if (!password) {
 
 ## 🌐 Network Security
 
+### Live log stream (`/ws/logs`)
+
+The WebSocket log stream carries log metadata (server names, account names, sync errors), so it is protected at the handshake, before any data is sent:
+
+- the same dashboard credentials, via a single-use 30 second ticket from `/api/dashboard/ws-ticket`, for browsers and scripts alike. The handshake does not accept an `Authorization` header, since WebSocket upgrades bypass the HTTP rate limiter;
+- an `Origin` check at every auth type, including `none`: only same-origin and `dashboard.allowedOrigins` are accepted, which blocks Cross-Site WebSocket Hijacking from a page the operator happens to visit;
+- at most 10 open streams per address.
+
+Credentials are compared in constant time (SHA-256 digests with `crypto.timingSafeEqual`), and the basic-auth username and password are both always compared.
+
 ### Transport Encryption
 
 **Policy**: All external communication MUST use HTTPS/TLS

@@ -126,7 +126,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Enhanced Logging System** - Log rotation with compression, syslog support, performance tracking, per-server log levels
 - ✅ **Sync History Database** - SQLite persistence with query interface and CLI tool (`npm run history`)
 - ✅ **Status Tracking** - Real-time health status (HEALTHY/DEGRADED/UNHEALTHY/READY)
-- ✅ **WebSocket Streaming** - Live log broadcast to connected dashboard clients with ring buffer
+- ✅ **WebSocket Streaming** - Live log broadcast to connected dashboard clients with ring buffer; the stream uses the dashboard's auth and rejects foreign origins
 
 ### 🔔 Notifications & Alerts
 
@@ -704,6 +704,7 @@ Actual-sync exposes HTTP endpoints for monitoring:
 | `GET /metrics` | Detailed sync statistics | JSON with per-server status |
 | `GET /ready` | Kubernetes readiness probe | `200 OK` when service is ready |
 | `GET /dashboard` | Web dashboard UI | HTML dashboard interface |
+| `WS /ws/logs` | Live log stream (dashboard auth, same-origin only) | JSON log records |
 
 **Example - Health Check:**
 

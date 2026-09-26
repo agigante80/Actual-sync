@@ -828,6 +828,57 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #242: /ws/logs streamed to anyone ----------------------------------
+    {
+        id: '242-ws-no-verify', ticket: '#242',
+        desc: 'the /ws/logs server is built without verifyClient, so any client gets the log stream',
+        file: 'src/services/healthCheck.js',
+        anchor: '          perMessageDeflate: false,\n          verifyClient: (info, done) => this.verifyWsClient(info, done)',
+        mutant: '          perMessageDeflate: false',
+        tests: 'healthCheck'
+    },
+    {
+        id: '242-ws-origin-unchecked', ticket: '#242',
+        desc: 'the handshake skips the Origin check, reopening Cross-Site WebSocket Hijacking',
+        file: 'src/services/healthCheck.js',
+        anchor: "    if (info.origin && !this.isAllowedWsOrigin(info.origin, req.headers.host)) {",
+        mutant: "    if (false) {",
+        tests: 'healthCheck'
+    },
+    {
+        id: '242-ws-ticket-reusable', ticket: '#242',
+        desc: 'a consumed ticket stays valid, so a leaked ticket URL grants the stream forever',
+        file: 'src/lib/dashboardCredentials.js',
+        anchor: '    this.tickets.delete(ticket);\n    return this.now() <= expiry;',
+        mutant: '    return this.now() <= expiry;',
+        tests: 'dashboardCredentials'
+    },
+    {
+        id: '246-basic-auth-short-circuits', ticket: '#246',
+        desc: 'a wrong username skips the password comparison, a timing signal for valid usernames',
+        file: 'src/lib/dashboardCredentials.js',
+        anchor: '    const passOk = safeEqual(password, authConfig.password);',
+        mutant: '    const passOk = userOk && safeEqual(password, authConfig.password);',
+        tests: 'dashboardCredentials'
+    },
+
+    {
+        id: '242-ws-header-oracle', ticket: '#242',
+        desc: 'the handshake accepts an Authorization header again, an unthrottled password oracle',
+        file: 'src/services/healthCheck.js',
+        anchor: '    if (ticket && this.wsTickets.consume(ticket)) return done(true);\n',
+        mutant: '    if (ticket && this.wsTickets.consume(ticket)) return done(true);\n    if (checkCredentials(req.headers, authConfig).ok) return done(true);\n',
+        tests: 'healthCheck'
+    },
+    {
+        id: '242-missing-token-matches-empty', ticket: '#242',
+        desc: 'a missing configured token lets an empty Bearer header in',
+        file: 'src/lib/dashboardCredentials.js',
+        anchor: "    if (!isSet(authConfig.token)) return { ok: false, reason: 'config' };\n",
+        mutant: '',
+        tests: 'dashboardCredentials'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
