@@ -789,6 +789,16 @@ module.exports = [
         tests: 'retargetRetest'
     },
 
+    // ---- #248: trivy-action ran from a floating branch ----------------------
+    {
+        id: '248-trivy-floating-branch', ticket: '#248',
+        desc: 'the Trivy image scan runs aquasecurity/trivy-action@master again',
+        file: '.github/workflows/ci-cd.yml',
+        anchor: '      - name: Run Trivy vulnerability scanner\n        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0',
+        mutant: '      - name: Run Trivy vulnerability scanner\n        uses: aquasecurity/trivy-action@master',
+        tests: 'workflowPins'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
