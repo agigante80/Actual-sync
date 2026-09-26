@@ -1410,6 +1410,43 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('GET /api/dashboard/status runningSync (#272)', () => {
+    const statusUrl = () => `http://127.0.0.1:${testPort}/api/dashboard/status`;
+
+    it('reports the sync holding the queue', async () => {
+      const running = { key: 'Main', startedAt: '2026-09-26T01:00:00.000Z' };
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        getRunningSync: () => running
+      });
+      await hc.start();
+      const res = await httpGet(statusUrl());
+      expect(res.statusCode).toBe(200);
+      expect(res.body.runningSync).toEqual(running);
+    });
+
+    it('is null when nothing runs, or when the callback throws', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        getRunningSync: () => { throw new Error('boom'); }
+      });
+      await hc.start();
+      const res = await httpGet(statusUrl());
+      expect(res.statusCode).toBe(200);
+      expect(res.body.runningSync).toBeNull();
+    });
+
+    it('is not disclosed on public /health', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        getRunningSync: () => ({ key: 'Main', startedAt: '2026-09-26T01:00:00.000Z' })
+      });
+      await hc.start();
+      const res = await httpGet(`http://127.0.0.1:${testPort}/health`);
+      expect(JSON.stringify(res.body)).not.toContain('Main');
+    });
+  });
+
   describe('POST /api/dashboard/dismiss-error (#264)', () => {
     const url = () => `http://127.0.0.1:${testPort}/api/dashboard/dismiss-error`;
 

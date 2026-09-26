@@ -384,8 +384,20 @@ so a long queue never blocks the bot's polling loop.
 The queue is per process. `--force-run` (`npm run sync`) and `scripts/listAccounts.js` start
 their own process with their own API session, so do not run them while the service is running.
 
-Known limit: the queue has no time limit on a slot, so a sync that hangs inside the Actual API
-blocks every later sync until restart. Per-phase timeouts are tracked separately.
+Hung calls (#272): each Actual API call a sync makes (`init`, `downloadBudget`, `loadBudget`,
+`aqlQuery`, `sync`, `shutdown`) is bounded by `sync.phaseTimeoutSeconds` (default 300), and
+`runBankSync` by 60 seconds per account. A call that runs out of time fails the sync with the
+phase named. A timeout only stops waiting: the call itself keeps running inside the one shared
+Actual session, so the sync keeps its queue slot for up to one more phase timeout while that call
+finishes, and only then runs `shutdown`, so a late download cannot leave its budget open for the
+next server. If a call is still running when the next sync starts, that sync waits up to its own
+phase timeout and then fails with `ACTUAL_SESSION_BUSY` rather than open a second budget in the
+same session. That sync also stops tracking the stuck call, so a call that never finishes costs
+one refused sync, not every sync until restart. With the default of 300 seconds, a server that
+never answers holds the queue for up to about 20 minutes (the stuck call, the wait, a stuck
+`shutdown`, and the next sync's wait). The dashboard status
+(`/api/dashboard/status`, `runningSync`) names the server holding the queue and when it started;
+public `/health` does not, so server names stay private.
 
 ### Exponential Backoff
 

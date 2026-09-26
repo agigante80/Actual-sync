@@ -828,6 +828,104 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #272: a hung Actual API call blocked the queue forever ------------------
+    {
+        id: '272-download-unbounded', ticket: '#272',
+        desc: 'downloadBudget is no longer timed, so a server that never answers hangs the queue again',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: "const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
+        mutant: "const TIMED_METHODS = ['init', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
+        tests: 'actualTimeouts'
+    },
+    {
+        id: '272-timeout-retried', ticket: '#272',
+        desc: 'a download timeout falls into the retry path, doubling the hang and clearing the cache',
+        file: 'src/syncService.js',
+        anchor: '            if (error instanceof PhaseTimeoutError) throw error;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-running-never-cleared', ticket: '#272',
+        desc: 'the queue keeps reporting a finished sync as running',
+        file: 'src/lib/syncQueue.js',
+        anchor: '                if (this.active === entry) this.active = null;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-status-hides-running', ticket: '#272',
+        desc: 'the dashboard status stops naming the sync holding the queue',
+        file: 'src/services/healthCheck.js',
+        anchor: '        runningSync: this.safeRunningSync(),',
+        mutant: '        runningSync: null,',
+        tests: 'healthCheck'
+    },
+    {
+        id: '272-retry-swallows-timeout', ticket: '#272',
+        desc: 'a timed-out retry download is treated as a corrupt cache and retried again',
+        file: 'src/syncService.js',
+        anchor: '                if (err instanceof PhaseTimeoutError) throw err; // same reason as above (#272)',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-entry-swallows-timeout', ticket: '#272',
+        desc: 'a loadBudget timeout is skipped as "not a budget directory"',
+        file: 'src/syncService.js',
+        anchor: '                    if (entryErr instanceof PhaseTimeoutError) throw entryErr;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-workaround-swallows-timeout', ticket: '#272',
+        desc: 'the loadBudget workaround carries on with no budget after a timeout',
+        file: 'src/syncService.js',
+        anchor: '            if (loadErr instanceof PhaseTimeoutError) throw loadErr;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-late-call-untracked', ticket: '#272',
+        desc: 'a timed-out call is forgotten, so it can land inside the next sync',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '            if (lateCalls) lateCalls.add(call);',
+        mutant: '',
+        tests: 'actualTimeouts'
+    },
+    {
+        id: '272-no-busy-check', ticket: '#272',
+        desc: 'a sync opens the session while an earlier late call still runs',
+        file: 'src/syncService.js',
+        anchor: '        if (!(await lateActualCalls.drain(phaseTimeoutMs))) {',
+        mutant: '        if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-shutdown-unguarded', ticket: '#272',
+        desc: 'a sync refused as busy still shuts down the session the late call is using',
+        file: 'src/syncService.js',
+        anchor: '        if (sessionOpened) {',
+        mutant: '        if (true) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-never-abandoned', ticket: '#272',
+        desc: 'a call that never settles blocks every later sync until restart',
+        file: 'src/syncService.js',
+        anchor: '            const abandoned = lateActualCalls.abandon();',
+        mutant: '            const abandoned = lateActualCalls.size;',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-abandon-keeps-calls', ticket: '#272',
+        desc: 'abandon reports the calls dropped but keeps tracking them',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '        this.pending.clear();',
+        mutant: '',
+        tests: 'actualTimeouts'
+    },
+
     // ---- #242: /ws/logs streamed to anyone ----------------------------------
     {
         id: '242-ws-no-verify', ticket: '#242',
