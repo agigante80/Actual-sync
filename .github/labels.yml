@@ -1,0 +1,102 @@
+# Label taxonomy. docs/guides/labels.md is the definition; scripts/sync-labels.sh puts this on GitHub.
+# Existing labels keep their current colours and descriptions so a sync changes nothing on them.
+
+# Type labels
+- name: bug
+  color: "d73a4a"
+  description: Something isn't working
+
+- name: enhancement
+  color: "a2eeef"
+  description: New feature or request
+
+- name: security
+  color: "D93F0B"
+  description: Security vulnerabilities and fixes
+
+- name: infrastructure
+  color: "0075ca"
+  description: CI/CD, Docker, dependencies, and infrastructure
+
+- name: design
+  color: "f9d0c4"
+  description: Dashboard UI, UX, accessibility
+
+- name: documentation
+  color: "0075ca"
+  description: Improvements or additions to documentation
+
+- name: testing
+  color: "fbca04"
+  description: Tests, QA, coverage
+
+# Area labels
+- name: api
+  color: "bfd4f2"
+  description: "Area: dashboard/API routes or contracts (adds the API-design checklist to the gate)"
+
+- name: privacy
+  color: "d4c5f9"
+  description: "Area: touches personal data (bank/transaction data, credentials)"
+
+- name: sync-engine
+  color: "c5def5"
+  description: "Area: src/syncService.js sync flow, retries, correlation IDs"
+
+- name: actual-api
+  color: "c5def5"
+  description: "Area: @actual-app/api integration, budget download/decrypt, E2EE"
+
+- name: config
+  color: "c5def5"
+  description: "Area: config schema/loader, AJV validation, config bootstrap"
+
+- name: dashboard
+  color: "c5def5"
+  description: "Area: Express dashboard, dashboard.html, healthCheck"
+
+- name: notifications
+  color: "c5def5"
+  description: "Area: Telegram/Slack/Discord/email/ntfy/webhook, message formatting"
+
+- name: metrics
+  color: "c5def5"
+  description: "Area: Prometheus / prom-client"
+
+- name: sync-history
+  color: "c5def5"
+  description: "Area: better-sqlite3 storage (syncHistory.js)"
+
+- name: logging
+  color: "c5def5"
+  description: "Area: logger, redaction, rotation"
+
+- name: docker
+  color: "c5def5"
+  description: "Area: image, entrypoint, PUID/PGID"
+
+- name: ci-release
+  color: "c5def5"
+  description: "Area: GitHub Actions, auto-release, version bump"
+
+# Priority labels
+- name: P0
+  color: "b60205"
+  description: Critical, blocks release
+
+- name: P1
+  color: "d93f0b"
+  description: High, important for current milestone
+
+- name: P2
+  color: "fbca04"
+  description: Medium, should do, not blocking
+
+- name: P3
+  color: "0e8a16"
+  description: Low, nice to have
+
+# Special
+- name: critical
+  color: "b60205"
+  description: Adds the security lens and maximum critic scrutiny

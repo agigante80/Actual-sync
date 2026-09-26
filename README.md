@@ -109,7 +109,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Flexible Scheduling** - Global and per-server cron schedules with timezone support
 - ✅ **Intelligent Retry Logic** - Exponential backoff with rate limit detection and handling
 - ✅ **Account Discovery** - List all accessible bank accounts across servers
-- ✅ **Manual Sync Trigger** - On-demand synchronization via CLI or Telegram bot
+- ✅ **Manual Sync Trigger** - On-demand synchronization via CLI, dashboard or Telegram bot; inside the running service syncs run one at a time, so a manual sync waits for any sync already running (do not run `npm run sync` while the service is running: it is a separate process)
 - ✅ **Configuration Validation** - Business rules (required fields, ranges, unique servers) and JSON-schema rules (types, ranges, formats, patterns, enums) both hard-fail at startup with clear, aggregated messages; unknown/typo'd keys warn. `CONFIG_STRICT=false` downgrades the schema hard-fails to warnings during a migration
 
 ### 📊 Monitoring & Observability
@@ -126,7 +126,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Enhanced Logging System** - Log rotation with compression, syslog support, performance tracking, per-server log levels
 - ✅ **Sync History Database** - SQLite persistence with query interface and CLI tool (`npm run history`)
 - ✅ **Status Tracking** - Real-time health status (HEALTHY/DEGRADED/UNHEALTHY/READY)
-- ✅ **WebSocket Streaming** - Live log broadcast to connected dashboard clients with ring buffer
+- ✅ **WebSocket Streaming** - Live log broadcast to connected dashboard clients with ring buffer; the stream uses the dashboard's auth and rejects foreign origins
 
 ### 🔔 Notifications & Alerts
 
@@ -400,10 +400,11 @@ See **[docs/CONFIG.md](docs/CONFIG.md)** for complete configuration reference in
 | `npm run list-accounts` | `node scripts/listAccounts.js` | List all configured bank accounts |
 | `npm run history` | `node scripts/viewHistory.js` | View sync history and statistics |
 | `npm run validate-config` | `node scripts/validateConfig.js` | Validate configuration file |
-| `npm run screenshots` | `node scripts/generateDashboardScreenshots.js` | Generate dashboard screenshots with fake data |
+| `npm run screenshots` | `node scripts/generateDashboardScreenshots.js` | Generate dashboard screenshots from the e2e fixture harness |
 | `npm test` | `jest` | Run test suite |
 | `npm run test:watch` | `jest --watch` | Run tests in watch mode |
 | `npm run test:coverage` | `jest --coverage` | Generate coverage report |
+| `npm run test:e2e` | `jest --config jest.e2e.config.js` | Run the browser E2E suite (see [TESTING.md](docs/TESTING.md#-browser-e2e-tests-263)) |
 
 ### Command Line Examples
 
@@ -704,6 +705,7 @@ Actual-sync exposes HTTP endpoints for monitoring:
 | `GET /metrics` | Detailed sync statistics | JSON with per-server status |
 | `GET /ready` | Kubernetes readiness probe | `200 OK` when service is ready |
 | `GET /dashboard` | Web dashboard UI | HTML dashboard interface |
+| `WS /ws/logs` | Live log stream (dashboard auth, same-origin only) | JSON log records |
 
 **Example - Health Check:**
 
@@ -851,7 +853,7 @@ See **[docs/TESTING.md](docs/TESTING.md)** for complete testing guide including:
 - **Non-Root Container** - Docker runs as `actualuser` (UID 1001), not root
 - **Read-Only Config** - Mount config as read-only in Docker
 - **HTTPS Enforcement** - Warnings for HTTP connections in production
-- **Rate Limiting** - HTTP endpoints protected (60 req/min per IP)
+- **Rate Limiting** - HTTP endpoints protected (60 req/min per IP), and dashboard logins lock out after 10 failures per IP in 15 minutes
 - **SQL Injection Protection** - Parameterized queries throughout
 - **Input Validation** - Startup business-logic validation, plus hard-fail JSON-schema validation (type/range/required/format/pattern/enum; unknown keys warn) for all config
 

@@ -371,6 +371,33 @@ Actual-sync/
 - Avoids overwhelming GoCardless API with concurrent requests
 - Reduces risk of rate limiting
 - Easier to debug issues with specific servers
+- Required for correctness: `@actual-app/api` is one process-wide session, so two syncs at once
+  would share (and corrupt) the same open budget
+
+**Enforcement** (#265): every sync goes through `syncBank`, which queues it on the single
+`SyncQueue` in `src/lib/syncQueue.js`. Scheduled jobs, auto-retries, the dashboard (including
+"Sync all") and Telegram `/sync` all wait their turn, in request order. A server that is already
+waiting or running is not queued again; the dashboard and Telegram answer "already queued". A
+failing sync releases the queue for the next one. Telegram does not wait for the sync to finish,
+so a long queue never blocks the bot's polling loop.
+
+The queue is per process. `--force-run` (`npm run sync`) and `scripts/listAccounts.js` start
+their own process with their own API session, so do not run them while the service is running.
+
+Hung calls (#272): each Actual API call a sync makes (`init`, `downloadBudget`, `loadBudget`,
+`aqlQuery`, `sync`, `shutdown`) is bounded by `sync.phaseTimeoutSeconds` (default 300), and
+`runBankSync` by 60 seconds per account. A call that runs out of time fails the sync with the
+phase named. A timeout only stops waiting: the call itself keeps running inside the one shared
+Actual session, so the sync keeps its queue slot for up to one more phase timeout while that call
+finishes, and only then runs `shutdown`, so a late download cannot leave its budget open for the
+next server. If a call is still running when the next sync starts, that sync waits up to its own
+phase timeout and then fails with `ACTUAL_SESSION_BUSY` rather than open a second budget in the
+same session. That sync also stops tracking the stuck call, so a call that never finishes costs
+one refused sync, not every sync until restart. With the default of 300 seconds, a server that
+never answers holds the queue for up to about 20 minutes (the stuck call, the wait, a stuck
+`shutdown`, and the next sync's wait). The dashboard status
+(`/api/dashboard/status`, `runningSync`) names the server holding the queue and when it started;
+public `/health` does not, so server names stay private.
 
 ### Exponential Backoff
 

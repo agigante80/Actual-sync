@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        <!-- template-version: 4 -->
+        <!-- template-version: 6 -->
         ## Bug Report
         Please provide enough detail to reproduce and assess the impact.
 
@@ -72,13 +72,18 @@ body:
       required: true
 
   - type: textarea
-    id: gdpr
+    id: personal_data
     attributes:
-      label: GDPR impact
-      description: Does this bug expose, leak, or mishandle PII (bank/transaction data, credentials, budget passwords)?
+      label: Personal data handling
+      description: Does this bug expose, leak or mishandle personal data (bank/transaction data, credentials, budget passwords)? If so, state all seven facts; otherwise mark N/A with the reason.
       value: |
-        - **Does this bug expose PII?** yes / no
-        - **Details:**
+        - **Personal-data fields affected:**
+        - **Storage location and encryption at rest:**
+        - **Erasure, including cascading deletion:**
+        - **Portability (export on request):**
+        - **Minimisation and retention:**
+        - **Legal basis:**
+        - **Cross-border transfer:**
     validations:
       required: true
 
@@ -169,10 +174,10 @@ body:
     attributes:
       label: Required reviews (mandatory)
       description: |
-        The gate orchestrators auto-select which specialist agents to run based on labels and content.
-        All selected agents must score 10/10 before implementation begins.
+        The gate runs its mechanical checks plus one critic, with the security lens joining by label.
+        The gate must return PASS before implementation begins.
       options:
-        - label: "**ticket-gate** - mandatory before implementation. Runs 5 core agents (Security, Architect, Developer, QA, GDPR) + dynamic agents based on labels. All must score 10/10."
+        - label: "**ticket-gate** - mandatory before implementation. Mechanical checks + one critic (plus the security lens by label). Must return PASS."
           required: true
 
   - type: textarea
@@ -188,6 +193,18 @@ body:
         ### Dashboard test (if dashboard-visible bug)
         - [ ] **Happy path:** Integration test verifying the fix works end-to-end
         - [ ] **Unhappy path:** Error state still handled correctly after fix
+    validations:
+      required: true
+
+  - type: textarea
+    id: docs_impact
+    attributes:
+      label: Documentation impact
+      description: Which documentation does this change affect, in the docs tree and the root README? "None" needs a reason.
+      placeholder: |
+        - **Docs affected:**
+        - **README impact (including screenshots regenerated with `npm run screenshots`):**
+        - **Why not, if none:**
     validations:
       required: true
 

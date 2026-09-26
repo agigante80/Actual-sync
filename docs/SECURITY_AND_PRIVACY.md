@@ -63,9 +63,21 @@ if (!password) {
 
 **Note**: Since Actual Budget is self-hosted, users control their own password policies. Above are recommendations, not enforcements.
 
+**Dashboard login throttle (#246)**: after 10 wrong dashboard credentials from one client IP within 15 minutes, every dashboard request from that IP gets `429` until the window ends, even with the right credentials. Successful logins and requests with no credentials yet (the browser's first basic-auth prompt) do not count. Credentials are compared in constant time. The throttle slows guessing but does not make a weak secret safe: prefer `auth.type: token` with a long random token (for example `openssl rand -hex 32`) over a chosen password.
+
 ---
 
 ## 🌐 Network Security
+
+### Live log stream (`/ws/logs`)
+
+The WebSocket log stream carries log metadata (server names, account names, sync errors), so it is protected at the handshake, before any data is sent:
+
+- the same dashboard credentials, via a single-use 30 second ticket from `/api/dashboard/ws-ticket`, for browsers and scripts alike. The handshake does not accept an `Authorization` header, since WebSocket upgrades bypass the HTTP rate limiter;
+- an `Origin` check at every auth type, including `none`: only same-origin and `dashboard.allowedOrigins` are accepted, which blocks Cross-Site WebSocket Hijacking from a page the operator happens to visit;
+- at most 10 open streams per address.
+
+Credentials are compared in constant time (SHA-256 digests with `crypto.timingSafeEqual`), and the basic-auth username and password are both always compared.
 
 ### Transport Encryption
 
@@ -112,6 +124,8 @@ const limiter = rateLimit({
   message: 'Too many requests, please try again later.'
 });
 ```
+
+**Behind a reverse proxy**: the limit is per client IP only when `healthCheck.trustProxy` is set to match the proxy (see [CONFIG.md](CONFIG.md#healthcheck-optional)). Unset, every request appears to come from the proxy, so all clients share one 60/minute bucket. Set too loosely (`true` on a port that is also reachable directly), clients can fake their IP and bypass the limit. `express-rate-limit`'s own configuration checks stay enabled.
 
 **Note**: Telegram bot API calls currently have no rate limiting (see Improvement Areas).
 
@@ -590,6 +604,8 @@ npm audit --audit-level=high
 **Tool**: [Trivy](https://github.com/aquasecurity/trivy) by Aqua Security
 
 **Runs**: After Docker test build completes
+
+**Supply chain**: the scanner's own GitHub Action is pinned to a commit SHA, not a branch, so a compromised upstream branch cannot run code in CI. No workflow may reference a branch; a test enforces both rules. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
 
 **Location**: `security-scan` job in CI/CD workflow
 

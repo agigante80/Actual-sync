@@ -258,11 +258,10 @@ module.exports = [
         id: '169-sync-confirmation-back', ticket: '#169',
         desc: "the inverted /sync confirmation returns, so `never` sends MORE than `always`",
         file: 'src/services/telegramBot.js',
-        anchor: '      await syncBank(server, { isAutomated: false, retryAttempt: 0 });',
-        mutant: '      await syncBank(server, { isAutomated: false, retryAttempt: 0 });\n'
-            + "      if (this.config.notifyOnSuccess === 'never') {\n"
-            + '        await this.sendMessage(`✅ Sync completed for ${serverName}`);\n'
-            + '      }',
+        anchor: '        .then(() => syncBank(server, { isAutomated: false, retryAttempt: 0 }))',
+        mutant: '        .then(() => syncBank(server, { isAutomated: false, retryAttempt: 0 }))\n'
+            + "        .then(() => this.config.notifyOnSuccess === 'never'\n"
+            + '          && this.sendMessage(`✅ Sync completed for ${serverName}`))',
         tests: 'telegramBot'
     },
 
@@ -787,6 +786,296 @@ module.exports = [
         anchor: "    log = console.error,",
         mutant: "    log = console.log,",
         tests: 'retargetRetest'
+    },
+
+    // ---- #245: trust proxy was never applied ---------------------------------
+    {
+        id: '245-trust-proxy-ignored', ticket: '#245',
+        desc: 'healthCheck.trustProxy is accepted but never set, so clients behind a proxy share one rate-limit bucket',
+        file: 'src/services/healthCheck.js',
+        anchor: "      this.app.set('trust proxy', options.trustProxy);",
+        mutant: '      // trust proxy not applied',
+        tests: 'healthCheck'
+    },
+
+    // ---- #248: trivy-action ran from a floating branch ----------------------
+    {
+        id: '248-trivy-floating-branch', ticket: '#248',
+        desc: 'the Trivy image scan runs aquasecurity/trivy-action@master again',
+        file: '.github/workflows/ci-cd.yml',
+        anchor: '      - name: Run Trivy vulnerability scanner\n        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0',
+        mutant: '      - name: Run Trivy vulnerability scanner\n        uses: aquasecurity/trivy-action@master',
+        tests: 'workflowPins'
+    },
+
+    // ---- #265: syncs share one Actual API session ---------------------------
+    {
+        id: '265-sync-bypasses-queue', ticket: '#265',
+        desc: 'syncBank calls runSyncBank directly, so two syncs can run at once again',
+        file: 'src/syncService.js',
+        anchor: '    return syncQueue.run(server.name, () => runSyncBank(server, options));',
+        mutant: '    return runSyncBank(server, options);',
+        tests: 'syncQueue'
+    },
+
+    // ---- #264: Dismiss read a field that does not exist -----------------------
+    {
+        id: '264-dismiss-wrong-field', ticket: '#264',
+        desc: 'dismiss-error reads this.serverStatuses (undefined) again, so every dismiss is a 500',
+        file: 'src/services/healthCheck.js',
+        anchor: '        const serverStatuses = this.status.serverStatuses;',
+        mutant: '        const serverStatuses = this.serverStatuses;',
+        tests: 'healthCheck'
+    },
+
+    // ---- #263: e2e harness seams and the string-error dashboard bug ---------
+    {
+        id: '263-port-zero-ignored', ticket: '#263',
+        desc: 'port 0 falls back to 3000 again, so the e2e fixtures can no longer get an OS-assigned free port',
+        file: 'src/services/healthCheck.js',
+        anchor: 'this.port = options.port ?? 3000;',
+        mutant: 'this.port = options.port || 3000;',
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '263-now-ignored', ticket: '#263',
+        desc: 'the injected clock is ignored, so status.startTime always reads the real clock again',
+        file: 'src/services/healthCheck.js',
+        anchor: "this.now = options.now || (() => new Date());",
+        mutant: 'this.now = () => new Date();',
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '263-rate-limit-max-ignored', ticket: '#263',
+        desc: 'the rate limiter goes back to a hardcoded 60, so the e2e fixtures cannot drive more requests than that',
+        file: 'src/services/healthCheck.js',
+        anchor: 'max: this.rateLimitMax, // requests per minute per IP (60 unless a test overrides it)',
+        mutant: 'max: 60, // requests per minute per IP',
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '263-sync-error-string-dropped', ticket: '#263',
+        desc: 'updateSyncStatus reads only error.message again, so a plain string error becomes "Unknown error"',
+        file: 'src/services/healthCheck.js',
+        anchor: "    const errorText = typeof syncResult.error === 'string'\n      ? syncResult.error\n      : syncResult.error?.message;",
+        mutant: '    const errorText = syncResult.error?.message;',
+        tests: 'healthCheck'
+    },
+    {
+        id: '263-synchistory-now-ignored', ticket: '#263',
+        desc: 'SyncHistoryService ignores the injected clock, so recorded timestamps and day-window queries use the real clock again',
+        file: 'src/services/syncHistory.js',
+        anchor: 'this.now = options.now || (() => new Date());',
+        mutant: 'this.now = () => new Date();',
+        tests: 'syncHistory'
+    },
+
+    // ---- #272: a hung Actual API call blocked the queue forever ------------------
+    {
+        id: '272-download-unbounded', ticket: '#272',
+        desc: 'downloadBudget is no longer timed, so a server that never answers hangs the queue again',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: "const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
+        mutant: "const TIMED_METHODS = ['init', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
+        tests: 'actualTimeouts'
+    },
+    {
+        id: '272-timeout-retried', ticket: '#272',
+        desc: 'a download timeout falls into the retry path, doubling the hang and clearing the cache',
+        file: 'src/syncService.js',
+        anchor: '            if (error instanceof PhaseTimeoutError) throw error;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-running-never-cleared', ticket: '#272',
+        desc: 'the queue keeps reporting a finished sync as running',
+        file: 'src/lib/syncQueue.js',
+        anchor: '                if (this.active === entry) this.active = null;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-status-hides-running', ticket: '#272',
+        desc: 'the dashboard status stops naming the sync holding the queue',
+        file: 'src/services/healthCheck.js',
+        anchor: '        runningSync: this.safeRunningSync(),',
+        mutant: '        runningSync: null,',
+        tests: 'healthCheck'
+    },
+    {
+        id: '272-retry-swallows-timeout', ticket: '#272',
+        desc: 'a timed-out retry download is treated as a corrupt cache and retried again',
+        file: 'src/syncService.js',
+        anchor: '                if (err instanceof PhaseTimeoutError) throw err; // same reason as above (#272)',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-entry-swallows-timeout', ticket: '#272',
+        desc: 'a loadBudget timeout is skipped as "not a budget directory"',
+        file: 'src/syncService.js',
+        anchor: '                    if (entryErr instanceof PhaseTimeoutError) throw entryErr;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-workaround-swallows-timeout', ticket: '#272',
+        desc: 'the loadBudget workaround carries on with no budget after a timeout',
+        file: 'src/syncService.js',
+        anchor: '            if (loadErr instanceof PhaseTimeoutError) throw loadErr;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-late-call-untracked', ticket: '#272',
+        desc: 'a timed-out call is forgotten, so it can land inside the next sync',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '            if (lateCalls) lateCalls.add(call);',
+        mutant: '',
+        tests: 'actualTimeouts'
+    },
+    {
+        id: '272-no-busy-check', ticket: '#272',
+        desc: 'a sync opens the session while an earlier late call still runs',
+        file: 'src/syncService.js',
+        anchor: '        if (!(await lateActualCalls.drain(phaseTimeoutMs))) {',
+        mutant: '        if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-shutdown-unguarded', ticket: '#272',
+        desc: 'a sync refused as busy still shuts down the session the late call is using',
+        file: 'src/syncService.js',
+        anchor: '        if (sessionOpened) {',
+        mutant: '        if (true) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-never-abandoned', ticket: '#272',
+        desc: 'a call that never settles blocks every later sync until restart',
+        file: 'src/syncService.js',
+        anchor: '            const abandoned = lateActualCalls.abandon();',
+        mutant: '            const abandoned = lateActualCalls.size;',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-abandon-keeps-calls', ticket: '#272',
+        desc: 'abandon reports the calls dropped but keeps tracking them',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '        this.pending.clear();',
+        mutant: '',
+        tests: 'actualTimeouts'
+    },
+
+    // ---- #242: /ws/logs streamed to anyone ----------------------------------
+    {
+        id: '242-ws-no-verify', ticket: '#242',
+        desc: 'the /ws/logs server is built without verifyClient, so any client gets the log stream',
+        file: 'src/services/healthCheck.js',
+        anchor: '          perMessageDeflate: false,\n          verifyClient: (info, done) => this.verifyWsClient(info, done)',
+        mutant: '          perMessageDeflate: false',
+        tests: 'healthCheck'
+    },
+    {
+        id: '242-ws-origin-unchecked', ticket: '#242',
+        desc: 'the handshake skips the Origin check, reopening Cross-Site WebSocket Hijacking',
+        file: 'src/services/healthCheck.js',
+        anchor: "    if (info.origin && !this.isAllowedWsOrigin(info.origin, req.headers.host)) {",
+        mutant: "    if (false) {",
+        tests: 'healthCheck'
+    },
+    {
+        id: '242-ws-ticket-reusable', ticket: '#242',
+        desc: 'a consumed ticket stays valid, so a leaked ticket URL grants the stream forever',
+        file: 'src/lib/dashboardCredentials.js',
+        anchor: '    this.tickets.delete(ticket);\n    return this.now() <= expiry;',
+        mutant: '    return this.now() <= expiry;',
+        tests: 'dashboardCredentials'
+    },
+    {
+        id: '246-basic-auth-short-circuits', ticket: '#246',
+        desc: 'a wrong username skips the password comparison, a timing signal for valid usernames',
+        file: 'src/lib/dashboardCredentials.js',
+        anchor: '    const passOk = safeEqual(password, authConfig.password);',
+        mutant: '    const passOk = userOk && safeEqual(password, authConfig.password);',
+        tests: 'dashboardCredentials'
+    },
+
+    {
+        id: '242-ws-header-oracle', ticket: '#242',
+        desc: 'the handshake accepts an Authorization header again, an unthrottled password oracle',
+        file: 'src/services/healthCheck.js',
+        anchor: '    if (ticket && this.wsTickets.consume(ticket)) return done(true);\n',
+        mutant: '    if (ticket && this.wsTickets.consume(ticket)) return done(true);\n    if (checkCredentials(req.headers, authConfig).ok) return done(true);\n',
+        tests: 'healthCheck'
+    },
+    {
+        id: '242-missing-token-matches-empty', ticket: '#242',
+        desc: 'a missing configured token lets an empty Bearer header in',
+        file: 'src/lib/dashboardCredentials.js',
+        anchor: "    if (!isSet(authConfig.token)) return { ok: false, reason: 'config' };\n",
+        mutant: '',
+        tests: 'dashboardCredentials'
+    },
+
+    {
+        id: '246-token-failure-uncounted', ticket: '#246',
+        desc: 'wrong tokens no longer count, so brute force is unthrottled',
+        file: 'src/services/healthCheck.js',
+        anchor: "    res.locals.authFailed = true;\n    this.logger.warn('Dashboard token authentication failed', {",
+        mutant: "    this.logger.warn('Dashboard token authentication failed', {",
+        tests: 'healthCheck'
+    },
+    {
+        id: '246-basic-failure-uncounted', ticket: '#246',
+        desc: 'wrong basic credentials no longer count',
+        file: 'src/services/healthCheck.js',
+        anchor: '      res.locals.authFailed = true;',
+        mutant: '',
+        tests: 'healthCheck'
+    },
+    {
+        id: '246-success-counts', ticket: '#246',
+        desc: 'every request counts, so an operator with the right password is locked out',
+        file: 'src/services/healthCheck.js',
+        anchor: '        if (res.locals.authFailed) this.authFailures.increment(key);',
+        mutant: '        this.authFailures.increment(key);',
+        tests: 'healthCheck'
+    },
+    {
+        id: '246-throttle-bypassed', ticket: '#246',
+        desc: 'the failure count is never checked, so guessing is unthrottled',
+        file: 'src/services/healthCheck.js',
+        anchor: '        if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {',
+        mutant: '        if (false) {',
+        tests: 'healthCheck'
+    },
+
+    {
+        id: '246-expired-window-still-locks', ticket: '#246',
+        desc: 'an ended window keeps locking the client out until the sweep',
+        file: 'src/services/healthCheck.js',
+        anchor: '        if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {',
+        mutant: '        if (seen && seen.totalHits >= this.authFailureLimit) {',
+        tests: 'healthCheck'
+    },
+    {
+        id: '246-await-between-check-and-count', ticket: '#246',
+        desc: 'an await between reading the count and adding a failure lets pipelined guesses through',
+        file: 'src/services/healthCheck.js',
+        anchor: "    return (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n",
+        mutant: "    return async (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n        await null;\n",
+        tests: 'healthCheck'
+    },
+
+    {
+        id: '263-metrics-echoes-error', ticket: '#263',
+        desc: 'the unauthenticated /metrics shows the sync error text',
+        file: 'src/services/healthCheck.js',
+        anchor: "          .map(([name, { error, ...rest }]) => [name, rest])),",
+        mutant: "          .map(([name, entry]) => [name, entry])),",
+        tests: 'healthCheck'
     },
 
     // ---- #169: the README claim that started #168 ---------------------------

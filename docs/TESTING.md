@@ -244,6 +244,71 @@ test('should detect invalid JSON in config.json', () => {
 
 ---
 
+## 🌐 Browser E2E Tests (#263)
+
+The unit suite above mocks the Actual API and the filesystem; it never renders
+the dashboard's HTML/JS or drives a real browser. `tests/e2e/` covers that gap
+with Puppeteer against real backing services (a real `HealthCheckService` and
+a real SQLite-backed `SyncHistoryService`), so it is a separate suite with its
+own Jest config rather than another `describe()` block in the unit tests.
+
+### Running It
+
+```bash
+npm run test:e2e
+```
+
+This must go through the npm script, not a bare `npx jest --config jest.e2e.config.js`:
+Puppeteer ships ESM-only and is loaded with a dynamic `import()`, which Jest's
+CommonJS runtime refuses unless Node itself starts with
+`--experimental-vm-modules`; the npm script sets that flag.
+
+### How a spec is structured
+
+- **Fixture states** (`tests/e2e/fixtures/states/*.js`) seed a scenario -
+  healthy, degraded, a longer history with a known failure count, and so on.
+  Each state is just a module with a name string and some seed data, so a new
+  scenario is a new small file, not a change to the harness itself.
+- **The fixture server** (`tests/e2e/fixtures/index.js`) starts a real
+  `HealthCheckService` on an OS-assigned port (`port: 0`) with a real
+  `SyncHistoryService` on a temp SQLite file, seeded from the chosen state.
+  Only `syncBank`, `getServers`, `getCronSchedules` and the notification
+  service are stubbed - everything else is the real dashboard code and real
+  routes.
+- **The browser fixture** (`tests/e2e/fixtures/browser.js`) launches one
+  shared headless Chrome for the whole run and exposes `withFixture` /
+  `withDashboard` helpers. Every page it opens has a fixed viewport, UTC
+  timezone, reduced motion, and a frozen clock (`@sinonjs/fake-timers`
+  installed before any dashboard script runs, sharing the exact same "now"
+  the fixture server uses) - so a screenshot or an assertion never depends on
+  wall-clock time.
+- **Network lockdown**: every request is intercepted. Only same-origin
+  requests to the fixture server and the pinned local copy of Chart.js (served
+  at the exact CDN URL `dashboard.html` hardcodes) are allowed through;
+  everything else, including the browser's own `/favicon.ico` request on every
+  navigation, is answered locally or blocked, so a spec can never reach the
+  real network or silently consume its own rate-limit budget on a request it
+  didn't intend to make.
+- **On failure**, the harness saves a screenshot and the page's console log
+  under `tests/e2e/artifacts/` (gitignored) instead of failing silently.
+
+### What is covered
+
+Login and the login rate limit, manual sync triggering and error dismissal,
+and the Overview, History, Analytics, Settings and Accounts tabs - each
+against a fixture state built for that scenario. See the spec files under
+`tests/e2e/*.e2e.js` for the exact assertions.
+
+### The screenshot generator uses the same harness
+
+`scripts/generateDashboardScreenshots.js` (`npm run screenshots`) renders the
+documentation screenshots in `docs/screenshots/` from `tests/e2e/screenshots.json`
+using this same fixture harness - there is no separate mocked code path to keep
+in sync, and no running service to start first. See `docs/screenshots/README.md`
+for the manifest format.
+
+---
+
 ## 🛠️ Test Helpers
 
 Located in `src/__tests__/helpers/testHelpers.js`:
@@ -519,9 +584,11 @@ When adding new features:
 
 1. Write tests first (TDD) or alongside implementation
 2. Ensure tests pass: `npm test`
-3. Check coverage: `npm run test:coverage`
-4. Maintain >70% coverage threshold
-5. Update this documentation if adding new test patterns
+3. If the change touches the dashboard's rendered UI, also run the browser
+   E2E suite: `npm run test:e2e`
+4. Check coverage: `npm run test:coverage`
+5. Maintain >70% coverage threshold
+6. Update this documentation if adding new test patterns
 
 ---
 

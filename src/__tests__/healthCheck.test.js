@@ -258,6 +258,64 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('trust proxy (#245)', () => {
+    // GET /health with an X-Forwarded-For header, as a reverse proxy would send.
+    function getForwarded(port, forwardedFor) {
+      return new Promise((resolve, reject) => {
+        http.get({ hostname: '127.0.0.1', port, path: '/health', headers: { 'X-Forwarded-For': forwardedFor } },
+          (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); }).on('error', reject);
+      });
+    }
+
+    async function exhaust(port, forwardedFor) {
+      const codes = [];
+      for (let i = 0; i < 60; i++) codes.push(await getForwarded(port, forwardedFor));
+      return codes;
+    }
+
+    it('is off by default, so req.ip is the socket address', () => {
+      expect(healthCheck.app.get('trust proxy')).toBe(false);
+      const svc = makeService({ port: testPort, trustProxy: false });
+      expect(svc.app.get('trust proxy')).toBe(false);
+    });
+
+    it('with trustProxy 1, two forwarded clients get separate rate-limit budgets', async () => {
+      const svc = makeService({ port: testPort, trustProxy: 1 });
+      await svc.start();
+
+      const codesA = await exhaust(testPort, '1.2.3.4');
+      expect(codesA.every(c => c === 200)).toBe(true);
+      expect(await getForwarded(testPort, '1.2.3.4')).toBe(429);
+      expect(await getForwarded(testPort, '5.6.7.8')).toBe(200);
+    });
+
+    it('unset, forwarded clients share the proxy bucket (documented pre-#245 behaviour)', async () => {
+      await healthCheck.start();
+
+      await exhaust(testPort, '1.2.3.4');
+      expect(await getForwarded(testPort, '5.6.7.8')).toBe(429);
+    });
+
+    it('with trustProxy 1, auth failures log the forwarded client address', async () => {
+      const svc = makeService({
+        port: testPort,
+        trustProxy: 1,
+        dashboardConfig: { enabled: true, auth: { type: 'token', token: 'right' } }
+      });
+      const warn = jest.spyOn(svc.logger, 'warn').mockImplementation(() => {});
+      await svc.start();
+
+      await new Promise((resolve, reject) => {
+        http.get({
+          hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/status',
+          headers: { 'X-Forwarded-For': '1.2.3.4', Authorization: 'Bearer wrong' }
+        }, (res) => { res.resume(); res.on('end', resolve); }).on('error', reject);
+      });
+
+      expect(warn).toHaveBeenCalledWith('Dashboard token authentication failed', { remoteAddress: '1.2.3.4' });
+    });
+  });
+
   describe('/icon.png endpoint (#113)', () => {
     beforeEach(async () => {
       await healthCheck.start();
@@ -345,8 +403,24 @@ describe('HealthCheckService', () => {
       expect(response.body.sync.successfulSyncs).toBe(0);
       expect(response.body.sync.failedSyncs).toBe(1);
       expect(response.body.sync.successRate).toBe('0.00%');
-      expect(response.body.lastError).toBeDefined();
-      expect(response.body.lastError.message).toBe('Test error');
+      expect(response.body.lastError).toEqual({
+        timestamp: expect.any(String),
+        serverName: 'TestServer'
+      });
+    });
+
+    test('never echoes the sync error text, which may carry bank messages', async () => {
+      healthCheck.updateSyncStatus({
+        status: 'failure',
+        serverName: 'TestServer',
+        error: '2 account(s) failed to sync: secret bank detail'
+      });
+
+      const response = await httpGet(`http://127.0.0.1:${testPort}/metrics`);
+
+      expect(response.body.servers.TestServer.status).toBe('failure');
+      expect(JSON.stringify(response.body)).not.toContain('secret bank detail');
+      expect(healthCheck.status.serverStatuses.TestServer.error).toContain('secret bank detail');
     });
 
     test('should calculate success rate correctly', async () => {
@@ -460,6 +534,18 @@ describe('HealthCheckService', () => {
       expect(status.failureCount).toBe(1);
       expect(status.lastSyncStatus).toBe('failure');
       expect(status.lastError.message).toBe('Test error');
+    });
+
+    test('should accept a plain string error, not only an Error object (#263)', () => {
+      // syncService passes the error as a string; an earlier version of
+      // updateSyncStatus read only error.message, which is undefined on a
+      // string, so both lastError.message and the per-server error ended up
+      // as "Unknown error" / undefined instead of the actual failure text.
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'TestServer', error: 'Connection refused' });
+
+      const status = healthCheck.getStatus();
+      expect(status.lastError.message).toBe('Connection refused');
+      expect(status.serverStatuses.TestServer.error).toBe('Connection refused');
     });
 
     test('should track multiple syncs', () => {
@@ -659,6 +745,237 @@ describe('HealthCheckService', () => {
       }
       
       await hc.stop();
+    });
+  });
+
+  describe('Dashboard auth-failure throttle (#246)', () => {
+    function getWithAuth(path, authorization) {
+      return new Promise((resolve, reject) => {
+        http.get({
+          hostname: '127.0.0.1',
+          port: testPort,
+          path,
+          headers: authorization ? { Authorization: authorization } : {}
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            let body = data;
+            try { body = JSON.parse(data); } catch { /* HTML */ }
+            resolve({ statusCode: res.statusCode, body });
+          });
+        }).on('error', reject);
+      });
+    }
+    const tokenService = (extra = {}) => makeService({
+      port: testPort,
+      host: '127.0.0.1',
+      dashboardConfig: { enabled: true, auth: { type: 'token', token: 'correct-token' } },
+      loggerConfig: { level: 'ERROR' },
+      authFailureLimit: 5,
+      ...extra
+    });
+
+    test('the failure after the limit gets 429 and a warn log, across routes', async () => {
+      const hc = tokenService();
+      const warn = jest.spyOn(hc.logger, 'warn');
+      await hc.start();
+      try {
+        const paths = ['/dashboard', '/api/dashboard/status', '/api/dashboard/history', '/api/dashboard/accounts', '/dashboard'];
+        for (const path of paths) {
+          expect((await getWithAuth(path, 'Bearer wrong-token')).statusCode).toBe(401);
+        }
+        const sixth = await getWithAuth('/api/dashboard/status', 'Bearer wrong-token');
+        expect(sixth.statusCode).toBe(429);
+        expect(sixth.body.error).toMatch(/Too many failed authentication attempts/);
+        expect(warn).toHaveBeenCalledWith(
+          'Dashboard authentication throttled after repeated failures',
+          expect.objectContaining({ remoteAddress: expect.any(String), limit: 5 })
+        );
+        // Locked out for the window, even with the right token.
+        expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(429);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('successful logins never consume the budget', async () => {
+      const hc = tokenService();
+      await hc.start();
+      try {
+        for (let i = 0; i < 20; i++) {
+          expect((await getWithAuth('/api/dashboard/status', 'Bearer correct-token')).statusCode).toBe(200);
+        }
+        // An authenticated request that fails for another reason is not an auth failure.
+        for (let i = 0; i < 6; i++) {
+          expect((await getWithAuth('/api/dashboard/metrics?range=bogus', 'Bearer correct-token')).statusCode).not.toBe(429);
+        }
+        expect((await getWithAuth('/api/dashboard/status', 'Bearer wrong-token')).statusCode).toBe(401);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('a request with no credentials yet does not count', async () => {
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'test-password' } },
+        loggerConfig: { level: 'ERROR' },
+        authFailureLimit: 2
+      });
+      await hc.start();
+      try {
+        for (let i = 0; i < 5; i++) {
+          expect((await getWithAuth('/dashboard')).statusCode).toBe(401);
+        }
+        const good = 'Basic ' + Buffer.from('admin:test-password').toString('base64');
+        expect((await getWithAuth('/dashboard', good)).statusCode).toBe(200);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('wrong guesses pipelined on one socket are held to the limit', async () => {
+      // Node parses every pipelined request in one tick, so an await between
+      // reading the count and adding a failure let all of them through.
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'token', token: 'correct-token' } },
+        loggerConfig: { level: 'ERROR' },
+        authFailureLimit: 5
+      });
+      await hc.start();
+      try {
+        const raw = await new Promise((resolve) => {
+          const socket = net.connect(testPort, '127.0.0.1');
+          let buf = '';
+          socket.on('data', (d) => {
+            buf += d;
+            if ((buf.match(/HTTP\/1\.1 \d{3}/g) || []).length >= 20) socket.end();
+          });
+          socket.on('close', () => resolve(buf));
+          socket.on('error', () => resolve(buf));
+          socket.write('GET /api/dashboard/status HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer wrong-token\r\n\r\n'.repeat(20));
+        });
+        const codes = (raw.match(/HTTP\/1\.1 \d{3}/g) || []).map((l) => l.slice(9));
+        expect(codes).toHaveLength(20);
+        expect(codes.filter((c) => c === '401')).toHaveLength(5);
+        expect(codes.filter((c) => c === '429')).toHaveLength(15);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('a wrong basic password counts, and so does a wrong username', async () => {
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'test-password' } },
+        loggerConfig: { level: 'ERROR' },
+        authFailureLimit: 2
+      });
+      await hc.start();
+      try {
+        const bad = (u, p) => 'Basic ' + Buffer.from(`${u}:${p}`).toString('base64');
+        expect((await getWithAuth('/dashboard', bad('admin', 'nope'))).statusCode).toBe(401);
+        expect((await getWithAuth('/dashboard', bad('wrong', 'wrong'))).statusCode).toBe(401);
+        expect((await getWithAuth('/dashboard', bad('admin', 'nope'))).statusCode).toBe(429);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('auth type none is never throttled', async () => {
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' },
+        authFailureLimit: 1
+      });
+      await hc.start();
+      try {
+        for (let i = 0; i < 3; i++) {
+          expect((await getWithAuth('/api/dashboard/status', 'Bearer anything')).statusCode).toBe(200);
+        }
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('correct requests never count, even in a burst right below the limit', async () => {
+      const hc = tokenService();
+      await hc.start();
+      try {
+        for (let i = 0; i < 4; i++) {
+          expect((await getWithAuth('/api/dashboard/status', 'Bearer wrong-token')).statusCode).toBe(401);
+        }
+        const burst = await Promise.all(Array.from({ length: 12 }, () =>
+          getWithAuth('/api/dashboard/status', 'Bearer correct-token')));
+        expect(burst.map(r => r.statusCode)).toEqual(Array(12).fill(200));
+        expect((await hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1'))).totalHits).toBe(4);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('a correct request the client aborts is not counted', async () => {
+      const hc = tokenService();
+      await hc.start();
+      try {
+        await Promise.all(Array.from({ length: 8 }, () => new Promise((resolve) => {
+          const req = http.get({
+            hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/status',
+            headers: { Authorization: 'Bearer correct-token' }
+          });
+          req.on('error', resolve);
+          req.on('socket', (sock) => sock.on('connect', () => { req.destroy(); resolve(); }));
+        })));
+        expect((await getWithAuth('/api/dashboard/status', 'Bearer correct-token')).statusCode).toBe(200);
+        expect(await hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1'))).toBeUndefined();
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('access comes back once the window ends', async () => {
+      const hc = tokenService({ authFailureLimit: 1, authFailureWindowMs: 300 });
+      await hc.start();
+      try {
+        expect((await getWithAuth('/dashboard', 'Bearer wrong-token')).statusCode).toBe(401);
+        expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(429);
+        await new Promise(r => setTimeout(r, 400));
+        expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(200);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('behind a trusted proxy each client has its own budget', async () => {
+      const hc = tokenService({ authFailureLimit: 2, trustProxy: 1 });
+      await hc.start();
+      const as = (ip, auth) => new Promise((resolve, reject) => {
+        http.get({
+          hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/status',
+          headers: { Authorization: auth, 'X-Forwarded-For': ip }
+        }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); }).on('error', reject);
+      });
+      try {
+        expect(await as('203.0.113.7', 'Bearer wrong-token')).toBe(401);
+        expect(await as('203.0.113.7', 'Bearer wrong-token')).toBe(401);
+        expect(await as('203.0.113.7', 'Bearer correct-token')).toBe(429);
+        expect(await as('198.51.100.9', 'Bearer correct-token')).toBe(200);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('defaults to 10 failures per 15 minutes', () => {
+      const hc = makeService({ port: testPort, loggerConfig: { level: 'ERROR' } });
+      expect(hc.authFailureLimit).toBe(10);
+      expect(hc.authFailureWindowMs).toBe(15 * 60 * 1000);
     });
   });
 
@@ -1081,6 +1398,188 @@ describe('HealthCheckService', () => {
    * a user whose failure alerts were being suppressed had no surface that said
    * so. Wiring it up is the point of the endpoint.
    */
+  describe('POST /api/dashboard/sync queueing (#265)', () => {
+    const url = () => `http://127.0.0.1:${testPort}/api/dashboard/sync`;
+    const servers = [{ name: 'A' }, { name: 'B' }];
+
+    it('queues every server in config order for "all" and returns at once', async () => {
+      const { SyncQueue } = require('../lib/syncQueue');
+      const queue = new SyncQueue();
+      const log = [];
+      let releaseA;
+      const aDone = new Promise((resolve) => { releaseA = resolve; });
+      const runOne = async (s) => {
+        log.push(`${s.name}-start`);
+        if (s.name === 'A') await aDone;
+        log.push(`${s.name}-end`);
+      };
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        loggerConfig: { level: 'ERROR' },
+        getServers: () => servers,
+        syncBank: (s) => queue.run(s.name, () => runOne(s)),
+        isSyncQueued: (name) => queue.has(name)
+      });
+      await hc.start();
+
+      const res = await httpPostJson(url(), { server: 'all' });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ success: true, message: 'Sync triggered for all servers' });
+      expect(log).toEqual(['A-start']);
+
+      releaseA();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(log).toEqual(['A-start', 'A-end', 'B-start', 'B-end']);
+    });
+
+    it('does not queue a server twice and says so', async () => {
+      const syncBank = jest.fn(() => new Promise(() => {}));
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        loggerConfig: { level: 'ERROR' },
+        getServers: () => servers,
+        syncBank,
+        isSyncQueued: (name) => name === 'A'
+      });
+      await hc.start();
+
+      const res = await httpPostJson(url(), { server: 'A' });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ success: true, message: 'Sync already queued' });
+      expect(syncBank).not.toHaveBeenCalled();
+    });
+
+    it('triggers a server that is not queued', async () => {
+      const syncBank = jest.fn(() => Promise.resolve());
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        loggerConfig: { level: 'ERROR' },
+        getServers: () => servers,
+        syncBank,
+        isSyncQueued: () => false
+      });
+      await hc.start();
+
+      const res = await httpPostJson(url(), { server: 'B' });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ success: true, message: 'Sync triggered for B' });
+      expect(syncBank).toHaveBeenCalledWith(servers[1]);
+    });
+  });
+
+  describe('GET /api/dashboard/status runningSync (#272)', () => {
+    const statusUrl = () => `http://127.0.0.1:${testPort}/api/dashboard/status`;
+
+    it('reports the sync holding the queue', async () => {
+      const running = { key: 'Main', startedAt: '2026-09-26T01:00:00.000Z' };
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        getRunningSync: () => running
+      });
+      await hc.start();
+      const res = await httpGet(statusUrl());
+      expect(res.statusCode).toBe(200);
+      expect(res.body.runningSync).toEqual(running);
+    });
+
+    it('is null when nothing runs, or when the callback throws', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        getRunningSync: () => { throw new Error('boom'); }
+      });
+      await hc.start();
+      const res = await httpGet(statusUrl());
+      expect(res.statusCode).toBe(200);
+      expect(res.body.runningSync).toBeNull();
+    });
+
+    it('is not disclosed on public /health', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        getRunningSync: () => ({ key: 'Main', startedAt: '2026-09-26T01:00:00.000Z' })
+      });
+      await hc.start();
+      const res = await httpGet(`http://127.0.0.1:${testPort}/health`);
+      expect(JSON.stringify(res.body)).not.toContain('Main');
+    });
+  });
+
+  describe('POST /api/dashboard/dismiss-error (#264)', () => {
+    const url = () => `http://127.0.0.1:${testPort}/api/dashboard/dismiss-error`;
+
+    beforeEach(async () => {
+      await healthCheck.start();
+    });
+
+    it('removes the error of a known server and reports success', async () => {
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'Main', error: new Error('x') });
+      const res = await httpPostJson(url(), { server: 'Main' });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ success: true, message: 'Error dismissed' });
+      expect(healthCheck.getStatus().serverStatuses.Main).not.toHaveProperty('error');
+      const status = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/status`);
+      expect(status.body.servers.Main).not.toHaveProperty('error');
+      // The card stops showing red; the failure itself is still reported.
+      expect(status.body.servers.Main.errorDismissed).toBe(true);
+      expect(status.body.servers.Main.status).toBe('failure');
+    });
+
+    it('a later sync clears the dismissed flag', async () => {
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'Main', error: new Error('x') });
+      await httpPostJson(url(), { server: 'Main' });
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'Main', error: new Error('y') });
+
+      const main = healthCheck.getStatus().serverStatuses.Main;
+      expect(main.error).toBe('y');
+      expect(main).not.toHaveProperty('errorDismissed');
+    });
+
+    it('succeeds and changes nothing when the server has no error', async () => {
+      healthCheck.updateSyncStatus({ status: 'success', serverName: 'Main' });
+      const before = healthCheck.getStatus().serverStatuses.Main;
+      const res = await httpPostJson(url(), { server: 'Main' });
+
+      expect(res.statusCode).toBe(200);
+      expect(healthCheck.getStatus().serverStatuses.Main).toEqual(before);
+    });
+
+    it('returns 404 for an unknown server', async () => {
+      const res = await httpPostJson(url(), { server: 'Ghost' });
+      expect(res.statusCode).toBe(404);
+      expect(res.body).toEqual({ error: 'Server not found' });
+    });
+
+    it('returns 404 for __proto__, keeping the prototype pollution guard', async () => {
+      const res = await httpPostJson(url(), { server: '__proto__' });
+      expect(res.statusCode).toBe(404);
+      expect(res.body).toEqual({ error: 'Server not found' });
+    });
+
+    it('returns 400 when the server name is missing', async () => {
+      const res = await httpPostJson(url(), {});
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toEqual({ error: 'Server name required' });
+    });
+
+    it('returns 401 without credentials when dashboard auth is enabled', async () => {
+      await healthCheck.stop();
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'secret' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+      const res = await httpPostJson(url(), { server: 'Main' });
+      expect(res.statusCode).toBe(401);
+      expect(res.body).toEqual({ error: 'Authentication required' });
+    });
+  });
+
   describe('GET /api/dashboard/notifications (#188)', () => {
     const url = () => `http://127.0.0.1:${testPort}/api/dashboard/notifications`;
 
@@ -1295,5 +1794,184 @@ describe('HealthCheckService', () => {
       }
     });
   });
-});
 
+  describe('/ws/logs handshake authentication (#242)', () => {
+    const WebSocket = require('ws');
+
+    // Resolve with how the handshake ended: { open: true, ws } or { status }.
+    function tryConnect(path, headers = {}) {
+      return new Promise((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${testPort}${path}`, { headers });
+        // ws is non-enumerable so a failed toEqual prints { open: true }, not the whole socket.
+        ws.once('open', () => resolve(Object.defineProperty({ open: true }, 'ws', { value: ws })));
+        ws.once('unexpected-response', (req, res) => {
+          resolve({ open: false, status: res.statusCode });
+          req.destroy();
+        });
+        ws.once('error', () => resolve({ open: false, status: null }));
+      });
+    }
+
+    function getJson(path, headers = {}) {
+      return new Promise((resolve, reject) => {
+        http.get({ host: '127.0.0.1', port: testPort, path, headers }, (res) => {
+          let data = '';
+          res.on('data', (c) => { data += c; });
+          res.on('end', () => resolve({ statusCode: res.statusCode, body: data ? JSON.parse(data) : null }));
+        }).on('error', reject);
+      });
+    }
+
+    const bearer = { authorization: 'Bearer t0k' };
+    const sameOrigin = () => ({ origin: `http://127.0.0.1:${testPort}` });
+
+    async function startWith(dashboardConfig) {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', dashboardConfig, loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+      return hc;
+    }
+
+    async function mintTicket() {
+      const res = await getJson('/api/dashboard/ws-ticket', bearer);
+      expect(res.statusCode).toBe(200);
+      return res.body.ticket;
+    }
+
+    test('a valid ticket and same-origin header opens the socket and receives broadcasts', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const ticket = await mintTicket();
+      const result = await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin());
+      expect(result.open).toBe(true);
+
+      const received = new Promise((resolve) => {
+        result.ws.on('message', (data) => {
+          const msg = JSON.parse(data);
+          if (msg.message === 'probe-242') resolve(msg);
+        });
+      });
+      hc.broadcastLog('info', 'probe-242', { server: 'x' });
+      await expect(received).resolves.toMatchObject({ level: 'info', message: 'probe-242' });
+      result.ws.close();
+    });
+
+    test('no ticket under auth.type token is refused with 401 and no socket is tracked', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const result = await tryConnect('/ws/logs', sameOrigin());
+      expect(result).toEqual({ open: false, status: 401 });
+      expect(hc.wsClients.size).toBe(0);
+    });
+
+    test('the ticket endpoint itself requires dashboard auth', async () => {
+      await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const res = await getJson('/api/dashboard/ws-ticket');
+      expect(res.statusCode).toBe(401);
+    });
+
+    test('a ticket works once: reuse is refused with 401', async () => {
+      await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const ticket = await mintTicket();
+      const first = await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin());
+      expect(first.open).toBe(true);
+      first.ws.close();
+      const second = await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin());
+      expect(second).toEqual({ open: false, status: 401 });
+    });
+
+    test('an expired ticket is refused with 401', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      let now = 1_000_000;
+      hc.wsTickets.now = () => now;
+      const ticket = hc.wsTickets.mint();
+      now += hc.wsTickets.ttlMs + 1;
+      const result = await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin());
+      expect(result).toEqual({ open: false, status: 401 });
+    });
+
+    // Upgrades bypass the HTTP rate limiter, so the handshake must not be a
+    // credential oracle: even a VALID header is refused without a ticket.
+    test('a valid Authorization header without a ticket is refused with 401', async () => {
+      await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const result = await tryConnect('/ws/logs', bearer);
+      expect(result).toEqual({ open: false, status: 401 });
+    });
+
+    test('basic auth: valid credentials on the handshake are refused, a ticket minted with them works', async () => {
+      await startWith({ enabled: true, auth: { type: 'basic', username: 'admin', password: 'pw' } });
+      const basic = { authorization: 'Basic ' + Buffer.from('admin:pw').toString('base64') };
+      expect(await tryConnect('/ws/logs', basic)).toEqual({ open: false, status: 401 });
+
+      const res = await getJson('/api/dashboard/ws-ticket', basic);
+      expect(res.statusCode).toBe(200);
+      const result = await tryConnect(`/ws/logs?ticket=${res.body.ticket}`, sameOrigin());
+      expect(result.open).toBe(true);
+      result.ws.close();
+    });
+
+    test('basic auth: a ticket request with a wrong password is refused', async () => {
+      await startWith({ enabled: true, auth: { type: 'basic', username: 'admin', password: 'pw' } });
+      const wrong = { authorization: 'Basic ' + Buffer.from('admin:nope').toString('base64') };
+      const res = await getJson('/api/dashboard/ws-ticket', wrong);
+      expect(res.statusCode).toBe(401);
+    });
+
+    test('a foreign Origin is refused with 403 even with a valid ticket', async () => {
+      await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const ticket = await mintTicket();
+      const result = await tryConnect(`/ws/logs?ticket=${ticket}`, { origin: 'https://evil.example' });
+      expect(result).toEqual({ open: false, status: 403 });
+    });
+
+    test('a foreign Origin is refused with 403 under auth.type none too', async () => {
+      await startWith({ enabled: true, auth: { type: 'none' } });
+      const result = await tryConnect('/ws/logs', { origin: 'https://evil.example' });
+      expect(result).toEqual({ open: false, status: 403 });
+    });
+
+    test('an Origin listed in dashboard.allowedOrigins is accepted', async () => {
+      await startWith({
+        enabled: true,
+        allowedOrigins: ['https://home.example'],
+        auth: { type: 'token', token: 't0k' }
+      });
+      const ticket = await mintTicket();
+      const result = await tryConnect(`/ws/logs?ticket=${ticket}`, { origin: 'https://home.example' });
+      expect(result.open).toBe(true);
+      result.ws.close();
+    });
+
+    test('auth.type none with a same-origin request behaves as before', async () => {
+      await startWith({ enabled: true, auth: { type: 'none' } });
+      const result = await tryConnect('/ws/logs', sameOrigin());
+      expect(result.open).toBe(true);
+      result.ws.close();
+    });
+
+    test('dashboard.enabled false refuses the handshake with 403', async () => {
+      await startWith({ enabled: false, auth: { type: 'none' } });
+      const result = await tryConnect('/ws/logs', sameOrigin());
+      expect(result).toEqual({ open: false, status: 403 });
+    });
+
+    test('connections beyond the per-address cap are refused with 429', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'none' } });
+      hc.maxWsConnectionsPerIp = 2;
+      const a = await tryConnect('/ws/logs');
+      const b = await tryConnect('/ws/logs');
+      expect(a.open && b.open).toBe(true);
+      const c = await tryConnect('/ws/logs');
+      expect(c).toEqual({ open: false, status: 429 });
+
+      // Closing one frees a slot.
+      const closed = new Promise((resolve) => a.ws.once('close', resolve));
+      a.ws.close();
+      await closed;
+      await new Promise((r) => setTimeout(r, 50));
+      const d = await tryConnect('/ws/logs');
+      expect(d.open).toBe(true);
+      b.ws.close();
+      d.ws.close();
+    });
+  });
+});

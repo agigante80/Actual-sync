@@ -18,6 +18,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
+    "test:e2e": "node --experimental-vm-modules node_modules/.bin/jest --config jest.e2e.config.js --runInBand",
     "test:mutation": "node scripts/mutationTest.js",
     "dead:check": "knip",
     "drift:check": "node scripts/defaultBranchDrift.js",
@@ -85,7 +86,9 @@
     "node": ">=22.0.0"
   },
   "devDependencies": {
+    "@sinonjs/fake-timers": "15.4.0",
     "@types/jest": "^30.0.0",
+    "chart.js": "4.4.0",
     "jest": "^30.5.2",
     "js-yaml": "^5.4.2",
     "knip": "^6.37.0",

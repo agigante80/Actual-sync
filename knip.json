@@ -2,12 +2,15 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "scripts/**/*.js",
-    "src/__tests__/**/*.test.js"
+    "src/__tests__/**/*.test.js",
+    "tests/e2e/**/*.e2e.js",
+    "jest.e2e.config.js",
+    "tests/e2e/fixtures/states/**/*.js"
   ],
   "project": [
     "src/**/*.js",
-    "scripts/**/*.js"
+    "scripts/**/*.js",
+    "tests/e2e/**/*.js"
   ],
-  "ignore": [],
   "ignoreDependencies": []
 }

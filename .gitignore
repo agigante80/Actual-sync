@@ -38,6 +38,9 @@ test-temp/
 coverage/
 .nyc_output/
 
+# Browser e2e failure artifacts (screenshots + console logs), see tests/e2e/fixtures/browser.js (#263)
+tests/e2e/artifacts/
+
 # Backup files
 *.backup
 *.bak

@@ -14,6 +14,8 @@ const PrometheusService = require('./services/prometheusService');
 const { enhanceActualApiError, explainBudgetNotOpen } = require('./lib/actualApiError');
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
+const { SyncQueue } = require('./lib/syncQueue');
+const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -79,6 +81,13 @@ let notificationService;
 let telegramBot;
 let prometheusService;
 let scheduledJobsRef = []; // Variable to store scheduled jobs (populated during run())
+// Every sync goes through this queue: @actual-app/api is one process-wide
+// session, so two syncs at once corrupt each other (#265). The logger is read
+// at call time because it is created inside the config block below.
+const syncQueue = new SyncQueue({ logger: { info: (message, context) => logger?.info(message, context) } });
+// Actual API calls that timed out but are still running (#272). They share the
+// one Actual session with every later sync, so the queue waits for them.
+const lateActualCalls = new LateCalls();
 try {
     const configLoader = new ConfigLoader();
     config = configLoader.load();
@@ -152,6 +161,8 @@ try {
                 healthCheck: null, // Will be set after healthCheck is created
                 getServerConfig: () => config.servers,
                 syncBank: syncBank,
+                isSyncQueued: (serverName) => syncQueue.has(serverName),
+                getRunningSync: () => syncQueue.running(),
                 notificationService: notificationService // /notify must reach the dispatch path (#169)
             },
             {
@@ -167,12 +178,15 @@ try {
     healthCheck = new HealthCheckService({
         port: config.healthCheck?.port || 3000,
         host: config.healthCheck?.host || '0.0.0.0',
+        trustProxy: config.healthCheck?.trustProxy,
         dashboardConfig: config.healthCheck?.dashboard || { enabled: true, auth: { type: 'none' } },
         prometheusService: prometheusService,
         syncHistory: syncHistory,
         notificationService: notificationService,
         telegramBot: telegramBot,
         syncBank: syncBank,
+        isSyncQueued: (serverName) => syncQueue.has(serverName),
+        getRunningSync: () => syncQueue.running(),
         getServers: () => config.servers,
         getSchedules: () => {
             // Return schedule info for each server
@@ -236,6 +250,7 @@ function getSyncConfig(server) {
         maxRetries: server.sync?.maxRetries ?? globalSyncConfig.maxRetries,
         baseRetryDelayMs: server.sync?.baseRetryDelayMs ?? globalSyncConfig.baseRetryDelayMs,
         schedule: server.sync?.schedule ?? globalSyncConfig.schedule,
+        phaseTimeoutSeconds: server.sync?.phaseTimeoutSeconds ?? globalSyncConfig.phaseTimeoutSeconds ?? DEFAULT_PHASE_TIMEOUT_SECONDS,
         autoRetry: {
             enabled: server.sync?.autoRetry?.enabled ?? globalSyncConfig.autoRetry?.enabled ?? true,
             maxAttempts: server.sync?.autoRetry?.maxAttempts ?? globalSyncConfig.autoRetry?.maxAttempts ?? 1,
@@ -316,7 +331,17 @@ function scheduleAutoRetry(server, attemptNumber, maxAttempts, delayMinutes) {
     activeRetryTimers.set(server.name, timer);
 }
 
-async function syncBank(server, options = {}) {
+/**
+ * Sync one server, after any sync already queued or running (#265).
+ * Every caller (cron, auto-retry, dashboard, Telegram, --force-run) comes
+ * through here, so no two syncs ever share the Actual API session. A server
+ * already waiting or running is not queued twice: the caller gets that run.
+ */
+function syncBank(server, options = {}) {
+    return syncQueue.run(server.name, () => runSyncBank(server, options));
+}
+
+async function runSyncBank(server, options = {}) {
     const { isAutomated = false, retryAttempt = 0 } = options;
     const { name, url, password, syncId, dataDir, encryptionPassword } = server;
     const syncIdLog = syncId ? syncId : "your_budget_name";
@@ -324,6 +349,13 @@ async function syncBank(server, options = {}) {
     
     // Get sync configuration for this server (server-specific or global)
     const syncConfig = getSyncConfig(server);
+    // Every server-facing Actual API call is bounded, so a server that never
+    // answers fails this sync instead of blocking the queue forever. (#272)
+    const phaseTimeoutMs = syncConfig.phaseTimeoutSeconds * 1000;
+    const api = timedActual(actual, phaseTimeoutMs, lateActualCalls);
+    // Set once this sync touches the session; until then its finally must not
+    // call shutdown(), which would close a session a late call still uses.
+    let sessionOpened = false;
     
     // Create server-specific logger with per-server log level if configured
     const serverLogger = server.logging ? logger.child({
@@ -390,8 +422,22 @@ async function syncBank(server, options = {}) {
         await fs.mkdir(dataDir, { recursive: true });
         serverLogger.debug('Data directory ready', { dataDir });
 
+        // A call from an earlier sync that timed out may still be running in the
+        // shared session. Give it one more phase timeout; if it is still busy,
+        // fail this sync rather than mix two budgets. (#272)
+        if (!(await lateActualCalls.drain(phaseTimeoutMs))) {
+            // Refuse this one sync, then stop waiting: a call that never
+            // settles must not block every later sync until restart.
+            const abandoned = lateActualCalls.abandon();
+            serverLogger.error('Gave up waiting for Actual API calls that never finished; the next sync will proceed', { abandoned });
+            const busy = new Error(`An earlier Actual API call is still running after its timeout; skipped this sync so two budgets are not mixed in one session`);
+            busy.code = 'ACTUAL_SESSION_BUSY';
+            throw busy;
+        }
+
         serverLogger.info(`Connecting to Actual server`, { url });
-        await actual.init({
+        sessionOpened = true;
+        await api.init({
             serverURL: url,
             password: password,
             dataDir: dataDir,
@@ -433,7 +479,7 @@ async function syncBank(server, options = {}) {
         // surfaces a real persistent error that warrants clearing the cache.
         let downloadError;
         try {
-            await actual.downloadBudget(syncId, downloadOptions);
+            await api.downloadBudget(syncId, downloadOptions);
             // Honest logging (#156): the download completing does NOT guarantee the
             // budget can actually be opened (e.g. a server/client version mismatch
             // downloads fine then fails to open). Report the download step here; the
@@ -442,6 +488,9 @@ async function syncBank(server, options = {}) {
                 encrypted: !!encryptionPassword
             });
         } catch (error) {
+            // A download that timed out may still be writing to dataDir. Retrying
+            // or clearing the cache now would race it, so fail straight away. (#272)
+            if (error instanceof PhaseTimeoutError) throw error;
             downloadError = error;
             serverLogger.warn('Budget download failed, retrying once before clearing cache', {
                 error: error?.reason || error?.message || String(error),
@@ -452,12 +501,13 @@ async function syncBank(server, options = {}) {
             let retryError = null;
             try {
                 await new Promise(r => setTimeout(r, 5000));
-                await actual.downloadBudget(syncId, downloadOptions);
+                await api.downloadBudget(syncId, downloadOptions);
                 serverLogger.info('Budget file downloaded on retry', {
                     encrypted: !!encryptionPassword
                 });
                 downloadError = null; // retry succeeded — fall through to loadBudget workaround
             } catch (err) {
+                if (err instanceof PhaseTimeoutError) throw err; // same reason as above (#272)
                 retryError = err;
             }
 
@@ -498,15 +548,20 @@ async function syncBank(server, options = {}) {
                         await fs.readFile(`${dataDir}/${entry}/metadata.json`, 'utf8')
                     );
                     if (meta.groupId === syncId && meta.id) {
-                        await actual.loadBudget(meta.id);
+                        await api.loadBudget(meta.id);
                         serverLogger.debug('Explicitly loaded budget after download', {
                             localBudgetId: meta.id,
                         });
                         break;
                     }
-                } catch { /* not a budget directory, skip */ }
+                } catch (entryErr) {
+                    // A hung loadBudget must fail the sync, not be skipped as "not a budget". (#272)
+                    if (entryErr instanceof PhaseTimeoutError) throw entryErr;
+                    /* not a budget directory, skip */
+                }
             }
         } catch (loadErr) {
+            if (loadErr instanceof PhaseTimeoutError) throw loadErr;
             serverLogger.debug('loadBudget workaround skipped', { error: loadErr.message });
         }
 
@@ -515,8 +570,8 @@ async function syncBank(server, options = {}) {
         // query via ActualQL, which exposes them. Only bank-linked, open accounts
         // can actually bank-sync; runBankSync is a silent no-op on manual/closed
         // accounts (which we'd otherwise miscount as successful). (#98)
-        const { data: allAccounts } = await actual.aqlQuery(
-            actual.q('accounts')
+        const { data: allAccounts } = await api.aqlQuery(
+            api.q('accounts')
                 .filter({ tombstone: false })
                 .select(['id', 'name', 'closed', 'account_sync_source'])
         );
@@ -540,7 +595,7 @@ async function syncBank(server, options = {}) {
 
         serverLogger.info('Starting file sync');
         try {
-            await actual.sync();
+            await api.sync();
             serverLogger.info('File sync completed');
         } catch (syncError) {
             throw enhanceActualApiError(syncError, {
@@ -566,12 +621,9 @@ async function syncBank(server, options = {}) {
                     });
                     
                     // Wrap runBankSync with timeout (60 seconds) to catch hung promises
-                    const syncPromise = actual.runBankSync({ accountId: account.id });
-                    const timeoutPromise = new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Bank sync timeout after 60 seconds')), 60000)
+                    const result = await withTimeout(
+                        actual.runBankSync({ accountId: account.id }), 60000, 'runBankSync', lateActualCalls
                     );
-                    
-                    const result = await Promise.race([syncPromise, timeoutPromise]);
                     
                     // Add a small delay to allow any background operations to complete
                     // This works around a race condition in Actual API where runBankSync
@@ -635,7 +687,7 @@ async function syncBank(server, options = {}) {
 
         serverLogger.info('Starting final file sync');
         try {
-            await actual.sync();
+            await api.sync();
             serverLogger.info('Final file sync completed');
         } catch (syncError) {
             throw enhanceActualApiError(syncError, {
@@ -904,15 +956,25 @@ async function syncBank(server, options = {}) {
             }
         }
     } finally {
-        try {
-            serverLogger.debug('Shutting down Actual API connection');
-            await actual.shutdown();
-            serverLogger.debug('Shutdown complete');
-        } catch (shutdownError) {
-            const shutdownErrorMessage = shutdownError?.message || String(shutdownError) || 'Unknown shutdown error';
-            serverLogger.error('Error during shutdown', {
-                error: shutdownErrorMessage
-            });
+        if (sessionOpened) {
+            // Wait for this sync's timed-out calls BEFORE shutdown: a late
+            // download that lands after shutdown would leave its budget open
+            // for the next server's sync. (#272)
+            if (lateActualCalls.size > 0 && !(await lateActualCalls.drain(phaseTimeoutMs))) {
+                serverLogger.error('Actual API calls still running after their timeout; the next sync will wait for them', {
+                    pending: lateActualCalls.size
+                });
+            }
+            try {
+                serverLogger.debug('Shutting down Actual API connection');
+                await api.shutdown();
+                serverLogger.debug('Shutdown complete');
+            } catch (shutdownError) {
+                const shutdownErrorMessage = shutdownError?.message || String(shutdownError) || 'Unknown shutdown error';
+                serverLogger.error('Error during shutdown', {
+                    error: shutdownErrorMessage
+                });
+            }
         }
         serverLogger.clearCorrelationId();
     }

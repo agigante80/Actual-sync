@@ -6,11 +6,47 @@
  */
 
 const express = require('express');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 const { resolveVersion } = require('../lib/version');
+const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
+
+/**
+ * Fixed-window count of failed dashboard logins per client key. (#246)
+ * Every method is synchronous; see dashboardAuth() for why that matters.
+ * get() returns an entry whose window has ended until the sweep removes it,
+ * so callers must compare resetTime themselves.
+ */
+class AuthFailureCounter {
+  constructor(windowMs) {
+    this.windowMs = windowMs;
+    this.entries = new Map();
+    this.sweeper = setInterval(() => {
+      const now = Date.now();
+      for (const [key, entry] of this.entries) {
+        if (entry.resetTime <= now) this.entries.delete(key);
+      }
+    }, windowMs);
+    this.sweeper.unref();
+  }
+
+  get(key) {
+    return this.entries.get(key);
+  }
+
+  increment(key) {
+    const now = Date.now();
+    let entry = this.entries.get(key);
+    if (!entry || entry.resetTime <= now) {
+      entry = { totalHits: 0, resetTime: now + this.windowMs };
+      this.entries.set(key, entry);
+    }
+    entry.totalHits++;
+    return entry;
+  }
+}
 
 class HealthCheckService {
   /**
@@ -22,19 +58,30 @@ class HealthCheckService {
    * @param {Object} options.notificationService - NotificationService instance (optional)
    * @param {Object} options.telegramBot - TelegramBotService instance (optional)
    * @param {Function} options.syncBank - Sync function for manual triggers (optional)
+   * @param {Function} options.isSyncQueued - (serverName) => true while that server's sync waits or runs (optional)
+   * @param {Function} options.getRunningSync - () => { key, startedAt } for the sync holding the queue, or null (optional, #272)
    * @param {Function} options.getServers - Function to get server list (optional)
    * @param {Function} options.getSchedules - Function to get schedule info (optional)
    * @param {Function} options.getCronSchedules - Function to get cron schedule details (optional)
    * @param {Object} options.loggerConfig - Logger configuration
+   * @param {boolean|number|string|string[]} options.trustProxy - Express 'trust proxy' value (#245); off when unset
    */
   constructor(options = {}) {
-    this.port = options.port || 3000;
+    // ?? not ||: port 0 asks the OS for a free port (the e2e fixtures, #263);
+    // the real port is read back once listening.
+    this.port = options.port ?? 3000;
+    // Injectable clock and rate limit so the e2e fixtures render stable
+    // timestamps and can drive many requests; production uses the defaults. (#263)
+    this.now = options.now || (() => new Date());
+    this.rateLimitMax = options.rateLimitMax ?? 60;
     this.host = options.host || '0.0.0.0';
     this.prometheusService = options.prometheusService;
     this.syncHistory = options.syncHistory;
     this.notificationService = options.notificationService;
     this.telegramBot = options.telegramBot;
     this.syncBank = options.syncBank;
+    this.isSyncQueued = options.isSyncQueued || (() => false);
+    this.getRunningSync = options.getRunningSync || (() => null);
     this.getServers = options.getServers;
     this.getSchedules = options.getSchedules;
     this.getCronSchedules = options.getCronSchedules;
@@ -42,12 +89,27 @@ class HealthCheckService {
     this.logger = createLogger(options.loggerConfig || {});
     
     this.app = express();
+    // Opt-in only (#245). Behind a reverse proxy every request comes from the
+    // proxy's address, so the per-IP rate limit becomes one shared bucket and
+    // auth-failure logs name the proxy. Trusting X-Forwarded-For on a directly
+    // exposed instance would let any client pick its own IP, so it stays off
+    // unless configured. express-rate-limit's own validation stays enabled.
+    if (options.trustProxy !== undefined && options.trustProxy !== false) {
+      this.app.set('trust proxy', options.trustProxy);
+    }
     this.server = null;
     this.wsClients = new Set();
+    // /ws/logs handshake state (#242)
+    this.wsTickets = new WsTicketStore();
+    this.wsConnectionsPerIp = new Map();
+    this.maxWsConnectionsPerIp = 10;
+    // Failed dashboard logins allowed per client IP per window (#246).
+    this.authFailureLimit = options.authFailureLimit ?? 10;
+    this.authFailureWindowMs = options.authFailureWindowMs ?? 15 * 60 * 1000;
     
     // Health status tracking
     this.status = {
-      startTime: new Date().toISOString(),
+      startTime: this.now().toISOString(),
       lastSyncTime: null,
       lastSyncStatus: 'pending',
       syncCount: 0,
@@ -72,6 +134,24 @@ class HealthCheckService {
    * Dashboard authentication middleware
    */
   dashboardAuth() {
+    // One failure counter shared by every dashboard route, so the budget is per
+    // client IP across /dashboard and /api/dashboard/*, not per route. (#246)
+    //
+    // Credentials are checked FIRST and only a wrong one is counted. An earlier
+    // version ran express-rate-limit with skipSuccessfulRequests, which counts
+    // every request up front and refunds it on 'finish': a correct request the
+    // browser aborted (a reload during a slow sync) was never refunded, and a
+    // burst of correct requests could briefly exceed the limit, so an operator
+    // with the right password got locked out. Do not go back to that.
+    if (!this.authFailures) {
+      this.authFailures = new AuthFailureCounter(this.authFailureWindowMs);
+    }
+
+    // Synchronous on purpose: no await may sit between reading the count and
+    // adding a failure. Node parses every request pipelined on one socket in
+    // the same tick, so with an await in between (express-rate-limit's async
+    // MemoryStore) all of them read the old count and a single write of 60
+    // wrong guesses was checked in full against a limit of 10.
     return (req, res, next) => {
       // Skip if dashboard is disabled
       if (!this.dashboardConfig.enabled) {
@@ -80,60 +160,64 @@ class HealthCheckService {
 
       const authConfig = this.dashboardConfig.auth || {};
       const authType = authConfig.type || 'none';
+      if (authType === 'none') return next();
 
-      // No authentication required
-      if (authType === 'none') {
-        return next();
+      try {
+        const key = ipKeyGenerator(req.ip || '');
+        const seen = this.authFailures.get(key);
+        // get() also returns entries whose window has ended (they are
+        // only swept on a timer), so check resetTime or a lockout lasts up to
+        // two windows.
+        if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {
+          this.logger.warn('Dashboard authentication throttled after repeated failures', {
+            remoteAddress: req.ip,
+            limit: this.authFailureLimit,
+            windowMinutes: Math.round(this.authFailureWindowMs / 60000)
+          });
+          return res.status(429).json({ error: 'Too many failed authentication attempts, try again later' });
+        }
+        this.checkDashboardCredentials(req, res, next, authConfig, authType);
+        if (res.locals.authFailed) this.authFailures.increment(key);
+      } catch (err) {
+        next(err);
       }
-
-      // Basic authentication
-      if (authType === 'basic') {
-        const authHeader = req.headers.authorization;
-        
-        if (!authHeader || !authHeader.startsWith('Basic ')) {
-          res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
-          return res.status(401).json({ error: 'Authentication required' });
-        }
-
-        const base64Credentials = authHeader.substring(6);
-        const credentials = Buffer.from(base64Credentials, 'base64').toString('utf8');
-        const [username, password] = credentials.split(':');
-
-        if (username === authConfig.username && password === authConfig.password) {
-          return next();
-        }
-
-        this.logger.warn('Dashboard authentication failed', { 
-          username, 
-          remoteAddress: req.ip 
-        });
-        res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-
-      // Token authentication
-      if (authType === 'token') {
-        const authHeader = req.headers.authorization;
-        
-        if (!authHeader || !authHeader.startsWith('Bearer ')) {
-          return res.status(401).json({ error: 'Authentication required' });
-        }
-
-        const token = authHeader.substring(7);
-
-        if (token === authConfig.token) {
-          return next();
-        }
-
-        this.logger.warn('Dashboard token authentication failed', { 
-          remoteAddress: req.ip 
-        });
-        return res.status(401).json({ error: 'Invalid token' });
-      }
-
-      // Unknown auth type
-      return res.status(500).json({ error: 'Invalid authentication configuration' });
     };
+  }
+
+  /**
+   * Check the credentials once the failure throttle has let the request through.
+   * A wrong credential sets res.locals.authFailed so the throttle counts it.
+   */
+  checkDashboardCredentials(req, res, next, authConfig, authType) {
+    const result = checkCredentials(req.headers, authConfig);
+    if (result.ok) return next();
+
+    if (result.reason === 'config') {
+      return res.status(500).json({ error: 'Invalid authentication configuration' });
+    }
+
+    if (authType === 'basic') {
+      res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
+      if (result.reason === 'missing') {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+      res.locals.authFailed = true;
+      this.logger.warn('Dashboard authentication failed', {
+        username: result.username,
+        remoteAddress: req.ip
+      });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Token authentication
+    if (result.reason === 'missing') {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    res.locals.authFailed = true;
+    this.logger.warn('Dashboard token authentication failed', {
+      remoteAddress: req.ip
+    });
+    return res.status(401).json({ error: 'Invalid token' });
   }
 
   /**
@@ -143,7 +227,7 @@ class HealthCheckService {
     // Rate limiting middleware - prevent abuse
     const limiter = rateLimit({
       windowMs: 60 * 1000, // 1 minute
-      max: 60, // 60 requests per minute per IP
+      max: this.rateLimitMax, // requests per minute per IP (60 unless a test overrides it)
       standardHeaders: true,
       legacyHeaders: false,
       message: 'Too many requests, please try again later.',
@@ -158,11 +242,11 @@ class HealthCheckService {
 
     // Health endpoint - simple alive check
     this.app.get('/health', (req, res) => {
-      const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
+      const uptime = Math.floor((this.now().getTime() - new Date(this.status.startTime).getTime()) / 1000);
       
       const health = {
         status: 'UP',
-        timestamp: new Date().toISOString(),
+        timestamp: this.now().toISOString(),
         uptime: uptime,
         service: 'actual-sync',
         version: global.APP_VERSION || resolveVersion()
@@ -174,11 +258,11 @@ class HealthCheckService {
 
     // Metrics endpoint - detailed sync metrics
     this.app.get('/metrics', (req, res) => {
-      const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
+      const uptime = Math.floor((this.now().getTime() - new Date(this.status.startTime).getTime()) / 1000);
       
       const metrics = {
         status: this.getOverallStatus(),
-        timestamp: new Date().toISOString(),
+        timestamp: this.now().toISOString(),
         uptime: uptime,
         service: 'actual-sync',
         version: global.APP_VERSION || resolveVersion(),
@@ -192,8 +276,15 @@ class HealthCheckService {
             ? ((this.status.successCount / this.status.syncCount) * 100).toFixed(2) + '%'
             : 'N/A'
         },
-        servers: this.status.serverStatuses,
-        lastError: this.status.lastError
+        // /metrics has no authentication, so it names which server failed and
+        // when, never the error text: that can carry bank or Actual messages.
+        // The text stays on the authenticated dashboard. (#263)
+        servers: Object.fromEntries(Object.entries(this.status.serverStatuses)
+          .map(([name, { error, ...rest }]) => [name, rest])),
+        lastError: this.status.lastError && {
+          timestamp: this.status.lastError.timestamp,
+          serverName: this.status.lastError.serverName
+        }
       };
 
       this.logger.debug('Metrics requested', { 
@@ -207,14 +298,14 @@ class HealthCheckService {
     // Readiness endpoint - checks if service is ready to sync
     this.app.get('/ready', (req, res) => {
       const isReady = this.status.syncCount > 0 || 
-                      (Date.now() - new Date(this.status.startTime).getTime()) < 60000;
+                      (this.now().getTime() - new Date(this.status.startTime).getTime()) < 60000;
       
       if (isReady) {
-        res.json({ status: 'READY', timestamp: new Date().toISOString() });
+        res.json({ status: 'READY', timestamp: this.now().toISOString() });
       } else {
         res.status(503).json({ 
           status: 'NOT_READY', 
-          timestamp: new Date().toISOString(),
+          timestamp: this.now().toISOString(),
           reason: 'No successful syncs yet'
         });
       }
@@ -268,8 +359,16 @@ class HealthCheckService {
     });
 
     // Dashboard API: Get status (with authentication)
+    // Single-use ticket for the /ws/logs handshake: browsers cannot send an
+    // Authorization header on a WebSocket, so the dashboard fetches one of
+    // these over authenticated HTTP and passes it as ?ticket=. (#242)
+    this.app.get('/api/dashboard/ws-ticket', this.dashboardAuth(), (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      res.json({ ticket: this.wsTickets.mint(), expiresInSeconds: this.wsTickets.ttlMs / 1000 });
+    });
+
     this.app.get('/api/dashboard/status', this.dashboardAuth(), (req, res) => {
-      const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
+      const uptime = Math.floor((this.now().getTime() - new Date(this.status.startTime).getTime()) / 1000);
       
       // Get all configured servers from getServers function
       let allServers = {};
@@ -340,6 +439,9 @@ class HealthCheckService {
             ? ((this.status.successCount / this.status.syncCount) * 100).toFixed(2) + '%'
             : 'N/A'
         },
+        // The sync holding the queue, so a hung one is visible by name and age (#272).
+        // Dashboard only: public /health must not disclose server names.
+        runningSync: this.safeRunningSync(),
         servers: allServers
       });
     });
@@ -446,14 +548,20 @@ class HealthCheckService {
           return res.status(400).json({ error: 'Server name required' });
         }
 
-        // Validate server name exists in serverStatuses (prevents prototype pollution)
-        if (!Object.prototype.hasOwnProperty.call(this.serverStatuses, server)) {
+        // Validate server name exists in serverStatuses (prevents prototype pollution).
+        // Statuses live on this.status; a bare this.serverStatuses is undefined and
+        // made every dismiss a 500 (#264).
+        const serverStatuses = this.status.serverStatuses;
+        if (!Object.prototype.hasOwnProperty.call(serverStatuses, server)) {
           return res.status(404).json({ error: 'Server not found' });
         }
 
         // Clear error from server status (using safer approach)
-        if (this.serverStatuses[server] && Object.prototype.hasOwnProperty.call(this.serverStatuses[server], 'error')) {
-          delete this.serverStatuses[server].error;
+        if (Object.prototype.hasOwnProperty.call(serverStatuses[server], 'error')) {
+          delete serverStatuses[server].error;
+          // The card stops highlighting the failure; the "failure" badge from sync
+          // history stays. The next sync replaces this object, clearing the flag.
+          serverStatuses[server].errorDismissed = true;
           this.logger.info('Server error dismissed via dashboard', {
             server: server,
             remoteAddress: req.ip
@@ -499,7 +607,8 @@ class HealthCheckService {
             remoteAddress: req.ip
           });
           
-          // Don't await - trigger async
+          // Don't await - trigger async. syncBank queues each server, so they
+          // run one at a time in config order, never concurrently (#265).
           Promise.all(servers.map(s => this.syncBank(s).catch(err => {
             this.logger.error('Manual sync failed', { 
               server: s.name, 
@@ -517,6 +626,10 @@ class HealthCheckService {
               error: 'Server not found',
               availableServers: servers.map(s => s.name)
             });
+          }
+
+          if (this.isSyncQueued(server)) {
+            return res.json({ success: true, message: 'Sync already queued' });
           }
 
           this.logger.info('Manual sync triggered via dashboard', {
@@ -981,6 +1094,16 @@ This test verifies that notifications are configured correctly and can reach the
   /**
    * Get overall service status based on recent sync results
    */
+  /** getRunningSync() guarded, so a failing callback cannot break the status route. (#272) */
+  safeRunningSync() {
+    try {
+      return this.getRunningSync() || null;
+    } catch (error) {
+      this.logger.debug('Failed to read the running sync', { error: error.message });
+      return null;
+    }
+  }
+
   getOverallStatus() {
     if (this.status.syncCount === 0) return 'PENDING';
     if (this.status.failureCount > 0 && this.status.successCount === 0) return 'UNHEALTHY';
@@ -1031,7 +1154,7 @@ This test verifies that notifications are configured correctly and can reach the
     this.status.serverVersions[serverName] = {
       serverVersion: info.serverVersion || null,
       verdict: info.verdict || 'unknown',
-      checkedAt: new Date().toISOString()
+      checkedAt: this.now().toISOString()
     };
     if (info.testedUpTo) {
       this.testedUpTo = info.testedUpTo;
@@ -1039,7 +1162,13 @@ This test verifies that notifications are configured correctly and can reach the
   }
 
   updateSyncStatus(syncResult) {
-    this.status.lastSyncTime = new Date().toISOString();
+    // syncService passes the error as a string; older callers passed an Error.
+    // Reading only .message dropped the string, so server cards never showed
+    // the failure text and lastError read "Unknown error". (#263)
+    const errorText = typeof syncResult.error === 'string'
+      ? syncResult.error
+      : syncResult.error?.message;
+    this.status.lastSyncTime = this.now().toISOString();
     this.status.syncCount++;
     
     if (syncResult.status === 'success') {
@@ -1062,7 +1191,7 @@ This test verifies that notifications are configured correctly and can reach the
       this.status.lastSyncStatus = 'failure';
       this.status.failureCount++;
       this.status.lastError = {
-        message: syncResult.error?.message || 'Unknown error',
+        message: errorText || 'Unknown error',
         timestamp: this.status.lastSyncTime,
         serverName: syncResult.serverName
       };
@@ -1071,16 +1200,89 @@ This test verifies that notifications are configured correctly and can reach the
       this.status.serverStatuses[syncResult.serverName] = {
         lastSync: this.status.lastSyncTime,
         status: 'failure',
-        error: syncResult.error?.message
+        error: errorText
       };
       
       this.logger.error('Sync status updated', { 
         serverName: syncResult.serverName,
         status: 'failure',
-        error: syncResult.error?.message,
+        error: errorText,
         totalSyncs: this.status.syncCount
       });
     }
+  }
+
+  /**
+   * Admit or refuse a /ws/logs handshake. (#242)
+   *
+   * Authentication happens here, before the upgrade, so an unauthenticated
+   * socket is never opened and never receives a log line.
+   * - dashboard disabled: 403
+   * - an Origin that is neither same-origin nor in dashboard.allowedOrigins:
+   *   403, at every auth type. This is the Cross-Site WebSocket Hijacking
+   *   guard. A request with no Origin is not from a browser and is let through
+   *   to the credential check.
+   * - more than maxWsConnectionsPerIp open sockets from one address: 429
+   * - auth type basic/token: a valid ?ticket= from /api/dashboard/ws-ticket,
+   *   or a valid Authorization header (non-browser clients). Otherwise 401.
+   * @param {{origin?: string, req: import('http').IncomingMessage}} info
+   * @param {Function} done - ws callback (result, code, message)
+   */
+  verifyWsClient(info, done) {
+    const req = info.req;
+    const remoteAddress = req.socket.remoteAddress;
+    const refuse = (code, message) => {
+      this.logger.warn('WebSocket handshake refused', { status: code, reason: message, remoteAddress });
+      done(false, code, message);
+    };
+
+    if (!this.dashboardConfig.enabled) return refuse(403, 'Dashboard is disabled');
+
+    if (info.origin && !this.isAllowedWsOrigin(info.origin, req.headers.host)) {
+      return refuse(403, 'Origin not allowed');
+    }
+
+    if ((this.wsConnectionsPerIp.get(remoteAddress) || 0) >= this.maxWsConnectionsPerIp) {
+      return refuse(429, 'Too many connections');
+    }
+
+    const authConfig = this.dashboardConfig.auth || {};
+    if ((authConfig.type || 'none') === 'none') return done(true);
+
+    let ticket = null;
+    try {
+      ticket = new URL(req.url, 'http://localhost').searchParams.get('ticket');
+    } catch { /* malformed URL: no ticket */ }
+    // Ticket only. An Authorization header is deliberately NOT accepted here:
+    // WebSocket upgrades bypass the Express rate limiter, so a header check on
+    // the handshake would be an unthrottled password oracle. Scripts get a
+    // ticket from /api/dashboard/ws-ticket with their header instead. (#242)
+    if (ticket && this.wsTickets.consume(ticket)) return done(true);
+
+    return refuse(401, 'Authentication required');
+  }
+
+  /**
+   * @param {string} origin - the handshake's Origin header
+   * @param {string} host - the handshake's Host header
+   * @returns {boolean} true when same-origin or listed in dashboard.allowedOrigins
+   */
+  isAllowedWsOrigin(origin, host) {
+    let parsed;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      return false;
+    }
+    if (host && parsed.host === host) return true;
+    const allowed = this.dashboardConfig.allowedOrigins || [];
+    return allowed.some(entry => {
+      try {
+        return new URL(entry).origin === parsed.origin;
+      } catch {
+        return false;
+      }
+    });
   }
 
   /**
@@ -1128,7 +1330,8 @@ This test verifies that notifications are configured correctly and can reach the
           server: this.server,
           path: '/ws/logs',
           clientTracking: true,
-          perMessageDeflate: false
+          perMessageDeflate: false,
+          verifyClient: (info, done) => this.verifyWsClient(info, done)
         });
 
         // ws forwards the underlying HTTP server's errors (e.g. a bind failure)
@@ -1150,6 +1353,13 @@ This test verifies that notifications are configured correctly and can reach the
 
           this.wsClients.add(ws);
           ws.isAlive = true;
+          const ip = req.socket.remoteAddress;
+          this.wsConnectionsPerIp.set(ip, (this.wsConnectionsPerIp.get(ip) || 0) + 1);
+          ws.once('close', () => {
+            const left = (this.wsConnectionsPerIp.get(ip) || 1) - 1;
+            if (left > 0) this.wsConnectionsPerIp.set(ip, left);
+            else this.wsConnectionsPerIp.delete(ip);
+          });
           
           // Handle incoming messages (ping/pong keep-alive)
           ws.on('message', (data) => {
@@ -1209,6 +1419,13 @@ This test verifies that notifications are configured correctly and can reach the
         let settled = false;
         const onListening = () => {
           settled = true;
+          // Only port 0 needs the real port read back; calling address() when a
+          // fixed port was requested would also break tests that mock this.server
+          // as a plain EventEmitter with no address() method (#94's fallback
+          // tests). (#263)
+          if (this.port === 0) {
+            this.port = this.server.address().port;
+          }
           this.logger.info('Health check service started', {
             port: this.port,
             host: this.host,
