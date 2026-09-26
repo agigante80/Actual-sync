@@ -173,6 +173,12 @@ HTTP server for health probes, Prometheus metrics, and the web dashboard.
 
 - **port** (integer, default: `3000`, range 1024-65535) — port for `/health`, `/ready`, `/metrics`, `/metrics/prometheus`, and `/dashboard`.
 - **host** (string, default: `"0.0.0.0"`) — bind address. **Keep `0.0.0.0` in containers.** Setting it to the host's LAN IP is not bindable in bridge mode (`EADDRNOTAVAIL`) and makes the dashboard unreachable; startup warns if it is set to anything other than `0.0.0.0`/`::`/`::1`/`127.0.0.1`/`localhost`.
+- **trustProxy** (default: `false`): set this only when a reverse proxy you control (nginx, Traefik, Caddy) is in front. It makes Express read the client address from `X-Forwarded-For`, so the 60 requests/minute rate limit applies per client and auth-failure logs name the real client, not the proxy. Accepted values:
+  - `false` (default): direct exposure. Behind a proxy, every client shares one rate-limit bucket.
+  - a hop count, `1` to `10`: `1` means one proxy in front. This is the usual choice.
+  - an IP/CIDR string or array, for example `"172.16.0.0/12"` or `["loopback", "10.0.0.0/8"]`: trust only those proxy addresses. Express keywords `loopback`, `linklocal` and `uniquelocal` also work.
+  - `true`: trusts every hop. **Do not use it if the port is reachable without the proxy**: any client could then send its own `X-Forwarded-For`, pick any IP and bypass rate limiting. Startup warns when it is set.
+  An invalid IP/CIDR fails at startup with a message naming `healthCheck.trustProxy`.
 - **dashboard.enabled** (boolean, default: `true`) — serve the web dashboard.
 - **dashboard.auth.type** (string, default: `"none"`) — `"none"`, `"basic"`, or `"token"`.
   - `"basic"` requires **username** and **password**.

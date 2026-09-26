@@ -195,6 +195,8 @@ Add your own keys (the defaults always apply):
 }
 ```
 
+**IP addresses**: failed dashboard logins are logged at WARN with the client address (`remoteAddress`), for spotting brute-force sources (GDPR Art. 6(1)(f), security monitoring). Behind a reverse proxy this is the real client IP only when `healthCheck.trustProxy` is set; otherwise it is the proxy's address. These entries follow the normal file retention (`rotation.maxFiles`, 30 days by default).
+
 Notes:
 - Non-secret data is preserved, including `Date`, `Buffer`, and `Error` values (an `Error` keeps its `message`, `stack`, `code`, `cause`, and custom fields such as `statusCode`, all redacted).
 - Redaction never mutates the object you passed and never throws.

@@ -370,7 +370,7 @@ By default, the health check service binds to `0.0.0.0` (all interfaces). Consid
 
 1. **Internal Only**: Set `host` to `"127.0.0.1"` if only local access is needed
 2. **Firewall**: Restrict access to health check port (3000) to monitoring systems only
-3. **Reverse Proxy**: Put behind nginx/Apache with authentication if exposed to internet
+3. **Reverse Proxy**: Put behind nginx/Apache with authentication if exposed to internet, and set `healthCheck.trustProxy` (usually `1`) so rate limiting and auth-failure logs see the real client IP ([CONFIG.md](CONFIG.md#healthcheck-optional))
 
 ### Sensitive Information
 

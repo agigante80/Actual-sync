@@ -521,6 +521,34 @@ describe('ConfigLoader', () => {
             }
         });
 
+        describe('healthCheck.trustProxy (#245)', () => {
+            const withTrustProxy = (trustProxy) => ({
+                servers: [{ name: 'Test', url: 'https://test.com', password: 'password123', syncId: 'id', dataDir: '/tmp' }],
+                sync: { maxRetries: 3, baseRetryDelayMs: 1000, schedule: '0 0 * * *' },
+                healthCheck: { port: 3000, trustProxy }
+            });
+
+            test('rejects an invalid IP/CIDR with a message naming the key', () => {
+                expect(() => new ConfigLoader().validateLogic(withTrustProxy('not-a-cidr')))
+                    .toThrow(/healthCheck\.trustProxy.*not-a-cidr/s);
+                expect(() => new ConfigLoader().validateLogic(withTrustProxy(['10.0.0.0/8', '300.1.1.1'])))
+                    .toThrow(/healthCheck\.trustProxy/);
+            });
+
+            test('accepts hop counts, CIDRs and Express keywords without warning', () => {
+                for (const value of [1, '10.0.0.0/8', ['loopback', 'fd00::/8'], false, undefined]) {
+                    console.warn.mockClear();
+                    expect(() => new ConfigLoader().validateLogic(withTrustProxy(value))).not.toThrow();
+                    expect(console.warn).not.toHaveBeenCalledWith(expect.stringContaining('trustProxy'));
+                }
+            });
+
+            test('warns that true lets any client fake its IP', () => {
+                new ConfigLoader().validateLogic(withTrustProxy(true));
+                expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('healthCheck.trustProxy is true'));
+            });
+        });
+
         test('should NOT warn for safe health hosts incl. IPv6 wildcard/loopback (#94)', () => {
             for (const host of ['0.0.0.0', '127.0.0.1', 'localhost', '::', '::1']) {
                 console.warn.mockClear();

@@ -113,6 +113,8 @@ const limiter = rateLimit({
 });
 ```
 
+**Behind a reverse proxy**: the limit is per client IP only when `healthCheck.trustProxy` is set to match the proxy (see [CONFIG.md](CONFIG.md#healthcheck-optional)). Unset, every request appears to come from the proxy, so all clients share one 60/minute bucket. Set too loosely (`true` on a port that is also reachable directly), clients can fake their IP and bypass the limit. `express-rate-limit`'s own configuration checks stay enabled.
+
 **Note**: Telegram bot API calls currently have no rate limiting (see Improvement Areas).
 
 ### Firewall Configuration
