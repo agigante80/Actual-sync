@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const express = require('express');
 const Ajv = require('ajv');
 const addFormats = require('ajv-formats');
 const { resolveSchemaPath } = require('./configBootstrap');
@@ -444,6 +445,27 @@ class ConfigLoader {
             console.warn(
                 `⚠️  Warning: healthCheck.host is set to "${hcHost}".\n` +
                 `   In containers use "0.0.0.0" — a specific host IP may not be bindable (EADDRNOTAVAIL) and the dashboard will be unreachable.`
+            );
+        }
+
+        // healthCheck.trustProxy (#245): the schema checks the shape; the IP/CIDR
+        // content is checked here with Express's own parser, so a typo fails at
+        // startup instead of at the first request.
+        const trustProxy = config.healthCheck && config.healthCheck.trustProxy;
+        if (typeof trustProxy === 'string' || Array.isArray(trustProxy)) {
+            try {
+                express().set('trust proxy', trustProxy);
+            } catch (error) {
+                throw new Error(
+                    `Invalid healthCheck.trustProxy value: ${JSON.stringify(trustProxy)}\n` +
+                    `${error.message}. Use a hop count (e.g. 1), an IP or CIDR (e.g. "10.0.0.0/8"), or an array of them.`
+                );
+            }
+        }
+        if (trustProxy === true) {
+            console.warn(
+                `⚠️  Warning: healthCheck.trustProxy is true, which trusts X-Forwarded-For from any client.\n` +
+                `   If the service is reachable without the proxy, clients can fake their IP and bypass rate limiting. Prefer a hop count (1) or the proxy's CIDR.`
             );
         }
 

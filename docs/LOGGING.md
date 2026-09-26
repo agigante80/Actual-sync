@@ -195,6 +195,15 @@ Add your own keys (the defaults always apply):
 }
 ```
 
+**IP addresses**: the client address (`remoteAddress`) is recorded by these log lines, for security monitoring and an audit trail of dashboard actions (GDPR Art. 6(1)(f)):
+
+- WARN: failed dashboard logins, and requests to unknown endpoints.
+- INFO: every dashboard action (manual sync, error dismiss, history reset, test notification).
+- INFO: live log stream (`/ws/logs`) connections.
+- DEBUG: `/health`, `/metrics` and Prometheus scrapes.
+
+Behind a reverse proxy the HTTP lines show the real client IP only when `healthCheck.trustProxy` is set; otherwise they show the proxy's address. The `/ws/logs` lines always show the TCP peer, which behind a proxy is the proxy. Log files follow the file retention (`rotation.maxFiles`, 30 days by default). Console output is kept by whatever collects it: under Docker, stdout is kept until the container is removed unless you set log rotation on the container (for example `logging: { driver: json-file, options: { max-size: 10m, max-file: "3" } }` in Compose).
+
 Notes:
 - Non-secret data is preserved, including `Date`, `Buffer`, and `Error` values (an `Error` keeps its `message`, `stack`, `code`, `cause`, and custom fields such as `statusCode`, all redacted).
 - Redaction never mutates the object you passed and never throws.

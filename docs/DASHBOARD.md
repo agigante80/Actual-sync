@@ -28,3 +28,7 @@ Served at `GET /api/dashboard/accounts` (subject to the dashboard's auth setting
 
 ![Account syncability badges](screenshots/dashboard-accounts.png)
 
+
+## Behind a reverse proxy
+
+If nginx, Traefik or Caddy sits in front of the dashboard, set `healthCheck.trustProxy` (usually `1`, one proxy) so the per-client rate limit and the auth-failure log see the real client IP instead of the proxy's. Keep `dashboard.auth` enabled, and do not also publish the port directly. See [CONFIG.md](CONFIG.md#healthcheck-optional) for the accepted values and [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#1-security) for an nginx example.

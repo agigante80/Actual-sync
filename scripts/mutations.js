@@ -788,6 +788,16 @@ module.exports = [
         tests: 'retargetRetest'
     },
 
+    // ---- #245: trust proxy was never applied ---------------------------------
+    {
+        id: '245-trust-proxy-ignored', ticket: '#245',
+        desc: 'healthCheck.trustProxy is accepted but never set, so clients behind a proxy share one rate-limit bucket',
+        file: 'src/services/healthCheck.js',
+        anchor: "      this.app.set('trust proxy', options.trustProxy);",
+        mutant: '      // trust proxy not applied',
+        tests: 'healthCheck'
+    },
+
     // ---- #248: trivy-action ran from a floating branch ----------------------
     {
         id: '248-trivy-floating-branch', ticket: '#248',

@@ -27,6 +27,7 @@ class HealthCheckService {
    * @param {Function} options.getSchedules - Function to get schedule info (optional)
    * @param {Function} options.getCronSchedules - Function to get cron schedule details (optional)
    * @param {Object} options.loggerConfig - Logger configuration
+   * @param {boolean|number|string|string[]} options.trustProxy - Express 'trust proxy' value (#245); off when unset
    */
   constructor(options = {}) {
     this.port = options.port || 3000;
@@ -44,6 +45,14 @@ class HealthCheckService {
     this.logger = createLogger(options.loggerConfig || {});
     
     this.app = express();
+    // Opt-in only (#245). Behind a reverse proxy every request comes from the
+    // proxy's address, so the per-IP rate limit becomes one shared bucket and
+    // auth-failure logs name the proxy. Trusting X-Forwarded-For on a directly
+    // exposed instance would let any client pick its own IP, so it stays off
+    // unless configured. express-rate-limit's own validation stays enabled.
+    if (options.trustProxy !== undefined && options.trustProxy !== false) {
+      this.app.set('trust proxy', options.trustProxy);
+    }
     this.server = null;
     this.wsClients = new Set();
     
