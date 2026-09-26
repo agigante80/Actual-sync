@@ -390,6 +390,16 @@ curl http://localhost:3000/metrics
 - Manual review recommended
 - Automatic fixes suggested when available
 
+### Pinning third-party actions
+
+A `uses:` line that points at a branch (`@master`, `@main`) runs whatever that branch holds at the moment the job starts, with the job's token and secrets. In March 2025 `tj-actions/changed-files` had its tags repointed to a credential-dumping commit, and every workflow tracking it ran the payload. So:
+
+- **Never reference a branch.** `src/__tests__/workflowPins.test.js` fails the test suite if any workflow does.
+- **Scanners and anything handed secrets are pinned to a full 40-character commit SHA**, with the version in a trailing comment so updates stay readable, for example `aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0`. The same test enforces this for `trivy-action`.
+- Other actions still use version tags (`@v4`). Moving them to SHAs is tracked in #249.
+
+To update a pinned action, look up the commit the new release tag points to (`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`, following an annotated tag to its commit) and replace both the SHA and the comment.
+
 ---
 
 ### Release (separate workflow)
