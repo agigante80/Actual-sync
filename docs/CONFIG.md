@@ -129,6 +129,14 @@ Global synchronization behavior configuration. These settings apply to all serve
   - Can be overridden per server
   - Example: `3000` (3 seconds)
 
+- **phaseTimeoutSeconds** (optional, integer, default: 300)
+  - Seconds each Actual API call (init, download, load, query, sync, shutdown) may take
+  - Range: 30-3600
+  - A call that runs longer fails the sync with the phase named. The sync holds the queue up to one more timeout for the stuck call to finish. If it is still running, the next sync waits up to its own timeout, then fails with `ACTUAL_SESSION_BUSY` and stops waiting for that call, so later syncs proceed
+  - Raise it for very large budgets on slow links; bank sync keeps its own 60 second limit per account
+  - Can be overridden per server
+  - Example: `300` (5 minutes)
+
 - **schedule** (optional, string, default: "03 03 */2 * *")
   - Cron expression for sync schedule
   - Format: `minute hour day month dayOfWeek` (5 fields), or 6 fields with a leading `seconds` field
@@ -173,7 +181,7 @@ HTTP server for health probes, Prometheus metrics, and the web dashboard.
 
 - **port** (integer, default: `3000`, range 1024-65535) — port for `/health`, `/ready`, `/metrics`, `/metrics/prometheus`, and `/dashboard`.
 - **host** (string, default: `"0.0.0.0"`) — bind address. **Keep `0.0.0.0` in containers.** Setting it to the host's LAN IP is not bindable in bridge mode (`EADDRNOTAVAIL`) and makes the dashboard unreachable; startup warns if it is set to anything other than `0.0.0.0`/`::`/`::1`/`127.0.0.1`/`localhost`.
-- **trustProxy** (default: `false`): set this only when a reverse proxy you control (nginx, Traefik, Caddy) is in front. It makes Express read the client address from `X-Forwarded-For`, so the 60 requests/minute rate limit applies per client and auth-failure logs name the real client, not the proxy. Accepted values:
+- **trustProxy** (default: `false`): set this only when a reverse proxy you control (nginx, Traefik, Caddy) is in front. It makes Express read the client address from `X-Forwarded-For`, so the 60 requests/minute rate limit and the dashboard login throttle (10 failures per 15 minutes) apply per client, and auth-failure logs name the real client, not the proxy. Without it, 10 bad logins through the proxy lock out every user behind it. Accepted values:
   - `false` (default): direct exposure. Behind a proxy, every client shares one rate-limit bucket.
   - a hop count, `1` to `10`: `1` means one proxy in front. This is the usual choice.
   - an IP/CIDR string or array, for example `"172.20.0.10"` (the proxy container's fixed IP) or `["loopback", "10.0.0.5"]`: trust only those proxy addresses. The Express keyword `loopback` also works. Avoid `uniquelocal` and wide ranges such as `172.16.0.0/12`: they cover the Docker bridge networks, so any container on the host could forge `X-Forwarded-For`.
@@ -183,7 +191,8 @@ HTTP server for health probes, Prometheus metrics, and the web dashboard.
 - **dashboard.auth.type** (string, default: `"none"`) — `"none"`, `"basic"`, or `"token"`.
   - `"basic"` requires **username** and **password**.
   - `"token"` requires **token** (sent as `Authorization: Bearer <token>`).
-  - A blank credential locks the dashboard out (every request is rejected), so set the credentials when you enable auth.
+  - A missing or blank credential locks the dashboard out (every request gets 500 `Invalid authentication configuration`), so set the credentials when you enable auth.
+- **dashboard.allowedOrigins** (array of `scheme://host[:port]`, default: `[]`) - extra browser origins allowed to open the `/ws/logs` live log stream. Same-origin is always allowed, and a request with no `Origin` header (a script, not a browser) is not origin-checked. Any other browser origin is refused with 403 at every auth type; this is the guard against Cross-Site WebSocket Hijacking. Add an entry only if the dashboard page is served under a different origin than the host the browser connects to, for example `["https://budget.example.com"]`.
 
 ```json
 "healthCheck": {

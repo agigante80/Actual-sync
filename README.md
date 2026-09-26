@@ -126,7 +126,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Enhanced Logging System** - Log rotation with compression, syslog support, performance tracking, per-server log levels
 - ✅ **Sync History Database** - SQLite persistence with query interface and CLI tool (`npm run history`)
 - ✅ **Status Tracking** - Real-time health status (HEALTHY/DEGRADED/UNHEALTHY/READY)
-- ✅ **WebSocket Streaming** - Live log broadcast to connected dashboard clients with ring buffer
+- ✅ **WebSocket Streaming** - Live log broadcast to connected dashboard clients with ring buffer; the stream uses the dashboard's auth and rejects foreign origins
 
 ### 🔔 Notifications & Alerts
 
@@ -705,6 +705,7 @@ Actual-sync exposes HTTP endpoints for monitoring:
 | `GET /metrics` | Detailed sync statistics | JSON with per-server status |
 | `GET /ready` | Kubernetes readiness probe | `200 OK` when service is ready |
 | `GET /dashboard` | Web dashboard UI | HTML dashboard interface |
+| `WS /ws/logs` | Live log stream (dashboard auth, same-origin only) | JSON log records |
 
 **Example - Health Check:**
 
@@ -852,7 +853,7 @@ See **[docs/TESTING.md](docs/TESTING.md)** for complete testing guide including:
 - **Non-Root Container** - Docker runs as `actualuser` (UID 1001), not root
 - **Read-Only Config** - Mount config as read-only in Docker
 - **HTTPS Enforcement** - Warnings for HTTP connections in production
-- **Rate Limiting** - HTTP endpoints protected (60 req/min per IP)
+- **Rate Limiting** - HTTP endpoints protected (60 req/min per IP), and dashboard logins lock out after 10 failures per IP in 15 minutes
 - **SQL Injection Protection** - Parameterized queries throughout
 - **Input Validation** - Startup business-logic validation, plus hard-fail JSON-schema validation (type/range/required/format/pattern/enum; unknown keys warn) for all config
 

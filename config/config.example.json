@@ -69,6 +69,7 @@
     "trustProxy": false,
     "dashboard": {
       "enabled": true,
+      "allowedOrigins": [],
       "auth": {
         "type": "none"
       }
