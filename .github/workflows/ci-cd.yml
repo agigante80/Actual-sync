@@ -54,8 +54,10 @@ on:
 env:
   NODE_VERSION: '22'
   DOCKER_IMAGE_NAME: actual-sync
-  # Puppeteer is only used by the screenshots script, never in CI jobs — skip its
-  # ~170 MB Chromium download (not covered by actions/setup-node's npm cache).
+  # Puppeteer's Chromium download (~170 MB, not covered by actions/setup-node's
+  # npm cache) is skipped by default here, because most jobs never launch a
+  # browser. The e2e job below overrides this back to 'false' for itself,
+  # since it is the one job that actually needs Chromium. (#263)
   PUPPETEER_SKIP_DOWNLOAD: 'true'
 
 jobs:
@@ -226,17 +228,66 @@ jobs:
           echo "- **Version**: \`${{ needs.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================================
+  # Job 3b: Run Browser E2E Tests (#263)
+  # ============================================================================
+  e2e:
+    name: Run E2E Tests
+    runs-on: ubuntu-latest
+    needs: version
+    if: ${{ github.event.inputs.skip_tests != 'true' }}
+    env:
+      # This is the one job that actually launches a browser, so it needs the
+      # real Chromium download the workflow-level env skips everywhere else.
+      PUPPETEER_SKIP_DOWNLOAD: 'false'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run browser E2E tests
+        run: npm run test:e2e
+
+      - name: Upload E2E failure artifacts
+        # Each failing spec saves a screenshot and console log under
+        # tests/e2e/artifacts (see tests/e2e/fixtures/browser.js); only useful
+        # on failure, so this only runs then.
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-failure-artifacts
+          path: tests/e2e/artifacts
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: E2E summary
+        if: always()
+        run: |
+          echo "### 🌐 Browser E2E Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`${{ needs.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
   # Job 4: Build Application
   # ============================================================================
   build:
     name: Build Application
     runs-on: ubuntu-latest
-    needs: [version, lint, test]
+    needs: [version, lint, test, e2e]
     if: |
       always() &&
       needs.version.result == 'success' &&
       needs.lint.result == 'success' &&
-      (needs.test.result == 'success' || needs.test.result == 'skipped')
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -632,7 +683,7 @@ jobs:
   summary:
     name: Pipeline Summary
     runs-on: ubuntu-latest
-    needs: [version, lint, test, build, validate-short-description, docker-test, docker-publish, docker-hub-description, security-scan, deployment-test]
+    needs: [version, lint, test, e2e, build, validate-short-description, docker-test, docker-publish, docker-hub-description, security-scan, deployment-test]
     if: always()
     steps:
       - name: Generate pipeline summary
@@ -644,6 +695,7 @@ jobs:
           echo "| Version Generation | ${{ needs.version.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Lint | ${{ needs.lint.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Test | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| E2E | ${{ needs.e2e.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Validate Description | ${{ needs.validate-short-description.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Docker Test | ${{ needs.docker-test.result }} |" >> $GITHUB_STEP_SUMMARY

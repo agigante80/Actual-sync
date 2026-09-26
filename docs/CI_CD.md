@@ -19,7 +19,7 @@ This document describes the comprehensive Continuous Integration and Continuous 
 
 ## Pipeline Architecture
 
-The CI/CD pipeline consists of 10 interconnected jobs that run in a specific order:
+The CI/CD pipeline consists of 11 interconnected jobs that run in a specific order:
 
 ```
 ┌─────────────┐
@@ -27,14 +27,14 @@ The CI/CD pipeline consists of 10 interconnected jobs that run in a specific ord
 │ Generation  │
 └──────┬──────┘
        │
-       ├────────────┬──────────────┬────────────────────┐
-       ▼            ▼              ▼                    ▼
-   ┌──────┐    ┌──────┐      ┌───────┐    ┌──────────────────┐
-   │ Lint │    │ Test │      │ Build │    │ Validate Docker  │
-   │      │    │      │      │       │    │  Description     │
-   └───┬──┘    └───┬──┘      └───┬───┘    └────────┬─────────┘
-       │           │             │                  │
-       └───────────┴─────────────┴──────────────────┘
+       ├────────────┬────────────┬──────────────┬────────────────────┐
+       ▼            ▼            ▼              ▼                    ▼
+   ┌──────┐    ┌──────┐    ┌────────┐    ┌───────┐    ┌──────────────────┐
+   │ Lint │    │ Test │    │  E2E   │    │ Build │    │ Validate Docker  │
+   │      │    │      │    │ Tests  │    │       │    │  Description     │
+   └───┬──┘    └───┬──┘    └───┬────┘    └───┬───┘    └────────┬─────────┘
+       │           │           │             │                  │
+       └───────────┴───────────┴─────────────┴──────────────────┘
                             │
                             ▼
                    ┌─────────────────┐
@@ -77,7 +77,7 @@ The pipeline runs automatically on:
 
 **Docs-only changes are skipped.** Pushes/PRs that touch only `**/*.md`, `docs/**`, or `LICENSE` do not trigger the pipeline (`paths-ignore`), so documentation edits don't run builds/tests/publish — and a docs-only push to `main` does not fire the Auto Release.
 
-**Chromium download is skipped in CI.** The workflow sets `PUPPETEER_SKIP_DOWNLOAD=true`, so `npm ci` in the lint/test/build jobs does not download Puppeteer's ~170 MB Chromium (it's only needed by the local screenshots script, never in CI).
+**Chromium download is skipped everywhere except the E2E job.** The workflow sets `PUPPETEER_SKIP_DOWNLOAD=true`, so `npm ci` in the lint/test/build jobs does not download Puppeteer's ~170 MB Chromium. The `e2e` job (#263) overrides this back to `false` for itself, since it is the one job that launches a real browser; every other job, including the local screenshots script's normal usage outside CI, is unaffected.
 
 ---
 
@@ -227,13 +227,39 @@ curl http://localhost:3000/metrics
 
 ---
 
+### 3b. E2E Tests (#263)
+
+**Purpose**: Run the browser end-to-end suite (`tests/e2e/`) against a real
+`HealthCheckService` and SQLite-backed history, driven through headless Chrome
+
+**Runs on**: All triggers (unless `skip_tests=true`)
+
+**Dependencies**: `version`
+
+**Steps**:
+1. Checkout code
+2. Setup Node.js
+3. Install dependencies (Chromium download included, unlike the other jobs -
+   see the Chromium note above)
+4. Run `npm run test:e2e`
+5. On failure, upload each failing spec's screenshot and console log from
+   `tests/e2e/artifacts/` (kept 7 days)
+
+**Duration**: ~30 seconds
+
+**What It Checks**: dashboard rendering, tab switching, manual sync, error
+dismissal, and the login rate limit, all against fixture states under
+`tests/e2e/fixtures/states/` rather than a live sync target.
+
+---
+
 ### 4. Build
 
 **Purpose**: Build application and verify artifacts
 
 **Runs on**: All triggers
 
-**Dependencies**: `version`, `lint`, `test`
+**Dependencies**: `version`, `lint`, `test`, `e2e`
 
 **Steps**:
 1. Checkout code
