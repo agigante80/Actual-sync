@@ -520,6 +520,18 @@ describe('HealthCheckService', () => {
       expect(status.lastError.message).toBe('Test error');
     });
 
+    test('should accept a plain string error, not only an Error object (#263)', () => {
+      // syncService passes the error as a string; an earlier version of
+      // updateSyncStatus read only error.message, which is undefined on a
+      // string, so both lastError.message and the per-server error ended up
+      // as "Unknown error" / undefined instead of the actual failure text.
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'TestServer', error: 'Connection refused' });
+
+      const status = healthCheck.getStatus();
+      expect(status.lastError.message).toBe('Connection refused');
+      expect(status.serverStatuses.TestServer.error).toBe('Connection refused');
+    });
+
     test('should track multiple syncs', () => {
       healthCheck.updateSyncStatus({ status: 'success', serverName: 'Server1' });
       healthCheck.updateSyncStatus({ status: 'failure', serverName: 'Server2', error: new Error('Test') });
