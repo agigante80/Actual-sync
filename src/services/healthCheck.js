@@ -11,6 +11,7 @@ const path = require('path');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 const { resolveVersion } = require('../lib/version');
+const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
 
 class HealthCheckService {
   /**
@@ -46,6 +47,10 @@ class HealthCheckService {
     this.app = express();
     this.server = null;
     this.wsClients = new Set();
+    // /ws/logs handshake state (#242)
+    this.wsTickets = new WsTicketStore();
+    this.wsConnectionsPerIp = new Map();
+    this.maxWsConnectionsPerIp = 10;
     
     // Health status tracking
     this.status = {
@@ -82,59 +87,33 @@ class HealthCheckService {
 
       const authConfig = this.dashboardConfig.auth || {};
       const authType = authConfig.type || 'none';
+      const result = checkCredentials(req.headers, authConfig);
+      if (result.ok) return next();
 
-      // No authentication required
-      if (authType === 'none') {
-        return next();
+      if (result.reason === 'config') {
+        return res.status(500).json({ error: 'Invalid authentication configuration' });
       }
 
-      // Basic authentication
       if (authType === 'basic') {
-        const authHeader = req.headers.authorization;
-        
-        if (!authHeader || !authHeader.startsWith('Basic ')) {
-          res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
+        res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
+        if (result.reason === 'missing') {
           return res.status(401).json({ error: 'Authentication required' });
         }
-
-        const base64Credentials = authHeader.substring(6);
-        const credentials = Buffer.from(base64Credentials, 'base64').toString('utf8');
-        const [username, password] = credentials.split(':');
-
-        if (username === authConfig.username && password === authConfig.password) {
-          return next();
-        }
-
-        this.logger.warn('Dashboard authentication failed', { 
-          username, 
-          remoteAddress: req.ip 
+        this.logger.warn('Dashboard authentication failed', {
+          username: result.username,
+          remoteAddress: req.ip
         });
-        res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
       // Token authentication
-      if (authType === 'token') {
-        const authHeader = req.headers.authorization;
-        
-        if (!authHeader || !authHeader.startsWith('Bearer ')) {
-          return res.status(401).json({ error: 'Authentication required' });
-        }
-
-        const token = authHeader.substring(7);
-
-        if (token === authConfig.token) {
-          return next();
-        }
-
-        this.logger.warn('Dashboard token authentication failed', { 
-          remoteAddress: req.ip 
-        });
-        return res.status(401).json({ error: 'Invalid token' });
+      if (result.reason === 'missing') {
+        return res.status(401).json({ error: 'Authentication required' });
       }
-
-      // Unknown auth type
-      return res.status(500).json({ error: 'Invalid authentication configuration' });
+      this.logger.warn('Dashboard token authentication failed', {
+        remoteAddress: req.ip
+      });
+      return res.status(401).json({ error: 'Invalid token' });
     };
   }
 
@@ -270,6 +249,14 @@ class HealthCheckService {
     });
 
     // Dashboard API: Get status (with authentication)
+    // Single-use ticket for the /ws/logs handshake: browsers cannot send an
+    // Authorization header on a WebSocket, so the dashboard fetches one of
+    // these over authenticated HTTP and passes it as ?ticket=. (#242)
+    this.app.get('/api/dashboard/ws-ticket', this.dashboardAuth(), (req, res) => {
+      res.set('Cache-Control', 'no-store');
+      res.json({ ticket: this.wsTickets.mint(), expiresInSeconds: this.wsTickets.ttlMs / 1000 });
+    });
+
     this.app.get('/api/dashboard/status', this.dashboardAuth(), (req, res) => {
       const uptime = Math.floor((Date.now() - new Date(this.status.startTime).getTime()) / 1000);
       
@@ -1097,6 +1084,79 @@ This test verifies that notifications are configured correctly and can reach the
   }
 
   /**
+   * Admit or refuse a /ws/logs handshake. (#242)
+   *
+   * Authentication happens here, before the upgrade, so an unauthenticated
+   * socket is never opened and never receives a log line.
+   * - dashboard disabled: 403
+   * - an Origin that is neither same-origin nor in dashboard.allowedOrigins:
+   *   403, at every auth type. This is the Cross-Site WebSocket Hijacking
+   *   guard. A request with no Origin is not from a browser and is let through
+   *   to the credential check.
+   * - more than maxWsConnectionsPerIp open sockets from one address: 429
+   * - auth type basic/token: a valid ?ticket= from /api/dashboard/ws-ticket,
+   *   or a valid Authorization header (non-browser clients). Otherwise 401.
+   * @param {{origin?: string, req: import('http').IncomingMessage}} info
+   * @param {Function} done - ws callback (result, code, message)
+   */
+  verifyWsClient(info, done) {
+    const req = info.req;
+    const remoteAddress = req.socket.remoteAddress;
+    const refuse = (code, message) => {
+      this.logger.warn('WebSocket handshake refused', { status: code, reason: message, remoteAddress });
+      done(false, code, message);
+    };
+
+    if (!this.dashboardConfig.enabled) return refuse(403, 'Dashboard is disabled');
+
+    if (info.origin && !this.isAllowedWsOrigin(info.origin, req.headers.host)) {
+      return refuse(403, 'Origin not allowed');
+    }
+
+    if ((this.wsConnectionsPerIp.get(remoteAddress) || 0) >= this.maxWsConnectionsPerIp) {
+      return refuse(429, 'Too many connections');
+    }
+
+    const authConfig = this.dashboardConfig.auth || {};
+    if ((authConfig.type || 'none') === 'none') return done(true);
+
+    let ticket = null;
+    try {
+      ticket = new URL(req.url, 'http://localhost').searchParams.get('ticket');
+    } catch { /* malformed URL: no ticket */ }
+    // Ticket only. An Authorization header is deliberately NOT accepted here:
+    // WebSocket upgrades bypass the Express rate limiter, so a header check on
+    // the handshake would be an unthrottled password oracle. Scripts get a
+    // ticket from /api/dashboard/ws-ticket with their header instead. (#242)
+    if (ticket && this.wsTickets.consume(ticket)) return done(true);
+
+    return refuse(401, 'Authentication required');
+  }
+
+  /**
+   * @param {string} origin - the handshake's Origin header
+   * @param {string} host - the handshake's Host header
+   * @returns {boolean} true when same-origin or listed in dashboard.allowedOrigins
+   */
+  isAllowedWsOrigin(origin, host) {
+    let parsed;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      return false;
+    }
+    if (host && parsed.host === host) return true;
+    const allowed = this.dashboardConfig.allowedOrigins || [];
+    return allowed.some(entry => {
+      try {
+        return new URL(entry).origin === parsed.origin;
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  /**
    * Broadcast log to WebSocket clients
    * @param {string} level - Log level
    * @param {string} message - Log message
@@ -1141,7 +1201,8 @@ This test verifies that notifications are configured correctly and can reach the
           server: this.server,
           path: '/ws/logs',
           clientTracking: true,
-          perMessageDeflate: false
+          perMessageDeflate: false,
+          verifyClient: (info, done) => this.verifyWsClient(info, done)
         });
 
         // ws forwards the underlying HTTP server's errors (e.g. a bind failure)
@@ -1163,6 +1224,13 @@ This test verifies that notifications are configured correctly and can reach the
 
           this.wsClients.add(ws);
           ws.isAlive = true;
+          const ip = req.socket.remoteAddress;
+          this.wsConnectionsPerIp.set(ip, (this.wsConnectionsPerIp.get(ip) || 0) + 1);
+          ws.once('close', () => {
+            const left = (this.wsConnectionsPerIp.get(ip) || 1) - 1;
+            if (left > 0) this.wsConnectionsPerIp.set(ip, left);
+            else this.wsConnectionsPerIp.delete(ip);
+          });
           
           // Handle incoming messages (ping/pong keep-alive)
           ws.on('message', (data) => {

@@ -68,6 +68,7 @@
     "host": "0.0.0.0",
     "dashboard": {
       "enabled": true,
+      "allowedOrigins": [],
       "auth": {
         "type": "none"
       }

@@ -177,7 +177,8 @@ HTTP server for health probes, Prometheus metrics, and the web dashboard.
 - **dashboard.auth.type** (string, default: `"none"`) — `"none"`, `"basic"`, or `"token"`.
   - `"basic"` requires **username** and **password**.
   - `"token"` requires **token** (sent as `Authorization: Bearer <token>`).
-  - A blank credential locks the dashboard out (every request is rejected), so set the credentials when you enable auth.
+  - A missing or blank credential locks the dashboard out (every request gets 500 `Invalid authentication configuration`), so set the credentials when you enable auth.
+- **dashboard.allowedOrigins** (array of `scheme://host[:port]`, default: `[]`) - extra browser origins allowed to open the `/ws/logs` live log stream. Same-origin is always allowed, and a request with no `Origin` header (a script, not a browser) is not origin-checked. Any other browser origin is refused with 403 at every auth type; this is the guard against Cross-Site WebSocket Hijacking. Add an entry only if the dashboard page is served under a different origin than the host the browser connects to, for example `["https://budget.example.com"]`.
 
 ```json
 "healthCheck": {
