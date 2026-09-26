@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-public-leaks-version: 13
+# check-public-leaks-version: 19
 #
 # The public half of the leak guard: home paths, unlisted "~/" roots and reachable addresses.
 #
@@ -58,30 +58,46 @@
 # disk; awk holds the largest kept object twice in memory. NEVER wired into a hook: it is a
 # pre-publish step, run by hand, and its evidence is REDACTED by default (see below).
 #
-# COST AND ITS LIMITS (#211). Rule C is linear in the line length in both modes: the anchored
+# COST AND ITS LIMITS (#211, #239). Rules A and B are linear in the line length in TREE mode and
+# under `--history --show-evidence`: the tail walk is one anchored match rather than a per-byte
+# loop, the segment is cut with a literal prefix strip rather than `${raw##*/}`, and a trailing
+# slash is tested before it is stripped rather than through `${m%/}`, which tries every suffix when
+# the string does not end in one. A 64 KB punctuation tail cost 40 s and now costs 0.15 s; 1 MB is
+# 2 s. The REDACTED `--history` report is still quadratic in the match, which is #217 and is not
+# claimed here. Measured on bash 5.2.21 and glibc; this repository's stated floor is bash 3.2.57,
+# where the COST is unmeasured. Correctness does not rest on that floor behaving: a failed tail
+# match falls back to the byte loop, so an engine that does not reload the locale the way
+# `local LC_ALL=C` expects reports a finding slowly rather than missing it (review of #239).
+# Rule C is linear in the line length in both modes: the anchored
 # RE_MAIL keeps grep on its DFA, LC_ALL=C on the tree-mode grep keeps it there under any locale,
 # and judge() splits the address with `IFS=@ read` rather than `${addr#*@}`. A 1 MB token followed
 # by an address costs 0.08 s where it once cost minutes, which is what matters: a hook that stalls
 # is a hook that gets --no-verify, and that is how this guard gets removed. Two things are NOT
 # linear and are #217 rather than part of that claim: `redact`'s append loop, so a REDACTED
 # --history report over a long match is still slow (20 s at 128 KB, 81 s at 256 KB, four times per
-# doubling), which is why the timing cases that use a glued match pass --show-evidence; and rules A
-# and B's own bash-side work on pathological paths.
+# doubling), which is why the timing cases that use a glued match pass --show-evidence.
 #
-# TWO SHAPES THIS DELIBERATELY DOES NOT REPORT, both consequences of the above, both pinned by a
-# test case so they cannot be rediscovered as bugs:
-#   1. An address glued to a home path or root, `/home/alice/alice@corp.io` and
-#      `~/secret/alice@corp.io`: rules A and B end in `/?`, which consumes the byte rule C's anchor
+# THREE SHAPES THIS DELIBERATELY DOES NOT REPORT, the first two consequences of the above, each
+# pinned by a test case so they cannot be rediscovered as bugs:
+#   1. An address glued to a home path or root, `/home/<name>/<name>@<host>.<tld>` and
+#      `~/<root>/<name>@<host>.<tld>`: rules A and B end in `/?`, which consumes the byte rule C's anchor
 #      needs, so the path row is reported and the address is not. Dropping that `/?` would change
 #      five existing cases for a shape no real tree here has produced. A separator between the two
-#      (`/home/alice/notes alice@corp.io`) reports both.
-#   2. An accented local part or domain in TREE mode, `jose@corp.io` with an acute e, `zoe@corp.io`
-#      with a diaeresis, `alice@corpe.io` likewise: LC_ALL=C narrows `[A-Za-z]` to ASCII, where a
+#      (`/home/<name>/notes <name>@<host>.<tld>`) reports both.
+#   2. An accented local part or domain in TREE mode, a local part with an acute e or a diaeresis,
+#      or a domain with an accented letter, likewise: LC_ALL=C narrows `[A-Za-z]` to ASCII, where a
 #      territory UTF-8 locale would admit Latin letters with diacritics. This is not a new blind
 #      spot: --history has always run under C, and CI runs under C.UTF-8, where GNU grep already
 #      misses them; the pin makes the laptop hook path match them. Widening the three classes with
 #      \x80-\xff is linear and was costed, and it glues any preceding multibyte byte into the
 #      evidence, so it is a maintainer decision rather than an oversight.
+#   3. A `/home/` or `/Users/` preceded by a word byte or a dot (#230): `./home/<Screen>.vue`,
+#      `src/home/index.ts`, `https://example.com/home/<name>`. Rule A is anchored on the byte
+#      before it, so a home path glued to a word (`cd/home/<name>` in a pasted transcript with the
+#      space lost) is not reported either. A real path starts at a boundary, and the fleet hit
+#      that argued for this was a Vue screen importing its siblings from `./home/`. The same
+#      mechanism as shape 1 applies to rule A against itself: in `/home/<a>//home/<b>` the first
+#      match's trailing `/` consumes the second's anchor byte, so only `/home/<a>/` is reported.
 #
 # `--history --orphans` also reads objects no ref reaches: a leak amended or reset away is still
 # in the local store until `git gc` prunes it, and so is a stash entry, which is the one ref the
@@ -118,7 +134,7 @@
 #
 # AND BOTH PATH RULES JUDGE THE FIRST SEGMENT ONLY. Rule A asks who "/home/<name>/" belongs to and
 # rule B asks whether "~/<root>" may be shown; NEITHER looks below that. So a private directory name
-# under an allowed root ("~/work/<client>/repo", "/home/user/clients/<client>/build.log") is
+# under an allowed root ("~/<root>/<client>/repo", "/home/<name>/clients/<client>/build.log") is
 # invisible here, and the segments above the project are exactly what the ticket called the worse
 # half of the leak. Catching those needs the name, which is the private half's job. This was found
 # by review AFTER the paragraph above shipped, which is the argument for the paragraph.
@@ -134,8 +150,8 @@
 # al******) because a pre-publish report is exactly the text that gets pasted into a public
 # issue; --show-evidence prints it whole.
 #
-# WHY RULE B IS AN ALLOWLIST AND THE OTHER TWO ARE NOT. Shape can decide "/home/alice/" is a person
-# and "/home/user/" is a placeholder. Shape cannot decide whether "~/foo" is private, because the
+# WHY RULE B IS AN ALLOWLIST AND THE OTHER TWO ARE NOT. Shape can decide that a first name after
+# /home/ is a person and that the word user there is a placeholder. Shape cannot decide whether "~/foo" is private, because the
 # string carries no marker either way. So the test is inverted: an allowlist of roots a document is
 # allowed to show. That catches the case by construction rather than by enumeration, and it needs
 # one thing from the project, a canonical example root, agreed once.
@@ -215,16 +231,61 @@ done
 TAIL_PUNCT='.,;:!?)]}"'"'"
 # Assigns to STRIPPED rather than printing, like set_lower: a command substitution forks, and
 # --history judges thousands of matches in one run.
+# ONE anchored match, never a per-byte loop (#239). Every bash parameter expansion is O(n) in the
+# string, so popping one byte at a time was quadratic: 40 s on a 64 KB punctuation tail under C and
+# 183 s under a UTF-8 locale, where 9 ms is what the anchored regex costs. `${s##*[!punct]}` and a
+# per-index loop were both measured WORSE (105 s and 9.6 s), and an unanchored regex is quadratic
+# for the same reason #211 recorded for grep. The class is built from TAIL_PUNCT with `]` leading,
+# which is how a bracket expression takes a literal `]`; TAIL_PUNCT holds no `^`, `-` or backslash,
+# so nothing else in it is special there.
+# LC_ALL=C is load-bearing, not hygiene: under a UTF-8 locale a byte that is not valid UTF-8 makes
+# the match FAIL, and a failed match is read here as "entirely punctuation", which would suppress a
+# leak this scanner reports today (found by the #239 security lens). Verified on bash 5.2.21; the
+# stated floor is 3.2.57, where neither the reload nor the cost is measured.
+_TAIL_CLASS="]${TAIL_PUNCT//]/}"
+_TAIL_RE="^(.*[^$_TAIL_CLASS])[$_TAIL_CLASS]*$"
+# TWO matches, then a loop that a working engine never reaches. The first says where the tail
+# starts. The second is what the first failing MEANS on a working engine: the value is empty or
+# entirely punctuation, so the answer is the empty string, and it is asked as a second anchored
+# match rather than assumed, because assuming it is the direction that SUPPRESSES a finding on an
+# engine that did not reload the locale (review of #239). Only when both disagree does the byte
+# loop run, which is v18's rule exactly: correct, and slow only on an engine already misbehaving.
+# The loop is NOT free and must stay unreachable: an entirely-punctuation segment is reachable
+# (`/home/` followed by 64 KB of dots is a rule A match) and walking it byte by byte costs 33 s,
+# which the second match answers in a millisecond (round 2 of the review found exactly that).
+_TAIL_ALL="^[$_TAIL_CLASS]*$"
 strip_tail() {
-  local s="$1" c
+  local s="$1" c LC_ALL=C
+  if [[ $s =~ $_TAIL_RE ]]; then STRIPPED="${BASH_REMATCH[1]}"; return; fi
+  if [[ $s =~ $_TAIL_ALL ]]; then STRIPPED=""; return; fi
   while [ -n "$s" ]; do
     c="${s: -1}"
-    case "$TAIL_PUNCT" in
-      *"$c"*) s="${s%?}" ;;
-      *) break ;;
-    esac
+    case "$_TAIL_CLASS" in *"$c"*) s="${s%?}" ;; *) break ;; esac
   done
   STRIPPED="$s"
+}
+# in_list_stripping <value> <entries...>: is the value, or the value with any number of trailing
+# TAIL_PUNCT bytes removed, in the list? A marker such as `[redacted]` ends in a byte strip_tail
+# would pop, so "~/[redacted]." must be compared at EVERY step of the strip, not only raw and fully
+# stripped: raw is `[redacted].`, fully stripped is `[redacted`, and the literal sits between them
+# (#227 review). A list entry that itself ends in punctuation therefore matches its literal.
+# Compared by ENTRY LENGTH rather than by walking the tail once per entry (#239): an entry `e`
+# matches when the value truncated to `${#e}` equals it. THE LOWER BOUND IS THE RULE, not an
+# optimisation: without `${#e}` at least `${#STRIPPED}` this is a prefix match, and every allow
+# entry widens into a suppressor for every longer name starting with it (`root ~/forge-kit` would
+# suppress `~/forge-kit-private`, and both that entry and `root [redacted` are live in this
+# repository's own allow-file). A false negative is this component's one security failure mode.
+# STRIPPED is left holding the fully stripped value on both paths, so rule A walks the tail once.
+in_list_stripping() {
+  local s="$1" e n min LC_ALL=C; shift
+  strip_tail "$s"; min=${#STRIPPED}
+  for e in "$@"; do
+    n=${#e}
+    [ "$n" -ge "$min" ] && [ "$n" -le "${#s}" ] || continue
+    [ "${s:0:n}" = "$e" ] || continue
+    return 0
+  done
+  return 1
 }
 
 # --- the allowed sets ------------------------------------------------------
@@ -235,9 +296,17 @@ strip_tail() {
 # identical on every machine, so it discloses nothing about whose machine it is, which is the only
 # question this rule asks.
 ALLOW_ROOTS=(projects .claude .config .local .cache dev code src work '<root>'
-             .ssh .bashrc .bash_profile .zshrc .profile .gitconfig .npmrc)
+             .ssh .bashrc .bash_profile .zshrc .profile .gitconfig .npmrc
+             '[redacted]' '<redacted>' '***REMOVED***')
+# The last three entries of both lists are REDACTION MARKERS (#227): a history rewrite that removes
+# a private root or user replaces it with one, and the scanner must know the marker or the very
+# rewrite that removed the leak leaves the scan red in every affected repository. `[redacted]` is
+# the convention the leak-guard remediation uses; `***REMOVED***` is git filter-repo's own default
+# when a --replace-text expression names no replacement. A marker is a LITERAL, never a shape:
+# `~/[myco]/` is still a root.
 # Segments that are obviously a stand-in for a person rather than a person.
-PLACEHOLDER_USERS=(user users username youruser '<user>' '<username>' '<name>' '<you>' '...' '$USER' '${USER}' '$HOME')
+PLACEHOLDER_USERS=(user users username youruser '<user>' '<username>' '<name>' '<you>' '...' '$USER' '${USER}' '$HOME'
+                   '[redacted]' '<redacted>' '***REMOVED***')
 ALLOW_PREFIXES=()
 ALLOW_EMAILS=()
 SKIP_PATHS=()
@@ -252,11 +321,47 @@ if [ -n "$ALLOW_FILE" ]; then
     line="${line%"${line##*[![:space:]]}"}"          # strip trailing whitespace
     case "$line" in ''|'#'*) continue ;; esac
     key="${line%% *}"; val="${line#* }"
+    val="${val#"${val%%[![:space:]]*}"}"              # two spaces after the key are not part of the value (#240)
     [ "$key" != "$val" ] || die "$ALLOW_FILE:$lineno: entry has no value: $line"
     case "$key" in
       # A root is written the way it appears in prose, "~/name", so the config reads like the
       # thing it permits.
-      root)   ALLOW_ROOTS+=("${val#\~/}") ;;
+      root)
+        # A trailing slash is stripped, as the prefix key strips it: rule B's own report prints
+        # `~/<root>/`, so the natural copy-paste carries the slash, and judge() compares the root
+        # without its slash, so stored with it the entry could never match (review of #224).
+        rootv="${val#\~/}"; rootv="${rootv%/}"   # ~/ first, so `root ~/` strips to nothing and refuses
+        # Exactly one segment, as the prefix key requires (#240): rule B yields one segment and
+        # nothing deeper, so a two-segment root, a doubled slash (one is stripped above, one
+        # remains) and a bare tilde (nothing strips it) could never match. This clause runs
+        # BEFORE strip_tail below, which would otherwise pop nothing off "a/b" and accept it.
+        case "$rootv" in '~'|*/*) die "$ALLOW_FILE:$lineno: root must name exactly one segment, because rule B matches one segment and nothing deeper: $val" ;; esac
+        # A root that is entirely punctuation ("..", "}", "...") is returned clean by rule B before
+        # the list is consulted, so an entry naming one can never change a verdict: a dead entry
+        # that reads as a decision. Refused at parse time, as the prefix key's segment is (#224).
+        # The redaction markers strip to something and stay accepted.
+        # Rule B's match class yields no whitespace, double quote or backtick, so an entry carrying
+        # one could never match (#239). The SINGLE quote is a name byte, not punctuation here:
+        # `root o'brien` suppresses a live `~/o'brien` row, and refusing it would break a working
+        # allow-file at exit 2.
+        case "$rootv" in
+          *[[:space:]]*|*'"'*|*'`'*) die "$ALLOW_FILE:$lineno: root cannot contain whitespace, a double quote or a backtick (rule B's match class yields none of them), so this entry could never match: $val" ;;
+        esac
+        strip_tail "$rootv"
+        [ -n "$STRIPPED" ] || die "$ALLOW_FILE:$lineno: root cannot be entirely punctuation (rule B never reports one), so this entry could never match: $val"
+        # An entry ending in punctuation is compared after the strip, so it could only ever match
+        # its own literal: the dead-entry class again (#239). The one exception is the redaction
+        # marker `[redacted]`, which ends in a TAIL_PUNCT byte and is a literal on purpose; the
+        # other two markers end in `>` and `*`, neither of which is in TAIL_PUNCT.
+        # A BRACKETED literal is exempt, not only the marker itself: `[redacted]` is one shape a
+        # rewrite writes, `[redacted-other]` and `[myco]` are others, and each matches exactly the
+        # root a rewrite produced, which is the point of writing it (the #227 suite pins one).
+        # Everything else ending in punctuation stays refused.
+        case "$rootv" in \[*\]) bracketed=1 ;; *) bracketed=0 ;; esac
+        if [ "$STRIPPED" != "$rootv" ] && [ "$bracketed" = 0 ]; then
+          die "$ALLOW_FILE:$lineno: root cannot end in punctuation (rule B strips it before compare, so this entry could only match its own literal): $val"
+        fi
+        ALLOW_ROOTS+=("$rootv") ;;
       # Rule A matches "/home/<seg>" or "/Users/<seg>" and nothing deeper, so a prefix with more
       # than one segment, or one under any other root, can never equal a match. It would parse
       # cleanly and silently do nothing, which is the config bug every other key here refuses.
@@ -364,7 +469,14 @@ skip_by_name() {  # skip_by_name <path> [<lowercased basename>]
 # The backtick is excluded from both character classes for one reason found by running this over a
 # real tree: a markdown code span is the commonest way a path appears in prose, and reading
 # "~/name`" as the root means the project's own allow-file entry never matches it.
-RE_HOME='(/home|/Users)/[^/[:space:]"`]+/?'
+# Anchored like RE_MAIL below (#230): the byte before /home/ or /Users/ must not be a word byte or a
+# dot, so "./home/Foo.vue", "src/home/index.ts" and "https://example.com/home/<name>" are a
+# directory called home, not a home directory. A real path always starts at a boundary (a quote,
+# =, (, a space, the start of the line). The match carries that one leading byte, and judge()
+# strips it before dispatching, as it does for rule C. `~` is excluded from the anchor class too
+# (review): with it admitted, a tilde root whose name is the word home matched rule A as the longer alternative and lost its
+# rule B `root home` allow entry.
+RE_HOME='(^|[^A-Za-z0-9_.~])(/home|/Users)/[^/[:space:]"`]+/?'
 RE_ROOT='~/[^/[:space:]"`]+/?'
 # The leading "(^|[^class])" is the half of #211 that makes rule C linear: unanchored, the local
 # part's "+" run can start at EVERY position of a long word-class byte run, and grep leaves its DFA
@@ -398,28 +510,44 @@ show_evidence() {  # show_evidence <rule> <evidence>: what the report prints for
 # One match, one verdict. Shared by the tree modes and --history so the rules cannot drift between
 # them: <label> is the file in a tree mode and "<path>@<oid>" in history.
 judge() {
-  local f="$1" n="$2" m="$3" raw seg allowed rawt p root addr local_part domain
+  local f="$1" n="$2" m="$3" raw seg allowed rawt p root rawroot addr local_part domain
   # Rule C's anchor (#211) leaves one leading byte on the match, and the dispatch below keys on the
-  # FIRST byte, so "see docs/alice@corp.io" would arrive as "/alice@corp.io" and be judged a home
+  # FIRST byte, so "see docs/<name>@<host>.<tld>" would arrive as "/<name>@..." and be judged a home
   # path. Strip it BEFORE the dispatch, never inside the email arm. A match that already starts
   # with a class byte, or that is a rule A or rule B match, is left exactly as it was.
+  # Rule A and B shapes are tested BEFORE the email arm (review of #230): a segment may contain
+  # `@`, so `-/home/<name>@<host>.<tld>` would otherwise satisfy the email arm's class and keep its
+  # anchor byte, and be judged an address.
   case "$m" in
-    [A-Za-z0-9._%+-]*@*|/home/*|/Users/*|'~'/*) ;;
+    /home/*|/Users/*|'~'/*) ;;
+    ?/home/*|?/Users/*) m="${m#?}" ;;   # rule A's anchor byte (#230)
+    [A-Za-z0-9._%+-]*@*) ;;
     *@*) m="${m#?}" ;;
   esac
   case "$m" in
     /*)
-      raw="${m%/}"; seg="${raw##*/}"
-      # Checked against BOTH forms: "..." is entirely punctuation, so stripping the trailing dots
-      # would leave nothing to compare and the guard would reject its own documented placeholder.
-      in_list "$seg" "${PLACEHOLDER_USERS[@]}" && return 0
-      strip_tail "$seg"; in_list "$STRIPPED" "${PLACEHOLDER_USERS[@]}" && return 0
+      # NOT `seg="${raw##*/}"` (#239): a longest-match strip tries every prefix, so it is quadratic
+      # in the segment and a 64 KB punctuation tail cost 3.3 s of the 3.5 s a scan took. RE_HOME
+      # matches `(/home|/Users)/` followed by a class that excludes `/`, so the segment is exactly
+      # the text after that literal prefix, and a shortest-match strip of a literal is linear.
+      # `${m%/}` is quadratic when the string does NOT end in `/`: bash tries every suffix and the
+      # match fails at each (2.5 s at 256 KB, #239). Test the last byte first, then strip one.
+      case "$m" in */) raw="${m%?}" ;; *) raw="$m" ;; esac
+      case "$raw" in
+        /home/*)  seg="${raw#/home/}" ;;
+        /Users/*) seg="${raw#/Users/}" ;;
+        *)        seg="${raw##*/}" ;;   # unreachable while RE_HOME keeps its two roots: a guard, not a path
+      esac
+      # Checked at every strip step: "..." is entirely punctuation, so stripping the trailing dots
+      # would leave nothing to compare and the guard would reject its own documented placeholder,
+      # and "[redacted]." holds its marker one step in (#227).
+      in_list_stripping "$seg" "${PLACEHOLDER_USERS[@]}" && return 0   # leaves the strip in STRIPPED (#239)
       # A segment that strips to nothing is entirely punctuation ("..", "...", a lone "}"): a
       # path idiom or a code fragment, not a person. No allow-file entry can name it (the prefix
       # parser above refuses to accept one), so without this it could never be suppressed.
       [ -n "$STRIPPED" ] || return 0
       # Punctuation is stripped here for the same reason as the placeholder check above, and
-      # its absence was a real false positive: with `prefix /home/runner`, an allowed path at
+      # its absence was a real false positive: with the CI runner's home allowed as a prefix, an allowed path at
       # the end of a sentence or inside brackets still reported a leak.
       allowed=0
       strip_tail "$raw"; rawt="$STRIPPED"
@@ -429,11 +557,17 @@ judge() {
       [ "$allowed" = 1 ] && return 0
       report "$f" "$n" home-path "$(show_evidence home-path "$m")" ;;
     '~'/*)
-      strip_tail "${m%/}"; root="${STRIPPED#\~/}"
+      # Compared at every strip step, as rule A does with the segment: strip_tail pops a marker's
+      # own "]" (it is in TAIL_PUNCT), so a stripped-only compare could never match the literal
+      # `[redacted]`, and an allow-file `root [redacted]` only worked written without its closing
+      # bracket; and "~/[redacted]." holds the marker one step in (#227).
+      local rawroot; case "$m" in */) rawroot="${m%?}" ;; *) rawroot="$m" ;; esac   # never `${m%/}` (#239)
+      rawroot="${rawroot#\~/}"
+      in_list_stripping "$rawroot" "${ALLOW_ROOTS[@]}" && return 0   # every step (#227)
+      root="$STRIPPED"                                              # the strip it already made (#239)
       # A root that strips to nothing is entirely punctuation ("~/..", "~/}"): a path idiom or a
       # code fragment, not a person's home. No allow-file `root` entry could name it either.
       [ -n "$root" ] || return 0
-      in_list "$root" "${ALLOW_ROOTS[@]}" && return 0
       report "$f" "$n" home-root "$(show_evidence home-root "$m")" ;;
     *)
       strip_tail "$m"; addr="$STRIPPED"
