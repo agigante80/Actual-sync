@@ -696,6 +696,12 @@ class TelegramBotService {
         return;
       }
 
+      const isSyncQueued = this.services.isSyncQueued;
+      if (isSyncQueued && isSyncQueued(serverName)) {
+        await this.sendMessage(`⏳ Sync for ${serverName} is already queued`);
+        return;
+      }
+
       // Send starting message
       await this.sendMessage(`🔄 Starting sync for ${serverName}...`);
 
@@ -705,7 +711,18 @@ class TelegramBotService {
         chatId: this.config.chatId
       });
 
-      await syncBank(server, { isAutomated: false, retryAttempt: 0 });
+      // Not awaited: syncs run one at a time (#265), so this can wait behind other
+      // servers. Awaiting it would stall the polling loop and every other command
+      // until the queue drains. The promise is kept so tests can wait for it.
+      this.pendingSync = Promise.resolve()
+        .then(() => syncBank(server, { isAutomated: false, retryAttempt: 0 }))
+        .catch(async (error) => {
+          this.logger.error('Sync command failed', {
+            error: error.message,
+            errorCode: error.code
+          });
+          await this.sendMessage(`❌ Sync failed: ${error.message}`);
+        });
 
       // The sync result is reported by notificationService.notifySync(), which now
       // honours notifyOnSuccess for Telegram like every other channel (#169). This

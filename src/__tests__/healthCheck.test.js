@@ -1081,6 +1081,78 @@ describe('HealthCheckService', () => {
    * a user whose failure alerts were being suppressed had no surface that said
    * so. Wiring it up is the point of the endpoint.
    */
+  describe('POST /api/dashboard/sync queueing (#265)', () => {
+    const url = () => `http://127.0.0.1:${testPort}/api/dashboard/sync`;
+    const servers = [{ name: 'A' }, { name: 'B' }];
+
+    it('queues every server in config order for "all" and returns at once', async () => {
+      const { SyncQueue } = require('../lib/syncQueue');
+      const queue = new SyncQueue();
+      const log = [];
+      let releaseA;
+      const aDone = new Promise((resolve) => { releaseA = resolve; });
+      const runOne = async (s) => {
+        log.push(`${s.name}-start`);
+        if (s.name === 'A') await aDone;
+        log.push(`${s.name}-end`);
+      };
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        loggerConfig: { level: 'ERROR' },
+        getServers: () => servers,
+        syncBank: (s) => queue.run(s.name, () => runOne(s)),
+        isSyncQueued: (name) => queue.has(name)
+      });
+      await hc.start();
+
+      const res = await httpPostJson(url(), { server: 'all' });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ success: true, message: 'Sync triggered for all servers' });
+      expect(log).toEqual(['A-start']);
+
+      releaseA();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(log).toEqual(['A-start', 'A-end', 'B-start', 'B-end']);
+    });
+
+    it('does not queue a server twice and says so', async () => {
+      const syncBank = jest.fn(() => new Promise(() => {}));
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        loggerConfig: { level: 'ERROR' },
+        getServers: () => servers,
+        syncBank,
+        isSyncQueued: (name) => name === 'A'
+      });
+      await hc.start();
+
+      const res = await httpPostJson(url(), { server: 'A' });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ success: true, message: 'Sync already queued' });
+      expect(syncBank).not.toHaveBeenCalled();
+    });
+
+    it('triggers a server that is not queued', async () => {
+      const syncBank = jest.fn(() => Promise.resolve());
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        loggerConfig: { level: 'ERROR' },
+        getServers: () => servers,
+        syncBank,
+        isSyncQueued: () => false
+      });
+      await hc.start();
+
+      const res = await httpPostJson(url(), { server: 'B' });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ success: true, message: 'Sync triggered for B' });
+      expect(syncBank).toHaveBeenCalledWith(servers[1]);
+    });
+  });
+
   describe('POST /api/dashboard/dismiss-error (#264)', () => {
     const url = () => `http://127.0.0.1:${testPort}/api/dashboard/dismiss-error`;
 
