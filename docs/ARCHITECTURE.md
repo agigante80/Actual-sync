@@ -371,6 +371,21 @@ Actual-sync/
 - Avoids overwhelming GoCardless API with concurrent requests
 - Reduces risk of rate limiting
 - Easier to debug issues with specific servers
+- Required for correctness: `@actual-app/api` is one process-wide session, so two syncs at once
+  would share (and corrupt) the same open budget
+
+**Enforcement** (#265): every sync goes through `syncBank`, which queues it on the single
+`SyncQueue` in `src/lib/syncQueue.js`. Scheduled jobs, auto-retries, the dashboard (including
+"Sync all") and Telegram `/sync` all wait their turn, in request order. A server that is already
+waiting or running is not queued again; the dashboard and Telegram answer "already queued". A
+failing sync releases the queue for the next one. Telegram does not wait for the sync to finish,
+so a long queue never blocks the bot's polling loop.
+
+The queue is per process. `--force-run` (`npm run sync`) and `scripts/listAccounts.js` start
+their own process with their own API session, so do not run them while the service is running.
+
+Known limit: the queue has no time limit on a slot, so a sync that hangs inside the Actual API
+blocks every later sync until restart. Per-phase timeouts are tracked separately.
 
 ### Exponential Backoff
 

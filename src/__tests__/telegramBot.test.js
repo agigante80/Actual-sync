@@ -569,6 +569,7 @@ describe('TelegramBotService', () => {
       );
       
       await bot.handleSync(['Main', 'Budget']);
+      await bot.pendingSync;
       
       expect(mockSyncBank).toHaveBeenCalledWith(mockServers[0], { isAutomated: false, retryAttempt: 0 });
       expect(mockRequest.write).toHaveBeenCalled();
@@ -864,18 +865,21 @@ describe('TelegramBotService', () => {
       test('never does not append a completion confirmation', async () => {
         const bot = botWithMode('never');
         await bot.handleSync(['Main', 'Budget']);
+        await bot.pendingSync;
         expect(sentTexts().filter(t => t.includes('Sync completed for'))).toHaveLength(0);
       });
 
       test('never sends no more messages than always', async () => {
         const bot = botWithMode('never');
         await bot.handleSync(['Main', 'Budget']);
+        await bot.pendingSync;
         const neverCount = mockRequest.write.mock.calls.length;
 
         mockRequest.write.mockClear();
 
         const alwaysBot = botWithMode('always');
         await alwaysBot.handleSync(['Main', 'Budget']);
+        await alwaysBot.pendingSync;
         const alwaysCount = mockRequest.write.mock.calls.length;
 
         expect(neverCount).toBeLessThanOrEqual(alwaysCount);
@@ -942,6 +946,7 @@ describe('TelegramBotService', () => {
       );
       
       await bot.handleSync(['Main', 'Budget']);
+      await bot.pendingSync;
       
       expect(mockSyncBank).toHaveBeenCalled();
       expect(mockRequest.write).toHaveBeenCalled();
@@ -952,6 +957,43 @@ describe('TelegramBotService', () => {
       })).toBe(true);
     });
     
+    test('returns before the sync finishes, so polling is not blocked (#265)', async () => {
+      let finish;
+      const mockSyncBank = jest.fn(() => new Promise(resolve => { finish = resolve; }));
+      const bot = new TelegramBotService(
+        { botToken: '123:ABC', chatId: '456' },
+        {
+          syncBank: mockSyncBank,
+          getServerConfig: jest.fn().mockReturnValue([{ name: 'Main', url: 'http://s:5006' }])
+        }
+      );
+
+      await bot.handleSync(['Main']);
+      await Promise.resolve();
+
+      expect(mockSyncBank).toHaveBeenCalledTimes(1);
+      finish();
+      await bot.pendingSync;
+    });
+
+    test('replies "already queued" instead of starting a second sync (#265)', async () => {
+      const mockSyncBank = jest.fn();
+      const bot = new TelegramBotService(
+        { botToken: '123:ABC', chatId: '456' },
+        {
+          syncBank: mockSyncBank,
+          isSyncQueued: (name) => name === 'Main',
+          getServerConfig: jest.fn().mockReturnValue([{ name: 'Main', url: 'http://s:5006' }])
+        }
+      );
+
+      await bot.handleSync(['Main']);
+
+      expect(mockSyncBank).not.toHaveBeenCalled();
+      const payload = JSON.parse(mockRequest.write.mock.calls[0][0]);
+      expect(payload.text).toContain('Sync for Main is already queued');
+    });
+
     test('should handle missing syncBank service', async () => {
       const bot = new TelegramBotService(
         { botToken: '123:ABC', chatId: '456' },

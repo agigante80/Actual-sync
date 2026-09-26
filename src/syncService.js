@@ -14,6 +14,7 @@ const PrometheusService = require('./services/prometheusService');
 const { enhanceActualApiError, explainBudgetNotOpen } = require('./lib/actualApiError');
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
+const { SyncQueue } = require('./lib/syncQueue');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -79,6 +80,10 @@ let notificationService;
 let telegramBot;
 let prometheusService;
 let scheduledJobsRef = []; // Variable to store scheduled jobs (populated during run())
+// Every sync goes through this queue: @actual-app/api is one process-wide
+// session, so two syncs at once corrupt each other (#265). The logger is read
+// at call time because it is created inside the config block below.
+const syncQueue = new SyncQueue({ logger: { info: (message, context) => logger?.info(message, context) } });
 try {
     const configLoader = new ConfigLoader();
     config = configLoader.load();
@@ -152,6 +157,7 @@ try {
                 healthCheck: null, // Will be set after healthCheck is created
                 getServerConfig: () => config.servers,
                 syncBank: syncBank,
+                isSyncQueued: (serverName) => syncQueue.has(serverName),
                 notificationService: notificationService // /notify must reach the dispatch path (#169)
             },
             {
@@ -174,6 +180,7 @@ try {
         notificationService: notificationService,
         telegramBot: telegramBot,
         syncBank: syncBank,
+        isSyncQueued: (serverName) => syncQueue.has(serverName),
         getServers: () => config.servers,
         getSchedules: () => {
             // Return schedule info for each server
@@ -317,7 +324,17 @@ function scheduleAutoRetry(server, attemptNumber, maxAttempts, delayMinutes) {
     activeRetryTimers.set(server.name, timer);
 }
 
-async function syncBank(server, options = {}) {
+/**
+ * Sync one server, after any sync already queued or running (#265).
+ * Every caller (cron, auto-retry, dashboard, Telegram, --force-run) comes
+ * through here, so no two syncs ever share the Actual API session. A server
+ * already waiting or running is not queued twice: the caller gets that run.
+ */
+function syncBank(server, options = {}) {
+    return syncQueue.run(server.name, () => runSyncBank(server, options));
+}
+
+async function runSyncBank(server, options = {}) {
     const { isAutomated = false, retryAttempt = 0 } = options;
     const { name, url, password, syncId, dataDir, encryptionPassword } = server;
     const syncIdLog = syncId ? syncId : "your_budget_name";

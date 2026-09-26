@@ -109,7 +109,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Flexible Scheduling** - Global and per-server cron schedules with timezone support
 - ✅ **Intelligent Retry Logic** - Exponential backoff with rate limit detection and handling
 - ✅ **Account Discovery** - List all accessible bank accounts across servers
-- ✅ **Manual Sync Trigger** - On-demand synchronization via CLI or Telegram bot
+- ✅ **Manual Sync Trigger** - On-demand synchronization via CLI, dashboard or Telegram bot; inside the running service syncs run one at a time, so a manual sync waits for any sync already running (do not run `npm run sync` while the service is running: it is a separate process)
 - ✅ **Configuration Validation** - Business rules (required fields, ranges, unique servers) and JSON-schema rules (types, ranges, formats, patterns, enums) both hard-fail at startup with clear, aggregated messages; unknown/typo'd keys warn. `CONFIG_STRICT=false` downgrades the schema hard-fails to warnings during a migration
 
 ### 📊 Monitoring & Observability
