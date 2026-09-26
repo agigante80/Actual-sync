@@ -334,6 +334,14 @@ volumes:
   actual-sync/logs/
   ```
 
+**Behind a reverse proxy (nginx, Traefik):** tell Actual-sync how many proxies sit in front, so rate limiting and auth-failure logs use the real client IP:
+
+```json
+"healthCheck": { "port": 3000, "host": "0.0.0.0", "trustProxy": 1 }
+```
+
+nginx must forward the client address (`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`); Traefik does this by default. Do not publish port 3000 as well (no `ports:` entry for it): a client that reaches the port directly can send its own `X-Forwarded-For` and pick any IP it likes. A CIDR such as the Docker bridge range is not a safe workaround, because connections through a published port can arrive from the bridge gateway address, which that range trusts. If you need a narrower rule than a hop count, put the proxy on a dedicated network with a fixed address and trust only that exact IP.
+
 ### 2. Monitoring
 
 **Health Check Endpoint:**

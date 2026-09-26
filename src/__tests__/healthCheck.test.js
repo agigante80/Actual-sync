@@ -258,6 +258,64 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('trust proxy (#245)', () => {
+    // GET /health with an X-Forwarded-For header, as a reverse proxy would send.
+    function getForwarded(port, forwardedFor) {
+      return new Promise((resolve, reject) => {
+        http.get({ hostname: '127.0.0.1', port, path: '/health', headers: { 'X-Forwarded-For': forwardedFor } },
+          (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); }).on('error', reject);
+      });
+    }
+
+    async function exhaust(port, forwardedFor) {
+      const codes = [];
+      for (let i = 0; i < 60; i++) codes.push(await getForwarded(port, forwardedFor));
+      return codes;
+    }
+
+    it('is off by default, so req.ip is the socket address', () => {
+      expect(healthCheck.app.get('trust proxy')).toBe(false);
+      const svc = makeService({ port: testPort, trustProxy: false });
+      expect(svc.app.get('trust proxy')).toBe(false);
+    });
+
+    it('with trustProxy 1, two forwarded clients get separate rate-limit budgets', async () => {
+      const svc = makeService({ port: testPort, trustProxy: 1 });
+      await svc.start();
+
+      const codesA = await exhaust(testPort, '1.2.3.4');
+      expect(codesA.every(c => c === 200)).toBe(true);
+      expect(await getForwarded(testPort, '1.2.3.4')).toBe(429);
+      expect(await getForwarded(testPort, '5.6.7.8')).toBe(200);
+    });
+
+    it('unset, forwarded clients share the proxy bucket (documented pre-#245 behaviour)', async () => {
+      await healthCheck.start();
+
+      await exhaust(testPort, '1.2.3.4');
+      expect(await getForwarded(testPort, '5.6.7.8')).toBe(429);
+    });
+
+    it('with trustProxy 1, auth failures log the forwarded client address', async () => {
+      const svc = makeService({
+        port: testPort,
+        trustProxy: 1,
+        dashboardConfig: { enabled: true, auth: { type: 'token', token: 'right' } }
+      });
+      const warn = jest.spyOn(svc.logger, 'warn').mockImplementation(() => {});
+      await svc.start();
+
+      await new Promise((resolve, reject) => {
+        http.get({
+          hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/status',
+          headers: { 'X-Forwarded-For': '1.2.3.4', Authorization: 'Bearer wrong' }
+        }, (res) => { res.resume(); res.on('end', resolve); }).on('error', reject);
+      });
+
+      expect(warn).toHaveBeenCalledWith('Dashboard token authentication failed', { remoteAddress: '1.2.3.4' });
+    });
+  });
+
   describe('/icon.png endpoint (#113)', () => {
     beforeEach(async () => {
       await healthCheck.start();
