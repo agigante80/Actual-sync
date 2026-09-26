@@ -487,11 +487,10 @@ interface MetricsResponse {
     [serverName: string]: {
       lastSync: string;
       status: "success" | "failure";
-      error?: string;
     };
   };
   lastError: {
-    message: string;
+    // no message: the error text stays on the authenticated dashboard
     timestamp: string;
     serverName: string;
   } | null;
