@@ -845,6 +845,73 @@ describe('HealthCheckService', () => {
       }
     });
 
+    test('correct requests never count, even in a burst right below the limit', async () => {
+      const hc = tokenService();
+      await hc.start();
+      try {
+        for (let i = 0; i < 4; i++) {
+          expect((await getWithAuth('/api/dashboard/status', 'Bearer wrong-token')).statusCode).toBe(401);
+        }
+        const burst = await Promise.all(Array.from({ length: 12 }, () =>
+          getWithAuth('/api/dashboard/status', 'Bearer correct-token')));
+        expect(burst.map(r => r.statusCode)).toEqual(Array(12).fill(200));
+        expect((await hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1'))).totalHits).toBe(4);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('a correct request the client aborts is not counted', async () => {
+      const hc = tokenService();
+      await hc.start();
+      try {
+        await Promise.all(Array.from({ length: 8 }, () => new Promise((resolve) => {
+          const req = http.get({
+            hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/status',
+            headers: { Authorization: 'Bearer correct-token' }
+          });
+          req.on('error', resolve);
+          req.on('socket', (sock) => sock.on('connect', () => { req.destroy(); resolve(); }));
+        })));
+        expect((await getWithAuth('/api/dashboard/status', 'Bearer correct-token')).statusCode).toBe(200);
+        expect(await hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1'))).toBeUndefined();
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('access comes back once the window ends', async () => {
+      const hc = tokenService({ authFailureLimit: 1, authFailureWindowMs: 300 });
+      await hc.start();
+      try {
+        expect((await getWithAuth('/dashboard', 'Bearer wrong-token')).statusCode).toBe(401);
+        expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(429);
+        await new Promise(r => setTimeout(r, 400));
+        expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(200);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('behind a trusted proxy each client has its own budget', async () => {
+      const hc = tokenService({ authFailureLimit: 2, trustProxy: 1 });
+      await hc.start();
+      const as = (ip, auth) => new Promise((resolve, reject) => {
+        http.get({
+          hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/status',
+          headers: { Authorization: auth, 'X-Forwarded-For': ip }
+        }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); }).on('error', reject);
+      });
+      try {
+        expect(await as('203.0.113.7', 'Bearer wrong-token')).toBe(401);
+        expect(await as('203.0.113.7', 'Bearer wrong-token')).toBe(401);
+        expect(await as('203.0.113.7', 'Bearer correct-token')).toBe(429);
+        expect(await as('198.51.100.9', 'Bearer correct-token')).toBe(200);
+      } finally {
+        await hc.stop();
+      }
+    });
+
     test('defaults to 10 failures per 15 minutes', () => {
       const hc = makeService({ port: testPort, loggerConfig: { level: 'ERROR' } });
       expect(hc.authFailureLimit).toBe(10);

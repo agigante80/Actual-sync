@@ -6,7 +6,7 @@
  */
 
 const express = require('express');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, MemoryStore, ipKeyGenerator } = require('express-rate-limit');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
@@ -91,31 +91,21 @@ class HealthCheckService {
    * Dashboard authentication middleware
    */
   dashboardAuth() {
-    // One limiter shared by every dashboard route, so the budget is per IP
-    // across /dashboard and /api/dashboard/*, not per route. (#246)
-    if (!this.authLimiter) {
-      this.authLimiter = rateLimit({
-        windowMs: this.authFailureWindowMs,
-        limit: this.authFailureLimit,
-        standardHeaders: true,
-        legacyHeaders: false,
-        // Only wrong credentials count. A request with no credentials yet (the
-        // browser's first basic-auth probe) and every authenticated request,
-        // whatever its status, leave the budget alone.
-        skipSuccessfulRequests: true,
-        requestWasSuccessful: (req, res) => !res.locals.authFailed,
-        handler: (req, res) => {
-          this.logger.warn('Dashboard authentication throttled after repeated failures', {
-            remoteAddress: req.ip,
-            limit: this.authFailureLimit,
-            windowMinutes: Math.round(this.authFailureWindowMs / 60000)
-          });
-          res.status(429).json({ error: 'Too many failed authentication attempts, try again later' });
-        }
-      });
+    // One failure counter shared by every dashboard route, so the budget is per
+    // client IP across /dashboard and /api/dashboard/*, not per route. (#246)
+    //
+    // Credentials are checked FIRST and only a wrong one is counted. An earlier
+    // version ran express-rate-limit with skipSuccessfulRequests, which counts
+    // every request up front and refunds it on 'finish': a correct request the
+    // browser aborted (a reload during a slow sync) was never refunded, and a
+    // burst of correct requests could briefly exceed the limit, so an operator
+    // with the right password got locked out. Do not go back to that.
+    if (!this.authFailures) {
+      this.authFailures = new MemoryStore();
+      this.authFailures.init({ windowMs: this.authFailureWindowMs });
     }
 
-    return (req, res, next) => {
+    return async (req, res, next) => {
       // Skip if dashboard is disabled
       if (!this.dashboardConfig.enabled) {
         return res.status(403).json({ error: 'Dashboard is disabled' });
@@ -125,16 +115,31 @@ class HealthCheckService {
       const authType = authConfig.type || 'none';
       if (authType === 'none') return next();
 
-      this.authLimiter(req, res, (err) => {
-        if (err) return next(err);
+      try {
+        const key = ipKeyGenerator(req.ip || '');
+        const seen = await this.authFailures.get(key);
+        // MemoryStore.get also returns entries whose window has ended (they are
+        // only swept on a timer), so check resetTime or a lockout lasts up to
+        // two windows.
+        if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {
+          this.logger.warn('Dashboard authentication throttled after repeated failures', {
+            remoteAddress: req.ip,
+            limit: this.authFailureLimit,
+            windowMinutes: Math.round(this.authFailureWindowMs / 60000)
+          });
+          return res.status(429).json({ error: 'Too many failed authentication attempts, try again later' });
+        }
         this.checkDashboardCredentials(req, res, next, authConfig, authType);
-      });
+        if (res.locals.authFailed) await this.authFailures.increment(key);
+      } catch (err) {
+        next(err);
+      }
     };
   }
 
   /**
-   * Check the credentials once the auth limiter has let the request through.
-   * A wrong credential sets res.locals.authFailed so the limiter counts it.
+   * Check the credentials once the failure throttle has let the request through.
+   * A wrong credential sets res.locals.authFailed so the throttle counts it.
    */
   checkDashboardCredentials(req, res, next, authConfig, authType) {
     const result = checkCredentials(req.headers, authConfig);

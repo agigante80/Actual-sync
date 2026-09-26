@@ -896,19 +896,28 @@ module.exports = [
         tests: 'healthCheck'
     },
     {
-        id: '246-every-request-counts', ticket: '#246',
-        desc: 'successful logins consume the budget and lock the operator out',
+        id: '246-success-counts', ticket: '#246',
+        desc: 'every request counts, so an operator with the right password is locked out',
         file: 'src/services/healthCheck.js',
-        anchor: '        requestWasSuccessful: (req, res) => !res.locals.authFailed,',
-        mutant: '        requestWasSuccessful: () => false,',
+        anchor: '        if (res.locals.authFailed) await this.authFailures.increment(key);',
+        mutant: '        await this.authFailures.increment(key);',
         tests: 'healthCheck'
     },
     {
         id: '246-throttle-bypassed', ticket: '#246',
-        desc: 'the limiter is not applied to dashboard routes',
+        desc: 'the failure count is never checked, so guessing is unthrottled',
         file: 'src/services/healthCheck.js',
-        anchor: '      this.authLimiter(req, res, (err) => {',
-        mutant: '      ((cb) => cb())((err) => {',
+        anchor: '        if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {',
+        mutant: '        if (false) {',
+        tests: 'healthCheck'
+    },
+
+    {
+        id: '246-expired-window-still-locks', ticket: '#246',
+        desc: 'an ended window keeps locking the client out until the sweep',
+        file: 'src/services/healthCheck.js',
+        anchor: '        if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {',
+        mutant: '        if (seen && seen.totalHits >= this.authFailureLimit) {',
         tests: 'healthCheck'
     },
 

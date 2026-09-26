@@ -26,7 +26,7 @@ If the panel keeps showing "Disconnected from log stream. Reconnecting...", chec
 
 ## Locked out after failed logins
 
-After 10 wrong usernames, passwords or tokens from one address within 15 minutes, the dashboard answers `429 Too many failed authentication attempts` for the rest of the window, even once the right credentials are entered. Wait 15 minutes, or restart the service to clear it. The service log shows `Dashboard authentication throttled after repeated failures` with the address. Behind a reverse proxy, set `healthCheck.trustProxy` so one client's mistakes do not lock out everyone behind the same proxy. The limits are fixed and have no config key.
+After 10 wrong usernames, passwords or tokens from one address within 15 minutes, the dashboard answers `429 Too many failed authentication attempts` for the rest of the window, even once the right credentials are entered. Wait 15 minutes, or restart the service to clear it. If it keeps coming back after you change the password or token, an old browser tab or a script still polls with the old credential: close every other dashboard tab and update those scripts, or the lockout returns every window. The service log shows `Dashboard authentication throttled after repeated failures` with the address. Behind a reverse proxy, set `healthCheck.trustProxy` so one client's mistakes do not lock out everyone behind the same proxy. The limits are fixed and have no config key.
 
 ## Account syncability
 
