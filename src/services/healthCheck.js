@@ -23,6 +23,7 @@ class HealthCheckService {
    * @param {Object} options.telegramBot - TelegramBotService instance (optional)
    * @param {Function} options.syncBank - Sync function for manual triggers (optional)
    * @param {Function} options.isSyncQueued - (serverName) => true while that server's sync waits or runs (optional)
+   * @param {Function} options.getRunningSync - () => { key, startedAt } for the sync holding the queue, or null (optional, #272)
    * @param {Function} options.getServers - Function to get server list (optional)
    * @param {Function} options.getSchedules - Function to get schedule info (optional)
    * @param {Function} options.getCronSchedules - Function to get cron schedule details (optional)
@@ -37,6 +38,7 @@ class HealthCheckService {
     this.telegramBot = options.telegramBot;
     this.syncBank = options.syncBank;
     this.isSyncQueued = options.isSyncQueued || (() => false);
+    this.getRunningSync = options.getRunningSync || (() => null);
     this.getServers = options.getServers;
     this.getSchedules = options.getSchedules;
     this.getCronSchedules = options.getCronSchedules;
@@ -342,6 +344,9 @@ class HealthCheckService {
             ? ((this.status.successCount / this.status.syncCount) * 100).toFixed(2) + '%'
             : 'N/A'
         },
+        // The sync holding the queue, so a hung one is visible by name and age (#272).
+        // Dashboard only: public /health must not disclose server names.
+        runningSync: this.safeRunningSync(),
         servers: allServers
       });
     });
@@ -994,6 +999,16 @@ This test verifies that notifications are configured correctly and can reach the
   /**
    * Get overall service status based on recent sync results
    */
+  /** getRunningSync() guarded, so a failing callback cannot break the status route. (#272) */
+  safeRunningSync() {
+    try {
+      return this.getRunningSync() || null;
+    } catch (error) {
+      this.logger.debug('Failed to read the running sync', { error: error.message });
+      return null;
+    }
+  }
+
   getOverallStatus() {
     if (this.status.syncCount === 0) return 'PENDING';
     if (this.status.failureCount > 0 && this.status.successCount === 0) return 'UNHEALTHY';

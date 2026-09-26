@@ -808,6 +808,40 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #272: a hung Actual API call blocked the queue forever ------------------
+    {
+        id: '272-download-unbounded', ticket: '#272',
+        desc: 'downloadBudget is no longer timed, so a server that never answers hangs the queue again',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: "const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
+        mutant: "const TIMED_METHODS = ['init', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
+        tests: 'actualTimeouts'
+    },
+    {
+        id: '272-timeout-retried', ticket: '#272',
+        desc: 'a download timeout falls into the retry path, doubling the hang and clearing the cache',
+        file: 'src/syncService.js',
+        anchor: '            if (error instanceof PhaseTimeoutError) throw error;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-running-never-cleared', ticket: '#272',
+        desc: 'the queue keeps reporting a finished sync as running',
+        file: 'src/lib/syncQueue.js',
+        anchor: '                if (this.active === entry) this.active = null;',
+        mutant: '',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-status-hides-running', ticket: '#272',
+        desc: 'the dashboard status stops naming the sync holding the queue',
+        file: 'src/services/healthCheck.js',
+        anchor: '        runningSync: this.safeRunningSync(),',
+        mutant: '        runningSync: null,',
+        tests: 'healthCheck'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',

@@ -129,6 +129,14 @@ Global synchronization behavior configuration. These settings apply to all serve
   - Can be overridden per server
   - Example: `3000` (3 seconds)
 
+- **phaseTimeoutSeconds** (optional, integer, default: 300)
+  - Seconds each Actual API call (init, download, load, query, sync, shutdown) may take
+  - Range: 30-3600
+  - A call that runs longer fails the sync with the phase named, and the next queued sync runs
+  - Raise it for very large budgets on slow links; bank sync keeps its own 60 second limit per account
+  - Can be overridden per server
+  - Example: `300` (5 minutes)
+
 - **schedule** (optional, string, default: "03 03 */2 * *")
   - Cron expression for sync schedule
   - Format: `minute hour day month dayOfWeek` (5 fields), or 6 fields with a leading `seconds` field

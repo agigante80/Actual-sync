@@ -15,6 +15,7 @@ const { enhanceActualApiError, explainBudgetNotOpen } = require('./lib/actualApi
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
 const { SyncQueue } = require('./lib/syncQueue');
+const { timedActual, withTimeout, PhaseTimeoutError, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -158,6 +159,7 @@ try {
                 getServerConfig: () => config.servers,
                 syncBank: syncBank,
                 isSyncQueued: (serverName) => syncQueue.has(serverName),
+                getRunningSync: () => syncQueue.running(),
                 notificationService: notificationService // /notify must reach the dispatch path (#169)
             },
             {
@@ -180,6 +182,7 @@ try {
         telegramBot: telegramBot,
         syncBank: syncBank,
         isSyncQueued: (serverName) => syncQueue.has(serverName),
+        getRunningSync: () => syncQueue.running(),
         getServers: () => config.servers,
         getSchedules: () => {
             // Return schedule info for each server
@@ -243,6 +246,7 @@ function getSyncConfig(server) {
         maxRetries: server.sync?.maxRetries ?? globalSyncConfig.maxRetries,
         baseRetryDelayMs: server.sync?.baseRetryDelayMs ?? globalSyncConfig.baseRetryDelayMs,
         schedule: server.sync?.schedule ?? globalSyncConfig.schedule,
+        phaseTimeoutSeconds: server.sync?.phaseTimeoutSeconds ?? globalSyncConfig.phaseTimeoutSeconds ?? DEFAULT_PHASE_TIMEOUT_SECONDS,
         autoRetry: {
             enabled: server.sync?.autoRetry?.enabled ?? globalSyncConfig.autoRetry?.enabled ?? true,
             maxAttempts: server.sync?.autoRetry?.maxAttempts ?? globalSyncConfig.autoRetry?.maxAttempts ?? 1,
@@ -341,6 +345,9 @@ async function runSyncBank(server, options = {}) {
     
     // Get sync configuration for this server (server-specific or global)
     const syncConfig = getSyncConfig(server);
+    // Every server-facing Actual API call is bounded, so a server that never
+    // answers fails this sync instead of blocking the queue forever. (#272)
+    const api = timedActual(actual, syncConfig.phaseTimeoutSeconds * 1000);
     
     // Create server-specific logger with per-server log level if configured
     const serverLogger = server.logging ? logger.child({
@@ -408,7 +415,7 @@ async function runSyncBank(server, options = {}) {
         serverLogger.debug('Data directory ready', { dataDir });
 
         serverLogger.info(`Connecting to Actual server`, { url });
-        await actual.init({
+        await api.init({
             serverURL: url,
             password: password,
             dataDir: dataDir,
@@ -450,7 +457,7 @@ async function runSyncBank(server, options = {}) {
         // surfaces a real persistent error that warrants clearing the cache.
         let downloadError;
         try {
-            await actual.downloadBudget(syncId, downloadOptions);
+            await api.downloadBudget(syncId, downloadOptions);
             // Honest logging (#156): the download completing does NOT guarantee the
             // budget can actually be opened (e.g. a server/client version mismatch
             // downloads fine then fails to open). Report the download step here; the
@@ -459,6 +466,9 @@ async function runSyncBank(server, options = {}) {
                 encrypted: !!encryptionPassword
             });
         } catch (error) {
+            // A download that timed out may still be writing to dataDir. Retrying
+            // or clearing the cache now would race it, so fail straight away. (#272)
+            if (error instanceof PhaseTimeoutError) throw error;
             downloadError = error;
             serverLogger.warn('Budget download failed, retrying once before clearing cache', {
                 error: error?.reason || error?.message || String(error),
@@ -469,12 +479,13 @@ async function runSyncBank(server, options = {}) {
             let retryError = null;
             try {
                 await new Promise(r => setTimeout(r, 5000));
-                await actual.downloadBudget(syncId, downloadOptions);
+                await api.downloadBudget(syncId, downloadOptions);
                 serverLogger.info('Budget file downloaded on retry', {
                     encrypted: !!encryptionPassword
                 });
                 downloadError = null; // retry succeeded — fall through to loadBudget workaround
             } catch (err) {
+                if (err instanceof PhaseTimeoutError) throw err; // same reason as above (#272)
                 retryError = err;
             }
 
@@ -515,15 +526,20 @@ async function runSyncBank(server, options = {}) {
                         await fs.readFile(`${dataDir}/${entry}/metadata.json`, 'utf8')
                     );
                     if (meta.groupId === syncId && meta.id) {
-                        await actual.loadBudget(meta.id);
+                        await api.loadBudget(meta.id);
                         serverLogger.debug('Explicitly loaded budget after download', {
                             localBudgetId: meta.id,
                         });
                         break;
                     }
-                } catch { /* not a budget directory, skip */ }
+                } catch (entryErr) {
+                    // A hung loadBudget must fail the sync, not be skipped as "not a budget". (#272)
+                    if (entryErr instanceof PhaseTimeoutError) throw entryErr;
+                    /* not a budget directory, skip */
+                }
             }
         } catch (loadErr) {
+            if (loadErr instanceof PhaseTimeoutError) throw loadErr;
             serverLogger.debug('loadBudget workaround skipped', { error: loadErr.message });
         }
 
@@ -532,8 +548,8 @@ async function runSyncBank(server, options = {}) {
         // query via ActualQL, which exposes them. Only bank-linked, open accounts
         // can actually bank-sync; runBankSync is a silent no-op on manual/closed
         // accounts (which we'd otherwise miscount as successful). (#98)
-        const { data: allAccounts } = await actual.aqlQuery(
-            actual.q('accounts')
+        const { data: allAccounts } = await api.aqlQuery(
+            api.q('accounts')
                 .filter({ tombstone: false })
                 .select(['id', 'name', 'closed', 'account_sync_source'])
         );
@@ -557,7 +573,7 @@ async function runSyncBank(server, options = {}) {
 
         serverLogger.info('Starting file sync');
         try {
-            await actual.sync();
+            await api.sync();
             serverLogger.info('File sync completed');
         } catch (syncError) {
             throw enhanceActualApiError(syncError, {
@@ -583,12 +599,9 @@ async function runSyncBank(server, options = {}) {
                     });
                     
                     // Wrap runBankSync with timeout (60 seconds) to catch hung promises
-                    const syncPromise = actual.runBankSync({ accountId: account.id });
-                    const timeoutPromise = new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Bank sync timeout after 60 seconds')), 60000)
+                    const result = await withTimeout(
+                        actual.runBankSync({ accountId: account.id }), 60000, 'runBankSync'
                     );
-                    
-                    const result = await Promise.race([syncPromise, timeoutPromise]);
                     
                     // Add a small delay to allow any background operations to complete
                     // This works around a race condition in Actual API where runBankSync
@@ -652,7 +665,7 @@ async function runSyncBank(server, options = {}) {
 
         serverLogger.info('Starting final file sync');
         try {
-            await actual.sync();
+            await api.sync();
             serverLogger.info('Final file sync completed');
         } catch (syncError) {
             throw enhanceActualApiError(syncError, {
@@ -923,7 +936,7 @@ async function runSyncBank(server, options = {}) {
     } finally {
         try {
             serverLogger.debug('Shutting down Actual API connection');
-            await actual.shutdown();
+            await api.shutdown();
             serverLogger.debug('Shutdown complete');
         } catch (shutdownError) {
             const shutdownErrorMessage = shutdownError?.message || String(shutdownError) || 'Unknown shutdown error';

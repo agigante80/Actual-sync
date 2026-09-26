@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { SyncQueue } = require('../lib/syncQueue');
+const { withTimeout } = require('../lib/actualTimeouts');
 
 /** A task whose completion the test controls, recording start/end into `log`. */
 function controlledTask(name, log) {
@@ -171,5 +172,78 @@ describe('syncService routes every sync through the queue (#265)', () => {
         const wrapper = source.match(/function syncBank\(server, options = \{\}\) \{[\s\S]*?\n\}/);
         expect(wrapper).not.toBeNull();
         expect(wrapper[0]).not.toMatch(/actual\./);
+    });
+});
+
+describe('SyncQueue running state (#272)', () => {
+    test('reports the running task with its start time, and null when idle', async () => {
+        const queue = new SyncQueue({ now: () => new Date('2026-09-26T01:00:00.000Z') });
+        const log = [];
+        const a = controlledTask('A', log);
+        const b = controlledTask('B', log);
+        expect(queue.running()).toBeNull();
+
+        const pa = queue.run('A', a.task);
+        const pb = queue.run('B', b.task);
+        await flush();
+        expect(queue.running()).toEqual({ key: 'A', startedAt: '2026-09-26T01:00:00.000Z' });
+
+        a.resolve();
+        await pa;
+        await flush();
+        expect(queue.running()).toMatchObject({ key: 'B' });
+
+        b.reject(new Error('fail'));
+        await expect(pb).rejects.toThrow('fail');
+        expect(queue.running()).toBeNull();
+    });
+
+    test('running() returns a copy the caller cannot use to change the queue', async () => {
+        const queue = new SyncQueue();
+        const a = controlledTask('A', []);
+        const pa = queue.run('A', a.task);
+        await flush();
+        queue.running().key = 'tampered';
+        expect(queue.running().key).toBe('A');
+        a.resolve();
+        await pa;
+    });
+
+    test('a task that times out on a hung call releases the queue for the next one', async () => {
+        const queue = new SyncQueue();
+        const log = [];
+        const hung = queue.run('A', async () => {
+            log.push('A-start');
+            await withTimeout(new Promise(() => {}), 20, 'downloadBudget');
+        });
+        const next = queue.run('B', async () => { log.push('B-start'); });
+
+        await expect(hung).rejects.toMatchObject({ code: 'PHASE_TIMEOUT', phase: 'downloadBudget' });
+        await next;
+        expect(log).toEqual(['A-start', 'B-start']);
+        expect(queue.running()).toBeNull();
+    });
+});
+
+describe('runSyncBank bounds every Actual API call (#272)', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'syncService.js'), 'utf8');
+    const body = source.match(/async function runSyncBank\(server, options = \{\}\) \{[\s\S]*?\n\}/);
+
+    test('makes no raw actual.* call except runBankSync, which has its own timeout', () => {
+        expect(body).not.toBeNull();
+        const raw = body[0].match(/\bactual\.\w+/g) || [];
+        expect(raw).toEqual(['actual.runBankSync']);
+        expect(body[0]).toMatch(/withTimeout\(\s*actual\.runBankSync\(/);
+    });
+
+    test('routes the calls through timedActual with the configured timeout', () => {
+        expect(body[0]).toMatch(/const api = timedActual\(actual, syncConfig\.phaseTimeoutSeconds \* 1000\)/);
+        for (const m of ['init', 'downloadBudget', 'sync', 'shutdown']) {
+            expect(body[0]).toMatch(new RegExp(`api\\.${m}\\(`));
+        }
+    });
+
+    test('a download timeout is not retried or swallowed', () => {
+        expect(body[0]).toMatch(/if \(error instanceof PhaseTimeoutError\) throw error;/);
     });
 });
