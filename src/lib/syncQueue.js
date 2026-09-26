@@ -21,6 +21,8 @@ class SyncQueue {
         this.logger = options.logger || null;
         this.tail = Promise.resolve();
         this.pending = new Map(); // key -> promise of its run, while waiting or running
+        this.active = null; // { key, startedAt } of the task running now (#272)
+        this.now = options.now || (() => new Date());
     }
 
     /**
@@ -40,7 +42,15 @@ class SyncQueue {
             this.log('Sync queued', { server: key, ahead });
         }
 
-        const result = this.tail.then(() => task());
+        const result = this.tail.then(async () => {
+            const entry = { key, startedAt: this.now().toISOString() };
+            this.active = entry;
+            try {
+                return await task();
+            } finally {
+                if (this.active === entry) this.active = null;
+            }
+        });
         // The queue itself must never reject, or one failure would skip the rest.
         this.tail = result.then(() => {}, () => {});
         // `tracked` rejects with the task's error; the caller handles it. No extra
@@ -56,6 +66,14 @@ class SyncQueue {
      */
     has(key) {
         return this.pending.has(key);
+    }
+
+    /**
+     * @returns {{ key: string, startedAt: string } | null} the task running now, so
+     *   a stuck sync is visible on the dashboard (#272)
+     */
+    running() {
+        return this.active ? { ...this.active } : null;
     }
 
     log(message, context) {
