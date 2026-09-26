@@ -351,6 +351,20 @@ endTimer({ metadata: 'value' }); // Logs duration automatically
 
 ---
 
+## 🚨 Alertable Security Events
+
+These WARN lines are worth an alert rule in your log pipeline:
+
+| Message | Meaning |
+|---|---|
+| `Dashboard authentication failed` / `Dashboard token authentication failed` | One wrong dashboard credential, with `remoteAddress` (and `username` for basic auth) |
+| `Dashboard authentication throttled after repeated failures` | A client already has 10 failed logins in the current 15 minute window and is refused with 429 (#246). It is written for every refused request, not once per lockout, so a burst of these is a guessing attempt or a stale tab still polling with an old credential |
+| `WebSocket handshake refused` | A `/ws/logs` connection was refused, with the status and reason |
+
+```bash
+grep "authentication throttled" logs/actual-sync-*.log
+```
+
 ## 🔎 Searching Logs
 
 ### Pretty Format

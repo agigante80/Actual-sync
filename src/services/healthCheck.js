@@ -6,12 +6,47 @@
  */
 
 const express = require('express');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 const { resolveVersion } = require('../lib/version');
 const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
+
+/**
+ * Fixed-window count of failed dashboard logins per client key. (#246)
+ * Every method is synchronous; see dashboardAuth() for why that matters.
+ * get() returns an entry whose window has ended until the sweep removes it,
+ * so callers must compare resetTime themselves.
+ */
+class AuthFailureCounter {
+  constructor(windowMs) {
+    this.windowMs = windowMs;
+    this.entries = new Map();
+    this.sweeper = setInterval(() => {
+      const now = Date.now();
+      for (const [key, entry] of this.entries) {
+        if (entry.resetTime <= now) this.entries.delete(key);
+      }
+    }, windowMs);
+    this.sweeper.unref();
+  }
+
+  get(key) {
+    return this.entries.get(key);
+  }
+
+  increment(key) {
+    const now = Date.now();
+    let entry = this.entries.get(key);
+    if (!entry || entry.resetTime <= now) {
+      entry = { totalHits: 0, resetTime: now + this.windowMs };
+      this.entries.set(key, entry);
+    }
+    entry.totalHits++;
+    return entry;
+  }
+}
 
 class HealthCheckService {
   /**
@@ -62,6 +97,9 @@ class HealthCheckService {
     this.wsTickets = new WsTicketStore();
     this.wsConnectionsPerIp = new Map();
     this.maxWsConnectionsPerIp = 10;
+    // Failed dashboard logins allowed per client IP per window (#246).
+    this.authFailureLimit = options.authFailureLimit ?? 10;
+    this.authFailureWindowMs = options.authFailureWindowMs ?? 15 * 60 * 1000;
     
     // Health status tracking
     this.status = {
@@ -90,6 +128,24 @@ class HealthCheckService {
    * Dashboard authentication middleware
    */
   dashboardAuth() {
+    // One failure counter shared by every dashboard route, so the budget is per
+    // client IP across /dashboard and /api/dashboard/*, not per route. (#246)
+    //
+    // Credentials are checked FIRST and only a wrong one is counted. An earlier
+    // version ran express-rate-limit with skipSuccessfulRequests, which counts
+    // every request up front and refunds it on 'finish': a correct request the
+    // browser aborted (a reload during a slow sync) was never refunded, and a
+    // burst of correct requests could briefly exceed the limit, so an operator
+    // with the right password got locked out. Do not go back to that.
+    if (!this.authFailures) {
+      this.authFailures = new AuthFailureCounter(this.authFailureWindowMs);
+    }
+
+    // Synchronous on purpose: no await may sit between reading the count and
+    // adding a failure. Node parses every request pipelined on one socket in
+    // the same tick, so with an await in between (express-rate-limit's async
+    // MemoryStore) all of them read the old count and a single write of 60
+    // wrong guesses was checked in full against a limit of 10.
     return (req, res, next) => {
       // Skip if dashboard is disabled
       if (!this.dashboardConfig.enabled) {
@@ -98,34 +154,64 @@ class HealthCheckService {
 
       const authConfig = this.dashboardConfig.auth || {};
       const authType = authConfig.type || 'none';
-      const result = checkCredentials(req.headers, authConfig);
-      if (result.ok) return next();
+      if (authType === 'none') return next();
 
-      if (result.reason === 'config') {
-        return res.status(500).json({ error: 'Invalid authentication configuration' });
-      }
-
-      if (authType === 'basic') {
-        res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
-        if (result.reason === 'missing') {
-          return res.status(401).json({ error: 'Authentication required' });
+      try {
+        const key = ipKeyGenerator(req.ip || '');
+        const seen = this.authFailures.get(key);
+        // get() also returns entries whose window has ended (they are
+        // only swept on a timer), so check resetTime or a lockout lasts up to
+        // two windows.
+        if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {
+          this.logger.warn('Dashboard authentication throttled after repeated failures', {
+            remoteAddress: req.ip,
+            limit: this.authFailureLimit,
+            windowMinutes: Math.round(this.authFailureWindowMs / 60000)
+          });
+          return res.status(429).json({ error: 'Too many failed authentication attempts, try again later' });
         }
-        this.logger.warn('Dashboard authentication failed', {
-          username: result.username,
-          remoteAddress: req.ip
-        });
-        return res.status(401).json({ error: 'Invalid credentials' });
+        this.checkDashboardCredentials(req, res, next, authConfig, authType);
+        if (res.locals.authFailed) this.authFailures.increment(key);
+      } catch (err) {
+        next(err);
       }
+    };
+  }
 
-      // Token authentication
+  /**
+   * Check the credentials once the failure throttle has let the request through.
+   * A wrong credential sets res.locals.authFailed so the throttle counts it.
+   */
+  checkDashboardCredentials(req, res, next, authConfig, authType) {
+    const result = checkCredentials(req.headers, authConfig);
+    if (result.ok) return next();
+
+    if (result.reason === 'config') {
+      return res.status(500).json({ error: 'Invalid authentication configuration' });
+    }
+
+    if (authType === 'basic') {
+      res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
       if (result.reason === 'missing') {
         return res.status(401).json({ error: 'Authentication required' });
       }
-      this.logger.warn('Dashboard token authentication failed', {
+      res.locals.authFailed = true;
+      this.logger.warn('Dashboard authentication failed', {
+        username: result.username,
         remoteAddress: req.ip
       });
-      return res.status(401).json({ error: 'Invalid token' });
-    };
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Token authentication
+    if (result.reason === 'missing') {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    res.locals.authFailed = true;
+    this.logger.warn('Dashboard token authentication failed', {
+      remoteAddress: req.ip
+    });
+    return res.status(401).json({ error: 'Invalid token' });
   }
 
   /**
