@@ -68,6 +68,18 @@ class LateCalls {
         await Promise.resolve();
         return this.pending.size === 0;
     }
+
+    /**
+     * Stop tracking every pending call. Used once a call has outlived the
+     * busy check, so a call that never settles (as runBankSync has been seen
+     * to do) costs one refused sync instead of every sync until restart.
+     * @returns {number} how many calls were dropped
+     */
+    abandon() {
+        const dropped = this.pending.size;
+        this.pending.clear();
+        return dropped;
+    }
 }
 
 /**

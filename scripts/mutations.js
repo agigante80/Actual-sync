@@ -899,6 +899,22 @@ module.exports = [
         mutant: '        if (true) {',
         tests: 'syncQueue'
     },
+    {
+        id: '272-never-abandoned', ticket: '#272',
+        desc: 'a call that never settles blocks every later sync until restart',
+        file: 'src/syncService.js',
+        anchor: '            const abandoned = lateActualCalls.abandon();',
+        mutant: '            const abandoned = lateActualCalls.size;',
+        tests: 'syncQueue'
+    },
+    {
+        id: '272-abandon-keeps-calls', ticket: '#272',
+        desc: 'abandon reports the calls dropped but keeps tracking them',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '        this.pending.clear();',
+        mutant: '',
+        tests: 'actualTimeouts'
+    },
 
     // ---- #169: the README claim that started #168 ---------------------------
     {

@@ -425,6 +425,10 @@ async function runSyncBank(server, options = {}) {
         // shared session. Give it one more phase timeout; if it is still busy,
         // fail this sync rather than mix two budgets. (#272)
         if (!(await lateActualCalls.drain(phaseTimeoutMs))) {
+            // Refuse this one sync, then stop waiting: a call that never
+            // settles must not block every later sync until restart.
+            const abandoned = lateActualCalls.abandon();
+            serverLogger.error('Gave up waiting for Actual API calls that never finished; the next sync will proceed', { abandoned });
             const busy = new Error(`An earlier Actual API call is still running after its timeout; skipped this sync so two budgets are not mixed in one session`);
             busy.code = 'ACTUAL_SESSION_BUSY';
             throw busy;
@@ -952,6 +956,14 @@ async function runSyncBank(server, options = {}) {
         }
     } finally {
         if (sessionOpened) {
+            // Wait for this sync's timed-out calls BEFORE shutdown: a late
+            // download that lands after shutdown would leave its budget open
+            // for the next server's sync. (#272)
+            if (lateActualCalls.size > 0 && !(await lateActualCalls.drain(phaseTimeoutMs))) {
+                serverLogger.error('Actual API calls still running after their timeout; the next sync will wait for them', {
+                    pending: lateActualCalls.size
+                });
+            }
             try {
                 serverLogger.debug('Shutting down Actual API connection');
                 await api.shutdown();
@@ -960,13 +972,6 @@ async function runSyncBank(server, options = {}) {
                 const shutdownErrorMessage = shutdownError?.message || String(shutdownError) || 'Unknown shutdown error';
                 serverLogger.error('Error during shutdown', {
                     error: shutdownErrorMessage
-                });
-            }
-            // Hold the queue slot while a timed-out call of this sync still runs,
-            // so it cannot land inside the next server's sync. (#272)
-            if (lateActualCalls.size > 0 && !(await lateActualCalls.drain(phaseTimeoutMs))) {
-                serverLogger.error('Actual API calls still running after their timeout; the next sync will wait for them', {
-                    pending: lateActualCalls.size
                 });
             }
         }

@@ -132,6 +132,14 @@ describe('LateCalls: a timed-out call is still tracked until it settles (#272)',
         expect(late.size).toBe(1);
     });
 
+    test('abandon drops a call that never settles, so the next drain is clean', async () => {
+        const late = new LateCalls();
+        await expect(withTimeout(never(), 10, 'runBankSync', late)).rejects.toBeInstanceOf(PhaseTimeoutError);
+        expect(late.abandon()).toBe(1);
+        expect(late.size).toBe(0);
+        await expect(late.drain(0)).resolves.toBe(true);
+    });
+
     test('drain on an empty tracker is immediate', async () => {
         await expect(new LateCalls().drain(0)).resolves.toBe(true);
     });

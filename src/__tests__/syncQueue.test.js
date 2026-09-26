@@ -273,6 +273,16 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
         const fin = body[0].slice(body[0].lastIndexOf('} finally {'));
         expect(fin).toMatch(/if \(sessionOpened\) \{/);
         expect(fin).toMatch(/lateActualCalls\.drain\(phaseTimeoutMs\)/);
+        // Drain first: a download landing after shutdown would leave its budget open.
+        expect(fin.indexOf('lateActualCalls.drain(')).toBeLessThan(fin.indexOf('await api.shutdown()'));
+    });
+
+    test('a refused busy sync stops tracking the stuck call, so later syncs proceed', () => {
+        const busyBlock = body[0].slice(
+            body[0].indexOf('if (!(await lateActualCalls.drain(phaseTimeoutMs)))'),
+            body[0].indexOf("busy.code = 'ACTUAL_SESSION_BUSY'")
+        );
+        expect(busyBlock).toMatch(/lateActualCalls\.abandon\(\)/);
     });
 
     test('a sync that never opened the session does not shut it down', () => {
