@@ -799,6 +799,16 @@ module.exports = [
         tests: 'workflowPins'
     },
 
+    // ---- #264: Dismiss read a field that does not exist -----------------------
+    {
+        id: '264-dismiss-wrong-field', ticket: '#264',
+        desc: 'dismiss-error reads this.serverStatuses (undefined) again, so every dismiss is a 500',
+        file: 'src/services/healthCheck.js',
+        anchor: '        const serverStatuses = this.status.serverStatuses;',
+        mutant: '        const serverStatuses = this.serverStatuses;',
+        tests: 'healthCheck'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
