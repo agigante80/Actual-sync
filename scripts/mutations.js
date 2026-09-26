@@ -258,11 +258,10 @@ module.exports = [
         id: '169-sync-confirmation-back', ticket: '#169',
         desc: "the inverted /sync confirmation returns, so `never` sends MORE than `always`",
         file: 'src/services/telegramBot.js',
-        anchor: '      await syncBank(server, { isAutomated: false, retryAttempt: 0 });',
-        mutant: '      await syncBank(server, { isAutomated: false, retryAttempt: 0 });\n'
-            + "      if (this.config.notifyOnSuccess === 'never') {\n"
-            + '        await this.sendMessage(`✅ Sync completed for ${serverName}`);\n'
-            + '      }',
+        anchor: '        .then(() => syncBank(server, { isAutomated: false, retryAttempt: 0 }))',
+        mutant: '        .then(() => syncBank(server, { isAutomated: false, retryAttempt: 0 }))\n'
+            + "        .then(() => this.config.notifyOnSuccess === 'never'\n"
+            + '          && this.sendMessage(`✅ Sync completed for ${serverName}`))',
         tests: 'telegramBot'
     },
 
@@ -787,6 +786,16 @@ module.exports = [
         anchor: "    log = console.error,",
         mutant: "    log = console.log,",
         tests: 'retargetRetest'
+    },
+
+    // ---- #265: syncs share one Actual API session ---------------------------
+    {
+        id: '265-sync-bypasses-queue', ticket: '#265',
+        desc: 'syncBank calls runSyncBank directly, so two syncs can run at once again',
+        file: 'src/syncService.js',
+        anchor: '    return syncQueue.run(server.name, () => runSyncBank(server, options));',
+        mutant: '    return runSyncBank(server, options);',
+        tests: 'syncQueue'
     },
 
     // ---- #264: Dismiss read a field that does not exist -----------------------
