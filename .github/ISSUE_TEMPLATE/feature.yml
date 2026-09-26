@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        <!-- template-version: 4 -->
+        <!-- template-version: 6 -->
         ## Feature Request
         Please fill in all required fields. This template ensures alignment with architecture,
         security, and privacy requirements before implementation begins.
@@ -85,15 +85,18 @@ body:
       required: true
 
   - type: textarea
-    id: gdpr
+    id: personal_data
     attributes:
-      label: GDPR compliance
-      description: How does this feature handle personal data (bank/transaction data, credentials, budget passwords)?
+      label: Personal data handling
+      description: How does this change handle personal data (bank/transaction data, credentials, budget passwords)? Name your privacy regime if you have one; the defaults below are regime-agnostic.
       value: |
-        - **PII fields affected:**
-        - **Article 17 (erasure):**
-        - **Article 20 (portability):**
-        - **Article 25 (by design):**
+        - **Personal-data fields affected:**
+        - **Storage location and encryption at rest:**
+        - **Erasure, including cascading deletion:**
+        - **Portability (export on request):**
+        - **Minimisation and retention:**
+        - **Legal basis:**
+        - **Cross-border transfer:**
     validations:
       required: true
 
@@ -160,10 +163,10 @@ body:
     attributes:
       label: Required reviews (mandatory)
       description: |
-        The gate orchestrators auto-select which specialist agents to run based on labels and content.
-        All selected agents must score 10/10 before implementation begins.
+        The gate runs its mechanical checks plus one critic, with the security lens joining by label.
+        The gate must return PASS before implementation begins.
       options:
-        - label: "**ticket-gate** - mandatory before implementation. Runs 5 core agents (Security, Architect, Developer, QA, GDPR) + dynamic agents based on labels. All must score 10/10."
+        - label: "**ticket-gate** - mandatory before implementation. Mechanical checks + one critic (plus the security lens by label). Must return PASS."
           required: true
 
   - type: textarea
@@ -203,6 +206,18 @@ body:
         - [ ] Backend error -> error status/state returned
         - [ ] Empty data -> empty state returned
         N/A - no dashboard surface affected by this feature
+    validations:
+      required: true
+
+  - type: textarea
+    id: docs_impact
+    attributes:
+      label: Documentation impact
+      description: Which documentation does this change affect, in the docs tree and the root README? "None" needs a reason.
+      placeholder: |
+        - **Docs affected:**
+        - **README impact (including screenshots regenerated with `npm run screenshots`):**
+        - **Why not, if none:**
     validations:
       required: true
 

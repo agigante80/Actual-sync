@@ -1,0 +1,11 @@
+name: Template lockstep
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  lockstep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/check-template-lockstep.sh
+      - run: bash scripts/test-template-lockstep.sh
