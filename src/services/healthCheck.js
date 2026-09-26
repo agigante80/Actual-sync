@@ -6,12 +6,47 @@
  */
 
 const express = require('express');
-const { rateLimit, MemoryStore, ipKeyGenerator } = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 const { resolveVersion } = require('../lib/version');
 const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
+
+/**
+ * Fixed-window count of failed dashboard logins per client key. (#246)
+ * Every method is synchronous; see dashboardAuth() for why that matters.
+ * get() returns an entry whose window has ended until the sweep removes it,
+ * so callers must compare resetTime themselves.
+ */
+class AuthFailureCounter {
+  constructor(windowMs) {
+    this.windowMs = windowMs;
+    this.entries = new Map();
+    this.sweeper = setInterval(() => {
+      const now = Date.now();
+      for (const [key, entry] of this.entries) {
+        if (entry.resetTime <= now) this.entries.delete(key);
+      }
+    }, windowMs);
+    this.sweeper.unref();
+  }
+
+  get(key) {
+    return this.entries.get(key);
+  }
+
+  increment(key) {
+    const now = Date.now();
+    let entry = this.entries.get(key);
+    if (!entry || entry.resetTime <= now) {
+      entry = { totalHits: 0, resetTime: now + this.windowMs };
+      this.entries.set(key, entry);
+    }
+    entry.totalHits++;
+    return entry;
+  }
+}
 
 class HealthCheckService {
   /**
@@ -103,11 +138,15 @@ class HealthCheckService {
     // burst of correct requests could briefly exceed the limit, so an operator
     // with the right password got locked out. Do not go back to that.
     if (!this.authFailures) {
-      this.authFailures = new MemoryStore();
-      this.authFailures.init({ windowMs: this.authFailureWindowMs });
+      this.authFailures = new AuthFailureCounter(this.authFailureWindowMs);
     }
 
-    return async (req, res, next) => {
+    // Synchronous on purpose: no await may sit between reading the count and
+    // adding a failure. Node parses every request pipelined on one socket in
+    // the same tick, so with an await in between (express-rate-limit's async
+    // MemoryStore) all of them read the old count and a single write of 60
+    // wrong guesses was checked in full against a limit of 10.
+    return (req, res, next) => {
       // Skip if dashboard is disabled
       if (!this.dashboardConfig.enabled) {
         return res.status(403).json({ error: 'Dashboard is disabled' });
@@ -119,8 +158,8 @@ class HealthCheckService {
 
       try {
         const key = ipKeyGenerator(req.ip || '');
-        const seen = await this.authFailures.get(key);
-        // MemoryStore.get also returns entries whose window has ended (they are
+        const seen = this.authFailures.get(key);
+        // get() also returns entries whose window has ended (they are
         // only swept on a timer), so check resetTime or a lockout lasts up to
         // two windows.
         if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {
@@ -132,7 +171,7 @@ class HealthCheckService {
           return res.status(429).json({ error: 'Too many failed authentication attempts, try again later' });
         }
         this.checkDashboardCredentials(req, res, next, authConfig, authType);
-        if (res.locals.authFailed) await this.authFailures.increment(key);
+        if (res.locals.authFailed) this.authFailures.increment(key);
       } catch (err) {
         next(err);
       }

@@ -808,6 +808,38 @@ describe('HealthCheckService', () => {
       }
     });
 
+    test('wrong guesses pipelined on one socket are held to the limit', async () => {
+      // Node parses every pipelined request in one tick, so an await between
+      // reading the count and adding a failure let all of them through.
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'token', token: 'correct-token' } },
+        loggerConfig: { level: 'ERROR' },
+        authFailureLimit: 5
+      });
+      await hc.start();
+      try {
+        const raw = await new Promise((resolve) => {
+          const socket = net.connect(testPort, '127.0.0.1');
+          let buf = '';
+          socket.on('data', (d) => {
+            buf += d;
+            if ((buf.match(/HTTP\/1\.1 \d{3}/g) || []).length >= 20) socket.end();
+          });
+          socket.on('close', () => resolve(buf));
+          socket.on('error', () => resolve(buf));
+          socket.write('GET /api/dashboard/status HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer wrong-token\r\n\r\n'.repeat(20));
+        });
+        const codes = (raw.match(/HTTP\/1\.1 \d{3}/g) || []).map((l) => l.slice(9));
+        expect(codes).toHaveLength(20);
+        expect(codes.filter((c) => c === '401')).toHaveLength(5);
+        expect(codes.filter((c) => c === '429')).toHaveLength(15);
+      } finally {
+        await hc.stop();
+      }
+    });
+
     test('a wrong basic password counts, and so does a wrong username', async () => {
       const hc = makeService({
         port: testPort,

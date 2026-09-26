@@ -997,8 +997,8 @@ module.exports = [
         id: '246-success-counts', ticket: '#246',
         desc: 'every request counts, so an operator with the right password is locked out',
         file: 'src/services/healthCheck.js',
-        anchor: '        if (res.locals.authFailed) await this.authFailures.increment(key);',
-        mutant: '        await this.authFailures.increment(key);',
+        anchor: '        if (res.locals.authFailed) this.authFailures.increment(key);',
+        mutant: '        this.authFailures.increment(key);',
         tests: 'healthCheck'
     },
     {
@@ -1016,6 +1016,14 @@ module.exports = [
         file: 'src/services/healthCheck.js',
         anchor: '        if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {',
         mutant: '        if (seen && seen.totalHits >= this.authFailureLimit) {',
+        tests: 'healthCheck'
+    },
+    {
+        id: '246-await-between-check-and-count', ticket: '#246',
+        desc: 'an await between reading the count and adding a failure lets pipelined guesses through',
+        file: 'src/services/healthCheck.js',
+        anchor: "    return (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n",
+        mutant: "    return async (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n        await null;\n",
         tests: 'healthCheck'
     },
 
