@@ -86,6 +86,10 @@ Detailed metrics endpoint with sync statistics and per-server status.
 }
 ```
 
+`/metrics` needs no login, so after a failed sync `lastError` holds only `timestamp` and
+`serverName`, and a server entry never carries the error text (it can include bank or Actual
+messages). Read the failure text on the authenticated dashboard.
+
 **Status Values:**
 - `PENDING`: No syncs performed yet
 - `HEALTHY`: Service operating normally (>50% success rate and last sync successful)

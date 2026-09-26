@@ -276,8 +276,15 @@ class HealthCheckService {
             ? ((this.status.successCount / this.status.syncCount) * 100).toFixed(2) + '%'
             : 'N/A'
         },
-        servers: this.status.serverStatuses,
-        lastError: this.status.lastError
+        // /metrics has no authentication, so it names which server failed and
+        // when, never the error text: that can carry bank or Actual messages.
+        // The text stays on the authenticated dashboard. (#263)
+        servers: Object.fromEntries(Object.entries(this.status.serverStatuses)
+          .map(([name, { error, ...rest }]) => [name, rest])),
+        lastError: this.status.lastError && {
+          timestamp: this.status.lastError.timestamp,
+          serverName: this.status.lastError.serverName
+        }
       };
 
       this.logger.debug('Metrics requested', { 

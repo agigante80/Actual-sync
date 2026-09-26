@@ -1069,6 +1069,15 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    {
+        id: '263-metrics-echoes-error', ticket: '#263',
+        desc: 'the unauthenticated /metrics shows the sync error text',
+        file: 'src/services/healthCheck.js',
+        anchor: "          .map(([name, { error, ...rest }]) => [name, rest])),",
+        mutant: "          .map(([name, entry]) => [name, entry])),",
+        tests: 'healthCheck'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
