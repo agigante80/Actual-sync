@@ -60,6 +60,9 @@ class HealthCheckService {
     this.wsTickets = new WsTicketStore();
     this.wsConnectionsPerIp = new Map();
     this.maxWsConnectionsPerIp = 10;
+    // Failed dashboard logins allowed per client IP per window (#246).
+    this.authFailureLimit = options.authFailureLimit ?? 10;
+    this.authFailureWindowMs = options.authFailureWindowMs ?? 15 * 60 * 1000;
     
     // Health status tracking
     this.status = {
@@ -88,6 +91,30 @@ class HealthCheckService {
    * Dashboard authentication middleware
    */
   dashboardAuth() {
+    // One limiter shared by every dashboard route, so the budget is per IP
+    // across /dashboard and /api/dashboard/*, not per route. (#246)
+    if (!this.authLimiter) {
+      this.authLimiter = rateLimit({
+        windowMs: this.authFailureWindowMs,
+        limit: this.authFailureLimit,
+        standardHeaders: true,
+        legacyHeaders: false,
+        // Only wrong credentials count. A request with no credentials yet (the
+        // browser's first basic-auth probe) and every authenticated request,
+        // whatever its status, leave the budget alone.
+        skipSuccessfulRequests: true,
+        requestWasSuccessful: (req, res) => !res.locals.authFailed,
+        handler: (req, res) => {
+          this.logger.warn('Dashboard authentication throttled after repeated failures', {
+            remoteAddress: req.ip,
+            limit: this.authFailureLimit,
+            windowMinutes: Math.round(this.authFailureWindowMs / 60000)
+          });
+          res.status(429).json({ error: 'Too many failed authentication attempts, try again later' });
+        }
+      });
+    }
+
     return (req, res, next) => {
       // Skip if dashboard is disabled
       if (!this.dashboardConfig.enabled) {
@@ -96,34 +123,49 @@ class HealthCheckService {
 
       const authConfig = this.dashboardConfig.auth || {};
       const authType = authConfig.type || 'none';
-      const result = checkCredentials(req.headers, authConfig);
-      if (result.ok) return next();
+      if (authType === 'none') return next();
 
-      if (result.reason === 'config') {
-        return res.status(500).json({ error: 'Invalid authentication configuration' });
-      }
+      this.authLimiter(req, res, (err) => {
+        if (err) return next(err);
+        this.checkDashboardCredentials(req, res, next, authConfig, authType);
+      });
+    };
+  }
 
-      if (authType === 'basic') {
-        res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
-        if (result.reason === 'missing') {
-          return res.status(401).json({ error: 'Authentication required' });
-        }
-        this.logger.warn('Dashboard authentication failed', {
-          username: result.username,
-          remoteAddress: req.ip
-        });
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
+  /**
+   * Check the credentials once the auth limiter has let the request through.
+   * A wrong credential sets res.locals.authFailed so the limiter counts it.
+   */
+  checkDashboardCredentials(req, res, next, authConfig, authType) {
+    const result = checkCredentials(req.headers, authConfig);
+    if (result.ok) return next();
 
-      // Token authentication
+    if (result.reason === 'config') {
+      return res.status(500).json({ error: 'Invalid authentication configuration' });
+    }
+
+    if (authType === 'basic') {
+      res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
       if (result.reason === 'missing') {
         return res.status(401).json({ error: 'Authentication required' });
       }
-      this.logger.warn('Dashboard token authentication failed', {
+      res.locals.authFailed = true;
+      this.logger.warn('Dashboard authentication failed', {
+        username: result.username,
         remoteAddress: req.ip
       });
-      return res.status(401).json({ error: 'Invalid token' });
-    };
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Token authentication
+    if (result.reason === 'missing') {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    res.locals.authFailed = true;
+    this.logger.warn('Dashboard token authentication failed', {
+      remoteAddress: req.ip
+    });
+    return res.status(401).json({ error: 'Invalid token' });
   }
 
   /**

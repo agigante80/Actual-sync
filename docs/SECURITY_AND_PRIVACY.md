@@ -63,6 +63,8 @@ if (!password) {
 
 **Note**: Since Actual Budget is self-hosted, users control their own password policies. Above are recommendations, not enforcements.
 
+**Dashboard login throttle (#246)**: after 10 wrong dashboard credentials from one client IP within 15 minutes, every dashboard request from that IP gets `429` until the window ends, even with the right credentials. Successful logins and requests with no credentials yet (the browser's first basic-auth prompt) do not count. Credentials are compared in constant time. The throttle slows guessing but does not make a weak secret safe: prefer `auth.type: token` with a long random token (for example `openssl rand -hex 32`) over a chosen password.
+
 ---
 
 ## 🌐 Network Security

@@ -852,7 +852,7 @@ See **[docs/TESTING.md](docs/TESTING.md)** for complete testing guide including:
 - **Non-Root Container** - Docker runs as `actualuser` (UID 1001), not root
 - **Read-Only Config** - Mount config as read-only in Docker
 - **HTTPS Enforcement** - Warnings for HTTP connections in production
-- **Rate Limiting** - HTTP endpoints protected (60 req/min per IP)
+- **Rate Limiting** - HTTP endpoints protected (60 req/min per IP), and dashboard logins lock out after 10 failures per IP in 15 minutes
 - **SQL Injection Protection** - Parameterized queries throughout
 - **Input Validation** - Startup business-logic validation, plus hard-fail JSON-schema validation (type/range/required/format/pattern/enum; unknown keys warn) for all config
 

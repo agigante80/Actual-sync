@@ -720,6 +720,138 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('Dashboard auth-failure throttle (#246)', () => {
+    function getWithAuth(path, authorization) {
+      return new Promise((resolve, reject) => {
+        http.get({
+          hostname: '127.0.0.1',
+          port: testPort,
+          path,
+          headers: authorization ? { Authorization: authorization } : {}
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            let body = data;
+            try { body = JSON.parse(data); } catch { /* HTML */ }
+            resolve({ statusCode: res.statusCode, body });
+          });
+        }).on('error', reject);
+      });
+    }
+    const tokenService = (extra = {}) => makeService({
+      port: testPort,
+      host: '127.0.0.1',
+      dashboardConfig: { enabled: true, auth: { type: 'token', token: 'correct-token' } },
+      loggerConfig: { level: 'ERROR' },
+      authFailureLimit: 5,
+      ...extra
+    });
+
+    test('the failure after the limit gets 429 and a warn log, across routes', async () => {
+      const hc = tokenService();
+      const warn = jest.spyOn(hc.logger, 'warn');
+      await hc.start();
+      try {
+        const paths = ['/dashboard', '/api/dashboard/status', '/api/dashboard/history', '/api/dashboard/accounts', '/dashboard'];
+        for (const path of paths) {
+          expect((await getWithAuth(path, 'Bearer wrong-token')).statusCode).toBe(401);
+        }
+        const sixth = await getWithAuth('/api/dashboard/status', 'Bearer wrong-token');
+        expect(sixth.statusCode).toBe(429);
+        expect(sixth.body.error).toMatch(/Too many failed authentication attempts/);
+        expect(warn).toHaveBeenCalledWith(
+          'Dashboard authentication throttled after repeated failures',
+          expect.objectContaining({ remoteAddress: expect.any(String), limit: 5 })
+        );
+        // Locked out for the window, even with the right token.
+        expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(429);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('successful logins never consume the budget', async () => {
+      const hc = tokenService();
+      await hc.start();
+      try {
+        for (let i = 0; i < 20; i++) {
+          expect((await getWithAuth('/api/dashboard/status', 'Bearer correct-token')).statusCode).toBe(200);
+        }
+        // An authenticated request that fails for another reason is not an auth failure.
+        for (let i = 0; i < 6; i++) {
+          expect((await getWithAuth('/api/dashboard/metrics?range=bogus', 'Bearer correct-token')).statusCode).not.toBe(429);
+        }
+        expect((await getWithAuth('/api/dashboard/status', 'Bearer wrong-token')).statusCode).toBe(401);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('a request with no credentials yet does not count', async () => {
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'test-password' } },
+        loggerConfig: { level: 'ERROR' },
+        authFailureLimit: 2
+      });
+      await hc.start();
+      try {
+        for (let i = 0; i < 5; i++) {
+          expect((await getWithAuth('/dashboard')).statusCode).toBe(401);
+        }
+        const good = 'Basic ' + Buffer.from('admin:test-password').toString('base64');
+        expect((await getWithAuth('/dashboard', good)).statusCode).toBe(200);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('a wrong basic password counts, and so does a wrong username', async () => {
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'test-password' } },
+        loggerConfig: { level: 'ERROR' },
+        authFailureLimit: 2
+      });
+      await hc.start();
+      try {
+        const bad = (u, p) => 'Basic ' + Buffer.from(`${u}:${p}`).toString('base64');
+        expect((await getWithAuth('/dashboard', bad('admin', 'nope'))).statusCode).toBe(401);
+        expect((await getWithAuth('/dashboard', bad('wrong', 'wrong'))).statusCode).toBe(401);
+        expect((await getWithAuth('/dashboard', bad('admin', 'nope'))).statusCode).toBe(429);
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('auth type none is never throttled', async () => {
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' },
+        authFailureLimit: 1
+      });
+      await hc.start();
+      try {
+        for (let i = 0; i < 3; i++) {
+          expect((await getWithAuth('/api/dashboard/status', 'Bearer anything')).statusCode).toBe(200);
+        }
+      } finally {
+        await hc.stop();
+      }
+    });
+
+    test('defaults to 10 failures per 15 minutes', () => {
+      const hc = makeService({ port: testPort, loggerConfig: { level: 'ERROR' } });
+      expect(hc.authFailureLimit).toBe(10);
+      expect(hc.authFailureWindowMs).toBe(15 * 60 * 1000);
+    });
+  });
+
   describe('Dashboard Accounts API (#99)', () => {
     test('returns the persisted account snapshot grouped by server (200)', async () => {
       const mockSyncHistory = {

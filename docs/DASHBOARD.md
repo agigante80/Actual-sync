@@ -24,6 +24,10 @@ If the panel keeps showing "Disconnected from log stream. Reconnecting...", chec
 - **status 403, Origin not allowed**: the page was loaded from an origin that is not the host the browser connects to. Add that origin to `dashboard.allowedOrigins` (see [CONFIG.md](CONFIG.md)).
 - **status 429**: more than 10 log streams are open from one address (every browser tab holds one). Behind a reverse proxy all streams share the proxy's address.
 
+## Locked out after failed logins
+
+After 10 wrong usernames, passwords or tokens from one address within 15 minutes, the dashboard answers `429 Too many failed authentication attempts` for the rest of the window, even once the right credentials are entered. Wait 15 minutes, or restart the service to clear it. The service log shows `Dashboard authentication throttled after repeated failures` with the address. Behind a reverse proxy, set `healthCheck.trustProxy` so one client's mistakes do not lock out everyone behind the same proxy. The limits are fixed and have no config key.
+
 ## Account syncability
 
 The Overview tab lists each server's accounts with a badge so you can tell, at a glance, which accounts actually bank-sync:

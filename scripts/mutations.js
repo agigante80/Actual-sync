@@ -879,6 +879,39 @@ module.exports = [
         tests: 'dashboardCredentials'
     },
 
+    {
+        id: '246-token-failure-uncounted', ticket: '#246',
+        desc: 'wrong tokens no longer count, so brute force is unthrottled',
+        file: 'src/services/healthCheck.js',
+        anchor: "    res.locals.authFailed = true;\n    this.logger.warn('Dashboard token authentication failed', {",
+        mutant: "    this.logger.warn('Dashboard token authentication failed', {",
+        tests: 'healthCheck'
+    },
+    {
+        id: '246-basic-failure-uncounted', ticket: '#246',
+        desc: 'wrong basic credentials no longer count',
+        file: 'src/services/healthCheck.js',
+        anchor: '      res.locals.authFailed = true;',
+        mutant: '',
+        tests: 'healthCheck'
+    },
+    {
+        id: '246-every-request-counts', ticket: '#246',
+        desc: 'successful logins consume the budget and lock the operator out',
+        file: 'src/services/healthCheck.js',
+        anchor: '        requestWasSuccessful: (req, res) => !res.locals.authFailed,',
+        mutant: '        requestWasSuccessful: () => false,',
+        tests: 'healthCheck'
+    },
+    {
+        id: '246-throttle-bypassed', ticket: '#246',
+        desc: 'the limiter is not applied to dashboard routes',
+        file: 'src/services/healthCheck.js',
+        anchor: '      this.authLimiter(req, res, (err) => {',
+        mutant: '      ((cb) => cb())((err) => {',
+        tests: 'healthCheck'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
