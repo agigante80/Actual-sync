@@ -1081,6 +1081,79 @@ describe('HealthCheckService', () => {
    * a user whose failure alerts were being suppressed had no surface that said
    * so. Wiring it up is the point of the endpoint.
    */
+  describe('POST /api/dashboard/dismiss-error (#264)', () => {
+    const url = () => `http://127.0.0.1:${testPort}/api/dashboard/dismiss-error`;
+
+    beforeEach(async () => {
+      await healthCheck.start();
+    });
+
+    it('removes the error of a known server and reports success', async () => {
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'Main', error: new Error('x') });
+      const res = await httpPostJson(url(), { server: 'Main' });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ success: true, message: 'Error dismissed' });
+      expect(healthCheck.getStatus().serverStatuses.Main).not.toHaveProperty('error');
+      const status = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/status`);
+      expect(status.body.servers.Main).not.toHaveProperty('error');
+      // The card stops showing red; the failure itself is still reported.
+      expect(status.body.servers.Main.errorDismissed).toBe(true);
+      expect(status.body.servers.Main.status).toBe('failure');
+    });
+
+    it('a later sync clears the dismissed flag', async () => {
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'Main', error: new Error('x') });
+      await httpPostJson(url(), { server: 'Main' });
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'Main', error: new Error('y') });
+
+      const main = healthCheck.getStatus().serverStatuses.Main;
+      expect(main.error).toBe('y');
+      expect(main).not.toHaveProperty('errorDismissed');
+    });
+
+    it('succeeds and changes nothing when the server has no error', async () => {
+      healthCheck.updateSyncStatus({ status: 'success', serverName: 'Main' });
+      const before = healthCheck.getStatus().serverStatuses.Main;
+      const res = await httpPostJson(url(), { server: 'Main' });
+
+      expect(res.statusCode).toBe(200);
+      expect(healthCheck.getStatus().serverStatuses.Main).toEqual(before);
+    });
+
+    it('returns 404 for an unknown server', async () => {
+      const res = await httpPostJson(url(), { server: 'Ghost' });
+      expect(res.statusCode).toBe(404);
+      expect(res.body).toEqual({ error: 'Server not found' });
+    });
+
+    it('returns 404 for __proto__, keeping the prototype pollution guard', async () => {
+      const res = await httpPostJson(url(), { server: '__proto__' });
+      expect(res.statusCode).toBe(404);
+      expect(res.body).toEqual({ error: 'Server not found' });
+    });
+
+    it('returns 400 when the server name is missing', async () => {
+      const res = await httpPostJson(url(), {});
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toEqual({ error: 'Server name required' });
+    });
+
+    it('returns 401 without credentials when dashboard auth is enabled', async () => {
+      await healthCheck.stop();
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'secret' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+      const res = await httpPostJson(url(), { server: 'Main' });
+      expect(res.statusCode).toBe(401);
+      expect(res.body).toEqual({ error: 'Authentication required' });
+    });
+  });
+
   describe('GET /api/dashboard/notifications (#188)', () => {
     const url = () => `http://127.0.0.1:${testPort}/api/dashboard/notifications`;
 

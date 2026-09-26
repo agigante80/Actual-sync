@@ -5,7 +5,8 @@ GitHub owns which phase a ticket is in. Only an `open` phase carries commitment;
 a reason, not a promise. Checked by the forge-kit roadmap-phases scripts (`check-phases.sh`).
 
 ## Phase: P0 Security and bug patch
-state: planned
+state: open
+plan: docs/plans/p0-security-and-bug-patch.md
 
 Close the exposed and broken things before adding features: the unauthenticated live log stream,
 the timing-unsafe credential compare and auth throttle, the trust proxy gap under it, the unpinned
