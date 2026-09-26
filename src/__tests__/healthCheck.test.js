@@ -1097,6 +1097,19 @@ describe('HealthCheckService', () => {
       expect(healthCheck.getStatus().serverStatuses.Main).not.toHaveProperty('error');
       const status = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/status`);
       expect(status.body.servers.Main).not.toHaveProperty('error');
+      // The card stops showing red; the failure itself is still reported.
+      expect(status.body.servers.Main.errorDismissed).toBe(true);
+      expect(status.body.servers.Main.status).toBe('failure');
+    });
+
+    it('a later sync clears the dismissed flag', async () => {
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'Main', error: new Error('x') });
+      await httpPostJson(url(), { server: 'Main' });
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'Main', error: new Error('y') });
+
+      const main = healthCheck.getStatus().serverStatuses.Main;
+      expect(main.error).toBe('y');
+      expect(main).not.toHaveProperty('errorDismissed');
     });
 
     it('succeeds and changes nothing when the server has no error', async () => {
@@ -1137,6 +1150,7 @@ describe('HealthCheckService', () => {
       await hc.start();
       const res = await httpPostJson(url(), { server: 'Main' });
       expect(res.statusCode).toBe(401);
+      expect(res.body).toEqual({ error: 'Authentication required' });
     });
   });
 

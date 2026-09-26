@@ -1009,7 +1009,7 @@
                 ` : '';
 
                 return `
-                    <li class="server-item ${status.status === 'failure' ? 'error' : ''}" id="server-${name.replace(/[^a-zA-Z0-9]/g, '_')}">
+                    <li class="server-item ${status.status === 'failure' && !status.errorDismissed ? 'error' : ''}" id="server-${name.replace(/[^a-zA-Z0-9]/g, '_')}">
                         <div class="server-name">${escapedName}${encryptionBadge}</div>
                         <div class="server-info">
                             Last sync: ${lastSyncText}

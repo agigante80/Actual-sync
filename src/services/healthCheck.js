@@ -457,6 +457,9 @@ class HealthCheckService {
         // Clear error from server status (using safer approach)
         if (Object.prototype.hasOwnProperty.call(serverStatuses[server], 'error')) {
           delete serverStatuses[server].error;
+          // The card stops highlighting the failure; the "failure" badge from sync
+          // history stays. The next sync replaces this object, clearing the flag.
+          serverStatuses[server].errorDismissed = true;
           this.logger.info('Server error dismissed via dashboard', {
             server: server,
             remoteAddress: req.ip
