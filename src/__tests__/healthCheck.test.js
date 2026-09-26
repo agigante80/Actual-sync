@@ -403,8 +403,24 @@ describe('HealthCheckService', () => {
       expect(response.body.sync.successfulSyncs).toBe(0);
       expect(response.body.sync.failedSyncs).toBe(1);
       expect(response.body.sync.successRate).toBe('0.00%');
-      expect(response.body.lastError).toBeDefined();
-      expect(response.body.lastError.message).toBe('Test error');
+      expect(response.body.lastError).toEqual({
+        timestamp: expect.any(String),
+        serverName: 'TestServer'
+      });
+    });
+
+    test('never echoes the sync error text, which may carry bank messages', async () => {
+      healthCheck.updateSyncStatus({
+        status: 'failure',
+        serverName: 'TestServer',
+        error: '2 account(s) failed to sync: secret bank detail'
+      });
+
+      const response = await httpGet(`http://127.0.0.1:${testPort}/metrics`);
+
+      expect(response.body.servers.TestServer.status).toBe('failure');
+      expect(JSON.stringify(response.body)).not.toContain('secret bank detail');
+      expect(healthCheck.status.serverStatuses.TestServer.error).toContain('secret bank detail');
     });
 
     test('should calculate success rate correctly', async () => {
@@ -518,6 +534,18 @@ describe('HealthCheckService', () => {
       expect(status.failureCount).toBe(1);
       expect(status.lastSyncStatus).toBe('failure');
       expect(status.lastError.message).toBe('Test error');
+    });
+
+    test('should accept a plain string error, not only an Error object (#263)', () => {
+      // syncService passes the error as a string; an earlier version of
+      // updateSyncStatus read only error.message, which is undefined on a
+      // string, so both lastError.message and the per-server error ended up
+      // as "Unknown error" / undefined instead of the actual failure text.
+      healthCheck.updateSyncStatus({ status: 'failure', serverName: 'TestServer', error: 'Connection refused' });
+
+      const status = healthCheck.getStatus();
+      expect(status.lastError.message).toBe('Connection refused');
+      expect(status.serverStatuses.TestServer.error).toBe('Connection refused');
     });
 
     test('should track multiple syncs', () => {

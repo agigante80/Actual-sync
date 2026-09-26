@@ -134,6 +134,20 @@ describe('SyncHistoryService', () => {
       const now = Date.now();
       expect(now - recordTime).toBeLessThan(1000);
     });
+
+    test('uses an injected now() for the timestamp instead of the real clock (#263)', () => {
+      const fixedDbPath = path.join(__dirname, 'test-injected-now.db');
+      if (fs.existsSync(fixedDbPath)) fs.unlinkSync(fixedDbPath);
+      const fixedNow = () => new Date('2026-01-15T12:00:00.000Z');
+      const sh = new SyncHistoryService({ dbPath: fixedDbPath, now: fixedNow, loggerConfig: { level: 'ERROR' } });
+
+      const id = sh.recordSync({ serverName: 'TestServer', status: 'success' });
+      const record = sh.db.prepare('SELECT * FROM sync_history WHERE id = ?').get(id);
+      expect(record.timestamp).toBe('2026-01-15T12:00:00.000Z');
+
+      sh.close();
+      fs.unlinkSync(fixedDbPath);
+    });
   });
 
   describe('getHistory', () => {

@@ -828,6 +828,48 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #263: e2e harness seams and the string-error dashboard bug ---------
+    {
+        id: '263-port-zero-ignored', ticket: '#263',
+        desc: 'port 0 falls back to 3000 again, so the e2e fixtures can no longer get an OS-assigned free port',
+        file: 'src/services/healthCheck.js',
+        anchor: 'this.port = options.port ?? 3000;',
+        mutant: 'this.port = options.port || 3000;',
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '263-now-ignored', ticket: '#263',
+        desc: 'the injected clock is ignored, so status.startTime always reads the real clock again',
+        file: 'src/services/healthCheck.js',
+        anchor: "this.now = options.now || (() => new Date());",
+        mutant: 'this.now = () => new Date();',
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '263-rate-limit-max-ignored', ticket: '#263',
+        desc: 'the rate limiter goes back to a hardcoded 60, so the e2e fixtures cannot drive more requests than that',
+        file: 'src/services/healthCheck.js',
+        anchor: 'max: this.rateLimitMax, // requests per minute per IP (60 unless a test overrides it)',
+        mutant: 'max: 60, // requests per minute per IP',
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '263-sync-error-string-dropped', ticket: '#263',
+        desc: 'updateSyncStatus reads only error.message again, so a plain string error becomes "Unknown error"',
+        file: 'src/services/healthCheck.js',
+        anchor: "    const errorText = typeof syncResult.error === 'string'\n      ? syncResult.error\n      : syncResult.error?.message;",
+        mutant: '    const errorText = syncResult.error?.message;',
+        tests: 'healthCheck'
+    },
+    {
+        id: '263-synchistory-now-ignored', ticket: '#263',
+        desc: 'SyncHistoryService ignores the injected clock, so recorded timestamps and day-window queries use the real clock again',
+        file: 'src/services/syncHistory.js',
+        anchor: 'this.now = options.now || (() => new Date());',
+        mutant: 'this.now = () => new Date();',
+        tests: 'syncHistory'
+    },
+
     // ---- #272: a hung Actual API call blocked the queue forever ------------------
     {
         id: '272-download-unbounded', ticket: '#272',
@@ -1024,6 +1066,15 @@ module.exports = [
         file: 'src/services/healthCheck.js',
         anchor: "    return (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n",
         mutant: "    return async (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n        await null;\n",
+        tests: 'healthCheck'
+    },
+
+    {
+        id: '263-metrics-echoes-error', ticket: '#263',
+        desc: 'the unauthenticated /metrics shows the sync error text',
+        file: 'src/services/healthCheck.js',
+        anchor: "          .map(([name, { error, ...rest }]) => [name, rest])),",
+        mutant: "          .map(([name, entry]) => [name, entry])),",
         tests: 'healthCheck'
     },
 

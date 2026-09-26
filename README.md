@@ -400,10 +400,11 @@ See **[docs/CONFIG.md](docs/CONFIG.md)** for complete configuration reference in
 | `npm run list-accounts` | `node scripts/listAccounts.js` | List all configured bank accounts |
 | `npm run history` | `node scripts/viewHistory.js` | View sync history and statistics |
 | `npm run validate-config` | `node scripts/validateConfig.js` | Validate configuration file |
-| `npm run screenshots` | `node scripts/generateDashboardScreenshots.js` | Generate dashboard screenshots with fake data |
+| `npm run screenshots` | `node scripts/generateDashboardScreenshots.js` | Generate dashboard screenshots from the e2e fixture harness |
 | `npm test` | `jest` | Run test suite |
 | `npm run test:watch` | `jest --watch` | Run tests in watch mode |
 | `npm run test:coverage` | `jest --coverage` | Generate coverage report |
+| `npm run test:e2e` | `jest --config jest.e2e.config.js` | Run the browser E2E suite (see [TESTING.md](docs/TESTING.md#-browser-e2e-tests-263)) |
 
 ### Command Line Examples
 
