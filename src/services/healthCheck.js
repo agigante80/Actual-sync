@@ -22,6 +22,7 @@ class HealthCheckService {
    * @param {Object} options.notificationService - NotificationService instance (optional)
    * @param {Object} options.telegramBot - TelegramBotService instance (optional)
    * @param {Function} options.syncBank - Sync function for manual triggers (optional)
+   * @param {Function} options.isSyncQueued - (serverName) => true while that server's sync waits or runs (optional)
    * @param {Function} options.getServers - Function to get server list (optional)
    * @param {Function} options.getSchedules - Function to get schedule info (optional)
    * @param {Function} options.getCronSchedules - Function to get cron schedule details (optional)
@@ -35,6 +36,7 @@ class HealthCheckService {
     this.notificationService = options.notificationService;
     this.telegramBot = options.telegramBot;
     this.syncBank = options.syncBank;
+    this.isSyncQueued = options.isSyncQueued || (() => false);
     this.getServers = options.getServers;
     this.getSchedules = options.getSchedules;
     this.getCronSchedules = options.getCronSchedules;
@@ -499,7 +501,8 @@ class HealthCheckService {
             remoteAddress: req.ip
           });
           
-          // Don't await - trigger async
+          // Don't await - trigger async. syncBank queues each server, so they
+          // run one at a time in config order, never concurrently (#265).
           Promise.all(servers.map(s => this.syncBank(s).catch(err => {
             this.logger.error('Manual sync failed', { 
               server: s.name, 
@@ -517,6 +520,10 @@ class HealthCheckService {
               error: 'Server not found',
               availableServers: servers.map(s => s.name)
             });
+          }
+
+          if (this.isSyncQueued(server)) {
+            return res.json({ success: true, message: 'Sync already queued' });
           }
 
           this.logger.info('Manual sync triggered via dashboard', {
