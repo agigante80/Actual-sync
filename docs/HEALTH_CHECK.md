@@ -134,7 +134,6 @@ returns the Prometheus text format. No authentication. See
 ### Other public endpoints
 
 - `GET /icon.png` — the project icon (served locally; used by the dashboard and notifications).
-- `GET /ws/logs` — WebSocket log stream consumed by the dashboard's Live Logs panel.
 
 ### Internal dashboard API (`/api/dashboard/*`)
 
@@ -370,7 +369,7 @@ By default, the health check service binds to `0.0.0.0` (all interfaces). Consid
 
 1. **Internal Only**: Set `host` to `"127.0.0.1"` if only local access is needed
 2. **Firewall**: Restrict access to health check port (3000) to monitoring systems only
-3. **Reverse Proxy**: Put behind nginx/Apache with authentication if exposed to internet
+3. **Reverse Proxy**: Put behind nginx/Apache with authentication if exposed to internet, and set `healthCheck.trustProxy` (usually `1`) so rate limiting and auth-failure logs see the real client IP ([CONFIG.md](CONFIG.md#healthcheck-optional))
 
 ### Sensitive Information
 
@@ -513,11 +512,33 @@ The health check service provides WebSocket endpoint for streaming real-time log
 
 ### WS /ws/logs
 
-Real-time log streaming via WebSocket connection.
+Real-time log streaming via WebSocket connection. **Not public**: the handshake is checked before the socket opens, so a refused client never receives a log line.
+
+| Check | Applies | Refused with |
+|---|---|---|
+| `dashboard.enabled` is false | always | 403 |
+| `Origin` is neither same-origin nor in `dashboard.allowedOrigins` | every auth type; skipped when there is no `Origin` header | 403 |
+| more than 10 open log streams from one address | always | 429 |
+| no valid ticket (an `Authorization` header is not accepted here) | `dashboard.auth.type` basic or token | 401 |
+
+The per-address cap uses the TCP peer address, so behind a reverse proxy it counts every stream through that proxy together.
+
+**Authenticating from a browser.** A browser cannot put an `Authorization` header on a WebSocket, so the dashboard first calls `GET /api/dashboard/ws-ticket` (behind the normal dashboard auth) and gets a ticket that is single use and valid for 30 seconds:
+
+```json
+{ "ticket": "9f2c...64 hex chars", "expiresInSeconds": 30 }
+```
+
+It then connects to `/ws/logs?ticket=<ticket>`. Tickets live in memory, so after a restart the dashboard simply asks for a new one.
+
+**Authenticating from a script.** Do the same: call `GET /api/dashboard/ws-ticket` with the `Authorization` header the HTTP dashboard takes (`Basic ...` or `Bearer ...`), then connect with the ticket. The handshake itself does not accept the header, because WebSocket upgrades bypass the HTTP rate limiter and would otherwise allow unlimited password guessing.
+
+With `auth.type: none`, no ticket is needed; the `Origin` check and the connection cap still apply.
 
 **Connection:**
 ```javascript
-const ws = new WebSocket('ws://localhost:3000/ws/logs');
+const { ticket } = await (await fetch('/api/dashboard/ws-ticket')).json();
+const ws = new WebSocket(`ws://localhost:3000/ws/logs?ticket=${ticket}`);
 ```
 
 **Message Format (Received):**
@@ -576,31 +597,33 @@ The WebSocket implementation is designed for 24/7 operation:
 ### Example Usage
 
 ```javascript
-const ws = new WebSocket('ws://localhost:3000/ws/logs');
+// Node.js 18+ with the ws package, token auth: fetch a ticket, then connect with it.
+const WebSocket = require('ws');
+const auth = { Authorization: 'Bearer <dashboard token>' };
 
-ws.onopen = () => {
-  console.log('Connected to log stream');
-  
-  // Start keep-alive
-  setInterval(() => {
-    ws.send(JSON.stringify({ type: 'ping' }));
-  }, 30000);
-};
+async function connect() {
+  const res = await fetch('http://localhost:3000/api/dashboard/ws-ticket', { headers: auth });
+  const { ticket } = await res.json();
+  const ws = new WebSocket(`ws://localhost:3000/ws/logs?ticket=${ticket}`);
+  let keepAlive;
 
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  
-  if (data.type === 'pong') {
-    console.log('Keep-alive pong received');
-    return;
-  }
-  
-  // Handle log message
-  console.log(`[${data.level}] ${data.message}`);
-};
+  ws.on('open', () => {
+    console.log('Connected to log stream');
+    keepAlive = setInterval(() => ws.send(JSON.stringify({ type: 'ping' })), 30000);
+  });
 
-ws.onclose = () => {
-  console.log('Disconnected, reconnecting...');
-  setTimeout(connect, 3000); // Reconnect after 3 seconds
-};
+  ws.on('message', (raw) => {
+    const data = JSON.parse(raw);
+    if (data.type === 'pong') return;
+    console.log(`[${data.level}] ${data.message}`);
+  });
+
+  ws.on('close', () => {
+    clearInterval(keepAlive);
+    console.log('Disconnected, reconnecting...');
+    setTimeout(connect, 3000);
+  });
+}
+
+connect();
 ```

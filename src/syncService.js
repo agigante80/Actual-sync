@@ -178,6 +178,7 @@ try {
     healthCheck = new HealthCheckService({
         port: config.healthCheck?.port || 3000,
         host: config.healthCheck?.host || '0.0.0.0',
+        trustProxy: config.healthCheck?.trustProxy,
         dashboardConfig: config.healthCheck?.dashboard || { enabled: true, auth: { type: 'none' } },
         prometheusService: prometheusService,
         syncHistory: syncHistory,

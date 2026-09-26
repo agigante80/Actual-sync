@@ -714,6 +714,7 @@
 
     <script>
         let ws = null;
+        let wsConnecting = false; // a ticket request is in flight (#242)
         let reconnectAttempts = 0;
         let reconnectDelay = 1000; // Start with 1 second
         const maxReconnectDelay = 30000; // Cap at 30 seconds
@@ -1079,17 +1080,33 @@
             }
         }
 
-        function connectWebSocket() {
+        // The log stream authenticates with a single-use ticket fetched over
+        // the same authenticated HTTP the rest of the dashboard uses, because a
+        // browser cannot set an Authorization header on a WebSocket. (#242)
+        async function fetchWsTicket() {
+            const response = await fetch('/api/dashboard/ws-ticket', getFetchOptions());
+            if (!response.ok) throw new Error(`ticket request failed: ${response.status}`);
+            const data = await response.json();
+            return data.ticket;
+        }
+
+        async function connectWebSocket() {
             // Don't reconnect if tab is hidden
             if (!isPageVisible) {
                 console.log('Tab hidden, deferring WebSocket connection');
                 return;
             }
             
+            // A ticket request is async, so guard against a second connect
+            // (e.g. from the visibility handler) starting while one is in flight.
+            if (wsConnecting) return;
+            wsConnecting = true;
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
 
             try {
+                const ticket = await fetchWsTicket();
+                const wsUrl = `${protocol}//${window.location.host}/ws/logs?ticket=${encodeURIComponent(ticket)}`;
                 ws = new WebSocket(wsUrl);
 
                 ws.onopen = () => {
@@ -1142,8 +1159,13 @@
                 };
             } catch (error) {
                 console.error('Failed to create WebSocket:', error);
-                // Retry on connection failure
-                setTimeout(connectWebSocket, reconnectDelay);
+                // Retry with the same backoff as a dropped connection, so a
+                // refused ticket request does not poll the server every second.
+                reconnectAttempts++;
+                const delay = Math.min(reconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
+                setTimeout(connectWebSocket, delay);
+            } finally {
+                wsConnecting = false;
             }
         }
         

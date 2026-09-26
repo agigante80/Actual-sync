@@ -128,6 +128,16 @@ describe('config schema reconciliation (#116)', () => {
         });
     });
 
+    describe('healthCheck.trustProxy shapes (#245)', () => {
+        test.each([false, true, 1, '10.0.0.0/8', ['loopback', '172.16.0.0/12']])('accepts %p', (value) => {
+            expect(validates(baseConfig({ healthCheck: { trustProxy: value } }))).toBe(true);
+        });
+
+        test.each([1.5, -1, 11, '', [], { hops: 1 }, [1]])('rejects %p', (value) => {
+            expect(validates(baseConfig({ healthCheck: { trustProxy: value } }))).toBe(false);
+        });
+    });
+
     describe('webhooks.generic[*].url rejects empty strings', () => {
         test('an empty generic webhook url is rejected', () => {
             const config = baseConfig({

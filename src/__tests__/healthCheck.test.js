@@ -258,6 +258,64 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('trust proxy (#245)', () => {
+    // GET /health with an X-Forwarded-For header, as a reverse proxy would send.
+    function getForwarded(port, forwardedFor) {
+      return new Promise((resolve, reject) => {
+        http.get({ hostname: '127.0.0.1', port, path: '/health', headers: { 'X-Forwarded-For': forwardedFor } },
+          (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); }).on('error', reject);
+      });
+    }
+
+    async function exhaust(port, forwardedFor) {
+      const codes = [];
+      for (let i = 0; i < 60; i++) codes.push(await getForwarded(port, forwardedFor));
+      return codes;
+    }
+
+    it('is off by default, so req.ip is the socket address', () => {
+      expect(healthCheck.app.get('trust proxy')).toBe(false);
+      const svc = makeService({ port: testPort, trustProxy: false });
+      expect(svc.app.get('trust proxy')).toBe(false);
+    });
+
+    it('with trustProxy 1, two forwarded clients get separate rate-limit budgets', async () => {
+      const svc = makeService({ port: testPort, trustProxy: 1 });
+      await svc.start();
+
+      const codesA = await exhaust(testPort, '1.2.3.4');
+      expect(codesA.every(c => c === 200)).toBe(true);
+      expect(await getForwarded(testPort, '1.2.3.4')).toBe(429);
+      expect(await getForwarded(testPort, '5.6.7.8')).toBe(200);
+    });
+
+    it('unset, forwarded clients share the proxy bucket (documented pre-#245 behaviour)', async () => {
+      await healthCheck.start();
+
+      await exhaust(testPort, '1.2.3.4');
+      expect(await getForwarded(testPort, '5.6.7.8')).toBe(429);
+    });
+
+    it('with trustProxy 1, auth failures log the forwarded client address', async () => {
+      const svc = makeService({
+        port: testPort,
+        trustProxy: 1,
+        dashboardConfig: { enabled: true, auth: { type: 'token', token: 'right' } }
+      });
+      const warn = jest.spyOn(svc.logger, 'warn').mockImplementation(() => {});
+      await svc.start();
+
+      await new Promise((resolve, reject) => {
+        http.get({
+          hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/status',
+          headers: { 'X-Forwarded-For': '1.2.3.4', Authorization: 'Bearer wrong' }
+        }, (res) => { res.resume(); res.on('end', resolve); }).on('error', reject);
+      });
+
+      expect(warn).toHaveBeenCalledWith('Dashboard token authentication failed', { remoteAddress: '1.2.3.4' });
+    });
+  });
+
   describe('/icon.png endpoint (#113)', () => {
     beforeEach(async () => {
       await healthCheck.start();
@@ -1477,5 +1535,184 @@ describe('HealthCheckService', () => {
       }
     });
   });
-});
 
+  describe('/ws/logs handshake authentication (#242)', () => {
+    const WebSocket = require('ws');
+
+    // Resolve with how the handshake ended: { open: true, ws } or { status }.
+    function tryConnect(path, headers = {}) {
+      return new Promise((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${testPort}${path}`, { headers });
+        // ws is non-enumerable so a failed toEqual prints { open: true }, not the whole socket.
+        ws.once('open', () => resolve(Object.defineProperty({ open: true }, 'ws', { value: ws })));
+        ws.once('unexpected-response', (req, res) => {
+          resolve({ open: false, status: res.statusCode });
+          req.destroy();
+        });
+        ws.once('error', () => resolve({ open: false, status: null }));
+      });
+    }
+
+    function getJson(path, headers = {}) {
+      return new Promise((resolve, reject) => {
+        http.get({ host: '127.0.0.1', port: testPort, path, headers }, (res) => {
+          let data = '';
+          res.on('data', (c) => { data += c; });
+          res.on('end', () => resolve({ statusCode: res.statusCode, body: data ? JSON.parse(data) : null }));
+        }).on('error', reject);
+      });
+    }
+
+    const bearer = { authorization: 'Bearer t0k' };
+    const sameOrigin = () => ({ origin: `http://127.0.0.1:${testPort}` });
+
+    async function startWith(dashboardConfig) {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', dashboardConfig, loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+      return hc;
+    }
+
+    async function mintTicket() {
+      const res = await getJson('/api/dashboard/ws-ticket', bearer);
+      expect(res.statusCode).toBe(200);
+      return res.body.ticket;
+    }
+
+    test('a valid ticket and same-origin header opens the socket and receives broadcasts', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const ticket = await mintTicket();
+      const result = await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin());
+      expect(result.open).toBe(true);
+
+      const received = new Promise((resolve) => {
+        result.ws.on('message', (data) => {
+          const msg = JSON.parse(data);
+          if (msg.message === 'probe-242') resolve(msg);
+        });
+      });
+      hc.broadcastLog('info', 'probe-242', { server: 'x' });
+      await expect(received).resolves.toMatchObject({ level: 'info', message: 'probe-242' });
+      result.ws.close();
+    });
+
+    test('no ticket under auth.type token is refused with 401 and no socket is tracked', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const result = await tryConnect('/ws/logs', sameOrigin());
+      expect(result).toEqual({ open: false, status: 401 });
+      expect(hc.wsClients.size).toBe(0);
+    });
+
+    test('the ticket endpoint itself requires dashboard auth', async () => {
+      await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const res = await getJson('/api/dashboard/ws-ticket');
+      expect(res.statusCode).toBe(401);
+    });
+
+    test('a ticket works once: reuse is refused with 401', async () => {
+      await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const ticket = await mintTicket();
+      const first = await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin());
+      expect(first.open).toBe(true);
+      first.ws.close();
+      const second = await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin());
+      expect(second).toEqual({ open: false, status: 401 });
+    });
+
+    test('an expired ticket is refused with 401', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      let now = 1_000_000;
+      hc.wsTickets.now = () => now;
+      const ticket = hc.wsTickets.mint();
+      now += hc.wsTickets.ttlMs + 1;
+      const result = await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin());
+      expect(result).toEqual({ open: false, status: 401 });
+    });
+
+    // Upgrades bypass the HTTP rate limiter, so the handshake must not be a
+    // credential oracle: even a VALID header is refused without a ticket.
+    test('a valid Authorization header without a ticket is refused with 401', async () => {
+      await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const result = await tryConnect('/ws/logs', bearer);
+      expect(result).toEqual({ open: false, status: 401 });
+    });
+
+    test('basic auth: valid credentials on the handshake are refused, a ticket minted with them works', async () => {
+      await startWith({ enabled: true, auth: { type: 'basic', username: 'admin', password: 'pw' } });
+      const basic = { authorization: 'Basic ' + Buffer.from('admin:pw').toString('base64') };
+      expect(await tryConnect('/ws/logs', basic)).toEqual({ open: false, status: 401 });
+
+      const res = await getJson('/api/dashboard/ws-ticket', basic);
+      expect(res.statusCode).toBe(200);
+      const result = await tryConnect(`/ws/logs?ticket=${res.body.ticket}`, sameOrigin());
+      expect(result.open).toBe(true);
+      result.ws.close();
+    });
+
+    test('basic auth: a ticket request with a wrong password is refused', async () => {
+      await startWith({ enabled: true, auth: { type: 'basic', username: 'admin', password: 'pw' } });
+      const wrong = { authorization: 'Basic ' + Buffer.from('admin:nope').toString('base64') };
+      const res = await getJson('/api/dashboard/ws-ticket', wrong);
+      expect(res.statusCode).toBe(401);
+    });
+
+    test('a foreign Origin is refused with 403 even with a valid ticket', async () => {
+      await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const ticket = await mintTicket();
+      const result = await tryConnect(`/ws/logs?ticket=${ticket}`, { origin: 'https://evil.example' });
+      expect(result).toEqual({ open: false, status: 403 });
+    });
+
+    test('a foreign Origin is refused with 403 under auth.type none too', async () => {
+      await startWith({ enabled: true, auth: { type: 'none' } });
+      const result = await tryConnect('/ws/logs', { origin: 'https://evil.example' });
+      expect(result).toEqual({ open: false, status: 403 });
+    });
+
+    test('an Origin listed in dashboard.allowedOrigins is accepted', async () => {
+      await startWith({
+        enabled: true,
+        allowedOrigins: ['https://home.example'],
+        auth: { type: 'token', token: 't0k' }
+      });
+      const ticket = await mintTicket();
+      const result = await tryConnect(`/ws/logs?ticket=${ticket}`, { origin: 'https://home.example' });
+      expect(result.open).toBe(true);
+      result.ws.close();
+    });
+
+    test('auth.type none with a same-origin request behaves as before', async () => {
+      await startWith({ enabled: true, auth: { type: 'none' } });
+      const result = await tryConnect('/ws/logs', sameOrigin());
+      expect(result.open).toBe(true);
+      result.ws.close();
+    });
+
+    test('dashboard.enabled false refuses the handshake with 403', async () => {
+      await startWith({ enabled: false, auth: { type: 'none' } });
+      const result = await tryConnect('/ws/logs', sameOrigin());
+      expect(result).toEqual({ open: false, status: 403 });
+    });
+
+    test('connections beyond the per-address cap are refused with 429', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'none' } });
+      hc.maxWsConnectionsPerIp = 2;
+      const a = await tryConnect('/ws/logs');
+      const b = await tryConnect('/ws/logs');
+      expect(a.open && b.open).toBe(true);
+      const c = await tryConnect('/ws/logs');
+      expect(c).toEqual({ open: false, status: 429 });
+
+      // Closing one frees a slot.
+      const closed = new Promise((resolve) => a.ws.once('close', resolve));
+      a.ws.close();
+      await closed;
+      await new Promise((r) => setTimeout(r, 50));
+      const d = await tryConnect('/ws/logs');
+      expect(d.open).toBe(true);
+      b.ws.close();
+      d.ws.close();
+    });
+  });
+});

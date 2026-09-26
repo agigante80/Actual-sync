@@ -67,6 +67,16 @@ if (!password) {
 
 ## 🌐 Network Security
 
+### Live log stream (`/ws/logs`)
+
+The WebSocket log stream carries log metadata (server names, account names, sync errors), so it is protected at the handshake, before any data is sent:
+
+- the same dashboard credentials, via a single-use 30 second ticket from `/api/dashboard/ws-ticket`, for browsers and scripts alike. The handshake does not accept an `Authorization` header, since WebSocket upgrades bypass the HTTP rate limiter;
+- an `Origin` check at every auth type, including `none`: only same-origin and `dashboard.allowedOrigins` are accepted, which blocks Cross-Site WebSocket Hijacking from a page the operator happens to visit;
+- at most 10 open streams per address.
+
+Credentials are compared in constant time (SHA-256 digests with `crypto.timingSafeEqual`), and the basic-auth username and password are both always compared.
+
 ### Transport Encryption
 
 **Policy**: All external communication MUST use HTTPS/TLS
@@ -112,6 +122,8 @@ const limiter = rateLimit({
   message: 'Too many requests, please try again later.'
 });
 ```
+
+**Behind a reverse proxy**: the limit is per client IP only when `healthCheck.trustProxy` is set to match the proxy (see [CONFIG.md](CONFIG.md#healthcheck-optional)). Unset, every request appears to come from the proxy, so all clients share one 60/minute bucket. Set too loosely (`true` on a port that is also reachable directly), clients can fake their IP and bypass the limit. `express-rate-limit`'s own configuration checks stay enabled.
 
 **Note**: Telegram bot API calls currently have no rate limiting (see Improvement Areas).
 
