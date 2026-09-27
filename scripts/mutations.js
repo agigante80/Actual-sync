@@ -1282,9 +1282,9 @@ module.exports = [
         tests: 'actualSchedules.vendor'
     },
 
-    // ---- #295 review round 1: PR #295 fixes ----------------------------------
+    // ---- #258 additional guards from PR #295 review round 1 ----------------
     {
-        id: '295-h1-last-sync-epoch-ms-not-parsed', ticket: '#295',
+        id: '258-h1-last-sync-epoch-ms-not-parsed', ticket: '#258',
         desc: 'account.last_sync (a production epoch-ms string) is parsed with plain moment.tz instead of as a number, so missing never fires in production',
         file: 'src/lib/scheduleAlerts.js',
         anchor: "  const parsed = isNumeric ? moment.tz(Number(lastSync), timezone) : moment.tz(lastSync, timezone);",
@@ -1292,7 +1292,7 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
-        id: '295-h2-binding-isolation-removed', ticket: '#295',
+        id: '258-h2-binding-isolation-removed', ticket: '#258',
         desc: 'one schedule that throws during evaluation is no longer isolated, so it aborts evaluate() and silences every other rule',
         file: 'src/lib/scheduleAlerts.js',
         anchor: '    } catch (error) {',
@@ -1300,7 +1300,7 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
-        id: '295-h2-cadence-date-format-missing', ticket: '#295',
+        id: '258-h2-cadence-date-format-missing', ticket: '#258',
         desc: 'getRecurringDescription is called with no date-fns format again, throwing for an on_date endMode schedule',
         file: 'src/lib/scheduleAlerts.js',
         anchor: "\n        cadenceText: typeof dateConfig === 'string' ? null : getRecurringDescription(dateConfig, CADENCE_DATE_FORMAT),",
@@ -1308,7 +1308,7 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
-        id: '295-h3-lookback-ignores-early-days', ticket: '#295',
+        id: '258-h3-lookback-ignores-early-days', ticket: '#258',
         desc: "the transaction fetch window is sized off MAX_LOOKBACK_DAYS alone again, so an early payment near the boundary can fall outside the query",
         file: 'src/lib/scheduleAlertsStep.js',
         anchor: "        .subtract(MAX_LOOKBACK_DAYS + maxEarlyDays, 'days')",
@@ -1316,7 +1316,7 @@ module.exports = [
         tests: 'scheduleAlertsSync'
     },
     {
-        id: '295-h4-completed-schedule-not-skipped', ticket: '#295',
+        id: '258-h4-completed-schedule-not-skipped', ticket: '#258',
         desc: 'a completed schedule is matched again, so it keeps producing false "missing" events for an occurrence nobody expects anymore',
         file: 'src/lib/scheduleAlertRules.js',
         anchor: '    const isActive = (s) => s.completed !== true;',
@@ -1324,7 +1324,7 @@ module.exports = [
         tests: 'scheduleAlertRules'
     },
     {
-        id: '295-h5-destination-key-ignores-target', ticket: '#295',
+        id: '258-h5-destination-key-ignores-target', ticket: '#258',
         desc: 'the per-destination ledger key collapses back to the channel name alone, so a dead multi-target destination (e.g. one of two webhooks) blocks resending to the other',
         file: 'src/lib/scheduleAlertDelivery.js',
         anchor: '      destinations.push({ channel, target, key: target.url ? `${channel}:${target.url}` : channel });',
@@ -1332,7 +1332,7 @@ module.exports = [
         tests: 'scheduleAlertDelivery'
     },
     {
-        id: '295-h6-template-not-validated-at-startup', ticket: '#295',
+        id: '258-h6-template-not-validated-at-startup', ticket: '#258',
         desc: 'a rule\'s merged template is no longer compiled at config-load time, so a bad template only fails at send time',
         file: 'src/lib/configLoader.js',
         anchor: '                    compileTemplateSet({ templates, variables: VARIABLES, channels: allModes });',
@@ -1340,7 +1340,7 @@ module.exports = [
         tests: 'configLoader'
     },
     {
-        id: '295-m1-digest-ignores-rule-channel-restriction', ticket: '#295',
+        id: '258-m1-digest-ignores-rule-channel-restriction', ticket: '#258',
         desc: "digest mode groups by every channel again instead of each item's own resolveChannels, leaking a channel-restricted rule's content onto channels it never allowed",
         file: 'src/lib/scheduleAlertDelivery.js',
         anchor: '    for (const channel of resolveChannels(item.rule, sender)) {',
@@ -1348,7 +1348,7 @@ module.exports = [
         tests: 'scheduleAlertDelivery'
     },
     {
-        id: '295-m2-unreachable-channels-not-rejected-at-startup', ticket: '#295',
+        id: '258-m2-unreachable-channels-not-rejected-at-startup', ticket: '#258',
         desc: "a rule whose explicit channels restriction names no configured destination is no longer rejected at startup",
         file: 'src/lib/configLoader.js',
         anchor: '                if (rule.channels && rule.channels.length && resolveChannels(rule, sender).length === 0) {',
@@ -1356,7 +1356,7 @@ module.exports = [
         tests: 'configLoader'
     },
     {
-        id: '295-m4-transactions-query-explodes-splits', ticket: '#295',
+        id: '258-m4-transactions-query-explodes-splits', ticket: '#258',
         desc: "the transactions query requests splits: 'inline' again, exploding a split parent into subtransactions that lose the schedule link",
         file: 'src/lib/scheduleAlertsStep.js',
         anchor: "            .options({ splits: 'none' })",
@@ -1364,7 +1364,7 @@ module.exports = [
         tests: 'scheduleAlertsSync'
     },
     {
-        id: '295-m7-calendar-days-uses-raw-24h-periods', ticket: '#295',
+        id: '258-m7-calendar-days-uses-raw-24h-periods', ticket: '#258',
         desc: 'calendarDaysBetween goes back to raw 24h-period diffing instead of calendar-day comparison in the configured timezone, letting a reminder skip or double-fire near a day boundary',
         file: 'src/lib/scheduleAlertDelivery.js',
         anchor: "  return moment.tz(now, timezone).startOf('day').diff(moment.tz(recordedAt, timezone).startOf('day'), 'days');",
@@ -1372,7 +1372,7 @@ module.exports = [
         tests: 'scheduleAlertDelivery'
     },
     {
-        id: '295-m9-skip-next-date-not-honored', ticket: '#295',
+        id: '258-m9-skip-next-date-not-honored', ticket: '#258',
         desc: "an occurrence Actual's \"Skip next date\" already moved past is reported missing again instead of skipped",
         file: 'src/lib/scheduleAlerts.js',
         anchor: '      const nextDateMoment = schedule.next_date ? moment.tz(schedule.next_date, timezone).startOf(\'day\') : null;',
@@ -1380,7 +1380,7 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
-        id: '295-m10-isbetween-range-check-removed', ticket: '#295',
+        id: '258-m10-isbetween-range-check-removed', ticket: '#258',
         desc: "an isbetween schedule's amount range check always passes, so wrongAmount can never fire for it",
         file: 'src/lib/scheduleAlerts.js',
         anchor: '    return amount >= lo && amount <= hi;',
@@ -1388,7 +1388,7 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
-        id: '295-m11-pass1-ignores-link-and-amount-preference', ticket: '#295',
+        id: '258-m11-pass1-ignores-link-and-amount-preference', ticket: '#258',
         desc: 'on-time matching goes back to taking the earliest in-window candidate regardless of link/amount, reintroducing false wrongAmount',
         file: 'src/lib/scheduleAlerts.js',
         anchor: "        const candidate = inWindow.find((c) => c.linked)\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          || inWindow[0]\n          || null;",
@@ -1396,7 +1396,7 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
-        id: '295-m12-linked-early-window-not-widened', ticket: '#295',
+        id: '258-m12-linked-early-window-not-widened', ticket: '#258',
         desc: "a linked transaction's early window goes back to the rule's own (possibly narrower) earlyDays instead of Actual's +/-2 day linking tolerance",
         file: 'src/lib/scheduleAlerts.js',
         anchor: "        const earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');",
@@ -1404,7 +1404,7 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
-        id: '295-m13-lookback-fallback-too-short', ticket: '#295',
+        id: '258-m13-lookback-fallback-too-short', ticket: '#258',
         desc: "the interval-stats fallback goes back to a hard-coded 30 days for a schedule with fewer than two occurrences in range, undersizing the window for a yearly schedule",
         file: 'src/lib/scheduleAlerts.js',
         anchor: '  return { shortestIntervalDays: shortest, longestIntervalDays: longest || MAX_LOOKBACK_DAYS };',
