@@ -33,6 +33,7 @@
 - [Docker Deployment](#-docker-deployment)
 - [Monitoring & Observability](#-monitoring--observability)
 - [Notifications](#-notifications)
+- [Missing-Payment Alerts](#-missing-payment-alerts)
 - [Testing](#-testing)
 - [Security](#-security)
 - [Troubleshooting](#-troubleshooting)
@@ -136,6 +137,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Per-Channel Notification Mode** - `notifyOnSuccess` (`always` / `errors_only` / `never`) set globally, per channel, or per webhook, so an alert channel can skip routine successes
 - ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate) applied to failures
 - ✅ **Rate Limiting** - Failure-notification spam prevention with configurable intervals
+- ✅ **Missing-Payment Alerts** - Compares Actual's own schedules against posted transactions per server and notifies when an expected payment is late, missing, wrong-amount, or cannot be checked (stale bank connection); see [Missing-Payment Alerts](#-missing-payment-alerts)
 
 ### 🛡️ Reliability & Security
 
@@ -805,9 +807,81 @@ Spanish example:
 El pago de {{amount}} de {{name}} vence el {{deadline}}.
 ```
 
-This is infrastructure for an upcoming feature; no configuration key uses it yet. See **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** for the full syntax, the variable and helper whitelist, and the per-channel output rules.
+A server's `scheduleAlerts.alerts[].templates` (or block-level `scheduleAlerts.templates`) block is the first configuration surface that uses this engine - see [Missing-Payment Alerts](#-missing-payment-alerts) below. See **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** for the full syntax, the variable and helper whitelist, and the per-channel output rules.
 
 See **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** for complete notification setup guide including configuration examples for all channels.
+
+---
+
+## 💸 Missing-Payment Alerts
+
+Actual-sync can watch a server's own [Actual schedules](https://actualbudget.org/docs/budgeting/schedules/) and tell you when an expected recurring payment did not behave as expected - a rent that never went out, a salary that arrived for the wrong amount, a bank connection too stale to trust. It never invents its own cadence: the schedule's own recurrence, in Actual, is the single source of truth.
+
+Enable it per server with a `scheduleAlerts` block:
+
+```json
+{
+  "servers": [
+    {
+      "name": "Main",
+      "scheduleAlerts": {
+        "staleAfterDays": 3,
+        "alerts": [
+          { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 },
+          { "id": "salary", "schedule": "Salary", "graceDays": 3, "earlyDays": 5, "amountTolerancePct": 0 }
+        ]
+      }
+    }
+  ]
+}
+```
+
+A server with no `scheduleAlerts` block never calls `getSchedules()` and pays no cost for this feature. The step runs once per sync, after the bank-sync loop, inside the same Actual session; any error in it is logged at WARN and never changes the sync's own recorded result.
+
+### Ten scenarios
+
+1. **On time** - a matching transaction posts within the rule's early/grace window. No alert.
+2. **Missing** - nothing has posted by the deadline (occurrence date + `graceDays`) and the account is synced past it. A `missing` alert fires, with how many days overdue.
+3. **Resolved** - a payment reported `missing` later posts (on time or late). A `resolved` alert closes it out; no manual dismissal needed.
+4. **Wrong amount** - a transaction matches the account and payee within the window, but its amount is outside tolerance. A `wrongAmount` alert reports both the expected and received amount.
+5. **Stale connection** - the account has not synced in more than `staleAfterDays`. A `cannotCheck` alert (reason `stale`) fires instead of a false `missing` - a broken bank connection is never mistaken for a broken payment.
+6. **Not yet synced** - the account is fresh enough (not stale) but its last sync is still before the deadline, so there has not yet been a chance to see the payment. A `cannotCheck` alert (reason `not-synced`) fires instead of `missing`.
+7. **Recurring reminder** - a `missing` alert stays unresolved. With `remindEveryDays` set, the same alert repeats every N days instead of firing once and going silent.
+8. **Renamed or deleted schedule** - a rule's `schedule`/`schedulePrefix` matches nothing in Actual anymore (renamed, deleted, or a typo). A `ruleUnmatched` alert names the rule, so it is never silently ignored.
+9. **Overlapping windows** - a rule's `graceDays + earlyDays` is greater than or equal to the schedule's own shortest interval between occurrences, which would let one payment satisfy two occurrences or invert the late window. The rule is skipped (one `cannotCheck` alert, reason `interval-violation`, plus a startup-log warning) rather than risk a wrong result.
+10. **Digest** - several alerts fire in the same sync for the same server. With `digest: true` set on the block, they are merged into one message per channel instead of one message per event; the ledger still records one row per event, so de-duplication and reminders work exactly as without digest.
+
+### Variables
+
+Every template (built-in or an override under `templates`) can reference these; each has a raw (`_raw`) counterpart carrying the underlying value (a number or an unformatted ISO date) for a template author who wants to format it differently.
+
+| Variable | Meaning |
+|---|---|
+| `name` | The alert's schedule name (or the rule's `id`, for `ruleUnmatched`) |
+| `payee` | The schedule's payee name |
+| `account` | The schedule's account name |
+| `direction` | `expense` or `income`, derived from the expected amount's sign |
+| `expected_amount` / `expected_amount_raw` | The schedule's expected amount |
+| `expected_date` / `expected_date_raw` | The occurrence's calendar date |
+| `deadline` / `deadline_raw` | Occurrence date + `graceDays` |
+| `grace_days` | The rule's configured `graceDays` |
+| `period` | The occurrence's month (or the following month, when `period: "next"`) |
+| `cadence` | Actual's own recurrence wording (e.g. "Every month on the 5th") |
+| `days_overdue` / `days_overdue_raw` | Days past the deadline |
+| `received_amount` / `received_amount_raw` | The amount actually received |
+| `received_date` / `received_date_raw` | The date the matching transaction posted |
+| `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
+| `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
+| `budget` | The server name |
+| `alert_id` | The rule's `id` |
+
+A variable that does not apply to the current event type is always present as `null`, so a template can reference it without an `{{#if}}` guard.
+
+### Timezone
+
+Every date in this feature - an occurrence date, a deadline, "today", account staleness - is computed in one timezone: `timezone` from the top-level config, falling back to the host machine's own local IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) when unset. A global `timezone` config key does not exist yet (tracked separately); until it does, every server's alerts use the sync process's own local zone.
+
+See **[docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md)** for the full configuration reference, the algorithm's edge cases, and message-template overrides.
 
 ---
 
@@ -1001,6 +1075,7 @@ Comprehensive documentation is available in the `docs/` directory:
 
 ### Features & Configuration
 - **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** - Notification setup (Email, Telegram, Slack, Discord, ntfy, generic webhooks)
+- **[docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md)** - Missing-payment alerts (schedule vs. transaction detection, config reference, templates)
 - **[docs/MIGRATION.md](docs/MIGRATION.md)** - Env-var to config.json migration
 - **[docs/TESTING.md](docs/TESTING.md)** - Testing guide and coverage
 - **[docs/VERSIONING.md](docs/VERSIONING.md)** - Semantic versioning and release process
