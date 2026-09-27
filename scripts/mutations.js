@@ -1078,6 +1078,104 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #257: message template layer -----------------------------------
+    {
+        id: '257-lookup-allowed', ticket: '#257',
+        desc: 'lookup becomes an allowed helper, defeating the security boundary',
+        file: 'src/lib/templateRenderer.js',
+        anchor: "const KNOWN_HELPERS = new Set(['eq', 'default', 'upper', 'lower']);",
+        mutant: "const KNOWN_HELPERS = new Set(['eq', 'default', 'upper', 'lower', 'lookup']);",
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-false-branch-not-checked', ticket: '#257',
+        desc: 'an unknown name inside a false #if branch no longer fails validation',
+        file: 'src/lib/templateRenderer.js',
+        anchor: '        walkProgram(statement.inverse, scopeVars);',
+        mutant: '',
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-telegram-bare-ampersand-allowed', ticket: '#257',
+        desc: 'a bare & in template literal text no longer fails Telegram markup validation',
+        file: 'src/lib/templateRenderer.js',
+        anchor: "      fail(key, '&', line, 'telegram_markup');",
+        mutant: '',
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-telegram-not-html-escaped', ticket: '#257',
+        desc: 'Telegram output stops HTML-escaping values, so a payee value can break message structure',
+        file: 'src/lib/templateRenderer.js',
+        anchor: "  telegram: { noEscape: false, postProcess: (text) => truncateTelegramHtml(text) },",
+        mutant: "  telegram: { noEscape: true, postProcess: (text) => truncateTelegramHtml(text) },",
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-slack-not-escaped', ticket: '#257',
+        desc: 'Slack output stops escaping the whole rendered string, so a payee value can inject markup',
+        file: 'src/lib/templateRenderer.js',
+        anchor: "  slack: { noEscape: true, postProcess: escapeSlack },",
+        mutant: '  slack: { noEscape: true },',
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-telegram-truncate-ignores-closing-cost', ticket: '#257',
+        desc: 'Telegram truncation forgets to budget for closing tags, so the result can exceed the length limit',
+        file: 'src/lib/channelEscape.js',
+        anchor: '    if (output.length + token.raw.length + closingSuffix.length > max) break;',
+        mutant: '    if (output.length + token.raw.length > max) break;',
+        tests: 'channelEscape'
+    },
+    {
+        id: '257-webhook-statuscode-not-set', ticket: '#257',
+        desc: 'a rejected webhook error no longer carries statusCode, so the Telegram 400 retry can never fire',
+        file: 'src/services/notificationService.js',
+        anchor: '            error.statusCode = res.statusCode;',
+        mutant: '',
+        tests: 'templatedDelivery'
+    },
+    {
+        id: '257-telegram-message-always-true', ticket: '#257',
+        desc: 'sendTelegramMessage reports success even when Telegram never accepted the message',
+        file: 'src/services/notificationService.js',
+        anchor: '    return (await this.sendTelegramMessageDetailed(message, options)).ok;',
+        mutant: '    return true;',
+        tests: 'notificationService'
+    },
+    {
+        id: '257-telegram-base-url-ignores-test-seam', ticket: '#257',
+        desc: 'the constructor stops honoring telegramApiBaseUrl, so tests can no longer reach a fake Telegram server',
+        file: 'src/services/notificationService.js',
+        anchor: "    this.telegramApiBaseUrl = options.telegramApiBaseUrl || 'https://api.telegram.org';",
+        mutant: "    this.telegramApiBaseUrl = 'https://api.telegram.org';",
+        tests: 'templatedDelivery'
+    },
+    {
+        id: '257-telegram-retry-not-limited-to-400', ticket: '#257',
+        desc: 'the Telegram retry fires on every failure, not only a 400, silently doubling every non-400 failure',
+        file: 'src/services/notificationService.js',
+        anchor: '    if (result.ok || result.statusCode !== 400) {',
+        mutant: '    if (result.ok) {',
+        tests: 'templatedDelivery'
+    },
+    {
+        id: '257-review-data-var-whitelist-bypassed', ticket: '#257',
+        desc: 'any @data path (including @root, the whole render context) is allowed again, bypassing the variable whitelist',
+        file: 'src/lib/templateRenderer.js',
+        anchor: '      if (node.parts.length === 1 && ALLOWED_DATA_VARS.has(node.parts[0])) return;',
+        mutant: '      return;',
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-review-dotted-path-bypassed', ticket: '#257',
+        desc: 'a dotted path off a non-block-param variable, or through a dangerous prototype-chain property, is allowed again',
+        file: 'src/lib/templateRenderer.js',
+        anchor: '      if (!isBlockParam || hasDangerousPart) {',
+        mutant: '      if (false) {',
+        tests: 'templateRenderer'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
