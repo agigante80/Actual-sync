@@ -16,9 +16,7 @@ const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/acc
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
 const { SyncQueue } = require('./lib/syncQueue');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
-const { getRules } = require('./lib/scheduleAlertRules');
-const { evaluate, MAX_LOOKBACK_DAYS } = require('./lib/scheduleAlerts');
-const { deliver } = require('./lib/scheduleAlertDelivery');
+const { runScheduleAlertsStep } = require('./lib/scheduleAlertsStep');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -34,17 +32,6 @@ const VERSION = resolveVersion();
  */
 function resolveTimezone(cfg) {
     return (cfg && cfg.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone;
-}
-
-/**
- * #261 (rule enable/mute) is not implemented yet: every rule is enabled and
- * never muted, so `scheduleAlertDelivery.deliver` behaves as if that feature
- * did not exist. #261 wires real per-rule state in without changing this
- * call site, per #258's "single merge point" design.
- * @returns {{enabled: boolean, mutedUntil: null}}
- */
-function scheduleAlertRuleState() {
-    return { enabled: true, mutedUntil: null };
 }
 
 /**
@@ -725,73 +712,23 @@ async function runSyncBank(server, options = {}) {
         }
 
         // Missing-payment alerts (#258): evaluated once per sync, after the
-        // final file sync so schedules and transactions are current. Every
-        // step below is best-effort: any failure here is logged and never
-        // changes the sync's own result (syncStatus, syncHistory.recordSync).
+        // final file sync so schedules and transactions are current. This is
+        // best-effort: any failure here is logged and never changes the
+        // sync's own result (syncStatus, syncHistory.recordSync). The step
+        // itself lives in ./lib/scheduleAlertsStep so it can be exercised
+        // directly in scheduleAlertsSync.test.js.
         if (server.scheduleAlerts) {
             try {
-                const scheduleAlertRules = getRules(server.scheduleAlerts);
-                const alertTimezone = resolveTimezone(config);
-                const alertNow = new Date();
-
-                const rawSchedules = await api.getSchedules();
-
-                // Payee/account names for message templates: getSchedules()
-                // only returns ids (#258's "APIScheduleEntity shape" note).
-                const { data: payees } = await api.aqlQuery(api.q('payees').select(['id', 'name']));
-                // accounts is re-read here (rather than reusing allAccounts
-                // above) because that read does not select last_sync, needed
-                // to tell "missing" from "cannotCheck" (#271 item 10).
-                const { data: accountsForAlerts } = await api.aqlQuery(
-                    api.q('accounts').filter({ tombstone: false }).select(['id', 'name', 'last_sync'])
-                );
-                const accountNameById = new Map(accountsForAlerts.map((a) => [a.id, a.name]));
-                const payeeNameById = new Map((payees || []).map((p) => [p.id, p.name]));
-                const hydratedSchedules = (rawSchedules || []).map((s) => ({
-                    ...s,
-                    accountName: s.account ? accountNameById.get(s.account) || null : null,
-                    payeeName: s.payee ? payeeNameById.get(s.payee) || null : null
-                }));
-
-                const lookbackStart = moment.tz(alertNow, alertTimezone)
-                    .subtract(MAX_LOOKBACK_DAYS, 'days')
-                    .format('YYYY-MM-DD');
-                const { data: alertTransactions } = await api.aqlQuery(
-                    api.q('transactions')
-                        .filter({ date: { $gte: lookbackStart }, tombstone: false })
-                        .select(['id', 'account', 'payee', 'amount', 'date', 'schedule'])
-                );
-
-                const { events, evaluations, warnings } = evaluate({
-                    rules: scheduleAlertRules,
-                    schedules: hydratedSchedules,
-                    transactions: alertTransactions,
-                    accounts: accountsForAlerts,
-                    now: alertNow,
-                    timezone: alertTimezone
-                });
-
-                for (const warning of warnings) {
-                    serverLogger.warn(warning.message, { ruleId: warning.ruleId, scheduleId: warning.scheduleId });
-                }
-
-                const deliverResult = await deliver(events, {
-                    evaluations,
-                    ruleState: scheduleAlertRuleState,
-                    history: syncHistory,
-                    sender: notificationService,
-                    now: alertNow,
-                    server: name,
-                    rules: scheduleAlertRules,
-                    timezone: alertTimezone,
+                const result = await runScheduleAlertsStep({
+                    api,
+                    server,
+                    serverName: name,
+                    timezone: resolveTimezone(config),
+                    syncHistory,
+                    notificationService,
                     logger: serverLogger
                 });
-
-                serverLogger.info('Schedule alerts evaluated', {
-                    events: events.length,
-                    sent: deliverResult.sent,
-                    skipped: deliverResult.skipped
-                });
+                serverLogger.info('Schedule alerts evaluated', result);
             } catch (scheduleAlertError) {
                 serverLogger.warn('Schedule alerts failed; sync result is unaffected', {
                     error: scheduleAlertError.message
