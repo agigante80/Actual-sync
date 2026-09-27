@@ -5,7 +5,7 @@ GitHub owns which phase a ticket is in. Only an `open` phase carries commitment;
 a reason, not a promise. Checked by the forge-kit roadmap-phases scripts (`check-phases.sh`).
 
 ## Phase: P0 Security and bug patch
-state: open
+state: done
 plan: docs/plans/p0-security-and-bug-patch.md
 
 Close the exposed and broken things before adding features: the unauthenticated live log stream,
@@ -14,8 +14,14 @@ trivy action, the Dismiss button that always fails, and concurrent syncs on the 
 session. Also lands the browser E2E harness, because every later phase is dashboard work and needs
 it. Ships as v1.17.x patches.
 
+Outcome: done (2026-09-27). Every planned ticket landed (#242, #245, #246, #248, #263, #264,
+#265), plus #272 (phase timeouts), which surfaced while fixing #265. Planned as one patch per
+ticket; shipped as v1.17.2 in a single release instead, because the fixes landed overnight in
+sequence. Review lows went to backlog as #280, #284, #286, #288 and #289.
+
 ## Phase: P1 v1.18 Payment alerts
-state: planned
+state: open
+plan: docs/plans/p1-v1-18-payment-alerts.md
 
 User-configurable message templates first, then overdue-payment alerts built on Actual schedules.
 Comes after P0 because alerts read budget state at sync time, which is only safe once syncs are

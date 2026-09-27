@@ -20,9 +20,14 @@
  * the `knownHelpers` hint). No partials are registered and none may be used.
  * The actual enforcement, though, is `validateTemplate`'s AST whitelist: a
  * template can only ever reference a name from the caller's `variables` list,
- * `this`, an `@data` variable, or a block param introduced by `#each`/`#with`
- * in scope - so a config secret that was never added to that list can never be
- * reached from a template, however it is written.
+ * `this`, one of the four per-iteration `@data` built-ins (`@index`, `@key`,
+ * `@first`, `@last`), or a block param introduced by `#each`/`#with` in scope
+ * - so a config secret that was never added to that list can never be reached
+ * from a template, however it is written. `@root` is deliberately not
+ * whitelisted: it re-exposes the whole render context and would otherwise
+ * bypass the `variables` list entirely. Dotted access (`{{name.length}}`) is
+ * also rejected unless the root is a block param, since a documented
+ * variable's shape is not part of the API contract.
  */
 const Handlebars = require('handlebars');
 const { escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml } = require('./channelEscape');
@@ -32,6 +37,32 @@ const BUILTIN_BLOCK_HELPERS = new Set(['if', 'unless', 'each', 'with']);
 
 /** Inline helpers registered on the isolated environment. */
 const KNOWN_HELPERS = new Set(['eq', 'default', 'upper', 'lower']);
+
+/**
+ * The only Handlebars `@data` variables useful inside a per-iteration message
+ * template. `@root` is deliberately excluded: it re-exposes the whole render
+ * context regardless of the `variables` whitelist, which is exactly what
+ * `validateTemplate` exists to prevent. (#257 review)
+ */
+const ALLOWED_DATA_VARS = new Set(['index', 'key', 'first', 'last']);
+
+/**
+ * Property names that must never be reachable through a dotted path, even
+ * when the path's root is a trusted block param: they reach the JS prototype
+ * chain rather than user data, and can crash the render or leak unrelated
+ * object internals. (#257 review)
+ */
+const DANGEROUS_PATH_PARTS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** Handlebars AST node types that hold a literal value, not a name lookup. */
+const LITERAL_TYPES = new Set(['StringLiteral', 'NumberLiteral', 'BooleanLiteral', 'UndefinedLiteral', 'NullLiteral']);
+
+/** A readable token for a literal node, for use in a TemplateValidationError. */
+function literalToken(node) {
+  if (node.type === 'UndefinedLiteral') return 'undefined';
+  if (node.type === 'NullLiteral') return 'null';
+  return String(node.value);
+}
 
 /**
  * HTML tags Telegram's HTML `parse_mode` accepts. Anything else in a
@@ -125,14 +156,52 @@ function validateTemplate(source, { key, variables, channel } = {}) {
   }
 
   const checkPath = (node, scopeVars) => {
-    if (node.data) return; // @index, @key, @root, ...
+    if (LITERAL_TYPES.has(node.type)) {
+      // `{{"&"}}`, `{{1}}`: a literal is not a name lookup. Handlebars itself
+      // treats it as an undefined-variable reference under `strict: true`
+      // and throws a raw Handlebars.Exception at compile time; reject it
+      // here with a clean, structured error instead. (#257 review)
+      fail(key, literalToken(node), node.loc.start.line, 'parse_error');
+    }
+    if (node.data) {
+      // Only the per-iteration built-ins are ever useful in a message
+      // template. `@root` re-exposes the whole render context, bypassing
+      // the `variables` whitelist entirely (it was never checked against
+      // `allowedVars`), and any other `@name` (including a typo like
+      // `@nmae`) is not a Handlebars built-in and throws at render time
+      // under `strict: true`. (#257 review)
+      if (node.parts.length === 1 && ALLOWED_DATA_VARS.has(node.parts[0])) return;
+      fail(key, node.original, node.loc.start.line, 'unknown_variable');
+    }
     if (node.parts.length === 0) return; // `this`
     const root = node.parts[0];
-    if (scopeVars.has(root) || allowedVars.has(root)) return;
-    fail(key, root, node.loc.start.line, 'unknown_variable');
+    // Handlebars resolves a block param only from a bare name: `../it` and
+    // `this.it` are context lookups even when `it` is an in-scope block
+    // param, so they must be checked against the whitelist instead. (#257
+    // review round 2)
+    const scoped = node.depth > 0 || /^(\.|this\b)/.test(node.original);
+    const isBlockParam = !scoped && scopeVars.has(root);
+    if (!isBlockParam && !allowedVars.has(root)) {
+      fail(key, root, node.loc.start.line, 'unknown_variable');
+    }
+    if (node.parts.length > 1) {
+      // A documented variable's shape is not part of the API contract (it
+      // may be a plain string or number at render time), so dotted access
+      // on one is rejected outright: `{{name.length}}`, `{{name.constructor}}`.
+      // A block param IS shaped by the caller's own `#each`/`#with` data, so
+      // field access is allowed there (`{{account.name}}`), but never
+      // through a name that reaches the JS prototype chain. (#257 review)
+      const hasDangerousPart = node.parts.slice(1).some((part) => DANGEROUS_PATH_PARTS.has(part));
+      if (!isBlockParam || hasDangerousPart) {
+        fail(key, node.original, node.loc.start.line, 'unknown_variable');
+      }
+    }
   };
 
   const checkHelperName = (pathNode) => {
+    if (LITERAL_TYPES.has(pathNode.type)) {
+      fail(key, literalToken(pathNode), pathNode.loc.start.line, 'parse_error');
+    }
     const name = pathNode.parts[0];
     if (!KNOWN_HELPERS.has(name)) {
       fail(key, name, pathNode.loc.start.line, 'unknown_helper');
@@ -184,6 +253,9 @@ function validateTemplate(source, { key, variables, channel } = {}) {
         break;
       }
       case 'BlockStatement': {
+        if (LITERAL_TYPES.has(statement.path.type)) {
+          fail(key, literalToken(statement.path), statement.path.loc.start.line, 'parse_error');
+        }
         const name = statement.path.parts[0];
         if (!BUILTIN_BLOCK_HELPERS.has(name)) {
           fail(key, name, statement.path.loc.start.line, 'unknown_helper');
