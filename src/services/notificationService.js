@@ -11,6 +11,7 @@ const http = require('http');
 const { URL } = require('url');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
+const { truncateCodePoints } = require('../lib/channelEscape');
 
 // Public icon + name used to brand notifications. Recipient services (Slack/
 // Discord/ntfy) fetch the icon, so it must be a public URL — not the dashboard's
@@ -1453,7 +1454,9 @@ Please investigate and resolve the issue.
    *   `{ text, ...fields }`: raw variables travel as structured JSON fields
    *   alongside the rendered text.
    * @param {Object} [channelOutputs.slack] - `{ url, text }`
-   * @param {Object} [channelOutputs.discord] - `{ url, text }`
+   * @param {Object} [channelOutputs.discord] - `{ url, text }`. Sent with
+   *   `allowed_mentions: { parse: [] }` so a rendered value cannot ping
+   *   @everyone/@here/a user id.
    * @param {Object} [channelOutputs.ntfy] - `{ title, text, level }`
    * @returns {Promise<Object>} per-channel results
    */
@@ -1494,7 +1497,12 @@ Please investigate and resolve the issue.
     if (channelOutputs.discord) {
       const { url, text } = channelOutputs.discord;
       try {
-        await this.sendWebhook(url, { content: text });
+        // A rendered template can contain a payee/note value an operator did
+        // not vet for @everyone/@here or <@id> mentions. allowed_mentions
+        // suppresses all of them at the Discord API level; this only applies
+        // to this templated path, not sendDiscordFormattedWebhooks's existing
+        // non-templated sends (#257 review).
+        await this.sendWebhook(url, { content: text, allowed_mentions: { parse: [] } });
         results.discord = { success: true };
       } catch (error) {
         this.logger.error('Failed to send templated Discord webhook', { error: error.message });
@@ -1514,8 +1522,9 @@ Please investigate and resolve the issue.
    * Telegram half of `sendTemplated`: send the HTML render with `parse_mode`,
    * and on a 400 (the literal-markup rule in `templateRenderer.js` should have
    * caught this at startup, but Telegram is the final authority) retry once
-   * with the plain-text render and no `parse_mode`. Any other failure,
-   * including no response at all (`statusCode: null`), is not retried. (#257)
+   * with the plain-text render and no `parse_mode`, truncated to Telegram's
+   * 4096-code-point limit. Any other failure, including no response at all
+   * (`statusCode: null`), is not retried. (#257)
    *
    * @param {{html: string, plain: string}} templateOutput
    * @returns {Promise<{ok: boolean, statusCode: number|null}>}
@@ -1527,7 +1536,10 @@ Please investigate and resolve the issue.
     }
 
     this.logger.warn('Telegram rejected templated message with a 400, retrying once without parse_mode', {});
-    return this.sendTelegramMessageDetailed(plain ?? html);
+    // Telegram's 4096 limit applies to this retry too. truncateCodePoints
+    // (not a plain substring, which counts UTF-16 units) keeps the cut from
+    // landing inside a surrogate pair. (#257 review)
+    return this.sendTelegramMessageDetailed(truncateCodePoints(plain ?? html));
   }
 
 }

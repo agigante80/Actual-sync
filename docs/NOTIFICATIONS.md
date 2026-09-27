@@ -919,12 +919,13 @@ A template can also use a small set of helpers and block helpers:
 
 A template can only reference:
 
-- a variable the consumer explicitly documented (each notification type defines its own list, for example `name`, `amount`, `deadline`);
-- `this`, an `@data` variable such as `@index`, or a block parameter introduced by `#each`/`#with` (for example the `item` in `{{#each items as |item|}}`);
+- a variable the consumer explicitly documented (each notification type defines its own list, for example `name`, `amount`, `deadline`), used bare (`{{name}}`), never through a dotted path (`{{name.length}}` fails validation even if `name` is documented, since a variable's shape is not part of its contract);
+- `this`, or one of exactly four `@data` built-ins: `@index`, `@key`, `@first`, `@last`. `@root` (the whole render context) and any other `@name` are rejected, since `@root` would bypass the variable whitelist entirely;
+- a block parameter introduced by `#each`/`#with` (for example the `item` in `{{#each items as |item|}}`), which may use a dotted path (`{{item.name}}`) since its shape comes from the caller's own data, but never through `__proto__`, `constructor`, or `prototype`;
 - one of four helpers: `eq`, `default`, `upper`, `lower`;
 - one of four block helpers: `if`, `unless`, `each`, `with`.
 
-Everything else, including `lookup`, `log`, any other custom helper name, and partials (`{{> something}}`), fails validation at startup. This is checked by walking the template's parsed syntax tree rather than by rendering a sample, so an unknown name is caught even when it only appears inside a helper argument, inside a false `#if` branch, or inside an `#each` body that happens to be empty for a given sample. Validation failures throw with the template key, the offending token, and the line number, so a typo such as `{{nmae}}` is reported precisely rather than silently rendering blank.
+Everything else, including `lookup`, `log`, any other custom helper name, a literal used where a name is expected (`{{"&"}}`, `{{1}}`), and partials (`{{> something}}`), fails validation at startup. This is checked by walking the template's parsed syntax tree rather than by rendering a sample, so an unknown name is caught even when it only appears inside a helper argument, inside a false `#if` branch, or inside an `#each` body that happens to be empty for a given sample. Validation failures throw with the template key, the offending token, and the line number, so a typo such as `{{nmae}}` is reported precisely rather than silently rendering blank.
 
 Because the render context only ever contains the variables a consumer explicitly whitelisted, a template can never reach configuration secrets such as a Telegram bot token or an SMTP password, no matter how it is written.
 
@@ -939,7 +940,7 @@ Escaping happens once, at output time, per channel, never before a helper runs. 
 | Email (text part) | raw, no escaping | none | plain text |
 | ntfy | raw, no escaping | none | plain text |
 | Slack | raw, no escaping | `escapeSlack` on the whole rendered string | plain-text semantics; Slack's own markup is not available to a template author |
-| Discord | raw, no escaping | `escapeDiscordMarkdown` on the whole rendered string | plain-text semantics |
+| Discord | raw, no escaping | `escapeDiscordMarkdown` on the whole rendered string | plain-text semantics; also sent with `allowed_mentions: { parse: [] }` so a rendered value can never ping `@everyone`, `@here`, or a user/role id |
 | Generic webhook | raw, no escaping, for the `text` field | none | raw variable values are also sent as separate structured JSON fields |
 
 ### Telegram markup rules
@@ -956,7 +957,7 @@ fails validation immediately, naming the `&` and its line, instead of failing th
 <b>{{name}}</b> owes {{amount}}
 ```
 
-If Telegram still rejects a rendered message at send time (for example because a variable's value produced markup the startup check could not foresee), the notification service retries exactly once, sending the plain-text rendering with no `parse_mode`, and logs a warning. Any other delivery failure is not retried.
+If Telegram still rejects a rendered message at send time (for example because a variable's value produced markup the startup check could not foresee), the notification service retries exactly once, sending the plain-text rendering with no `parse_mode`, and logs a warning. That fallback text is also truncated to Telegram's 4096 code-point limit, counting whole Unicode code points rather than UTF-16 units so the cut never splits a surrogate pair. Any other delivery failure is not retried.
 
 ### Validation errors
 

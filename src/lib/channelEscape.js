@@ -27,14 +27,24 @@ function escapeSlack(text) {
 
 /**
  * Backslash-escape the characters Discord's Markdown parser treats specially,
- * so a rendered value cannot turn into bold/italic/strikethrough/code/quote
- * markup or a mention-like `>` the operator did not write.
+ * so a rendered value cannot turn into bold/italic/strikethrough/code/quote/
+ * masked-link markup, or a mention-like `>` the operator did not write.
+ * `[`, `]`, `(`, `)` are included so a value cannot complete a masked link
+ * (`[label](url)`) that spans a template's literal text and a rendered
+ * variable. `@` is neutralised separately below: Discord mentions
+ * (`@everyone`, `@here`, `<@id>`) are not Markdown syntax, so backslash-
+ * escaping an `@` does not suppress them; a zero-width space breaks the
+ * exact-match the mention parser looks for while leaving the text visually
+ * unchanged. This is defense in depth alongside `allowed_mentions: { parse:
+ * [] }`, which `sendTemplated`'s Discord branch always sends. (#257 review)
  *
  * @param {string} text
  * @returns {string}
  */
 function escapeDiscordMarkdown(text) {
-  return String(text).replace(/[\\*_~`|>]/g, (ch) => `\\${ch}`);
+  return String(text)
+    .replace(/[\\*_~`|>()[\]]/g, (ch) => `\\${ch}`)
+    .replace(/@/g, '@​');
 }
 
 // Tags templateRenderer's telegram_markup check allows in literal template
@@ -47,8 +57,11 @@ const ENTITY_RE = /^&[#a-zA-Z0-9]+;/;
 
 /**
  * Split rendered Telegram HTML into atomic units - each unit is a whole tag
- * (open or close), a whole HTML entity, or a single character - so a
- * truncation point can never land inside one.
+ * (open or close), a whole HTML entity, or a single Unicode code point - so a
+ * truncation point can never land inside one. Indexing by UTF-16 code unit
+ * instead of code point would let a cut fall between the two surrogate
+ * halves of an astral character (most emoji), producing a lone surrogate and
+ * an ill-formed string. (#257 review)
  *
  * @param {string} text
  * @returns {{raw: string, tag: string|null, closing: boolean}[]}
@@ -70,10 +83,35 @@ function tokenizeTelegramHtml(text) {
       i += entityMatch[0].length;
       continue;
     }
-    tokens.push({ raw: text[i], tag: null, closing: false });
-    i += 1;
+    const codePoint = text.codePointAt(i);
+    const charWidth = codePoint > 0xffff ? 2 : 1; // surrogate pair vs single unit
+    tokens.push({ raw: text.slice(i, i + charWidth), tag: null, closing: false });
+    i += charWidth;
   }
   return tokens;
+}
+
+/**
+ * Truncate plain text to at most `max` Unicode code points without ever
+ * splitting a surrogate pair. Used for content that carries no tags or
+ * entities to preserve (for example the plain-text Telegram fallback sent
+ * without `parse_mode` after a 400).
+ *
+ * @param {string} text
+ * @param {number} [max=4096]
+ * @returns {string}
+ */
+function truncateCodePoints(text, max = 4096) {
+  const value = String(text);
+  if (value.length <= max) return value; // fast path: cannot exceed max code points either
+  let output = '';
+  let count = 0;
+  for (const char of value) { // iterates by code point, not UTF-16 unit
+    if (count >= max) break;
+    output += char;
+    count += 1;
+  }
+  return output;
 }
 
 /**
@@ -122,4 +160,4 @@ function truncateTelegramHtml(text, max = 4096) {
   return output + suffix;
 }
 
-module.exports = { escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml };
+module.exports = { escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml, truncateCodePoints };

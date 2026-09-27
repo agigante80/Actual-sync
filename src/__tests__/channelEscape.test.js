@@ -2,7 +2,7 @@
  * Tests for src/lib/channelEscape.js (#257)
  */
 
-const { escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml } = require('../lib/channelEscape');
+const { escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml, truncateCodePoints } = require('../lib/channelEscape');
 
 describe('escapeSlack', () => {
   test('escapes &, < and >', () => {
@@ -29,6 +29,23 @@ describe('escapeDiscordMarkdown', () => {
 
   test('leaves plain text unchanged', () => {
     expect(escapeDiscordMarkdown('Hello World 123')).toBe('Hello World 123');
+  });
+
+  // M2 (#257 review): [ ] ( ) were left active, so a rendered value spanning
+  // a template's literal text and a variable could complete a masked link
+  // ([label](url)) the operator never wrote.
+  test('escapes [ ] ( ) so a value cannot complete a masked link', () => {
+    expect(escapeDiscordMarkdown('[label](url)')).toBe('\\[label\\]\\(url\\)');
+  });
+
+  // M2 (#257 review): @everyone/@here/<@id> are not Markdown syntax, so
+  // backslash-escaping an @ does nothing to suppress them. A zero-width
+  // space after @ breaks the mention parser's exact match while the text
+  // still reads the same to a human.
+  test('inserts a zero-width space after @ to defuse mentions', () => {
+    // The trailing > is also backslash-escaped by the existing markup rule,
+    // same as any other > in the text; that is unrelated to the mention fix.
+    expect(escapeDiscordMarkdown('@everyone hi @here <@123>')).toBe('@​everyone hi @​here <@​123\\>');
   });
 });
 
@@ -81,5 +98,46 @@ describe('truncateTelegramHtml', () => {
 
   test('coerces non-string input and short input is returned unchanged', () => {
     expect(truncateTelegramHtml(123)).toBe('123');
+  });
+
+  // H2 (#257 review): the tokenizer's fallback branch used to consume one
+  // UTF-16 unit at a time, so a truncation point could fall between the two
+  // surrogate halves of an astral character (most emoji), producing a lone
+  // surrogate. 4095 (an odd offset) plus a 2-unit emoji puts the pair exactly
+  // across the default 4096 boundary.
+  test('never splits a surrogate pair at the truncation boundary', () => {
+    const text = 'a'.repeat(4095) + '\u{1F600}' + 'b'.repeat(50);
+    const out = truncateTelegramHtml(text);
+
+    expect(out.length).toBeLessThanOrEqual(4096);
+    expect(out.isWellFormed()).toBe(true);
+  });
+});
+
+describe('truncateCodePoints', () => {
+  test('short input is returned unchanged', () => {
+    expect(truncateCodePoints('hello', 10)).toBe('hello');
+  });
+
+  test('truncates to exactly max code points', () => {
+    const text = 'a'.repeat(5000);
+    const out = truncateCodePoints(text, 4096);
+    expect([...out]).toHaveLength(4096);
+  });
+
+  // H2-adjacent (#257 review): a naive `text.slice(0, max)` counts UTF-16
+  // units, not code points, so an astral character at the boundary would be
+  // split into a lone surrogate. truncateCodePoints iterates by code point
+  // and must drop the whole character instead.
+  test('never splits a surrogate pair at the truncation boundary', () => {
+    const text = 'a'.repeat(4095) + '\u{1F600}\u{1F600}';
+    const out = truncateCodePoints(text, 4096);
+
+    expect([...out]).toHaveLength(4096);
+    expect(out.isWellFormed()).toBe(true);
+  });
+
+  test('coerces non-string input', () => {
+    expect(truncateCodePoints(123, 10)).toBe('123');
   });
 });

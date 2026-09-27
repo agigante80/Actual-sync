@@ -106,19 +106,34 @@ describe('sendTemplated delivery (#257)', () => {
     expect(emailArgs.text).toBe('BOB & CO owes €80.00');
   });
 
-  test('an invalid template throws before any request is sent', () => {
-    expect(() => {
-      buildChannelOutputs({ message: '{{nmae}}' }, { name: 'bob', amount: '1' });
-    }).toThrow(TemplateValidationError);
+  // M5 (#257 review): the previous version of this test only asserted that
+  // buildChannelOutputs itself throws, and never called sendTemplated at all,
+  // so it could not tell "sendTemplated sends nothing on a bad template" from
+  // "this test forgot to invoke sendTemplated". Wrapping the real two-step
+  // caller flow (build, then send) in one async function and awaiting its
+  // rejection exercises the actual path and still proves zero requests go out.
+  test('an invalid template throws before any request is sent', async () => {
+    const service = makeService();
+    const runFlow = async () => {
+      const outputs = buildChannelOutputs({ message: '{{nmae}}' }, { name: 'bob', amount: '1' });
+      return service.sendTemplated(outputs);
+    };
 
+    await expect(runFlow()).rejects.toThrow(TemplateValidationError);
     expect(received).toHaveLength(0);
   });
 
+  // M4 (#257 review): 'Bob' has no characters HTML-escapes, so the previous
+  // version of this test could not actually distinguish the escaped HTML
+  // request from the raw plain-text one; a bug that sent html twice, or
+  // plain twice, would still have passed. 'Bob & Co' makes the two renders
+  // different strings, so each request's text is checked against the render
+  // it must have come from.
   test('a Telegram 400 triggers exactly one retry without parse_mode, with a WARN logged', async () => {
     telegramStatusQueue = [400];
     const service = makeService();
     const warnSpy = jest.spyOn(service.logger, 'warn');
-    const outputs = buildChannelOutputs({ message: 'Hi {{name}}' }, { name: 'Bob', amount: '1' });
+    const outputs = buildChannelOutputs({ message: 'Hi {{name}}' }, { name: 'Bob & Co', amount: '1' });
 
     const result = await service._sendTemplatedTelegram(outputs.telegram);
 
@@ -126,8 +141,29 @@ describe('sendTemplated delivery (#257)', () => {
     const telegramReqs = received.filter((r) => r.url.startsWith('/bot'));
     expect(telegramReqs).toHaveLength(2);
     expect(JSON.parse(telegramReqs[0].body).parse_mode).toBe('HTML');
+    expect(JSON.parse(telegramReqs[0].body).text).toBe('Hi Bob &amp; Co');
     expect(JSON.parse(telegramReqs[1].body)).not.toHaveProperty('parse_mode');
+    expect(JSON.parse(telegramReqs[1].body).text).toBe('Hi Bob & Co');
     expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/400/), expect.any(Object));
+  });
+
+  // M1 (#257 review): the 400 fallback used to send `plain ?? html` untruncated.
+  // A plain render past Telegram's 4096-code-point limit, with an astral
+  // character straddling the cut, previously risked an ill-formed string;
+  // truncateCodePoints must produce a well-formed 4096-code-point string.
+  test('a Telegram 400 fallback is truncated to 4096 code points, surrogate-safe', async () => {
+    telegramStatusQueue = [400];
+    const service = makeService();
+    const longPlain = 'a'.repeat(4095) + '\u{1F600}\u{1F600}'; // emoji pair straddles the 4096 cut
+    const html = 'irrelevant html, only the 400 fallback matters here';
+
+    const result = await service._sendTemplatedTelegram({ html, plain: longPlain });
+
+    expect(result).toEqual({ ok: true, statusCode: 200 });
+    const telegramReqs = received.filter((r) => r.url.startsWith('/bot'));
+    const fallbackText = JSON.parse(telegramReqs[1].body).text;
+    expect([...fallbackText]).toHaveLength(4096);
+    expect(fallbackText.isWellFormed()).toBe(true);
   });
 
   test('a Telegram 500 is not retried and the result is a failure', async () => {
@@ -141,6 +177,27 @@ describe('sendTemplated delivery (#257)', () => {
     expect(result.statusCode).toBe(500);
     const telegramReqs = received.filter((r) => r.url.startsWith('/bot'));
     expect(telegramReqs).toHaveLength(1);
+  });
+
+  // M2 (#257 review): a rendered value the operator never vetted (a payee
+  // name, say) must not be able to ping @everyone/@here/a user id. Discord's
+  // own allowed_mentions gate is the authoritative fix; escapeDiscordMarkdown's
+  // backslash/zero-width-space handling (channelEscape.test.js) is defense in
+  // depth on top of it.
+  test('a templated Discord send includes allowed_mentions: { parse: [] }', async () => {
+    const service = makeService();
+    const outputs = buildChannelOutputs({ message: 'Hi {{name}}' }, { name: 'Bob', amount: '1' });
+    outputs.discord.url = `${baseUrl}/discord`;
+    delete outputs.telegram;
+    delete outputs.email;
+    delete outputs.webhook;
+
+    const results = await service.sendTemplated(outputs);
+
+    expect(results.discord).toEqual({ success: true });
+    const discordReq = received.find((r) => r.url === '/discord');
+    const discordBody = JSON.parse(discordReq.body);
+    expect(discordBody.allowed_mentions).toEqual({ parse: [] });
   });
 
   test('an existing caller using sendTelegramMessage still gets false on a fake 500', async () => {

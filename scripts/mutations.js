@@ -1159,6 +1159,22 @@ module.exports = [
         mutant: '    if (result.ok) {',
         tests: 'templatedDelivery'
     },
+    {
+        id: '257-review-data-var-whitelist-bypassed', ticket: '#257',
+        desc: 'any @data path (including @root, the whole render context) is allowed again, bypassing the variable whitelist',
+        file: 'src/lib/templateRenderer.js',
+        anchor: '      if (node.parts.length === 1 && ALLOWED_DATA_VARS.has(node.parts[0])) return;',
+        mutant: '      return;',
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-review-dotted-path-bypassed', ticket: '#257',
+        desc: 'a dotted path off a non-block-param variable, or through a dangerous prototype-chain property, is allowed again',
+        file: 'src/lib/templateRenderer.js',
+        anchor: '      if (!isBlockParam || hasDangerousPart) {',
+        mutant: '      if (false) {',
+        tests: 'templateRenderer'
+    },
 
     // ---- #169: the README claim that started #168 ---------------------------
     {

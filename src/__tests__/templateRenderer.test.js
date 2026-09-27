@@ -33,6 +33,24 @@ describe('validateTemplate', () => {
         validateTemplate('{{#each items}}{{@index}}: {{this}}{{/each}}', { key: 'items', variables: ['items'] });
       }).not.toThrow();
     });
+
+    test('@key, @first and @last need no variable declaration', () => {
+      expect(() => {
+        validateTemplate('{{#each items}}{{@key}} {{@first}} {{@last}}{{/each}}', {
+          key: 'items',
+          variables: ['items']
+        });
+      }).not.toThrow();
+    });
+
+    test('a dotted path rooted at an in-scope block param passes', () => {
+      expect(() => {
+        validateTemplate('{{#each accounts as |account|}}{{account.name}}{{/each}}', {
+          key: 'accounts',
+          variables: ['accounts']
+        });
+      }).not.toThrow();
+    });
   });
 
   describe('negative cases (spec scenarios)', () => {
@@ -148,6 +166,131 @@ describe('validateTemplate', () => {
       } catch (err) {
         expect(err.reason).toBe('unknown_variable');
         expect(err.token).toBe('constructor');
+      }
+    });
+  });
+
+  // H1 (#257 review): `if (node.data) return;` let any @data path skip the
+  // whitelist entirely, so @root (the whole render context, secrets
+  // included) and a mistyped @data name both slipped past validation.
+  describe('only @index/@key/@first/@last are reachable data variables', () => {
+    test('@root is rejected as unknown_variable, not allowed through', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{@root}}', { key: 'missing', variables: ['name'] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_variable');
+        expect(err.token).toBe('@root');
+      }
+    });
+
+    test('a dotted @root path used to reach outside the whitelist is rejected', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{@root.telegram.botToken}}', { key: 'missing', variables: ['name'] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_variable');
+        expect(err.token).toBe('@root.telegram.botToken');
+      }
+    });
+
+    test('a misspelled @data variable is rejected at validation time, not left to throw at render', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{@nmae}}', { key: 'missing', variables: ['name'] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_variable');
+        expect(err.token).toBe('@nmae');
+      }
+    });
+  });
+
+  // H3 (#257 review): only parts[0] of a dotted path was ever checked, so
+  // `{{name.length}}`, `{{name.constructor}}` and similar passed validation
+  // and then threw (or worse, walked the prototype chain) at render time.
+  describe('a dotted path is only reachable through an in-scope block param', () => {
+    test('a dotted path off a plain whitelisted variable is rejected', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{name.length}}', { key: 'missing', variables: ['name'] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_variable');
+        expect(err.token).toBe('name.length');
+      }
+    });
+
+    test('constructor reached through a dotted path is rejected', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{name.constructor}}', { key: 'missing', variables: ['name'] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_variable');
+        expect(err.token).toBe('name.constructor');
+      }
+    });
+
+    test('constructor.name reached through a whitelisted list variable is rejected', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{items.constructor.name}}', { key: 'missing', variables: ['items'] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_variable');
+        expect(err.token).toBe('items.constructor.name');
+      }
+    });
+
+    test('a dangerous property name is rejected even off an in-scope block param', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{#each accounts as |account|}}{{account.__proto__}}{{/each}}', {
+          key: 'accounts',
+          variables: ['accounts']
+        });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_variable');
+        expect(err.token).toBe('account.__proto__');
+      }
+    });
+  });
+
+  // M3 (#257 review): a literal in mustache/helper/block position
+  // (`{{"&"}}`, `{{1}}`, `{{#"x"}}...{{/"x"}}`) has no `.parts`/`.data`
+  // fields, so the AST walk crashed with a raw TypeError instead of a clean
+  // TemplateValidationError.
+  describe('a literal expression fails cleanly instead of crashing the validator', () => {
+    test('a string literal in mustache position is a parse_error', () => {
+      expect.assertions(1);
+      try {
+        validateTemplate('{{"&"}}', { key: 'missing', variables: [] });
+      } catch (err) {
+        expect(err.reason).toBe('parse_error');
+      }
+    });
+
+    test('a number literal in mustache position is a parse_error', () => {
+      expect.assertions(1);
+      try {
+        validateTemplate('{{1}}', { key: 'missing', variables: [] });
+      } catch (err) {
+        expect(err.reason).toBe('parse_error');
+      }
+    });
+
+    test('a string literal used as a block name is a parse_error', () => {
+      expect.assertions(1);
+      try {
+        validateTemplate('{{#"x"}}y{{/"x"}}', { key: 'missing', variables: [] });
+      } catch (err) {
+        expect(err.reason).toBe('parse_error');
+      }
+    });
+
+    test('a string literal used as a helper is a parse_error', () => {
+      expect.assertions(1);
+      try {
+        validateTemplate('{{"foo" name}}', { key: 'missing', variables: ['name'] });
+      } catch (err) {
+        expect(err.reason).toBe('parse_error');
       }
     });
   });
@@ -298,6 +441,13 @@ describe('compileTemplateSet / render', () => {
 
     expect(() => {
       validateTemplate('{{email.auth.pass}}', { key: 'leak', variables: ['name'] });
+    }).toThrow(TemplateValidationError);
+
+    // @root is the whole render context: without the H1 fix this reached the
+    // same secret through Handlebars' built-in data variable instead of a
+    // whitelisted variable name (#257 review).
+    expect(() => {
+      validateTemplate('{{@root.telegram.botToken}}', { key: 'leak', variables: ['name'] });
     }).toThrow(TemplateValidationError);
 
     // Only a template that explicitly declares `name` as a variable can ever

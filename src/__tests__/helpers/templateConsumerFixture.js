@@ -15,7 +15,7 @@
 const { compileTemplateSet } = require('../../lib/templateRenderer');
 
 const VARIABLES = ['name', 'amount'];
-const CHANNELS = ['telegram', 'email_text', 'email_html', 'webhook'];
+const CHANNELS = ['telegram', 'email_text', 'email_html', 'webhook', 'discord'];
 
 /**
  * Build channel outputs for NotificationService.sendTemplated from a set of
@@ -46,6 +46,10 @@ function buildChannelOutputs(templates, context) {
       url: null, // filled in by the caller once the fake server URL is known
       text: render('message', context, 'webhook'),
       fields: { name: context.name, amount: context.amount }
+    },
+    discord: {
+      url: null, // filled in by the caller once the fake server URL is known
+      text: render('message', context, 'discord')
     }
   };
 }
