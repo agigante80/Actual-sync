@@ -106,17 +106,38 @@ class SyncHistoryService {
       )
     `;
 
+    // Missing-payment alert de-duplication ledger (#258). One row per
+    // successfully delivered event, keyed by (server, alert, schedule,
+    // occurrence, event); `deliver()` (src/lib/scheduleAlertDelivery.js)
+    // reads it before sending and writes it only after a successful send, so
+    // a failed send is retried on the next sync instead of being lost.
+    const createScheduleAlertsTable = `
+      CREATE TABLE IF NOT EXISTS schedule_alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        server TEXT NOT NULL,
+        alert_id TEXT NOT NULL,
+        schedule_id TEXT,
+        occurrence_date TEXT,
+        event TEXT NOT NULL,
+        delivery TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      )
+    `;
+
     const createIndexes = [
       'CREATE INDEX IF NOT EXISTS idx_timestamp ON sync_history(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_server_name ON sync_history(server_name)',
       'CREATE INDEX IF NOT EXISTS idx_status ON sync_history(status)',
       'CREATE INDEX IF NOT EXISTS idx_correlation_id ON sync_history(correlation_id)',
-      'CREATE INDEX IF NOT EXISTS idx_account_meta_server ON account_metadata(server_name)'
+      'CREATE INDEX IF NOT EXISTS idx_account_meta_server ON account_metadata(server_name)',
+      'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_lookup ON schedule_alerts(server, alert_id, schedule_id, occurrence_date, event)',
+      'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_recorded_at ON schedule_alerts(recorded_at)'
     ];
 
     this.db.exec(createSyncHistoryTable);
     this.db.exec(createAccountMetadataTable);
-    this.logger.debug('Created sync_history and account_metadata tables');
+    this.db.exec(createScheduleAlertsTable);
+    this.logger.debug('Created sync_history, account_metadata and schedule_alerts tables');
 
     createIndexes.forEach(idx => {
       this.db.exec(idx);
@@ -142,10 +163,65 @@ class SyncHistoryService {
       this.logger.info('Migrated sync_history: added accounts_skipped column');
     }
 
-    // NOTE: account_metadata is created via CREATE TABLE IF NOT EXISTS in
-    // createTables() (so a missing table is added to existing DBs). If a NEW
-    // COLUMN is ever added to account_metadata, add an ALTER guard here too —
-    // CREATE TABLE IF NOT EXISTS will not add columns to an existing table. (#99)
+    // NOTE: account_metadata and schedule_alerts are created via CREATE TABLE
+    // IF NOT EXISTS in createTables() (so a missing table is added to
+    // existing DBs). If a NEW COLUMN is ever added to either, add an ALTER
+    // guard here too, since CREATE TABLE IF NOT EXISTS will not add columns
+    // to an existing table. (#99, #258)
+  }
+
+  /**
+   * Look up the most recent `schedule_alerts` ledger row for one
+   * `(server, alertId, scheduleId, occurrenceDate, event)` key.
+   * `scheduleAlertDelivery.deliver()`'s de-duplication and reminder logic.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @param {string} key.alertId
+   * @param {?string} key.scheduleId
+   * @param {?string} key.occurrenceDate
+   * @param {string} key.event
+   * @returns {Promise<{recordedAt:string}|null>}
+   */
+  async findLatestScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event }) {
+    try {
+      const row = this.db.prepare(`
+        SELECT recorded_at AS recordedAt FROM schedule_alerts
+        WHERE server = ? AND alert_id = ?
+          AND schedule_id IS ? AND occurrence_date IS ? AND event = ?
+        ORDER BY recorded_at DESC, id DESC
+        LIMIT 1
+      `).get(server, alertId, scheduleId ?? null, occurrenceDate ?? null, event);
+      return row || null;
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts ledger', { error: error.message, server, alertId, event });
+      throw error;
+    }
+  }
+
+  /**
+   * Record a delivered (or muted/disabled, for #261) schedule alert event.
+   *
+   * @param {Object} record
+   * @param {string} record.server
+   * @param {string} record.alertId
+   * @param {?string} record.scheduleId
+   * @param {?string} record.occurrenceDate
+   * @param {string} record.event
+   * @param {'sent'|'muted'|'disabled'} record.delivery
+   * @returns {Promise<number>} inserted row id
+   */
+  async recordScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, delivery }) {
+    try {
+      const result = this.db.prepare(`
+        INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, delivery, this.now().toISOString());
+      return result.lastInsertRowid;
+    } catch (error) {
+      this.logger.error('Failed to record schedule alert', { error: error.message, server, alertId, event });
+      throw error;
+    }
   }
 
   /**
@@ -611,6 +687,27 @@ class SyncHistoryService {
         });
       }
 
+      // schedule_alerts (#258) is purged at max(retentionDays, 120) days, on
+      // its own recorded_at column, independently of sync_history's own
+      // retentionDays. 120 is longer than the 90-day evaluation look-back
+      // cap, so the ledger never forgets an occurrence that could still be
+      // re-evaluated (which would otherwise re-send a "missing" alert).
+      const scheduleAlertsRetentionDays = Math.max(this.retentionDays, 120);
+      const scheduleAlertsCutoff = this.now();
+      scheduleAlertsCutoff.setDate(scheduleAlertsCutoff.getDate() - scheduleAlertsRetentionDays);
+      const scheduleAlertsResult = this.db.prepare(`
+        DELETE FROM schedule_alerts
+        WHERE recorded_at < ?
+      `).run(scheduleAlertsCutoff.toISOString());
+
+      if (scheduleAlertsResult.changes > 0) {
+        this.logger.info('Cleaned up old schedule alert ledger rows', {
+          deletedRecords: scheduleAlertsResult.changes,
+          retentionDays: scheduleAlertsRetentionDays,
+          cutoffDate: scheduleAlertsCutoff.toISOString()
+        });
+      }
+
       // Vacuum database to reclaim space
       this.db.exec('VACUUM');
 
@@ -629,13 +726,17 @@ class SyncHistoryService {
    */
   async resetServerHistory(serverName) {
     try {
-      // Clear sync history AND the dashboard account snapshot atomically, so a
-      // reset never leaves orphaned account badges (or half-cleared state). (#99)
+      // Clear sync history, the dashboard account snapshot and the schedule
+      // alert ledger atomically, so a reset never leaves orphaned account
+      // badges, half-cleared state, or a ledger that still blocks a "missing"
+      // alert this reset was meant to let re-fire. (#99, #258)
       const delHistory = this.db.prepare('DELETE FROM sync_history WHERE server_name = ?');
       const delMeta = this.db.prepare('DELETE FROM account_metadata WHERE server_name = ?');
+      const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts WHERE server = ?');
       const reset = this.db.transaction((s) => {
         const r = delHistory.run(s);
         delMeta.run(s);
+        delScheduleAlerts.run(s);
         return r;
       });
       const result = reset(serverName);
@@ -660,12 +761,15 @@ class SyncHistoryService {
    */
   async resetAllHistory() {
     try {
-      // Clear all sync history AND all account snapshots atomically. (#99)
+      // Clear all sync history, all account snapshots and the whole schedule
+      // alert ledger atomically. (#99, #258)
       const delHistory = this.db.prepare('DELETE FROM sync_history');
       const delMeta = this.db.prepare('DELETE FROM account_metadata');
+      const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts');
       const reset = this.db.transaction(() => {
         const r = delHistory.run();
         delMeta.run();
+        delScheduleAlerts.run();
         return r;
       });
       const result = reset();
