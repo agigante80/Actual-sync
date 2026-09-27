@@ -371,9 +371,14 @@ describe('deliver: resolved events', () => {
       expect.objectContaining({ event: 'resolved', delivery: 'sent' })
     ]));
 
-    // Sync 3: still late/paid, no new missing alert since - resolved must not resend.
+    // Sync 3: still late/paid, no new missing alert since - resolved must not
+    // resend. `deriveResolvedEvents` still synthesizes the event (#295 review
+    // round 2, M5: its own pre-filter only asks "was `missing` ever recorded
+    // on any channel", not "is `resolved` already fully delivered" - that
+    // finer, per-destination check now lives in `isDestinationDue`), so this
+    // is `skipped`, not simply absent, but nothing is sent again either way.
     const thirdResult = await deliver([], { ...baseArgs, evaluations: [lateEvaluation], now: '2026-01-12' });
-    expect(thirdResult).toEqual({ sent: 0, skipped: 0 });
+    expect(thirdResult).toEqual({ sent: 0, skipped: 1 });
     expect(sender.calls).toHaveLength(2);
   });
 
@@ -415,6 +420,101 @@ describe('deliver: resolved events', () => {
 
     expect(result).toEqual({ sent: 0, skipped: 0 });
     expect(sender.calls).toHaveLength(0);
+  });
+});
+
+describe('deliver: resolved is retried and gated per destination (#295 review round 2, M5)', () => {
+  test('resolved is never sent to a destination that never received the original missing alert', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      webhooks: { slack: [{ name: 'a', url: 'https://slack/a', enabled: true }] }
+    });
+    const baseArgs = {
+      ruleState: enabledState, history, sender, server: 'Main',
+      rules: rentRules({ channels: ['slack'] }), timezone: 'UTC', logger: quietLogger
+    };
+
+    // Sync 1: missing sent only to "a" (the only destination configured then).
+    await deliver([missingEvent()], { ...baseArgs, evaluations: [rentEvaluation()], now: '2026-01-10' });
+    expect(sender.calls).toHaveLength(1);
+
+    // A new destination "b" is added before the payment resolves.
+    sender.config.webhooks.slack.push({ name: 'b', url: 'https://slack/b', enabled: true });
+
+    const lateEvaluation = rentEvaluation({
+      state: 'late',
+      occurrences: [{ date: '2026-01-05', deadline: '2026-01-08', state: 'late', receivedDate: '2026-01-09', receivedAmount: -50000 }]
+    });
+    const result = await deliver([], { ...baseArgs, evaluations: [lateEvaluation], now: '2026-01-11' });
+
+    expect(result).toEqual({ sent: 1, skipped: 0 });
+    // Before the fix, `isDestinationDue`'s generic branch treated "b" as due
+    // for `resolved` just because "b" had no `resolved` row yet, regardless
+    // of whether "b" was ever told about the original `missing` alert.
+    expect(sender.calls).toHaveLength(2); // only "a" gets "resolved"; "b" never got "missing"
+    expect(sender.calls[1].slack.url).toBe('https://slack/a');
+  });
+});
+
+describe('deliver: resolved retries per destination against the real ledger (#295 review round 2, M5)', () => {
+  const { SyncHistoryService } = require('../services/syncHistory');
+  const fs = require('fs');
+  const path = require('path');
+  const dbPath = path.join(__dirname, 'test-schedule-alert-delivery.db');
+  let realHistory;
+
+  beforeEach(() => {
+    ['', '-wal', '-shm'].forEach((suffix) => {
+      if (fs.existsSync(dbPath + suffix)) fs.unlinkSync(dbPath + suffix);
+    });
+    realHistory = new SyncHistoryService({ dbPath, retentionDays: 30, loggerConfig: { level: 'ERROR' } });
+  });
+
+  afterEach(() => {
+    realHistory.close();
+    ['', '-wal', '-shm'].forEach((suffix) => {
+      if (fs.existsSync(dbPath + suffix)) fs.unlinkSync(dbPath + suffix);
+    });
+  });
+
+  test('a resolved send that fails on one destination is retried there next sync, without resending to a destination that already succeeded', async () => {
+    const sender = makeFakeSender({
+      webhooks: { slack: [{ name: 'a', url: 'https://slack/a', enabled: true }, { name: 'b', url: 'https://slack/b', enabled: true }] }
+    });
+    const baseArgs = {
+      ruleState: enabledState, history: realHistory, sender, server: 'Main',
+      rules: rentRules({ channels: ['slack'] }), timezone: 'UTC', logger: quietLogger
+    };
+
+    // Sync 1: missing alert delivered to both slack destinations.
+    await deliver([missingEvent()], { ...baseArgs, evaluations: [rentEvaluation()], now: '2026-01-10' });
+    expect(sender.calls).toHaveLength(2);
+
+    // Sync 2: the payment arrives late. Destination "a" succeeds sending
+    // "resolved", "b" fails.
+    sender.result = (outputs) => (outputs.slack.url === 'https://slack/b' ? { slack: { success: false } } : { slack: { success: true } });
+    const lateEvaluation = rentEvaluation({
+      state: 'late',
+      occurrences: [{ date: '2026-01-05', deadline: '2026-01-08', state: 'late', receivedDate: '2026-01-09', receivedAmount: -50000 }]
+    });
+    const resolvedResult = await deliver([], { ...baseArgs, evaluations: [lateEvaluation], now: '2026-01-11' });
+    expect(resolvedResult).toEqual({ sent: 1, skipped: 0 }); // "a" succeeded, so the event counts as sent
+    expect(sender.calls).toHaveLength(4); // 2 missing + 2 resolved attempts
+
+    // Sync 3: "b" must be retried for "resolved" (it never got a resolved
+    // row); "a" must NOT be resent (it already has one). Before the fix,
+    // `deriveResolvedEvents` skipped the whole occurrence once ANY channel
+    // had a `resolved` row, so "b" would never be retried here.
+    sender.result = null;
+    const retryResult = await deliver([], { ...baseArgs, evaluations: [lateEvaluation], now: '2026-01-12' });
+    expect(retryResult).toEqual({ sent: 1, skipped: 0 });
+    expect(sender.calls).toHaveLength(5); // only "b" retried
+    expect(sender.calls[4].slack.url).toBe('https://slack/b');
+
+    // Sync 4: both destinations now have a resolved row - nothing left to send.
+    const finalResult = await deliver([], { ...baseArgs, evaluations: [lateEvaluation], now: '2026-01-13' });
+    expect(finalResult).toEqual({ sent: 0, skipped: 1 });
+    expect(sender.calls).toHaveLength(5);
   });
 });
 

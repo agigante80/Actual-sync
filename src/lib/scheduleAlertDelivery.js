@@ -284,6 +284,25 @@ function destinationsForRule(rule, sender) {
  * @returns {Promise<Array<{channel:string, target:Object, key:string}>>}
  */
 async function isDestinationDue(event, rule, destinationKey, history, server, now, timezone) {
+  // #295 review round 2, M5: a `resolved` event is only meaningful for a
+  // destination that actually received the original `missing` alert, and
+  // must retry to any destination that has not YET recorded `resolved`,
+  // independently of what other destinations already did. Both checks are
+  // per-destination (`channel: destinationKey`), unlike `deriveResolvedEvents`'s
+  // own coarse existence check, which only asks "does ANY channel need this".
+  if (event.event === 'resolved') {
+    const missingRow = await history.findLatestScheduleAlert({
+      server, alertId: event.alertId, scheduleId: event.scheduleId,
+      occurrenceDate: event.occurrence, event: 'missing', channel: destinationKey
+    });
+    if (!missingRow) return false; // this destination was never told it was missing
+    const resolvedRow = await history.findLatestScheduleAlert({
+      server, alertId: event.alertId, scheduleId: event.scheduleId,
+      occurrenceDate: event.occurrence, event: 'resolved', channel: destinationKey
+    });
+    return !resolvedRow;
+  }
+
   const latest = await history.findLatestScheduleAlert({
     server, alertId: event.alertId, scheduleId: event.scheduleId,
     occurrenceDate: event.occurrence, event: event.event, channel: destinationKey
@@ -591,8 +610,19 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
 
 /**
  * Derive `resolved` events from `evaluations` + the ledger: every occurrence
- * now `received` or `late` that has a `sent` `missing` row and no `resolved`
- * row yet. `evaluate()` cannot do this itself - it has no alert history.
+ * now `received` or `late` that has a `sent` `missing` row on at least one
+ * channel. `evaluate()` cannot do this itself - it has no alert history.
+ *
+ * This is only a coarse, cheap pre-filter ("has anybody, on any channel,
+ * ever been told this was missing"), not the actual per-destination send
+ * decision. It deliberately does NOT also check for an existing `resolved`
+ * row (#295 review round 2, M5): that used to skip the whole occurrence the
+ * moment ANY channel had recorded `resolved`, which meant a destination
+ * whose own `resolved` send had failed was never retried, since the event
+ * itself was never even synthesized again. The real, per-destination
+ * "already resolved here, or never alerted here" decision now lives in
+ * `isDestinationDue`, which `mayRecord`/`sendEvent`/`sendDigestBatch` all go
+ * through before a destination is attempted or recorded.
  *
  * @param {Object[]} evaluations
  * @param {Object} history
@@ -608,10 +638,6 @@ async function deriveResolvedEvents(evaluations, history, server) {
         server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId, occurrenceDate: occ.date, event: 'missing'
       });
       if (!missingRow) continue;
-      const resolvedRow = await history.findLatestScheduleAlert({
-        server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId, occurrenceDate: occ.date, event: 'resolved'
-      });
-      if (resolvedRow) continue;
 
       const daysOverdue = occ.receivedDate ? moment(occ.receivedDate).diff(moment(occ.deadline), 'days') : 0;
       resolved.push({

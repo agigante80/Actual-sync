@@ -177,9 +177,14 @@ class SyncHistoryService {
 
     // #295 review, H5: schedule_alerts.channel, added to an existing
     // database created before per-destination ledger keying existed.
-    // Existing rows read as NULL for it, i.e. "any destination", which is
-    // the correct reading for a row written back when there was only ever
-    // one implicit "destination" per event.
+    // Existing rows read as NULL for it: a row written back when there was
+    // only ever one implicit "destination" per event. `findLatestScheduleAlert`
+    // (#295 review round 2, M9) treats such a row as a match for ANY specific
+    // destination key, not just "any destination" lookups that omit `channel`
+    // entirely - otherwise every pre-upgrade "sent" row would become invisible
+    // to the new per-destination lookups the moment a real `channel` value is
+    // queried, and every already-delivered alert would resend once per
+    // destination on the first post-upgrade sync.
     const scheduleAlertsColumns = this.db.prepare('PRAGMA table_info(schedule_alerts)').all();
     if (!scheduleAlertsColumns.some((col) => col.name === 'channel')) {
       this.db.exec('ALTER TABLE schedule_alerts ADD COLUMN channel TEXT');
@@ -204,9 +209,14 @@ class SyncHistoryService {
    * @param {?string} key.scheduleId
    * @param {?string} key.occurrenceDate
    * @param {string} key.event
-   * @param {string} [key.channel] - #295 review, H5: when given, only a row
-   *   recorded for this exact destination matches; when omitted, any row for
-   *   the event matches regardless of which destination recorded it (used by
+   * @param {string} [key.channel] - #295 review, H5: when given, a row
+   *   recorded for this exact destination matches, and so does a legacy row
+   *   recorded before per-destination keying existed (`channel IS NULL`,
+   *   #295 review round 2, M9 - otherwise upgrading an existing database
+   *   made every previously-delivered alert resend once per destination,
+   *   since no old row could ever match a specific destination key again).
+   *   When `channel` is omitted entirely, any row for the event matches
+   *   regardless of which destination recorded it (used by
    *   `deriveResolvedEvents`, which only needs to know an event was ever
    *   recorded at all, not on which channel).
    * @returns {Promise<{recordedAt:string}|null>}
@@ -218,10 +228,10 @@ class SyncHistoryService {
         SELECT recorded_at AS recordedAt FROM schedule_alerts
         WHERE server = ? AND alert_id = ?
           AND schedule_id IS ? AND occurrence_date IS ? AND event = ?
-          ${filterChannel ? 'AND channel IS ?' : ''}
+          ${filterChannel ? 'AND (channel IS ? OR channel IS NULL)' : ''}
         ORDER BY recorded_at DESC, id DESC
         LIMIT 1
-      `).get(...[server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, ...(filterChannel ? [channel ?? null] : [])]);
+      `).get(...[server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, ...(filterChannel ? [channel] : [])]);
       return row || null;
     } catch (error) {
       this.logger.error('Failed to read schedule_alerts ledger', { error: error.message, server, alertId, event });

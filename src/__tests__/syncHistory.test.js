@@ -801,5 +801,80 @@ describe('SyncHistoryService', () => {
       expect(await syncHistory.findLatestScheduleAlert(key({ server: 'Main' }))).toBeNull();
       expect(await syncHistory.findLatestScheduleAlert(key({ server: 'Other' }))).toBeNull();
     });
+
+    // #295 review round 2, M9: the per-destination `channel` column (H5) had
+    // no real-DB test at all, so a broken filter or a missing migration would
+    // still show green. These exercise both.
+    describe('channel column (#295 review, H5 / round 2 M9)', () => {
+      test('a lookup with a specific channel does not match a row recorded for a different channel', async () => {
+        await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent', channel: 'slack:https://hooks.example/a' });
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:https://hooks.example/b' })).toBeNull();
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:https://hooks.example/a' })).not.toBeNull();
+      });
+
+      test('a lookup with no channel at all matches a row recorded for any specific channel', async () => {
+        await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent', channel: 'telegram' });
+        expect(await syncHistory.findLatestScheduleAlert(key())).not.toBeNull();
+      });
+
+      // The migration comment (syncHistory.js, migrateSchema) documents this:
+      // a row recorded before per-destination keying existed has channel
+      // NULL, and must still be found by a lookup for one specific
+      // destination, or every pre-upgrade alert would resend once per
+      // destination on the first post-upgrade sync.
+      test('a legacy row with a NULL channel matches a lookup for any specific channel', async () => {
+        syncHistory.db.prepare(`
+          INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at, channel)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+        `).run('Main', 'rent', 's1', '2026-01-05', 'missing', 'sent', new Date().toISOString());
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:https://hooks.example/a' })).not.toBeNull();
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'telegram' })).not.toBeNull();
+      });
+
+      test('migrates a pre-existing DB whose schedule_alerts table lacks the channel column, preserving rows (idempotent)', () => {
+        const legacyDbPath = path.join(__dirname, 'test-legacy-schedule-alerts.db');
+        if (fs.existsSync(legacyDbPath)) fs.unlinkSync(legacyDbPath);
+
+        const legacy = new Database(legacyDbPath);
+        legacy.exec(`
+          CREATE TABLE schedule_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            server TEXT NOT NULL,
+            alert_id TEXT NOT NULL,
+            schedule_id TEXT,
+            occurrence_date TEXT,
+            event TEXT NOT NULL,
+            delivery TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+          )
+        `);
+        legacy.prepare(`
+          INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run('Main', 'rent', 's1', '2026-01-05', 'missing', 'sent', new Date().toISOString());
+        const hasChannel = () => legacy.prepare('PRAGMA table_info(schedule_alerts)').all().some((c) => c.name === 'channel');
+        expect(hasChannel()).toBe(false);
+        legacy.close();
+
+        const migrated = new SyncHistoryService({ dbPath: legacyDbPath, loggerConfig: { level: 'ERROR' } });
+        const hasChannelMigrated = migrated.db.prepare('PRAGMA table_info(schedule_alerts)').all().some((c) => c.name === 'channel');
+        expect(hasChannelMigrated).toBe(true);
+
+        const legacyRow = migrated.db.prepare('SELECT * FROM schedule_alerts WHERE server = ?').get('Main');
+        expect(legacyRow).toBeDefined();
+        expect(legacyRow.channel).toBeNull();
+        migrated.close();
+
+        // Re-opening must not throw and must keep the column (idempotent).
+        const reopened = new SyncHistoryService({ dbPath: legacyDbPath, loggerConfig: { level: 'ERROR' } });
+        expect(reopened.db.prepare('PRAGMA table_info(schedule_alerts)').all().some((c) => c.name === 'channel')).toBe(true);
+        reopened.close();
+
+        ['', '-wal', '-shm'].forEach((suffix) => {
+          const p = legacyDbPath + suffix;
+          if (fs.existsSync(p)) fs.unlinkSync(p);
+        });
+      });
+    });
   });
 });
