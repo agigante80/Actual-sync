@@ -567,6 +567,27 @@ describe('ConfigLoader', () => {
                 const config = baseConfig({ alerts: [{ id: 'rent', schedule: 'Rent' }] }, {});
                 expect(() => new ConfigLoader().validateLogic(config)).not.toThrow();
             });
+
+            test('R2-M7: a template with literal Telegram-unsafe markup passes when the rule is restricted to slack and only slack is configured', () => {
+                const config = baseConfig(
+                    {
+                        alerts: [{
+                            id: 'rent', schedule: 'Rent', channels: ['slack'],
+                            templates: { missing: 'Rent & parking due {{expected_date}}' }
+                        }]
+                    },
+                    { webhooks: { slack: [{ name: 'ops', url: 'https://hooks.slack.example/x', enabled: true }] } }
+                );
+                expect(() => new ConfigLoader().validateLogic(config)).not.toThrow();
+            });
+
+            test('R2-M7: the same literal "&" still throws when the rule can actually reach telegram', () => {
+                const config = baseConfig(
+                    { alerts: [{ id: 'rent', schedule: 'Rent', templates: { missing: 'Rent & parking due {{expected_date}}' } }] },
+                    { telegram: { enabled: true, botToken: '1:AAAA', chatId: '1' } }
+                );
+                expect(() => new ConfigLoader().validateLogic(config)).toThrow(/Invalid scheduleAlerts template.*"rent".*"Test"/);
+            });
         });
 
         describe('healthCheck.trustProxy (#245)', () => {

@@ -5,7 +5,7 @@ const Ajv = require('ajv');
 const addFormats = require('ajv-formats');
 const { resolveSchemaPath } = require('./configBootstrap');
 const { checkUniqueIds, getRules } = require('./scheduleAlertRules');
-const { DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS, CHANNEL_TO_MODES, resolveChannels } = require('./scheduleAlertDelivery');
+const { DEFAULT_TEMPLATES, VARIABLES, CHANNEL_TO_MODES, resolveChannels } = require('./scheduleAlertDelivery');
 const { compileTemplateSet } = require('./templateRenderer');
 
 // AJV combinator keywords whose failures are pure structural noise: when an
@@ -521,6 +521,15 @@ class ConfigLoader {
      *   an operator noticed (`sendEvent`/`sendDigestBatch` also wrap
      *   rendering per event now, as a second line of defense - see
      *   scheduleAlertDelivery.js).
+     *   (#295 review round 2, M7) The check used to compile every template
+     *   against every channel's mode, including ones the rule can never be
+     *   sent on. That made a Telegram-only markup character (say, a bare `&`)
+     *   in a rule's template fail startup even for a server whose rule is
+     *   restricted to slack/email, or whose config has no telegram
+     *   destination at all. Modes are now built from the rule's own resolved
+     *   channels (`resolveChannels`, the same set `deliver()` will actually
+     *   use), so a template is only validated against modes it could really
+     *   be rendered for.
      * - M2: a rule with an explicit `channels` restriction that names only
      *   channels nothing is configured for can never deliver anything; that
      *   is a config mistake worth failing startup for, rather than "sending"
@@ -534,22 +543,23 @@ class ConfigLoader {
      * @throws {Error}
      */
     validateScheduleAlerts(servers, notificationsConfig) {
-        const allModes = ALL_CHANNELS.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
         const sender = { config: notificationsConfig || {} };
 
         for (const server of servers || []) {
             const rules = getRules(server.scheduleAlerts);
             for (const rule of rules) {
                 const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+                const ruleChannels = resolveChannels(rule, sender);
+                const modes = ruleChannels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
                 try {
-                    compileTemplateSet({ templates, variables: VARIABLES, channels: allModes });
+                    compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
                 } catch (error) {
                     throw new Error(
                         `Invalid scheduleAlerts template for rule "${rule.id}" (server "${server.name}"): ${error.message}`
                     );
                 }
 
-                if (rule.channels && rule.channels.length && resolveChannels(rule, sender).length === 0) {
+                if (rule.channels && rule.channels.length && ruleChannels.length === 0) {
                     throw new Error(
                         `scheduleAlerts rule "${rule.id}" (server "${server.name}") restricts channels to `
                         + `[${rule.channels.join(', ')}], but none of those channels have a configured destination `

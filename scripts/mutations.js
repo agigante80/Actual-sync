@@ -1341,8 +1341,11 @@ module.exports = [
     {
         id: '258-h6-template-not-validated-at-startup', ticket: '#258',
         desc: 'a rule\'s merged template is no longer compiled at config-load time, so a bad template only fails at send time',
+        // R2-M7 rewrote the compiled channel set from a fixed allModes to the
+        // rule's own resolved modes; retargeted to the call itself, which is
+        // unaffected by which channel list it is passed (#258 review round 2).
         file: 'src/lib/configLoader.js',
-        anchor: '                    compileTemplateSet({ templates, variables: VARIABLES, channels: allModes });',
+        anchor: '                    compileTemplateSet({ templates, variables: VARIABLES, channels: modes });',
         mutant: '                    void 0;',
         tests: 'configLoader'
     },
@@ -1357,8 +1360,11 @@ module.exports = [
     {
         id: '258-m2-unreachable-channels-not-rejected-at-startup', ticket: '#258',
         desc: "a rule whose explicit channels restriction names no configured destination is no longer rejected at startup",
+        // R2-M7 hoisted resolveChannels(rule, sender) into a ruleChannels
+        // local (reused for the per-rule template modes too); retargeted to
+        // that same guard, now read from ruleChannels (#258 review round 2).
         file: 'src/lib/configLoader.js',
-        anchor: '                if (rule.channels && rule.channels.length && resolveChannels(rule, sender).length === 0) {',
+        anchor: '                if (rule.channels && rule.channels.length && ruleChannels.length === 0) {',
         mutant: '                if (false) {',
         tests: 'configLoader'
     },
@@ -1484,6 +1490,14 @@ module.exports = [
         anchor: "          ${filterChannel ? 'AND (channel IS ? OR channel IS NULL)' : ''}",
         mutant: "          ${filterChannel ? 'AND channel IS ?' : ''}",
         tests: 'syncHistory.test'
+    },
+    {
+        id: '258-r2-m7-startup-template-check-ignores-rule-channels', ticket: '#258',
+        desc: 'startup template validation goes back to compiling every rule against every channel mode, so a Telegram-only literal-markup restriction rejects a valid template for a rule that can only ever reach slack/email',
+        file: 'src/lib/configLoader.js',
+        anchor: '                const ruleChannels = resolveChannels(rule, sender);',
+        mutant: "                const ruleChannels = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'];",
+        tests: 'configLoader.test'
     },
 
     // ---- #169: the README claim that started #168 ---------------------------
