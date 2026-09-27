@@ -40,6 +40,16 @@ const ROOT = path.resolve(__dirname, '..', '..');
  * this repository can reach them.
  */
 const REVIEWED_KEPT = new Map([
+    // False positive, not a deferred decision: `render` is an object-literal
+    // method returned by the `compileTemplateSet` factory function, not a
+    // method of any class. The scanner's per-file `class` check only sees
+    // that templateRenderer.js also defines the unrelated `TemplateValidationError`
+    // class, so it treats every indented `name() {` in the whole file as a
+    // class method. `render`'s only caller in this ticket is its own test
+    // suite (#258 is the first production consumer), and tests are
+    // deliberately not counted as references, so the heuristic cannot see it
+    // as live even though it is not dead code. (#257)
+    ['src/lib/templateRenderer.js:render', '#257 - false positive: render is a factory-returned object method, not a class method; see comment above']
 ]);
 
 // The body may start on the same line; a guard that only saw multi-line

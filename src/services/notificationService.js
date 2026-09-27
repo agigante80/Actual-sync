@@ -42,8 +42,12 @@ class NotificationService {
    * @param {number} config.rateLimit.minIntervalMinutes - Min time between notifications
    * @param {number} config.rateLimit.maxPerHour - Max notifications per hour
    * @param {Object} loggerConfig - Logger configuration
+   * @param {Object} options - Constructor-only options, never persisted to config
+   * @param {string} [options.telegramApiBaseUrl] - Telegram API base URL (default
+   *   https://api.telegram.org). Not a config key: it exists purely as a test seam
+   *   so tests can point Telegram calls at a local fake-channel server. (#257)
    */
-  constructor(config = {}, loggerConfig = {}) {
+  constructor(config = {}, loggerConfig = {}, options = {}) {
     // Branding (project name + logo on Slack/Discord/ntfy) is on by default but
     // can be turned off with `notifications.branding: false` — e.g. to keep a
     // Slack/Discord webhook's own configured app identity, or to stop ntfy from
@@ -107,6 +111,10 @@ class NotificationService {
       component: 'NotificationService',
       ...loggerConfig
     });
+
+    // Test seam only (#257): never read from config, so a fake-channel server
+    // can be swapped in without a config key someone could point at production.
+    this.telegramApiBaseUrl = options.telegramApiBaseUrl || 'https://api.telegram.org';
 
     // Track notification state (per-server)
     this.lastNotificationTime = {}; // Per-server timestamps
@@ -1195,7 +1203,12 @@ Please investigate and resolve the issue.
           if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve({ statusCode: res.statusCode, body: data });
           } else {
-            reject(new Error(`Webhook failed with status ${res.statusCode}: ${data}`));
+            // statusCode is set on the error (not just in the message text) so a
+            // caller can react to specific codes, e.g. sendTemplated()'s single
+            // retry on a Telegram 400 (#257).
+            const error = new Error(`Webhook failed with status ${res.statusCode}: ${data}`);
+            error.statusCode = res.statusCode;
+            reject(error);
           }
         });
       });
@@ -1353,17 +1366,23 @@ Please investigate and resolve the issue.
   }
 
   /**
-   * Send a simple Telegram message (for startup notifications, etc.)
+   * Send a Telegram message and report the outcome in detail (#257).
+   *
+   * `sendTelegramMessage` (below) is the boolean-returning form every existing
+   * caller uses. This method is the same send, with the status visibility
+   * `sendTemplated` needs to decide whether a Telegram 400 is worth retrying.
+   *
    * @param {string} message - Message text
    * @param {Object} options - Additional options (parse_mode, etc.)
-   * @returns {Promise<boolean>} Success status
+   * @returns {Promise<{ok: boolean, statusCode: number|null}>} statusCode is
+   *   null when Telegram was never reached: not configured, or a network error.
    */
-  async sendTelegramMessage(message, options = {}) {
+  async sendTelegramMessageDetailed(message, options = {}) {
     // The constructor always materialises config.telegram, so a plain
     // `config.telegram || webhooks.telegram[0]` never reached the fallback and the
     // schema-supported legacy shape silently delivered nothing (#174). A
-    // webhooks.telegram entry has no `enabled` key — the schema forbids extras —
-    // so its presence IS its enablement.
+    // webhooks.telegram entry has no `enabled` key, since the schema forbids
+    // extras, so its presence IS its enablement.
     const legacyEntry = this.config.webhooks?.telegram?.[0];
     const telegram = this.config.telegram?.enabled
       ? this.config.telegram
@@ -1371,18 +1390,18 @@ Please investigate and resolve the issue.
 
     if (!telegram || !telegram.enabled) {
       this.logger.debug('Telegram not configured or not enabled');
-      return false;
+      return { ok: false, statusCode: null };
     }
 
     // Get chatId - handle both chatId (string) and chatIds (array)
     const chatId = telegram.chatId || telegram.chatIds?.[0];
     if (!chatId) {
       this.logger.error('Telegram chat ID not configured');
-      return false;
+      return { ok: false, statusCode: null };
     }
 
     try {
-      const url = `https://api.telegram.org/bot${telegram.botToken}/sendMessage`;
+      const url = `${this.telegramApiBaseUrl}/bot${telegram.botToken}/sendMessage`;
       const payload = {
         chat_id: chatId,
         text: message,
@@ -1390,15 +1409,125 @@ Please investigate and resolve the issue.
         ...options
       };
 
-      await this.sendWebhook(url, payload);
+      const result = await this.sendWebhook(url, payload);
       this.logger.debug('Telegram message sent successfully');
-      return true;
+      return { ok: true, statusCode: result.statusCode };
     } catch (error) {
       this.logger.error('Failed to send Telegram message', {
         error: error.message
       });
-      return false;
+      return { ok: false, statusCode: typeof error.statusCode === 'number' ? error.statusCode : null };
     }
+  }
+
+  /**
+   * Send a simple Telegram message (for startup notifications, etc.)
+   * @param {string} message - Message text
+   * @param {Object} options - Additional options (parse_mode, etc.)
+   * @returns {Promise<boolean>} Success status
+   */
+  async sendTelegramMessage(message, options = {}) {
+    return (await this.sendTelegramMessageDetailed(message, options)).ok;
+  }
+
+  /**
+   * Send a set of already-rendered, per-channel template outputs (#257).
+   *
+   * This is the templated counterpart to `notifySync()` and
+   * `sendStartupNotification()`: those format built-in sync/startup content
+   * via `MessageFormatter`, while this sends content a consumer already
+   * rendered from its own `compileTemplateSet()` (`src/lib/templateRenderer.js`).
+   * It is infrastructure only. No consumer in this ticket calls it: #258 is
+   * the first one.
+   *
+   * Each key is optional. Only the channels the caller populates are sent.
+   *
+   * @param {Object} channelOutputs
+   * @param {Object} [channelOutputs.telegram] - `{ html, plain }`. `html` is
+   *   rendered for the 'telegram' channel (HTML-escaped, truncated to 4096)
+   *   and is sent first with `parse_mode: 'HTML'`. On a Telegram 400, `plain`
+   *   (rendered for 'email_text', unescaped) is sent once as a fallback with
+   *   no `parse_mode`, and a WARN is logged. Any other failure is not retried.
+   * @param {Object} [channelOutputs.email] - `{ subject, text, html }`
+   * @param {Object} [channelOutputs.webhook] - `{ url, text, fields }`. Sent as
+   *   `{ text, ...fields }`: raw variables travel as structured JSON fields
+   *   alongside the rendered text.
+   * @param {Object} [channelOutputs.slack] - `{ url, text }`
+   * @param {Object} [channelOutputs.discord] - `{ url, text }`
+   * @param {Object} [channelOutputs.ntfy] - `{ title, text, level }`
+   * @returns {Promise<Object>} per-channel results
+   */
+  async sendTemplated(channelOutputs = {}) {
+    const results = {};
+
+    if (channelOutputs.telegram) {
+      results.telegram = await this._sendTemplatedTelegram(channelOutputs.telegram);
+    }
+
+    if (channelOutputs.email) {
+      const { subject, text, html } = channelOutputs.email;
+      results.email = await this.sendFormattedEmail(subject, text, html);
+    }
+
+    if (channelOutputs.webhook) {
+      const { url, text, fields } = channelOutputs.webhook;
+      try {
+        await this.sendWebhook(url, { text, ...(fields || {}) });
+        results.webhook = { success: true };
+      } catch (error) {
+        this.logger.error('Failed to send templated webhook', { error: error.message });
+        results.webhook = { success: false, error: error.message };
+      }
+    }
+
+    if (channelOutputs.slack) {
+      const { url, text } = channelOutputs.slack;
+      try {
+        await this.sendWebhook(url, { text });
+        results.slack = { success: true };
+      } catch (error) {
+        this.logger.error('Failed to send templated Slack webhook', { error: error.message });
+        results.slack = { success: false, error: error.message };
+      }
+    }
+
+    if (channelOutputs.discord) {
+      const { url, text } = channelOutputs.discord;
+      try {
+        await this.sendWebhook(url, { content: text });
+        results.discord = { success: true };
+      } catch (error) {
+        this.logger.error('Failed to send templated Discord webhook', { error: error.message });
+        results.discord = { success: false, error: error.message };
+      }
+    }
+
+    if (channelOutputs.ntfy) {
+      const { title, text, level } = channelOutputs.ntfy;
+      results.ntfy = await this.sendNtfy({ title, message: text, level });
+    }
+
+    return results;
+  }
+
+  /**
+   * Telegram half of `sendTemplated`: send the HTML render with `parse_mode`,
+   * and on a 400 (the literal-markup rule in `templateRenderer.js` should have
+   * caught this at startup, but Telegram is the final authority) retry once
+   * with the plain-text render and no `parse_mode`. Any other failure,
+   * including no response at all (`statusCode: null`), is not retried. (#257)
+   *
+   * @param {{html: string, plain: string}} templateOutput
+   * @returns {Promise<{ok: boolean, statusCode: number|null}>}
+   */
+  async _sendTemplatedTelegram({ html, plain }) {
+    const result = await this.sendTelegramMessageDetailed(html, { parse_mode: 'HTML' });
+    if (result.ok || result.statusCode !== 400) {
+      return result;
+    }
+
+    this.logger.warn('Telegram rejected templated message with a 400, retrying once without parse_mode', {});
+    return this.sendTelegramMessageDetailed(plain ?? html);
   }
 
 }
