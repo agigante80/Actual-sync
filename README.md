@@ -840,16 +840,151 @@ A server with no `scheduleAlerts` block never calls `getSchedules()` and pays no
 
 ### Ten scenarios
 
-1. **On time** - a matching transaction posts within the rule's early/grace window. No alert.
-2. **Missing** - nothing has posted by the deadline (occurrence date + `graceDays`) and the account is synced past it. A `missing` alert fires, with how many days overdue.
-3. **Resolved** - a payment reported `missing` later posts (on time or late). A `resolved` alert closes it out; no manual dismissal needed.
-4. **Wrong amount** - a transaction matches the account and payee within the window, but its amount is outside tolerance. A `wrongAmount` alert reports both the expected and received amount.
-5. **Stale connection** - the account has not synced in more than `staleAfterDays`. A `cannotCheck` alert (reason `stale`) fires instead of a false `missing` - a broken bank connection is never mistaken for a broken payment.
-6. **Not yet synced** - the account is fresh enough (not stale) but its last sync is still before the deadline, so there has not yet been a chance to see the payment. A `cannotCheck` alert (reason `not-synced`) fires instead of `missing`.
-7. **Recurring reminder** - a `missing` alert stays unresolved. With `remindEveryDays` set, the same alert repeats every N days instead of firing once and going silent.
-8. **Renamed or deleted schedule** - a rule's `schedule`/`schedulePrefix` matches nothing in Actual anymore (renamed, deleted, or a typo). A `ruleUnmatched` alert names the rule, so it is never silently ignored.
-9. **Overlapping windows** - a rule's `graceDays + earlyDays` is greater than or equal to the schedule's own shortest interval between occurrences, which would let one payment satisfy two occurrences or invert the late window. The rule is skipped (one `cannotCheck` alert, reason `interval-violation`, plus a startup-log warning) rather than risk a wrong result.
-10. **Digest** - several alerts fire in the same sync for the same server. With `digest: true` set on the block, they are merged into one message per channel instead of one message per event; the ledger still records one row per event, so de-duplication and reminders work exactly as without digest.
+Every scenario below (except #9, which needs a shorter cadence to demonstrate) uses the same
+schedule, configured in Actual as: recurrence **Monthly, on the 5th**; amount **-850.00** (an
+expense); account **Checking**; payee **Landlord LLC**; name **"Rent - Apartment"**. Timezone is
+`Europe/Madrid`, `dateFormat` is left at its default (`D MMM YYYY`), and the destination channel is
+a configured Slack webhook unless noted. Each message below is rendered by the real `deliver()`
+code against that exact fixture, not paraphrased.
+
+**1. On time** - a transaction for -850.00 posts to Checking on 5 Oct 2026 (the occurrence date
+itself), linked to the schedule in Actual.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+```
+
+No event, no message: an on-time payment produces nothing to report.
+
+**2. Missing** - nothing has posted to Checking by the deadline (5 Oct + `graceDays: 6` = 11 Oct),
+and the account's `last_sync` is past that deadline. Sync runs on 12 Oct 2026.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+```
+
+> ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
+
+**3. Resolved** - the sync on 12 Oct sends the `missing` alert above. Three days later, on 15 Oct,
+the payment posts (4 days after the 11 Oct deadline). The next sync closes it out with a `resolved`
+alert; no manual dismissal is needed.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+```
+
+> ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
+>
+> *(3 days later, once the payment posts:)*
+>
+> ✅ Rent - Apartment: -850.00 arrived 15 Oct 2026, 4 day(s) after the deadline. Alert closed.
+
+**4. Wrong amount** - a transaction for -800.00 (not -850.00) posts to Checking, matching account
+and payee within the window, on 5 Oct 2026. The rule's amount mode is exact (Actual's schedule
+amount is `is`, not `approximately`), so `amountTolerancePct` defaults to `0`.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+```
+
+> ⚠️ Rent - Apartment: received -800.00 on 5 Oct 2026, expected -850.00 (difference 50.00).
+
+**5. Stale connection** - nothing has posted, and Checking's `last_sync` is 8 Oct 2026 while the
+sync runs on 15 Oct - 7 days old, more than `staleAfterDays: 3`. A `cannotCheck` alert (reason
+`stale`) fires instead of a false `missing`.
+
+```json
+{
+  "staleAfterDays": 3,
+  "alerts": [{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }]
+}
+```
+
+> ⏸️ Cannot check Rent - Apartment: Checking has not synced since 8 Oct 2026 (deadline 11 Oct 2026). Check the bank connection.
+
+**6. Not yet synced** - the sync runs on 13 Oct 2026 (past the 11 Oct deadline), and Checking's
+`last_sync` is 11 Oct - fresh enough not to be stale (2 days old, under `staleAfterDays: 3`), but
+still at/before the deadline itself, so there has been no chance yet to see the payment. A
+`cannotCheck` alert (reason `not-synced`) fires instead of `missing`.
+
+```json
+{
+  "staleAfterDays": 3,
+  "alerts": [{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }]
+}
+```
+
+> ⏸️ Cannot check Rent - Apartment: Checking has not synced since 11 Oct 2026 (deadline 11 Oct 2026). Check the bank connection.
+
+**7. Recurring reminder** - the same `missing` alert as scenario 2 stays unresolved. With
+`remindEveryDays: 3` set, it repeats every 3 calendar days (in the configured timezone) instead of
+firing once and going silent: the sync on 12 Oct sends it, and the sync on 15 Oct (3 days later,
+still unresolved) sends the identical message again rather than staying silent.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6, "remindEveryDays": 3 }
+```
+
+> ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
+>
+> *(repeated verbatim 3 days later, since the payment is still missing)*
+>
+> ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
+
+**8. Renamed or deleted schedule** - the rule watches `"Rent - Apartment (old name)"`, but the
+schedule in Actual was renamed to `"Rent - Apartment"` (or deleted). The rule's own `schedule`/
+`schedulePrefix` matches nothing.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment (old name)", "graceDays": 6 }
+```
+
+> ❓ Payment alert "rent" matches no schedule in Main. Check the schedule name in Actual.
+
+This repeats once per day while unmatched (a fixed interval, independent of `remindEveryDays`).
+
+**9. Overlapping windows** - a *weekly* schedule (7-day interval between occurrences) with
+`graceDays: 5, earlyDays: 3` (5 + 3 = 8, greater than or equal to the 7-day interval): a late
+payment for one week's occurrence could be counted as an early payment for the next, or vice versa.
+The rule is skipped for that sync rather than risk a wrong result - one `cannotCheck` alert (reason
+`interval-violation`, no `occurrence`/`deadline` since none is being evaluated) plus a logged
+warning naming the rule and the exact numbers.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 5, "earlyDays": 3 }
+```
+
+Logged warning:
+
+> Rule "rent": graceDays (5) + earlyDays (3) >= the schedule's shortest interval between occurrences (7 days); the on-time and late windows of consecutive occurrences would overlap, so this rule was skipped.
+
+Sent alert (the shared `cannotCheck` template has no `occurrence`/`deadline` to fill in for this
+reason, so those two fields render blank - this is expected for `interval-violation`):
+
+> ⏸️ Cannot check Rent - Apartment: Checking has not synced since  (deadline ). Check the bank connection.
+
+**10. Digest** - in the same sync, the Rent rule above is `missing` and a second rule, watching an
+income schedule **"Salary"** (recurrence Monthly on the 5th, expected +3200.00 into Checking from
+"Employer Inc"), receives +3000.00 instead - a `wrongAmount`. With `digest: true` set on the block,
+both are merged into one message per channel instead of two separate messages; the ledger still
+records one row per event, per destination, so de-duplication and reminders work exactly as without
+digest.
+
+```json
+{
+  "staleAfterDays": 3,
+  "digest": true,
+  "alerts": [
+    { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 },
+    { "id": "salary", "schedule": "Salary", "graceDays": 3, "earlyDays": 5, "amountTolerancePct": 0 }
+  ]
+}
+```
+
+> Actual-sync: 2 payment alert(s) for Main
+>
+> ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
+> ⚠️ Salary: received 3000.00 on 5 Oct 2026, expected 3200.00 (difference -200.00).
 
 ### Variables
 

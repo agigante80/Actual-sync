@@ -18,6 +18,7 @@ unconfirmable instead of missing.
 - [Event types](#event-types)
 - [De-duplication and reminders](#de-duplication-and-reminders)
 - [Digest mode](#digest-mode)
+- [Startup validation](#startup-validation)
 - [Templates](#templates)
 - [Variables](#variables)
 - [Timezone](#timezone)
@@ -118,26 +119,49 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 ## De-duplication and reminders
 
 Every event is looked up in the `schedule_alerts` ledger (part of the sync-history SQLite database;
-see [SYNC_HISTORY.md](./SYNC_HISTORY.md)) by `(server, alertId, scheduleId, occurrenceDate, event)`
-before it is sent. A key that already has a row is not sent again, **except**:
+see [SYNC_HISTORY.md](./SYNC_HISTORY.md)) by `(server, alertId, scheduleId, occurrenceDate, event,
+channel)` before it is sent, where `channel` identifies the exact destination (the channel name
+alone for a single-destination channel such as `telegram` or `email`, or `channel:url` for a
+webhook-style channel such as `slack`/`discord`/`webhook` that can have several destinations). A
+key that already has a row is not sent again to that destination, **except**:
 
 - a `missing` event, when `remindEveryDays` is set and that many days have passed since the latest
-  recorded row for that key;
+  recorded row for that destination;
 - a `ruleUnmatched` event, which always uses a fixed 1-day interval, regardless of `remindEveryDays`.
 
-A ledger row is written only after a successful send; a failed send (every configured destination
-returned a failure, or the send threw) withholds the row so the event is retried on the next sync
-rather than silently lost. The ledger is purged along with the rest of sync history, but never
-before `max(retentionDays, 120)` days, so alert history outlives a short `retentionDays` setting.
+Keying the ledger per destination, not just per channel type, means each destination is retried
+independently (#295 review, H5): if one of two configured Slack webhooks is down, only its own row
+is withheld and it is retried on the next sync, while the other webhook (and every other channel)
+keeps recording success and is not resent. A ledger row is written only after a successful send to
+that destination; a failed send to a destination withholds only that destination's row. When a
+rule's explicit `channels` list resolves to no configured destination, no ledger row is written and
+the sync logs a warning instead of counting the event as delivered; such a rule is also rejected at
+config-load time so this is caught before the first sync (see "Startup validation" below). The
+ledger is purged along with the rest of sync history, but never before `max(retentionDays, 120)`
+days, so alert history outlives a short `retentionDays` setting.
 
 ## Digest mode
 
 `scheduleAlerts.digest: true` merges every eligible event from one sync, for one server, into a
-single message per channel, instead of one message per event. The ledger still records one row per
-event - de-duplication and reminders work exactly as in the non-digest case; only the outgoing
-notification is merged. When several destinations of the same channel type are configured (for
-example two Slack webhooks), the digest sends to the first enabled one of that type; fan-out to
+single message per channel, instead of one message per event. Each rule's own `channels`
+restriction is still honored in digest mode: an event is only merged into the channels its rule
+allows, never into every configured channel (#295 review, M1). The ledger still records one row per
+destination - de-duplication and reminders work exactly as in the non-digest case; only the
+outgoing notification is merged. When several destinations of the same channel type are configured
+(for example two Slack webhooks), the digest sends to the first enabled one of that type; fan-out to
 every configured destination is preserved for the non-digest case.
+
+## Startup validation
+
+Config loading fails fast on two classes of mistakes that would otherwise only surface at send time,
+mid-sync (#295 review, H6/M2):
+
+- every rule's merged template set (built-in defaults, `scheduleAlerts.templates`, and the rule's own
+  `alerts[].templates`) is compiled for every channel the rule can use, so a malformed Handlebars
+  template is a config error, not a runtime one that blocks every alert for that server;
+- a rule whose explicit `channels` list names no destination that is actually configured (for
+  example `channels: ["slack"]` with no Slack webhook set up) is rejected at startup rather than
+  silently never sending.
 
 ## Templates
 
@@ -205,12 +229,13 @@ shares the sync process's own local zone.
   detected the first time the rule is evaluated: the rule is skipped for that sync (one
   `cannotCheck` event, `reason: "interval-violation"`) and a warning is logged, rather than risk a
   double-counted payment or an inverted late window.
-- **A rule requesting a channel with nothing configured to receive it is not an error.** If a rule's
-  `channels` names a channel with no usable destination (for example `email` with no SMTP
-  configured), that channel is silently dropped rather than failing the whole alert; if every
-  requested channel drops out this way, the event is treated as delivered (so it does not retry
-  forever waiting for a destination that will never exist) but nothing is actually sent anywhere.
-  Configure at least one working destination for a rule's channels to receive it.
+- **A rule's `channels` list must name at least one configured destination, checked at config-load
+  time (#295 review, M2).** If a rule's explicit `channels` names only channels with no usable
+  destination (for example `email` with no SMTP configured), config loading fails with an error
+  naming the rule, rather than the rule silently never sending. A rule that leaves `channels` unset
+  (defaulting to every configured channel) is not subject to this check: if nothing at all is
+  configured server-wide, its events log a warning and record no ledger row at send time instead of
+  being treated as delivered.
 - **Rule enable/mute state and dashboard-managed rules are out of scope for this release.** Every
   rule from `config.json` is always enabled and never muted; a future release can add real
   enable/mute state and dashboard-created rules without changing the evaluation or delivery engine.
