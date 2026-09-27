@@ -120,10 +120,12 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 
 Every event is looked up in the `schedule_alerts` ledger (part of the sync-history SQLite database;
 see [SYNC_HISTORY.md](./SYNC_HISTORY.md)) by `(server, alertId, scheduleId, occurrenceDate, event,
-channel)` before it is sent, where `channel` identifies the exact destination (the channel name
-alone for a single-destination channel such as `telegram` or `email`, or `channel:url` for a
-webhook-style channel such as `slack`/`discord`/`webhook` that can have several destinations). A
-key that already has a row is not sent again to that destination, **except**:
+channel)` before it is sent, where `channel` identifies the exact destination: the channel name
+alone for a single-destination channel such as `telegram` or `email`, or for a webhook-style channel
+such as `slack`/`discord`/`webhook` that can have several destinations, the channel name plus the
+operator's configured `name` for that webhook, or, when no name is set, a short non-reversible hash
+of its URL (never the URL itself - the ledger is never a place secrets are stored, #295 review round
+2, M8). A key that already has a row is not sent again to that destination, **except**:
 
 - a `missing` event, when `remindEveryDays` is set and that many days have passed since the latest
   recorded row for that destination;
@@ -221,21 +223,46 @@ shares the sync process's own local zone.
 ## Design notes and known limitations
 
 - **Overlapping windows are caught per schedule, at evaluation time, not at config load.** A rule
-  whose `graceDays + earlyDays` is greater than or equal to its schedule's own shortest interval
-  between occurrences would let one payment satisfy two occurrences, or invert the late window. A
-  schedule's cadence is only known once `getSchedules()` returns during a sync - `config.json` alone
-  carries no cadence information - so this cannot be rejected at config-load time the way a
-  structural error (a missing required field, a duplicate `id`) can. Instead, the violation is
-  detected the first time the rule is evaluated: the rule is skipped for that sync (one
-  `cannotCheck` event, `reason: "interval-violation"`) and a warning is logged, rather than risk a
-  double-counted payment or an inverted late window.
+  whose `graceDays + earlyDays` (widened, when larger, to the linked-transaction early allowance -
+  see the next bullet) is greater than or equal to its schedule's own shortest interval between
+  occurrences would let one payment satisfy two occurrences, or invert the late window. A schedule's
+  cadence is only known once `getSchedules()` returns during a sync - `config.json` alone carries no
+  cadence information - so this cannot be rejected at config-load time the way a structural error (a
+  missing required field, a duplicate `id`) can. Instead, the violation is detected the first time
+  the rule is evaluated: the rule is skipped for that sync (one `cannotCheck` event, `reason:
+  "interval-violation"`) and a warning is logged, rather than risk a double-counted payment or an
+  inverted late window.
 - **A rule's `channels` list must name at least one configured destination, checked at config-load
-  time (#295 review, M2).** If a rule's explicit `channels` names only channels with no usable
-  destination (for example `email` with no SMTP configured), config loading fails with an error
-  naming the rule, rather than the rule silently never sending. A rule that leaves `channels` unset
-  (defaulting to every configured channel) is not subject to this check: if nothing at all is
-  configured server-wide, its events log a warning and record no ledger row at send time instead of
-  being treated as delivered.
+  time (#295 review, M2), and every template is validated at startup only against the channels a
+  rule can actually reach (#295 review round 2, M7).** If a rule's explicit `channels` names only
+  channels with no usable destination (for example `email` with no SMTP configured), config loading
+  fails with an error naming the rule, rather than the rule silently never sending. A rule that
+  leaves `channels` unset (defaulting to every configured channel) is not subject to this check: if
+  nothing at all is configured server-wide, its events log a warning and record no ledger row at
+  send time instead of being treated as delivered. Template validation follows the same resolved
+  channel list, so a Telegram-only restriction (for example, no literal `&`/`<` in the rendered
+  text) is only enforced for a rule that can actually reach Telegram, never for one restricted to
+  slack/email or on a server with no Telegram destination configured.
+- **A missed occurrence can be masked by a later linked payment, not only by an explicit "Skip next
+  date" (#295 review round 2, H2).** Actual advances a schedule's `next_date` both when an operator
+  explicitly skips an occurrence and whenever a later occurrence gets linked to a posted payment,
+  with no other trace distinguishing the two cases. Schedule alerts treats an occurrence before
+  `next_date` as `skipped` only when no transaction linked to that schedule falls between the
+  occurrence's deadline and `next_date`; if one does, that later payment - not a deliberate skip -
+  is what moved `next_date`, and the occurrence falls through to the normal `missing`/`cannotCheck`
+  check instead of being hidden. The accepted trade-off: a genuine explicit skip whose next payment
+  happens to post early (dated between the skipped occurrence's deadline and `next_date`) looks
+  identical to the masked-miss case above, and will also fall through rather than being reported as
+  `skipped` - an occasional false `missing` on an explicitly-skipped occurrence (which the operator
+  can dismiss) is accepted in exchange for never silently hiding a genuine miss.
 - **Rule enable/mute state and dashboard-managed rules are out of scope for this release.** Every
   rule from `config.json` is always enabled and never muted; a future release can add real
   enable/mute state and dashboard-created rules without changing the evaluation or delivery engine.
+- **A new or rotated webhook destination gets its currently-open alerts re-sent once (#295 review
+  round 2, M8).** The ledger key for a webhook-style destination is the operator's configured `name`
+  when set, or otherwise a short hash of its URL - never the URL itself, since the ledger is a
+  plain-text SQLite database and the URL is a secret. Adding a webhook, renaming one, or rotating its
+  URL with no name set changes its key to one the ledger has never recorded, so any alert still open
+  for that destination is delivered once more before settling back into the normal per-destination
+  de-duplication and reminder cycle. This is accepted: it is strictly safer than storing the secret
+  in the ledger, or silently losing track of an in-flight alert across a rename/rotation.
