@@ -61,7 +61,10 @@ describe('validateTemplate', () => {
     test('an unknown name used only in a false #if branch still throws', () => {
       expect.assertions(2);
       try {
-        validateTemplate('{{#if nmae}}x{{/if}}', { key: 'missing', variables: ['name'] });
+        validateTemplate('{{#if flag}}{{name}}{{else}}{{nmae}}{{/if}}', {
+          key: 'missing',
+          variables: ['flag', 'name']
+        });
       } catch (err) {
         expect(err.reason).toBe('unknown_variable');
         expect(err.token).toBe('nmae');
