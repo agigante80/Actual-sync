@@ -9,6 +9,7 @@ The Notification System provides automated alerts and interactive commands to mo
 - [Telegram Bot](#telegram-bot)
 - [Email Notifications](#email-notifications)
 - [Webhook Notifications](#webhook-notifications)
+- [Message templates](#message-templates)
 - [Notification Thresholds](#notification-thresholds)
 - [Rate Limiting](#rate-limiting)
 - [Use Cases](#use-cases)
@@ -892,6 +893,83 @@ See [Generic webhooks](#webhook-settings) for the payload shape and options.
    - Create separate bots for different environments
    - Test with `/start` command to ensure bot is working
    - Bot needs admin rights to post in channels
+
+## Message templates
+
+> Infrastructure note: this section documents the template engine itself (`src/lib/templateRenderer.js` and `src/lib/channelEscape.js`). No configuration key uses it yet in this release; it exists so a future feature can offer user-configurable wording without inventing a new placeholder syntax. Every notification described earlier in this document keeps its current hard-coded text.
+
+### Syntax
+
+Templates use [Handlebars](https://handlebarsjs.com/) `{{ variable }}` syntax, the same engine and placeholder style Actual Budget uses for rule action templates, so Actual users already know it:
+
+```handlebars
+{{name}}'s payment of {{amount}} is due {{deadline}}.
+```
+
+A template can also use a small set of helpers and block helpers:
+
+```handlebars
+{{upper name}} owes {{default amount "an unknown amount"}}.
+{{#if (eq status "overdue")}}This payment is overdue.{{else}}This payment is on time.{{/if}}
+{{#each items as |item|}}- {{item.name}}: {{item.amount}}
+{{/each}}
+```
+
+### Variable and helper whitelist
+
+A template can only reference:
+
+- a variable the consumer explicitly documented (each notification type defines its own list, for example `name`, `amount`, `deadline`);
+- `this`, an `@data` variable such as `@index`, or a block parameter introduced by `#each`/`#with` (for example the `item` in `{{#each items as |item|}}`);
+- one of four helpers: `eq`, `default`, `upper`, `lower`;
+- one of four block helpers: `if`, `unless`, `each`, `with`.
+
+Everything else, including `lookup`, `log`, any other custom helper name, and partials (`{{> something}}`), fails validation at startup. This is checked by walking the template's parsed syntax tree rather than by rendering a sample, so an unknown name is caught even when it only appears inside a helper argument, inside a false `#if` branch, or inside an `#each` body that happens to be empty for a given sample. Validation failures throw with the template key, the offending token, and the line number, so a typo such as `{{nmae}}` is reported precisely rather than silently rendering blank.
+
+Because the render context only ever contains the variables a consumer explicitly whitelisted, a template can never reach configuration secrets such as a Telegram bot token or an SMTP password, no matter how it is written.
+
+### Per-channel output
+
+Escaping happens once, at output time, per channel, never before a helper runs. `{{upper payee}}` on `Bob & Co` always produces `BOB & CO` from the helper itself; whether that ends up as `BOB & CO` or `BOB &amp; CO` depends only on the channel it is rendered for:
+
+| Channel | Compiled with | Post-processing | Notes |
+|---|---|---|---|
+| Telegram | HTML escaping on | `truncateTelegramHtml` (4096 char limit) | sent with `parse_mode: HTML` |
+| Email (HTML part) | HTML escaping on | none | |
+| Email (text part) | raw, no escaping | none | plain text |
+| ntfy | raw, no escaping | none | plain text |
+| Slack | raw, no escaping | `escapeSlack` on the whole rendered string | plain-text semantics; Slack's own markup is not available to a template author |
+| Discord | raw, no escaping | `escapeDiscordMarkdown` on the whole rendered string | plain-text semantics |
+| Generic webhook | raw, no escaping, for the `text` field | none | raw variable values are also sent as separate structured JSON fields |
+
+### Telegram markup rules
+
+Telegram rejects a message outright (HTTP 400) if its literal text contains a bare `&` or `<`, or a tag other than `b`, `i`, `u`, `s`, `code`, `pre`, or `a`. A template's literal content, the parts the template author typed directly rather than a rendered variable, is checked against this rule at startup, so a template like:
+
+```handlebars
+Rent & fees due {{deadline}}
+```
+
+fails validation immediately, naming the `&` and its line, instead of failing the first time it is sent. A template using only the allowed tags passes:
+
+```handlebars
+<b>{{name}}</b> owes {{amount}}
+```
+
+If Telegram still rejects a rendered message at send time (for example because a variable's value produced markup the startup check could not foresee), the notification service retries exactly once, sending the plain-text rendering with no `parse_mode`, and logs a warning. Any other delivery failure is not retried.
+
+### Validation errors
+
+`validateTemplate` throws a `TemplateValidationError` carrying:
+
+- `key`: the template's identifier, so an error in a multi-template set names the right one;
+- `token`: the offending variable name, helper name, or character;
+- `line`: the 1-based line number inside the template source;
+- `reason`: one of `unknown_variable`, `unknown_helper`, `parse_error`, or `telegram_markup`.
+
+### Locale loading
+
+A consumer formats money and dates before handing values to a template, rather than doing it inside the template itself: for example `expected_amount: "80,00 €"` alongside a raw twin `expected_amount_raw: 80`, using `Intl.NumberFormat` for currency and `moment-timezone` for dates. A non-English locale's data is loaded on demand; an unrecognized locale code is a startup error rather than a silent fallback to English formatting.
 
 ## Notification Thresholds
 

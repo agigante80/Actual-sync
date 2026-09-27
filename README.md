@@ -789,6 +789,24 @@ Test notifications from the dashboard always send, so you can still verify a mut
 - **Minimum Interval**: Don't send notifications more frequently than X minutes (default: 15)
 - **Maximum Per Hour**: Don't send more than X notifications per hour (default: 4)
 
+### Message templates
+
+Notification wording is being made user-configurable, using [Handlebars](https://handlebarsjs.com/) syntax: the same engine and `{{ variable }}` placeholders Actual Budget uses for rule action templates, so Actual users already know it. A template is validated at startup: an unknown variable, an unregistered helper, or (for Telegram) literal markup Telegram would reject all fail fast, naming the offending token and line rather than failing silently at send time.
+
+English example:
+
+```handlebars
+{{name}}'s payment of {{amount}} is due {{deadline}}.
+```
+
+Spanish example:
+
+```handlebars
+El pago de {{amount}} de {{name}} vence el {{deadline}}.
+```
+
+This is infrastructure for an upcoming feature; no configuration key uses it yet. See **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** for the full syntax, the variable and helper whitelist, and the per-channel output rules.
+
 See **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** for complete notification setup guide including configuration examples for all channels.
 
 ---
