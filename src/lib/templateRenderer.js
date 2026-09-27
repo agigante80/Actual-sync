@@ -175,7 +175,13 @@ function validateTemplate(source, { key, variables, channel } = {}) {
     }
     if (node.parts.length === 0) return; // `this`
     const root = node.parts[0];
-    if (!scopeVars.has(root) && !allowedVars.has(root)) {
+    // Handlebars resolves a block param only from a bare name: `../it` and
+    // `this.it` are context lookups even when `it` is an in-scope block
+    // param, so they must be checked against the whitelist instead. (#257
+    // review round 2)
+    const scoped = node.depth > 0 || /^(\.|this\b)/.test(node.original);
+    const isBlockParam = !scoped && scopeVars.has(root);
+    if (!isBlockParam && !allowedVars.has(root)) {
       fail(key, root, node.loc.start.line, 'unknown_variable');
     }
     if (node.parts.length > 1) {
@@ -185,7 +191,6 @@ function validateTemplate(source, { key, variables, channel } = {}) {
       // A block param IS shaped by the caller's own `#each`/`#with` data, so
       // field access is allowed there (`{{account.name}}`), but never
       // through a name that reaches the JS prototype chain. (#257 review)
-      const isBlockParam = scopeVars.has(root);
       const hasDangerousPart = node.parts.slice(1).some((part) => DANGEROUS_PATH_PARTS.has(part));
       if (!isBlockParam || hasDangerousPart) {
         fail(key, node.original, node.loc.start.line, 'unknown_variable');

@@ -251,6 +251,23 @@ describe('validateTemplate', () => {
         expect(err.token).toBe('account.__proto__');
       }
     });
+
+    // Round 2: `../it` and `this.it` are context lookups in Handlebars, never
+    // block param lookups, so they passed as block params and threw at render.
+    test.each([
+      ['{{#each items as |it|}}{{../it.n}}{{/each}}', 'it'],
+      ['{{#each items as |it|}}{{this.it.n}}{{/each}}', 'it'],
+      ['{{#each items as |it|}}{{this.it}}{{/each}}', 'it'],
+      ['{{#each items as |name|}}{{../name.length}}{{/each}}', '../name.length']
+    ])('a scoped path %s is not treated as a block param', (source, token) => {
+      expect.assertions(2);
+      try {
+        validateTemplate(source, { key: 'items', variables: ['items', 'name'] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_variable');
+        expect(err.token).toBe(token);
+      }
+    });
   });
 
   // M3 (#257 review): a literal in mustache/helper/block position
