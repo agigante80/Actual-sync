@@ -12,8 +12,10 @@
 const fs = require('fs');
 const path = require('path');
 const {
+  RSchedule,
   parseDate,
   dayFromDate,
+  recurConfigToRSchedule,
   getDateWithSkippedWeekend,
   parseRecurDate,
   getRecurringDescription
@@ -73,6 +75,27 @@ describe('getDateWithSkippedWeekend', () => {
   test('throws on an unknown solve mode for a weekend date', () => {
     const saturday = parseDate('2026-01-03');
     expect(() => getDateWithSkippedWeekend(saturday, 'bogus')).toThrow('Unknown weekend solve mode');
+  });
+});
+
+describe('RSchedule / recurConfigToRSchedule (exported for drop-in parity with Actual)', () => {
+  // parseRecurDate is the only in-repo caller of these two, but both are
+  // still exported (see the module doc comment: "kept import-clean ... so it
+  // can be dropped once Actual exports these helpers itself"), so a consumer
+  // that only needs the raw rrule options - or wants to build an RSchedule
+  // directly, as Actual's own rule engine does - can do so without going
+  // through parseRecurDate's simplified error wrapping.
+  test('recurConfigToRSchedule produces rrule options RSchedule accepts directly', () => {
+    const rules = recurConfigToRSchedule({ start: '2026-01-01', frequency: 'daily' });
+    expect(Array.isArray(rules)).toBe(true);
+    const s = new RSchedule({ rrules: rules });
+    const occ = s.occurrences({ start: parseDate('2026-01-01'), end: parseDate('2026-01-03') }).toArray();
+    expect(occ.map((o) => dayFromDate(o.date))).toEqual(['2026-01-01', '2026-01-02', '2026-01-03']);
+  });
+
+  test('RSchedule is a subclass of the underlying @rschedule/core Schedule', () => {
+    const s = new RSchedule({ rrules: recurConfigToRSchedule({ start: '2026-01-01', frequency: 'daily' }) });
+    expect(s.occurrences).toBeInstanceOf(Function);
   });
 });
 

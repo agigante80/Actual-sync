@@ -8,8 +8,9 @@
  * real `SyncHistoryService` and `NotificationService` through `syncService.js`.
  */
 
-const { deliver } = require('../lib/scheduleAlertDelivery');
+const { deliver, DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS } = require('../lib/scheduleAlertDelivery');
 const { getRules } = require('../lib/scheduleAlertRules');
+const { compileTemplateSet } = require('../lib/templateRenderer');
 
 /** In-memory stand-in for the schedule_alerts ledger (src/services/syncHistory.js). */
 function makeFakeHistory() {
@@ -322,5 +323,38 @@ describe('deliver: resolved events', () => {
 
     expect(result).toEqual({ sent: 0, skipped: 0 });
     expect(sender.calls).toHaveLength(0);
+  });
+});
+
+describe('exported constants: DEFAULT_TEMPLATES / VARIABLES / ALL_CHANNELS', () => {
+  // These three are read by config.schema.json's defaults, docs/SCHEDULE_ALERTS.md's
+  // variable table, and an operator wanting to override only one built-in
+  // message, so they are exported as public API even though nothing inside
+  // this repo imports them (deliver() uses its own module-private copies).
+  // These tests exist to keep that surface honest: every default template
+  // must actually compile against the documented variable list, on every
+  // channel `deliver()` can send to.
+  test('ALL_CHANNELS matches sendTemplated\'s known channel keys', () => {
+    expect(ALL_CHANNELS).toEqual(['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy']);
+  });
+
+  test('every DEFAULT_TEMPLATES entry compiles and renders on every channel mode', () => {
+    const modes = ['telegram', 'email_html', 'email_text', 'slack', 'discord', 'webhook', 'ntfy'];
+    const renderer = compileTemplateSet({ templates: DEFAULT_TEMPLATES, variables: VARIABLES, channels: modes });
+    const context = Object.fromEntries(VARIABLES.map((v) => [v, v.endsWith('_raw') ? 0 : `test-${v}`]));
+
+    for (const key of Object.keys(DEFAULT_TEMPLATES)) {
+      for (const mode of modes) {
+        expect(() => renderer.render(key, context, mode)).not.toThrow();
+      }
+    }
+  });
+
+  test('VARIABLES has no duplicates and covers every _raw counterpart', () => {
+    expect(new Set(VARIABLES).size).toBe(VARIABLES.length);
+    const rawSuffixed = VARIABLES.filter((v) => v.endsWith('_raw'));
+    for (const raw of rawSuffixed) {
+      expect(VARIABLES).toContain(raw.slice(0, -'_raw'.length));
+    }
   });
 });
