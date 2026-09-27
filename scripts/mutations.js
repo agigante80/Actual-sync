@@ -875,8 +875,8 @@ module.exports = [
         id: '272-download-unbounded', ticket: '#272',
         desc: 'downloadBudget is no longer timed, so a server that never answers hangs the queue again',
         file: 'src/lib/actualTimeouts.js',
-        anchor: "const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
-        mutant: "const TIMED_METHODS = ['init', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
+        anchor: "const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown', 'getSchedules'];",
+        mutant: "const TIMED_METHODS = ['init', 'loadBudget', 'aqlQuery', 'sync', 'shutdown', 'getSchedules'];",
         tests: 'actualTimeouts'
     },
     {
