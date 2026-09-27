@@ -134,21 +134,34 @@ function expandRules(rules, schedules) {
     // matching entirely (#295 review, H4): Actual keeps a completed schedule
     // around (e.g. it reached its endOccurrences/endDate) but stops expecting
     // new occurrences of it, so evaluating it here only ever produced a
-    // false "missing" for an occurrence nobody expects anymore. A rule whose
-    // only match is completed now behaves like a rule matching nothing
-    // (one `unmatched` binding), same as any other non-match.
+    // false "missing" for an occurrence nobody expects anymore.
+    //
+    // `rawMatches` (name only) is kept separate from `matches` (name and
+    // active) so a rule can tell apart two different non-match reasons
+    // (#295 review round 2, M2): a genuine name mismatch (`rawMatches` is
+    // empty) still gets one `unmatched: true` binding, which the caller
+    // turns into a `ruleUnmatched` event - but a rule whose name DID match,
+    // just only against a completed schedule, produces no binding at all
+    // and no event. Before this, a one-off schedule that Actual marks
+    // completed the day after it is paid (or any fully-completed recurring
+    // schedule) fell into the `matches.length === 0` branch and was treated
+    // as a name mismatch, firing a daily `ruleUnmatched` for a rule that was
+    // actually working fine.
     const isActive = (s) => s.completed !== true;
-    let matches;
+    let rawMatches;
     if (rule.schedulePrefix) {
-      matches = (schedules || []).filter((s) => typeof s.name === 'string' && s.name.startsWith(rule.schedulePrefix) && isActive(s));
+      rawMatches = (schedules || []).filter((s) => typeof s.name === 'string' && s.name.startsWith(rule.schedulePrefix));
     } else if (rule.schedule) {
-      matches = (schedules || []).filter((s) => s.name === rule.schedule && isActive(s));
+      rawMatches = (schedules || []).filter((s) => s.name === rule.schedule);
     } else {
-      matches = [];
+      rawMatches = [];
     }
+    const matches = rawMatches.filter(isActive);
 
     if (matches.length === 0) {
-      bindings.push({ ...rule, scheduleId: null, scheduleName: null, schedule: null, unmatched: true });
+      if (rawMatches.length === 0) {
+        bindings.push({ ...rule, scheduleId: null, scheduleName: null, schedule: null, unmatched: true });
+      }
       continue;
     }
 

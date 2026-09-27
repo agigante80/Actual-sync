@@ -185,10 +185,23 @@ describe('expandRules', () => {
 
   // #295 review, H4: a completed schedule must not produce a binding (it
   // would otherwise still be evaluated and reported "missing" forever).
-  test('a completed schedule is excluded, so a schedule rule matching only a completed one is unmatched', () => {
+  //
+  // #295 review round 2, M2 reverses H4's original choice of outcome here:
+  // a name match against only a completed schedule is NOT the same as a
+  // name mismatch, so it now produces no binding at all (and no
+  // `ruleUnmatched`) rather than one `unmatched: true` binding - see the
+  // rationale comment in `expandRules` for why the daily `ruleUnmatched` was
+  // wrong for a paid one-off or a completed recurring schedule.
+  test('a completed schedule is excluded, so a schedule rule matching only a completed one produces no binding and is not unmatched', () => {
     const rules = getRules({ alerts: [{ id: 'rent', schedule: 'Rent - Apartment' }] });
     const completedSchedules = [{ id: 's1', name: 'Rent - Apartment', completed: true }];
-    expect(expandRules(rules, completedSchedules)).toEqual([expect.objectContaining({ unmatched: true, scheduleId: null })]);
+    expect(expandRules(rules, completedSchedules)).toEqual([]);
+  });
+
+  test('a rule matching no schedule by name at all is still unmatched (name mismatch, not completion)', () => {
+    const rules = getRules({ alerts: [{ id: 'ghost', schedule: 'Does Not Exist' }] });
+    const completedSchedules = [{ id: 's1', name: 'Rent - Apartment', completed: true }];
+    expect(expandRules(rules, completedSchedules)).toEqual([expect.objectContaining({ id: 'ghost', unmatched: true, scheduleId: null })]);
   });
 
   test('a schedulePrefix rule skips a completed schedule but still expands the active ones', () => {
@@ -200,5 +213,14 @@ describe('expandRules', () => {
     const bindings = expandRules(rules, mixed);
     expect(bindings).toHaveLength(1);
     expect(bindings[0]).toMatchObject({ scheduleId: 's2', unmatched: false });
+  });
+
+  test('a schedulePrefix rule matching only completed schedules produces no binding and is not unmatched (#295 review round 2, M2)', () => {
+    const rules = getRules({ alerts: [{ id: 'utilities', schedulePrefix: 'Utilities' }] });
+    const allCompleted = [
+      { id: 's2', name: 'Utilities - Gas', completed: true },
+      { id: 's3', name: 'Utilities - Electric', completed: true }
+    ];
+    expect(expandRules(rules, allCompleted)).toEqual([]);
   });
 });
