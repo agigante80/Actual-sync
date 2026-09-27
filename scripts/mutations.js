@@ -1205,8 +1205,8 @@ module.exports = [
         id: '258-schedule-link-ignored', ticket: '#258',
         desc: "Actual's own transaction-to-schedule link is ignored, falling back to account+payee matching even when linked",
         file: 'src/lib/scheduleAlerts.js',
-        anchor: "  if (tx.schedule && schedule.id && tx.schedule === schedule.id) return { eligible: true, linked: true };",
-        mutant: "  if (false) return { eligible: true, linked: true };",
+        anchor: '    const linked = !!schedule.id && tx.schedule === schedule.id;',
+        mutant: '    const linked = false;',
         tests: 'scheduleAlerts.test'
     },
     {
@@ -1229,7 +1229,7 @@ module.exports = [
         id: '258-reminder-interval-not-enforced', ticket: '#258',
         desc: 'a missing-payment reminder resends on every sync instead of waiting remindEveryDays, spamming every channel',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: '  return ageDays >= remindEveryDays;',
+        anchor: '  return calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays;',
         mutant: '  return true;',
         tests: 'scheduleAlertDelivery'
     },
@@ -1280,6 +1280,136 @@ module.exports = [
         anchor: "    if (solveMode === 'after') {\n      return d.nextMonday(date);\n    } else if (solveMode === 'before') {\n      return d.previousFriday(date);\n    }",
         mutant: "    if (solveMode === 'after') {\n      return d.previousFriday(date);\n    } else if (solveMode === 'before') {\n      return d.nextMonday(date);\n    }",
         tests: 'actualSchedules.vendor'
+    },
+
+    // ---- #295 review round 1: PR #295 fixes ----------------------------------
+    {
+        id: '295-h1-last-sync-epoch-ms-not-parsed', ticket: '#295',
+        desc: 'account.last_sync (a production epoch-ms string) is parsed with plain moment.tz instead of as a number, so missing never fires in production',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const parsed = isNumeric ? moment.tz(Number(lastSync), timezone) : moment.tz(lastSync, timezone);",
+        mutant: "  const parsed = moment.tz(lastSync, timezone);",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '295-h2-binding-isolation-removed', ticket: '#295',
+        desc: 'one schedule that throws during evaluation is no longer isolated, so it aborts evaluate() and silences every other rule',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '    } catch (error) {',
+        mutant: '    } catch (error) { throw error;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '295-h2-cadence-date-format-missing', ticket: '#295',
+        desc: 'getRecurringDescription is called with no date-fns format again, throwing for an on_date endMode schedule',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "\n        cadenceText: typeof dateConfig === 'string' ? null : getRecurringDescription(dateConfig, CADENCE_DATE_FORMAT),",
+        mutant: "\n        cadenceText: typeof dateConfig === 'string' ? null : getRecurringDescription(dateConfig),",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '295-h3-lookback-ignores-early-days', ticket: '#295',
+        desc: "the transaction fetch window is sized off MAX_LOOKBACK_DAYS alone again, so an early payment near the boundary can fall outside the query",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "        .subtract(MAX_LOOKBACK_DAYS + maxEarlyDays, 'days')",
+        mutant: "        .subtract(MAX_LOOKBACK_DAYS, 'days')",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '295-h4-completed-schedule-not-skipped', ticket: '#295',
+        desc: 'a completed schedule is matched again, so it keeps producing false "missing" events for an occurrence nobody expects anymore',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: '    const isActive = (s) => s.completed !== true;',
+        mutant: '    const isActive = (s) => true;',
+        tests: 'scheduleAlertRules'
+    },
+    {
+        id: '295-h5-destination-key-ignores-target', ticket: '#295',
+        desc: 'the per-destination ledger key collapses back to the channel name alone, so a dead multi-target destination (e.g. one of two webhooks) blocks resending to the other',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '      destinations.push({ channel, target, key: target.url ? `${channel}:${target.url}` : channel });',
+        mutant: '      destinations.push({ channel, target, key: channel });',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '295-h6-template-not-validated-at-startup', ticket: '#295',
+        desc: 'a rule\'s merged template is no longer compiled at config-load time, so a bad template only fails at send time',
+        file: 'src/lib/configLoader.js',
+        anchor: '                    compileTemplateSet({ templates, variables: VARIABLES, channels: allModes });',
+        mutant: '                    void 0;',
+        tests: 'configLoader'
+    },
+    {
+        id: '295-m1-digest-ignores-rule-channel-restriction', ticket: '#295',
+        desc: "digest mode groups by every channel again instead of each item's own resolveChannels, leaking a channel-restricted rule's content onto channels it never allowed",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '    for (const channel of resolveChannels(item.rule, sender)) {',
+        mutant: '    for (const channel of ALL_CHANNELS) {',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '295-m2-unreachable-channels-not-rejected-at-startup', ticket: '#295',
+        desc: "a rule whose explicit channels restriction names no configured destination is no longer rejected at startup",
+        file: 'src/lib/configLoader.js',
+        anchor: '                if (rule.channels && rule.channels.length && resolveChannels(rule, sender).length === 0) {',
+        mutant: '                if (false) {',
+        tests: 'configLoader'
+    },
+    {
+        id: '295-m4-transactions-query-explodes-splits', ticket: '#295',
+        desc: "the transactions query requests splits: 'inline' again, exploding a split parent into subtransactions that lose the schedule link",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "            .options({ splits: 'none' })",
+        mutant: "            .options({ splits: 'inline' })",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '295-m7-calendar-days-uses-raw-24h-periods', ticket: '#295',
+        desc: 'calendarDaysBetween goes back to raw 24h-period diffing instead of calendar-day comparison in the configured timezone, letting a reminder skip or double-fire near a day boundary',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  return moment.tz(now, timezone).startOf('day').diff(moment.tz(recordedAt, timezone).startOf('day'), 'days');",
+        mutant: '  return moment(now).diff(moment(recordedAt), \'days\');',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '295-m9-skip-next-date-not-honored', ticket: '#295',
+        desc: "an occurrence Actual's \"Skip next date\" already moved past is reported missing again instead of skipped",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const nextDateMoment = schedule.next_date ? moment.tz(schedule.next_date, timezone).startOf(\'day\') : null;',
+        mutant: '      const nextDateMoment = null;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '295-m10-isbetween-range-check-removed', ticket: '#295',
+        desc: "an isbetween schedule's amount range check always passes, so wrongAmount can never fire for it",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '    return amount >= lo && amount <= hi;',
+        mutant: '    return true;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '295-m11-pass1-ignores-link-and-amount-preference', ticket: '#295',
+        desc: 'on-time matching goes back to taking the earliest in-window candidate regardless of link/amount, reintroducing false wrongAmount',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "        const candidate = inWindow.find((c) => c.linked)\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          || inWindow[0]\n          || null;",
+        mutant: '        const candidate = inWindow[0] || null;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '295-m12-linked-early-window-not-widened', ticket: '#295',
+        desc: "a linked transaction's early window goes back to the rule's own (possibly narrower) earlyDays instead of Actual's +/-2 day linking tolerance",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "        const earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');",
+        mutant: '        const earlyStartLinked = earlyStart;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '295-m13-lookback-fallback-too-short', ticket: '#295',
+        desc: "the interval-stats fallback goes back to a hard-coded 30 days for a schedule with fewer than two occurrences in range, undersizing the window for a yearly schedule",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '  return { shortestIntervalDays: shortest, longestIntervalDays: longest || MAX_LOOKBACK_DAYS };',
+        mutant: '  return { shortestIntervalDays: shortest, longestIntervalDays: longest || 30 };',
+        tests: 'scheduleAlerts.test'
     },
 
     // ---- #169: the README claim that started #168 ---------------------------
