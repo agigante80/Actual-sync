@@ -8,7 +8,7 @@
  * real `SyncHistoryService` and `NotificationService` through `syncService.js`.
  */
 
-const { deliver, DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS } = require('../lib/scheduleAlertDelivery');
+const { deliver, DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS, destinationKey } = require('../lib/scheduleAlertDelivery');
 const { getRules } = require('../lib/scheduleAlertRules');
 const { compileTemplateSet } = require('../lib/templateRenderer');
 
@@ -225,8 +225,11 @@ describe('deliver: fan-out and partial failure', () => {
     // module doc comment and the "retry only the failed destination" test
     // below for why (a single shared row let one dead destination make every
     // other, already-succeeding destination resend on every sync).
+    //
+    // #295 review round 2, M8: the key is `channel:#name`, never the raw
+    // webhook URL (a secret) - see `destinationKey`.
     expect(history.rows).toHaveLength(2);
-    expect(history.rows.map((r) => r.channel).sort()).toEqual(['slack:https://slack/a', 'slack:https://slack/b']);
+    expect(history.rows.map((r) => r.channel).sort()).toEqual(['slack:#a', 'slack:#b']);
   });
 
   test('a failed destination is withheld for retry without blocking the destination(s) that succeeded', async () => {
@@ -247,7 +250,7 @@ describe('deliver: fan-out and partial failure', () => {
     expect(result).toEqual({ sent: 1, skipped: 0 });
     expect(sender.calls).toHaveLength(2);
     expect(history.rows).toHaveLength(1);
-    expect(history.rows[0].channel).toBe('slack:https://slack/b');
+    expect(history.rows[0].channel).toBe('slack:#b'); // #295 review round 2, M8: keyed by name, never the URL
 
     // Sync 2: "a" is retried (it never got a ledger row); "b" must NOT be
     // resent, since it already has one. This is the exact bug H5 reports:
@@ -264,7 +267,7 @@ describe('deliver: fan-out and partial failure', () => {
     expect(sender.calls).toHaveLength(4);
     expect(sender.calls[3].slack.url).toBe('https://slack/a');
     expect(history.rows).toHaveLength(2);
-    expect(history.rows.map((r) => r.channel).sort()).toEqual(['slack:https://slack/a', 'slack:https://slack/b']);
+    expect(history.rows.map((r) => r.channel).sort()).toEqual(['slack:#a', 'slack:#b']);
 
     // Sync 4: both destinations already have a row and remindEveryDays is
     // unset - nothing left to attempt.
@@ -585,6 +588,36 @@ describe('deliver: reminders compare calendar dates in the configured timezone (
     // ~20 hours later by the clock, but still 10 Jan Madrid local time (20:00 local).
     const sameCalendarDay = await deliver([missingEvent()], { ...args, now: '2026-01-10T19:00:00.000Z' });
     expect(sameCalendarDay).toEqual({ sent: 0, skipped: 1 });
+  });
+});
+
+describe('destinationKey (#295 review round 2, M8)', () => {
+  test('a named webhook target is keyed by its name, never its URL', () => {
+    const key = destinationKey('slack', { name: 'ops-alerts', url: 'https://hooks.example/services/T00/B00/secret' });
+    expect(key).toBe('slack:#ops-alerts');
+    expect(key).not.toContain('hooks.example');
+    expect(key).not.toContain('secret');
+  });
+
+  test('an unnamed webhook target is keyed by a short hash of its URL, and the key never contains the URL', () => {
+    const url = 'https://hooks.example/services/T00/B00/another-secret-path';
+    const key = destinationKey('slack', { url });
+    expect(key).toMatch(/^slack:#[0-9a-f]{8}$/);
+    expect(key).not.toContain(url);
+    expect(key).not.toContain('hooks.example');
+    expect(key).not.toContain('secret');
+  });
+
+  test('the hash is stable for the same URL and different for a different URL', () => {
+    const keyA1 = destinationKey('discord', { url: 'https://discord.example/webhooks/1/aaa' });
+    const keyA2 = destinationKey('discord', { url: 'https://discord.example/webhooks/1/aaa' });
+    const keyB = destinationKey('discord', { url: 'https://discord.example/webhooks/1/bbb' });
+    expect(keyA1).toBe(keyA2);
+    expect(keyA1).not.toBe(keyB);
+  });
+
+  test('a single-destination channel with no url is keyed by channel name alone', () => {
+    expect(destinationKey('telegram', {})).toBe('telegram');
   });
 });
 

@@ -37,7 +37,8 @@
  * endpoint is preserved for the non-digest case in `sendEvent`).
  *
  * #295 review, H5: the ledger is keyed per destination (`schedule_alerts.channel`,
- * e.g. `slack:https://hooks.example/a`), not just per event. Previously a
+ * e.g. `slack:#a1b2c3d4` - see `destinationKey`, which never stores the raw
+ * webhook URL, #295 review round 2, M8), not just per event. Previously a
  * single `allOk` flag spanned every destination of every requested channel,
  * so one dead destination withheld the ledger row for the whole event and
  * every OTHER, already-succeeding destination resent it again next sync.
@@ -49,10 +50,39 @@
 'use strict';
 
 const moment = require('moment-timezone');
+const crypto = require('crypto');
 const { compileTemplateSet } = require('./templateRenderer');
 
 /** Every channel key `deliver` can request from `sender.sendTemplated`. */
 const ALL_CHANNELS = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'];
+
+/**
+ * A ledger-safe key identifying one destination (#295 review round 2, M8).
+ * Previously this was `${channel}:${target.url}`, storing the full webhook
+ * URL - a secret - in plain text in sync-history.db. This keys by the
+ * operator's own `name` for the webhook when configured (stable and already
+ * how they refer to it), or otherwise a short, non-reversible sha256 hash of
+ * the URL, e.g. `slack:#a1b2c3d4`. A single-destination channel (telegram,
+ * email, ntfy) has no URL at all and keys by the channel name alone, as
+ * before.
+ *
+ * Trade-off: adding a webhook, renaming one, or rotating its URL (with no
+ * name set) changes its key, which the ledger has never seen before, so any
+ * currently-open alert is re-sent once to it before settling into the normal
+ * per-destination dedup/reminder cycle. This is accepted: it is strictly
+ * safer than either storing the secret or silently losing track of in-flight
+ * alerts across a rename/rotation.
+ *
+ * @param {string} channel
+ * @param {{name?:string, url?:string}} target
+ * @returns {string}
+ */
+function destinationKey(channel, target) {
+  if (!target.url) return channel;
+  if (target.name) return `${channel}:#${target.name}`;
+  const hash = crypto.createHash('sha256').update(target.url).digest('hex').slice(0, 8);
+  return `${channel}:#${hash}`;
+}
 
 /**
  * Each `sendTemplated` channel key to the `templateRenderer` channel mode(s)
@@ -267,7 +297,7 @@ function destinationsForRule(rule, sender) {
   const destinations = [];
   for (const channel of resolveChannels(rule, sender)) {
     for (const target of resolveTargets(channel, sender)) {
-      destinations.push({ channel, target, key: target.url ? `${channel}:${target.url}` : channel });
+      destinations.push({ channel, target, key: destinationKey(channel, target) });
     }
   }
   return destinations;
@@ -563,11 +593,11 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     // first enabled destination (see the module doc comment).
     const target = resolveTargets(channel, sender)[0];
     if (!target) continue; // resolveChannels already guarantees this, defensive only
-    const destinationKey = target.url ? `${channel}:${target.url}` : channel;
+    const key = destinationKey(channel, target);
 
     const dueItems = [];
     for (const item of channelItems) {
-      if (await isDestinationDue(item.event, item.rule, destinationKey, history, server, now, timezone)) dueItems.push(item);
+      if (await isDestinationDue(item.event, item.rule, key, history, server, now, timezone)) dueItems.push(item);
     }
     if (dueItems.length === 0) continue;
 
@@ -599,7 +629,7 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
       await history.recordScheduleAlert({
         server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
         occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent',
-        channel: destinationKey
+        channel: key
       });
       sentKeys.add(eventKey(item.event));
     }
@@ -758,5 +788,5 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
 
 module.exports = {
   deliver, DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS, CHANNEL_TO_MODES,
-  resolveChannels
+  resolveChannels, destinationKey
 };
