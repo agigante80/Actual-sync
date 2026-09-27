@@ -301,6 +301,22 @@ describe('evaluate: #271 item 1 (window overlap)', () => {
     });
     expect(warnings).toEqual([]);
   });
+
+  test('graceDays + earlyDays exactly equal to the shortest interval also trips the guard (boundary is >=, not >)', () => {
+    const weeklySchedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } }); // 7-day interval
+    const { events, warnings } = evaluate({
+      rules: rentRule({ graceDays: 4, earlyDays: 3 }), // 4 + 3 = 7 == 7
+      schedules: [weeklySchedule],
+      transactions: [],
+      accounts: [account()],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(warnings).toHaveLength(1);
+    expect(events).toEqual([{
+      event: 'cannotCheck', alertId: 'rent', scheduleId: 's1', occurrence: null, deadline: null, reason: 'interval-violation'
+    }]);
+  });
 });
 
 describe('evaluate: #271 item 4 (occurrences shape) and MAX_OCCURRENCES', () => {

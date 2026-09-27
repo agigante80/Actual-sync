@@ -244,6 +244,27 @@ describe('deliver: fan-out and partial failure', () => {
     expect(sender.calls).toHaveLength(0);
     expect(result).toEqual({ sent: 1, skipped: 0 });
   });
+
+  test('a webhook destination with enabled:false is never sent to, even when another destination of the same type is enabled', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      webhooks: {
+        generic: [
+          { name: 'off', url: 'https://hooks/off', enabled: false },
+          { name: 'on', url: 'https://hooks/on', enabled: true }
+        ]
+      }
+    });
+
+    const result = await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender,
+      now: '2026-01-10', server: 'Main', rules: rentRules({ channels: ['webhook'] }), timezone: 'UTC', logger: quietLogger
+    });
+
+    expect(result).toEqual({ sent: 1, skipped: 0 });
+    expect(sender.calls).toHaveLength(1);
+    expect(sender.calls[0].webhook.url).toBe('https://hooks/on');
+  });
 });
 
 describe('deliver: digest', () => {
