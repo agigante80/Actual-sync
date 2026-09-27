@@ -685,4 +685,196 @@ describe('SyncHistoryService', () => {
       expect(rows[0]).toMatchObject({ id: 'dup', name: 'Second', classification: 'closed' }); // last wins
     });
   });
+
+  describe('schedule alert ledger (#258)', () => {
+    const key = (overrides = {}) => ({
+      server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05', event: 'missing',
+      ...overrides
+    });
+
+    test('creates the schedule_alerts table on a fresh database', () => {
+      const tables = syncHistory.db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='schedule_alerts'"
+      ).all();
+      expect(tables).toHaveLength(1);
+    });
+
+    test('findLatestScheduleAlert returns null when nothing has been recorded', async () => {
+      expect(await syncHistory.findLatestScheduleAlert(key())).toBeNull();
+    });
+
+    test('recordScheduleAlert then findLatestScheduleAlert round-trips recordedAt', async () => {
+      await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent' });
+      const found = await syncHistory.findLatestScheduleAlert(key());
+      expect(found).not.toBeNull();
+      expect(typeof found.recordedAt).toBe('string');
+    });
+
+    // #295 review, M6: as originally written this asserted
+    // `second.recordedAt >= first.recordedAt`, which passes even if the
+    // lookup wrongly returned the FIRST row both times (`x >= x` is `true`),
+    // so it could not fail regardless of whether "most recent" was
+    // implemented correctly. Driving `now()` explicitly gives two rows with
+    // distinct, known `recorded_at` values, so the test can assert the exact
+    // newest one and would fail if the oldest (or either row, non-deterministically) came back instead.
+    test('findLatestScheduleAlert returns the most recently recorded row for a repeated key', async () => {
+      syncHistory.now = () => new Date('2026-01-10T10:00:00.000Z');
+      await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent' });
+      const first = await syncHistory.findLatestScheduleAlert(key());
+      expect(first.recordedAt).toBe('2026-01-10T10:00:00.000Z');
+
+      // A second write for the exact same key (e.g. a reminder resend) must
+      // move the ledger forward, not just leave the first row in place.
+      syncHistory.now = () => new Date('2026-01-12T08:00:00.000Z');
+      await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent' });
+      const second = await syncHistory.findLatestScheduleAlert(key());
+      expect(second.recordedAt).toBe('2026-01-12T08:00:00.000Z');
+    });
+
+    test('matches on a null scheduleId/occurrenceDate key (ruleUnmatched events)', async () => {
+      const unmatchedKey = key({ scheduleId: null, occurrenceDate: null, event: 'ruleUnmatched' });
+      expect(await syncHistory.findLatestScheduleAlert(unmatchedKey)).toBeNull();
+      await syncHistory.recordScheduleAlert({ ...unmatchedKey, delivery: 'sent' });
+      expect(await syncHistory.findLatestScheduleAlert(unmatchedKey)).not.toBeNull();
+      // A key with a non-null scheduleId must not accidentally match the
+      // null-scheduleId row (SQL NULL = NULL is not true; IS ? handles this).
+      expect(await syncHistory.findLatestScheduleAlert(key({ scheduleId: 's1', occurrenceDate: '2026-01-05' }))).toBeNull();
+    });
+
+    test('each key field isolates the lookup (server, alertId, scheduleId, occurrenceDate, event)', async () => {
+      await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent' });
+      expect(await syncHistory.findLatestScheduleAlert(key({ server: 'Other' }))).toBeNull();
+      expect(await syncHistory.findLatestScheduleAlert(key({ alertId: 'salary' }))).toBeNull();
+      expect(await syncHistory.findLatestScheduleAlert(key({ scheduleId: 's2' }))).toBeNull();
+      expect(await syncHistory.findLatestScheduleAlert(key({ occurrenceDate: '2026-01-06' }))).toBeNull();
+      expect(await syncHistory.findLatestScheduleAlert(key({ event: 'late' }))).toBeNull();
+    });
+
+    test('cleanup purges schedule_alerts at max(retentionDays, 120) days, independently of retentionDays', () => {
+      // retentionDays is 30 for the shared fixture, but schedule_alerts always
+      // keeps at least 120 days (longer than the 90-day evaluation look-back
+      // cap), so a 100-day-old row must survive a cleanup() that would already
+      // have purged a 100-day-old sync_history row.
+      const fixedNow = new Date('2026-06-01T00:00:00.000Z');
+      const sh = new SyncHistoryService({
+        dbPath: path.join(__dirname, 'test-alert-cleanup.db'),
+        retentionDays: 30,
+        now: () => new Date(fixedNow),
+        loggerConfig: { level: 'ERROR' }
+      });
+      try {
+        const daysAgo = (n) => new Date(fixedNow.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
+        sh.db.prepare(`
+          INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run('Main', 'rent', 's1', '2026-01-01', 'missing', 'sent', daysAgo(100));
+        sh.db.prepare(`
+          INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run('Main', 'rent', 's1', '2025-12-01', 'missing', 'sent', daysAgo(130));
+
+        sh.cleanup();
+
+        const remaining = sh.db.prepare('SELECT occurrence_date AS d FROM schedule_alerts').all().map((r) => r.d);
+        expect(remaining).toEqual(['2026-01-01']);
+      } finally {
+        sh.close();
+        ['', '-wal', '-shm'].forEach((suffix) => {
+          const p = path.join(__dirname, 'test-alert-cleanup.db') + suffix;
+          if (fs.existsSync(p)) fs.unlinkSync(p);
+        });
+      }
+    });
+
+    test('resetServerHistory clears only that server\'s schedule_alerts rows', async () => {
+      await syncHistory.recordScheduleAlert({ ...key(), server: 'Main', delivery: 'sent' });
+      await syncHistory.recordScheduleAlert({ ...key(), server: 'Other', delivery: 'sent' });
+      await syncHistory.resetServerHistory('Main');
+      expect(await syncHistory.findLatestScheduleAlert(key({ server: 'Main' }))).toBeNull();
+      expect(await syncHistory.findLatestScheduleAlert(key({ server: 'Other' }))).not.toBeNull();
+    });
+
+    test('resetAllHistory clears every server\'s schedule_alerts rows', async () => {
+      await syncHistory.recordScheduleAlert({ ...key(), server: 'Main', delivery: 'sent' });
+      await syncHistory.recordScheduleAlert({ ...key(), server: 'Other', delivery: 'sent' });
+      await syncHistory.resetAllHistory();
+      expect(await syncHistory.findLatestScheduleAlert(key({ server: 'Main' }))).toBeNull();
+      expect(await syncHistory.findLatestScheduleAlert(key({ server: 'Other' }))).toBeNull();
+    });
+
+    // #295 review round 2, M9: the per-destination `channel` column (H5) had
+    // no real-DB test at all, so a broken filter or a missing migration would
+    // still show green. These exercise both.
+    describe('channel column (#295 review, H5 / round 2 M9)', () => {
+      test('a lookup with a specific channel does not match a row recorded for a different channel', async () => {
+        await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent', channel: 'slack:https://hooks.example/a' });
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:https://hooks.example/b' })).toBeNull();
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:https://hooks.example/a' })).not.toBeNull();
+      });
+
+      test('a lookup with no channel at all matches a row recorded for any specific channel', async () => {
+        await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent', channel: 'telegram' });
+        expect(await syncHistory.findLatestScheduleAlert(key())).not.toBeNull();
+      });
+
+      // The migration comment (syncHistory.js, migrateSchema) documents this:
+      // a row recorded before per-destination keying existed has channel
+      // NULL, and must still be found by a lookup for one specific
+      // destination, or every pre-upgrade alert would resend once per
+      // destination on the first post-upgrade sync.
+      test('a legacy row with a NULL channel matches a lookup for any specific channel', async () => {
+        syncHistory.db.prepare(`
+          INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at, channel)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+        `).run('Main', 'rent', 's1', '2026-01-05', 'missing', 'sent', new Date().toISOString());
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:https://hooks.example/a' })).not.toBeNull();
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'telegram' })).not.toBeNull();
+      });
+
+      test('migrates a pre-existing DB whose schedule_alerts table lacks the channel column, preserving rows (idempotent)', () => {
+        const legacyDbPath = path.join(__dirname, 'test-legacy-schedule-alerts.db');
+        if (fs.existsSync(legacyDbPath)) fs.unlinkSync(legacyDbPath);
+
+        const legacy = new Database(legacyDbPath);
+        legacy.exec(`
+          CREATE TABLE schedule_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            server TEXT NOT NULL,
+            alert_id TEXT NOT NULL,
+            schedule_id TEXT,
+            occurrence_date TEXT,
+            event TEXT NOT NULL,
+            delivery TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+          )
+        `);
+        legacy.prepare(`
+          INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run('Main', 'rent', 's1', '2026-01-05', 'missing', 'sent', new Date().toISOString());
+        const hasChannel = () => legacy.prepare('PRAGMA table_info(schedule_alerts)').all().some((c) => c.name === 'channel');
+        expect(hasChannel()).toBe(false);
+        legacy.close();
+
+        const migrated = new SyncHistoryService({ dbPath: legacyDbPath, loggerConfig: { level: 'ERROR' } });
+        const hasChannelMigrated = migrated.db.prepare('PRAGMA table_info(schedule_alerts)').all().some((c) => c.name === 'channel');
+        expect(hasChannelMigrated).toBe(true);
+
+        const legacyRow = migrated.db.prepare('SELECT * FROM schedule_alerts WHERE server = ?').get('Main');
+        expect(legacyRow).toBeDefined();
+        expect(legacyRow.channel).toBeNull();
+        migrated.close();
+
+        // Re-opening must not throw and must keep the column (idempotent).
+        const reopened = new SyncHistoryService({ dbPath: legacyDbPath, loggerConfig: { level: 'ERROR' } });
+        expect(reopened.db.prepare('PRAGMA table_info(schedule_alerts)').all().some((c) => c.name === 'channel')).toBe(true);
+        reopened.close();
+
+        ['', '-wal', '-shm'].forEach((suffix) => {
+          const p = legacyDbPath + suffix;
+          if (fs.existsSync(p)) fs.unlinkSync(p);
+        });
+      });
+    });
+  });
 });

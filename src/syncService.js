@@ -16,10 +16,23 @@ const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/acc
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
 const { SyncQueue } = require('./lib/syncQueue');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
+const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts } = require('./lib/scheduleAlertsStep');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
 const VERSION = resolveVersion();
+
+/**
+ * IANA timezone every scheduleAlerts date/deadline/staleness calculation runs
+ * in (#258). A future global `config.timezone` (#266, not yet landed) wins
+ * once it exists; until then this falls back to the host's own zone, exactly
+ * as `resolveTimezone` will once #266 adds the config key.
+ * @param {Object} cfg - the loaded config object
+ * @returns {string} an IANA timezone name, e.g. "Europe/Madrid"
+ */
+function resolveTimezone(cfg) {
+    return (cfg && cfg.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
 
 /**
  * Format next sync time in human-readable format
@@ -356,6 +369,10 @@ async function runSyncBank(server, options = {}) {
     // Set once this sync touches the session; until then its finally must not
     // call shutdown(), which would close a session a late call still uses.
     let sessionOpened = false;
+    // Set by the schedule-alerts read phase (#295 review, M3) while the
+    // session is still open; the write phase runs after the session is shut
+    // down and after endTimer()/recordSync(), see the call after `finally` below.
+    let scheduleAlertsEvaluated = null;
     
     // Create server-specific logger with per-server log level if configured
     const serverLogger = server.logging ? logger.child({
@@ -697,7 +714,25 @@ async function runSyncBank(server, options = {}) {
                 isEncrypted: isEncrypted
             }, serverLogger);
         }
-        
+
+        // Missing-payment alerts (#258): evaluated once per sync, after the
+        // final file sync so schedules and transactions are current. Only the
+        // read side (getSchedules/queries/evaluate) runs here, while the
+        // Actual session is still open; the write side (render/send/record)
+        // is run after this try/catch/finally block, once the session is
+        // closed and the sync's own durationMs is already recorded (#295
+        // review, M3 - see the call site after this function's `finally`).
+        // This is best-effort throughout: any failure is logged and never
+        // changes the sync's own result (syncStatus, syncHistory.recordSync).
+        // The step itself lives in ./lib/scheduleAlertsStep so it can be
+        // exercised directly in scheduleAlertsSync.test.js.
+        scheduleAlertsEvaluated = await maybeRunScheduleAlerts(server, {
+            api,
+            serverName: name,
+            timezone: resolveTimezone(config),
+            logger: serverLogger
+        });
+
         // Calculate sync duration and log performance
         let durationMs = endTimer({ 
             accountsProcessed: accountsSucceeded,
@@ -978,6 +1013,19 @@ async function runSyncBank(server, options = {}) {
         }
         serverLogger.clearCorrelationId();
     }
+
+    // #295 review, M3: the schedule-alerts write phase runs here, after the
+    // Actual session is closed and after the sync's own durationMs/history
+    // are already recorded above, so a slow or dead notification channel
+    // cannot inflate this sync's duration or hold the session open. It is
+    // still bounded (DELIVER_BUDGET_MS, inside maybeDeliverScheduleAlerts)
+    // so it cannot block the next server queued behind this one (#265)
+    // indefinitely either.
+    await maybeDeliverScheduleAlerts(scheduleAlertsEvaluated, {
+        syncHistory,
+        notificationService,
+        logger: serverLogger
+    });
 }
 
 async function syncAllBanks() {

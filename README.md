@@ -33,6 +33,7 @@
 - [Docker Deployment](#-docker-deployment)
 - [Monitoring & Observability](#-monitoring--observability)
 - [Notifications](#-notifications)
+- [Missing-Payment Alerts](#-missing-payment-alerts)
 - [Testing](#-testing)
 - [Security](#-security)
 - [Troubleshooting](#-troubleshooting)
@@ -136,6 +137,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Per-Channel Notification Mode** - `notifyOnSuccess` (`always` / `errors_only` / `never`) set globally, per channel, or per webhook, so an alert channel can skip routine successes
 - ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate) applied to failures
 - ✅ **Rate Limiting** - Failure-notification spam prevention with configurable intervals
+- ✅ **Missing-Payment Alerts** - Compares Actual's own schedules against posted transactions per server and notifies when an expected payment is late, missing, wrong-amount, or cannot be checked (stale bank connection); see [Missing-Payment Alerts](#-missing-payment-alerts)
 
 ### 🛡️ Reliability & Security
 
@@ -805,9 +807,216 @@ Spanish example:
 El pago de {{amount}} de {{name}} vence el {{deadline}}.
 ```
 
-This is infrastructure for an upcoming feature; no configuration key uses it yet. See **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** for the full syntax, the variable and helper whitelist, and the per-channel output rules.
+A server's `scheduleAlerts.alerts[].templates` (or block-level `scheduleAlerts.templates`) block is the first configuration surface that uses this engine - see [Missing-Payment Alerts](#-missing-payment-alerts) below. See **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** for the full syntax, the variable and helper whitelist, and the per-channel output rules.
 
 See **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** for complete notification setup guide including configuration examples for all channels.
+
+---
+
+## 💸 Missing-Payment Alerts
+
+Actual-sync can watch a server's own [Actual schedules](https://actualbudget.org/docs/budgeting/schedules/) and tell you when an expected recurring payment did not behave as expected - a rent that never went out, a salary that arrived for the wrong amount, a bank connection too stale to trust. It never invents its own cadence: the schedule's own recurrence, in Actual, is the single source of truth.
+
+Enable it per server with a `scheduleAlerts` block:
+
+```json
+{
+  "servers": [
+    {
+      "name": "Main",
+      "scheduleAlerts": {
+        "staleAfterDays": 3,
+        "alerts": [
+          { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 },
+          { "id": "salary", "schedule": "Salary", "graceDays": 3, "earlyDays": 5, "amountTolerancePct": 0 }
+        ]
+      }
+    }
+  ]
+}
+```
+
+A server with no `scheduleAlerts` block never calls `getSchedules()` and pays no cost for this feature. The step runs once per sync, after the bank-sync loop, inside the same Actual session; any error in it is logged at WARN and never changes the sync's own recorded result.
+
+### Ten scenarios
+
+Every scenario below (except #9, which needs a shorter cadence to demonstrate) uses the same
+schedule, configured in Actual as: recurrence **Monthly, on the 5th**; amount **-850.00** (an
+expense); account **Checking**; payee **Landlord LLC**; name **"Rent - Apartment"**. Timezone is
+`Europe/Madrid`, `dateFormat` is left at its default (`D MMM YYYY`), and the destination channel is
+a configured Slack webhook unless noted. Each message below is rendered by the real `deliver()`
+code against that exact fixture, not paraphrased.
+
+**1. On time** - a transaction for -850.00 posts to Checking on 5 Oct 2026 (the occurrence date
+itself), linked to the schedule in Actual.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+```
+
+No event, no message: an on-time payment produces nothing to report.
+
+**2. Missing** - nothing has posted to Checking by the deadline (5 Oct + `graceDays: 6` = 11 Oct),
+and the account's `last_sync` is past that deadline. Sync runs on 12 Oct 2026.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+```
+
+> ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
+
+**3. Resolved** - the sync on 12 Oct sends the `missing` alert above. Three days later, on 15 Oct,
+the payment posts (4 days after the 11 Oct deadline). The next sync closes it out with a `resolved`
+alert; no manual dismissal is needed.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+```
+
+> ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
+>
+> *(3 days later, once the payment posts:)*
+>
+> ✅ Rent - Apartment: -850.00 arrived 15 Oct 2026, 4 day(s) after the deadline. Alert closed.
+
+**4. Wrong amount** - a transaction for -800.00 (not -850.00) posts to Checking, matching account
+and payee within the window, on 5 Oct 2026. The rule's amount mode is exact (Actual's schedule
+amount is `is`, not `approximately`), so `amountTolerancePct` defaults to `0`.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+```
+
+> ⚠️ Rent - Apartment: received -800.00 on 5 Oct 2026, expected -850.00 (difference 50.00).
+
+**5. Stale connection** - nothing has posted, and Checking's `last_sync` is 8 Oct 2026 while the
+sync runs on 15 Oct - 7 days old, more than `staleAfterDays: 3`. A `cannotCheck` alert (reason
+`stale`) fires instead of a false `missing`.
+
+```json
+{
+  "staleAfterDays": 3,
+  "alerts": [{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }]
+}
+```
+
+> ⏸️ Cannot check Rent - Apartment: Checking has not synced since 8 Oct 2026 (deadline 11 Oct 2026). Check the bank connection.
+
+**6. Not yet synced** - the sync runs on 13 Oct 2026 (past the 11 Oct deadline), and Checking's
+`last_sync` is 11 Oct - fresh enough not to be stale (2 days old, under `staleAfterDays: 3`), but
+still at/before the deadline itself, so there has been no chance yet to see the payment. A
+`cannotCheck` alert (reason `not-synced`) fires instead of `missing`.
+
+```json
+{
+  "staleAfterDays": 3,
+  "alerts": [{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }]
+}
+```
+
+> ⏸️ Cannot check Rent - Apartment: Checking has not synced since 11 Oct 2026 (deadline 11 Oct 2026). Check the bank connection.
+
+**7. Recurring reminder** - the same `missing` alert as scenario 2 stays unresolved. With
+`remindEveryDays: 3` set, it repeats every 3 calendar days (in the configured timezone) instead of
+firing once and going silent: the sync on 12 Oct sends it, and the sync on 15 Oct (3 days later,
+still unresolved) sends the identical message again rather than staying silent.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6, "remindEveryDays": 3 }
+```
+
+> ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
+>
+> *(repeated verbatim 3 days later, since the payment is still missing)*
+>
+> ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
+
+**8. Renamed or deleted schedule** - the rule watches `"Rent - Apartment (old name)"`, but the
+schedule in Actual was renamed to `"Rent - Apartment"` (or deleted). The rule's own `schedule`/
+`schedulePrefix` matches nothing.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment (old name)", "graceDays": 6 }
+```
+
+> ❓ Payment alert "rent" matches no schedule in Main. Check the schedule name in Actual.
+
+This repeats once per day while unmatched (a fixed interval, independent of `remindEveryDays`).
+
+**9. Overlapping windows** - a *weekly* schedule (7-day interval between occurrences) with
+`graceDays: 5, earlyDays: 3` (5 + 3 = 8, greater than or equal to the 7-day interval): a late
+payment for one week's occurrence could be counted as an early payment for the next, or vice versa.
+The rule is skipped for that sync rather than risk a wrong result - one `cannotCheck` alert (reason
+`interval-violation`, no `occurrence`/`deadline` since none is being evaluated) plus a logged
+warning naming the rule and the exact numbers.
+
+```json
+{ "id": "rent", "schedule": "Rent - Apartment", "graceDays": 5, "earlyDays": 3 }
+```
+
+Logged warning:
+
+> Rule "rent": graceDays (5) + earlyDays (3) >= the schedule's shortest interval between occurrences (7 days); the on-time and late windows of consecutive occurrences would overlap, so this rule was skipped.
+
+Sent alert (the shared `cannotCheck` template has no `occurrence`/`deadline` to fill in for this
+reason, so those two fields render blank - this is expected for `interval-violation`):
+
+> ⏸️ Cannot check Rent - Apartment: Checking has not synced since  (deadline ). Check the bank connection.
+
+**10. Digest** - in the same sync, the Rent rule above is `missing` and a second rule, watching an
+income schedule **"Salary"** (recurrence Monthly on the 5th, expected +3200.00 into Checking from
+"Employer Inc"), receives +3000.00 instead - a `wrongAmount`. With `digest: true` set on the block,
+both are merged into one message per channel instead of two separate messages; the ledger still
+records one row per event, per destination, so de-duplication and reminders work exactly as without
+digest.
+
+```json
+{
+  "staleAfterDays": 3,
+  "digest": true,
+  "alerts": [
+    { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 },
+    { "id": "salary", "schedule": "Salary", "graceDays": 3, "earlyDays": 5, "amountTolerancePct": 0 }
+  ]
+}
+```
+
+> Actual-sync: 2 payment alert(s) for Main
+>
+> ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
+> ⚠️ Salary: received 3000.00 on 5 Oct 2026, expected 3200.00 (difference -200.00).
+
+### Variables
+
+Every template (built-in or an override under `templates`) can reference these; each has a raw (`_raw`) counterpart carrying the underlying value (a number or an unformatted ISO date) for a template author who wants to format it differently.
+
+| Variable | Meaning |
+|---|---|
+| `name` | The alert's schedule name (or the rule's `id`, for `ruleUnmatched`) |
+| `payee` | The schedule's payee name |
+| `account` | The schedule's account name |
+| `direction` | `expense` or `income`, derived from the expected amount's sign |
+| `expected_amount` / `expected_amount_raw` | The schedule's expected amount |
+| `expected_date` / `expected_date_raw` | The occurrence's calendar date |
+| `deadline` / `deadline_raw` | Occurrence date + `graceDays` |
+| `grace_days` | The rule's configured `graceDays` |
+| `period` | The occurrence's month (or the following month, when `period: "next"`) |
+| `cadence` | Actual's own recurrence wording (e.g. "Every month on the 5th") |
+| `days_overdue` / `days_overdue_raw` | Days past the deadline |
+| `received_amount` / `received_amount_raw` | The amount actually received |
+| `received_date` / `received_date_raw` | The date the matching transaction posted |
+| `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
+| `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
+| `budget` | The server name |
+| `alert_id` | The rule's `id` |
+
+A variable that does not apply to the current event type is always present as `null`, so a template can reference it without an `{{#if}}` guard.
+
+### Timezone
+
+Every date in this feature - an occurrence date, a deadline, "today", account staleness - is computed in one timezone: `timezone` from the top-level config, falling back to the host machine's own local IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) when unset. A global `timezone` config key does not exist yet (tracked separately); until it does, every server's alerts use the sync process's own local zone.
+
+See **[docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md)** for the full configuration reference, the algorithm's edge cases, and message-template overrides.
 
 ---
 
@@ -1001,6 +1210,7 @@ Comprehensive documentation is available in the `docs/` directory:
 
 ### Features & Configuration
 - **[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)** - Notification setup (Email, Telegram, Slack, Discord, ntfy, generic webhooks)
+- **[docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md)** - Missing-payment alerts (schedule vs. transaction detection, config reference, templates)
 - **[docs/MIGRATION.md](docs/MIGRATION.md)** - Env-var to config.json migration
 - **[docs/TESTING.md](docs/TESTING.md)** - Testing guide and coverage
 - **[docs/VERSIONING.md](docs/VERSIONING.md)** - Semantic versioning and release process

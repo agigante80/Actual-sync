@@ -896,7 +896,7 @@ See [Generic webhooks](#webhook-settings) for the payload shape and options.
 
 ## Message templates
 
-> Infrastructure note: this section documents the template engine itself (`src/lib/templateRenderer.js` and `src/lib/channelEscape.js`). No configuration key uses it yet in this release; it exists so a future feature can offer user-configurable wording without inventing a new placeholder syntax. Every notification described earlier in this document keeps its current hard-coded text.
+> This section documents the template engine itself (`src/lib/templateRenderer.js` and `src/lib/channelEscape.js`). A server's `scheduleAlerts.alerts[].templates` (or block-level `scheduleAlerts.templates`) is the first configuration surface that uses it, to customize missing-payment alert wording; see [SCHEDULE_ALERTS.md](./SCHEDULE_ALERTS.md). Every notification described earlier in this document keeps its own current hard-coded text.
 
 ### Syntax
 

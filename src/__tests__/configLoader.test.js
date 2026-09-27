@@ -521,6 +521,75 @@ describe('ConfigLoader', () => {
             }
         });
 
+        describe('scheduleAlerts startup validation (#295 review, H6/M2)', () => {
+            const baseConfig = (scheduleAlerts, notifications) => ({
+                servers: [{
+                    name: 'Test', url: 'https://test.com', password: 'password123', syncId: 'id', dataDir: '/tmp',
+                    scheduleAlerts
+                }],
+                sync: { maxRetries: 3, baseRetryDelayMs: 1000, schedule: '0 0 * * *' },
+                notifications
+            });
+
+            test('H6: a rule with an invalid template throws at startup, naming the rule and server', () => {
+                const config = baseConfig(
+                    { alerts: [{ id: 'rent', schedule: 'Rent', templates: { missing: '{{#if broken' } }] },
+                    { telegram: { enabled: true, botToken: '1:AAAA', chatId: '1' } }
+                );
+                expect(() => new ConfigLoader().validateLogic(config)).toThrow(/Invalid scheduleAlerts template.*"rent".*"Test"/);
+            });
+
+            test('H6: the built-in default templates (no operator override) pass validation', () => {
+                const config = baseConfig(
+                    { alerts: [{ id: 'rent', schedule: 'Rent' }] },
+                    { telegram: { enabled: true, botToken: '1:AAAA', chatId: '1' } }
+                );
+                expect(() => new ConfigLoader().validateLogic(config)).not.toThrow();
+            });
+
+            test('M2: a rule restricted to a channel nothing is configured for throws at startup', () => {
+                const config = baseConfig(
+                    { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['slack'] }] },
+                    { telegram: { enabled: true, botToken: '1:AAAA', chatId: '1' } } // slack not configured
+                );
+                expect(() => new ConfigLoader().validateLogic(config)).toThrow(/rule "rent".*"Test".*channels to \[slack\]/);
+            });
+
+            test('M2: a rule restricted to a channel that IS configured passes validation', () => {
+                const config = baseConfig(
+                    { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'] }] },
+                    { telegram: { enabled: true, botToken: '1:AAAA', chatId: '1' } }
+                );
+                expect(() => new ConfigLoader().validateLogic(config)).not.toThrow();
+            });
+
+            test('M2: a rule with no explicit channels is not rejected even when nothing at all is configured (runtime WARNs instead, see scheduleAlertDelivery.js)', () => {
+                const config = baseConfig({ alerts: [{ id: 'rent', schedule: 'Rent' }] }, {});
+                expect(() => new ConfigLoader().validateLogic(config)).not.toThrow();
+            });
+
+            test('R2-M7: a template with literal Telegram-unsafe markup passes when the rule is restricted to slack and only slack is configured', () => {
+                const config = baseConfig(
+                    {
+                        alerts: [{
+                            id: 'rent', schedule: 'Rent', channels: ['slack'],
+                            templates: { missing: 'Rent & parking due {{expected_date}}' }
+                        }]
+                    },
+                    { webhooks: { slack: [{ name: 'ops', url: 'https://hooks.slack.example/x', enabled: true }] } }
+                );
+                expect(() => new ConfigLoader().validateLogic(config)).not.toThrow();
+            });
+
+            test('R2-M7: the same literal "&" still throws when the rule can actually reach telegram', () => {
+                const config = baseConfig(
+                    { alerts: [{ id: 'rent', schedule: 'Rent', templates: { missing: 'Rent & parking due {{expected_date}}' } }] },
+                    { telegram: { enabled: true, botToken: '1:AAAA', chatId: '1' } }
+                );
+                expect(() => new ConfigLoader().validateLogic(config)).toThrow(/Invalid scheduleAlerts template.*"rent".*"Test"/);
+            });
+        });
+
         describe('healthCheck.trustProxy (#245)', () => {
             const withTrustProxy = (trustProxy) => ({
                 servers: [{ name: 'Test', url: 'https://test.com', password: 'password123', syncId: 'id', dataDir: '/tmp' }],

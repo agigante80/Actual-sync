@@ -875,8 +875,8 @@ module.exports = [
         id: '272-download-unbounded', ticket: '#272',
         desc: 'downloadBudget is no longer timed, so a server that never answers hangs the queue again',
         file: 'src/lib/actualTimeouts.js',
-        anchor: "const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
-        mutant: "const TIMED_METHODS = ['init', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
+        anchor: "const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown', 'getSchedules'];",
+        mutant: "const TIMED_METHODS = ['init', 'loadBudget', 'aqlQuery', 'sync', 'shutdown', 'getSchedules'];",
         tests: 'actualTimeouts'
     },
     {
@@ -1174,6 +1174,330 @@ module.exports = [
         anchor: '      if (!isBlockParam || hasDangerousPart) {',
         mutant: '      if (false) {',
         tests: 'templateRenderer'
+    },
+
+    // ---- #258: missing-payment alerts ------------------------------------
+    {
+        id: '258-interval-violation-boundary-off-by-one', ticket: '#258',
+        desc: 'the #271 item 1 window-overlap guard uses > instead of >=, so an exact-equal grace+early no longer trips it',
+        file: 'src/lib/scheduleAlerts.js',
+        // #295 review round 2, M3 widened the guard from `binding.earlyDays`
+        // alone to `effectiveEarlyDays` (Math.max with LINKED_EARLY_WINDOW_DAYS);
+        // this anchor was retargeted to match, since the old text no longer
+        // appears in the file at all (a stale anchor tests nothing).
+        anchor: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays >= shortestIntervalDays) {',
+        mutant: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays > shortestIntervalDays) {',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-amount-tolerance-boundary-off-by-one', ticket: '#258',
+        desc: 'an amount exactly at the tolerance boundary is no longer accepted, narrowing the allowed range',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '  return Math.abs(Math.abs(amount) - Math.abs(expected)) <= allowed;',
+        mutant: '  return Math.abs(Math.abs(amount) - Math.abs(expected)) < allowed;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-staleness-check-disabled', ticket: '#258',
+        desc: 'a stale bank connection is never detected, so a merely-unsynced account is reported missing instead of cannotCheck',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const stale = !lastSync || today.diff(lastSync, \'days\') > binding.staleAfterDays;',
+        mutant: '      const stale = false;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-schedule-link-ignored', ticket: '#258',
+        desc: "Actual's own transaction-to-schedule link is ignored, falling back to account+payee matching even when linked",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '    const linked = !!schedule.id && tx.schedule === schedule.id;',
+        mutant: '    const linked = false;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-duplicate-alert-id-not-rejected', ticket: '#258',
+        desc: 'checkUniqueIds no longer throws on a duplicate alert id, silently allowing two rules to collide',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: '      if (seen.has(id)) {',
+        mutant: '      if (false) {',
+        tests: 'scheduleAlertRules'
+    },
+    {
+        id: '258-unmatched-rule-not-flagged', ticket: '#258',
+        desc: 'a rule matching no schedule silently expands to zero bindings instead of one unmatched binding, so no ruleUnmatched event fires',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: '    if (matches.length === 0) {',
+        mutant: '    if (false) {',
+        tests: 'scheduleAlertRules'
+    },
+    {
+        id: '258-reminder-interval-not-enforced', ticket: '#258',
+        desc: 'a missing-payment reminder resends on every sync instead of waiting remindEveryDays, spamming every channel',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '  return calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays;',
+        mutant: '  return true;',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-ruleUnmatched-reminder-uses-configured-interval', ticket: '#258',
+        desc: 'ruleUnmatched reminders stop using the fixed 1-day interval and instead honor (or skip, when unset) the rule\'s own remindEveryDays',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;",
+        mutant: '  const remindEveryDays = rule.remindEveryDays;',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-disabled-webhook-not-skipped', ticket: '#258',
+        desc: 'a generic webhook with enabled:false is sent to anyway, since the enabled check is dropped from resolveTargets',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      return (cfg.webhooks?.generic || []).filter((w) => w.enabled !== false && w.url);",
+        mutant: "      return (cfg.webhooks?.generic || []).filter((w) => w.url);",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-sent-skipped-swapped', ticket: '#258',
+        desc: 'runScheduleAlertsStep swaps sent and skipped in its return value, so syncService would log an inverted count',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '    return { events: events.length, sent: deliverResult.sent, skipped: deliverResult.skipped };',
+        mutant: '    return { events: events.length, sent: deliverResult.skipped, skipped: deliverResult.sent };',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '258-ledger-null-key-matching-broken', ticket: '#258',
+        desc: 'the schedule_alerts ledger lookup uses = instead of IS for nullable key columns, so a NULL scheduleId/occurrenceDate never matches itself',
+        file: 'src/services/syncHistory.js',
+        anchor: '          AND schedule_id IS ? AND occurrence_date IS ? AND event = ?',
+        mutant: '          AND schedule_id = ? AND occurrence_date = ? AND event = ?',
+        tests: 'syncHistory'
+    },
+    {
+        id: '258-ledger-retention-floor-dropped', ticket: '#258',
+        desc: 'the schedule_alerts ledger loses its 120-day retention floor, so a low sync-history retentionDays purges alert history too early',
+        file: 'src/services/syncHistory.js',
+        anchor: '      const scheduleAlertsRetentionDays = Math.max(this.retentionDays, 120);',
+        mutant: '      const scheduleAlertsRetentionDays = this.retentionDays;',
+        tests: 'syncHistory'
+    },
+    {
+        id: '258-weekend-skip-mode-inverted', ticket: '#258',
+        desc: 'a "before" weekend solve mode rolls a Saturday to Monday instead of back to Friday (the before/after branches are swapped)',
+        file: 'src/lib/vendor/actualSchedules.js',
+        anchor: "    if (solveMode === 'after') {\n      return d.nextMonday(date);\n    } else if (solveMode === 'before') {\n      return d.previousFriday(date);\n    }",
+        mutant: "    if (solveMode === 'after') {\n      return d.previousFriday(date);\n    } else if (solveMode === 'before') {\n      return d.nextMonday(date);\n    }",
+        tests: 'actualSchedules.vendor'
+    },
+
+    // ---- #258 additional guards from PR #295 review round 1 ----------------
+    {
+        id: '258-h1-last-sync-epoch-ms-not-parsed', ticket: '#258',
+        desc: 'account.last_sync (a production epoch-ms string) is parsed with plain moment.tz instead of as a number, so missing never fires in production',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const parsed = isNumeric ? moment.tz(Number(lastSync), timezone) : moment.tz(lastSync, timezone);",
+        mutant: "  const parsed = moment.tz(lastSync, timezone);",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-h2-binding-isolation-removed', ticket: '#258',
+        desc: 'one schedule that throws during evaluation is no longer isolated, so it aborts evaluate() and silences every other rule',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '    } catch (error) {',
+        mutant: '    } catch (error) { throw error;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-h2-cadence-date-format-missing', ticket: '#258',
+        desc: 'getRecurringDescription is called with no date-fns format again, throwing for an on_date endMode schedule',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "\n        cadenceText: typeof dateConfig === 'string' ? null : getRecurringDescription(dateConfig, CADENCE_DATE_FORMAT),",
+        mutant: "\n        cadenceText: typeof dateConfig === 'string' ? null : getRecurringDescription(dateConfig),",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-h3-lookback-ignores-early-days', ticket: '#258',
+        desc: "the transaction fetch window is sized off MAX_LOOKBACK_DAYS alone again, so an early payment near the boundary can fall outside the query",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "        .subtract(MAX_LOOKBACK_DAYS + maxEarlyDays, 'days')",
+        mutant: "        .subtract(MAX_LOOKBACK_DAYS, 'days')",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '258-h4-completed-schedule-not-skipped', ticket: '#258',
+        desc: 'a completed schedule is matched again, so it keeps producing false "missing" events for an occurrence nobody expects anymore',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: '    const isActive = (s) => s.completed !== true;',
+        mutant: '    const isActive = (s) => true;',
+        tests: 'scheduleAlertRules'
+    },
+    {
+        id: '258-h5-destination-key-ignores-target', ticket: '#258',
+        desc: 'the per-destination ledger key collapses back to the channel name alone, so a dead multi-target destination (e.g. one of two webhooks) blocks resending to the other',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        // #295 review round 2, M8 moved the key computation into destinationKey()
+        // (never storing the raw webhook URL); this anchor was retargeted to the
+        // new call site, since the old inline ternary no longer appears in the file.
+        anchor: '      destinations.push({ channel, target, key: destinationKey(channel, target) });',
+        mutant: '      destinations.push({ channel, target, key: channel });',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-h6-template-not-validated-at-startup', ticket: '#258',
+        desc: 'a rule\'s merged template is no longer compiled at config-load time, so a bad template only fails at send time',
+        // R2-M7 rewrote the compiled channel set from a fixed allModes to the
+        // rule's own resolved modes; retargeted to the call itself, which is
+        // unaffected by which channel list it is passed (#258 review round 2).
+        file: 'src/lib/configLoader.js',
+        anchor: '                    compileTemplateSet({ templates, variables: VARIABLES, channels: modes });',
+        mutant: '                    void 0;',
+        tests: 'configLoader'
+    },
+    {
+        id: '258-m1-digest-ignores-rule-channel-restriction', ticket: '#258',
+        desc: "digest mode groups by every channel again instead of each item's own resolveChannels, leaking a channel-restricted rule's content onto channels it never allowed",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '    for (const channel of resolveChannels(item.rule, sender)) {',
+        mutant: '    for (const channel of ALL_CHANNELS) {',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-m2-unreachable-channels-not-rejected-at-startup', ticket: '#258',
+        desc: "a rule whose explicit channels restriction names no configured destination is no longer rejected at startup",
+        // R2-M7 hoisted resolveChannels(rule, sender) into a ruleChannels
+        // local (reused for the per-rule template modes too); retargeted to
+        // that same guard, now read from ruleChannels (#258 review round 2).
+        file: 'src/lib/configLoader.js',
+        anchor: '                if (rule.channels && rule.channels.length && ruleChannels.length === 0) {',
+        mutant: '                if (false) {',
+        tests: 'configLoader'
+    },
+    {
+        id: '258-m4-transactions-query-explodes-splits', ticket: '#258',
+        desc: "the transactions query requests splits: 'inline' again, exploding a split parent into subtransactions that lose the schedule link",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "            .options({ splits: 'none' })",
+        mutant: "            .options({ splits: 'inline' })",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '258-m7-calendar-days-uses-raw-24h-periods', ticket: '#258',
+        desc: 'calendarDaysBetween goes back to raw 24h-period diffing instead of calendar-day comparison in the configured timezone, letting a reminder skip or double-fire near a day boundary',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  return moment.tz(now, timezone).startOf('day').diff(moment.tz(recordedAt, timezone).startOf('day'), 'days');",
+        mutant: '  return moment(now).diff(moment(recordedAt), \'days\');',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-m9-skip-next-date-not-honored', ticket: '#258',
+        desc: "an occurrence Actual's \"Skip next date\" already moved past is reported missing again instead of skipped",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const nextDateMoment = schedule.next_date ? moment.tz(schedule.next_date, timezone).startOf(\'day\') : null;',
+        mutant: '      const nextDateMoment = null;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-m10-isbetween-range-check-removed', ticket: '#258',
+        desc: "an isbetween schedule's amount range check always passes, so wrongAmount can never fire for it",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '    return amount >= lo && amount <= hi;',
+        mutant: '    return true;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-m11-pass1-ignores-link-and-amount-preference', ticket: '#258',
+        desc: 'on-time matching goes back to taking the earliest in-window candidate regardless of link/amount, reintroducing false wrongAmount',
+        file: 'src/lib/scheduleAlerts.js',
+        // #295 review round 2, M1/M3 reworked this block (betterMatchedElsewhere,
+        // strictLinked/closestLinked); this anchor was retargeted to the current
+        // preference chain, since the old text no longer appears in the file.
+        anchor: "        const candidate = strictLinked\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          || closestLinked\n          // Wrong-amount fallback (M11): only take a candidate that is not a\n          // better, correctly-amounted match for some OTHER bound schedule\n          // (#295 review round 2, M1).\n          || inWindow.find((c) => !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))\n          || null;",
+        mutant: '        const candidate = inWindow[0] || null;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-m12-linked-early-window-not-widened', ticket: '#258',
+        desc: "a linked transaction's early window goes back to the rule's own (possibly narrower) earlyDays instead of Actual's +/-2 day linking tolerance",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "        const earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');",
+        mutant: '        const earlyStartLinked = earlyStart;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-m13-lookback-fallback-too-short', ticket: '#258',
+        desc: "the interval-stats fallback goes back to a hard-coded 30 days for a schedule with fewer than two occurrences in range, undersizing the window for a yearly schedule",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '  return { shortestIntervalDays: shortest, longestIntervalDays: longest || MAX_LOOKBACK_DAYS };',
+        mutant: '  return { shortestIntervalDays: shortest, longestIntervalDays: longest || 30 };',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-h1-shared-pool-claim-ignores-schedule', ticket: '#258',
+        desc: 'the shared transaction pool goes back to a plain used-set, so a second rule bound to the same schedule cannot reuse a transaction the first rule already claimed for that SAME schedule, reporting every occurrence missing',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        .filter((c) => c.match.eligible && (!globallyUsedTx.has(c.tx) || globallyUsedTx.get(c.tx) === schedule.id))',
+        mutant: '        .filter((c) => c.match.eligible && !globallyUsedTx.has(c.tx))',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-h2-skip-inference-ignores-intervening-linked-payment', ticket: '#258',
+        desc: 'next_date-based skip inference goes back to firing on ANY occurrence before next_date, even when a later linked payment (not an explicit skip) is what advanced next_date, hiding a genuinely missed payment',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '          if (!hasInterveningLinkedPayment) {',
+        mutant: '          if (true) {',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-m1-pass2-late-fallback-ignores-sibling-match', ticket: '#258',
+        desc: 'the pass-2 late fallback goes back to taking any unlinked candidate in window, even one that is a better, correctly-amounted match for a sibling schedule on the same account+payee',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '            && (c.linked || !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))',
+        mutant: '            && true',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-m2-completed-only-match-fires-rule-unmatched', ticket: '#258',
+        desc: 'a rule whose name matched only completed schedules goes back to producing an unmatched: true binding (and a daily ruleUnmatched) instead of no binding at all',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: "      if (rawMatches.length === 0) {\n        bindings.push({ ...rule, scheduleId: null, scheduleName: null, schedule: null, unmatched: true });\n      }",
+        mutant: '        bindings.push({ ...rule, scheduleId: null, scheduleName: null, schedule: null, unmatched: true });',
+        tests: 'scheduleAlertRules.test'
+    },
+    {
+        id: '258-r2-m5-resolved-resent-after-already-resolved-here', ticket: '#258',
+        desc: 'a resolved event goes back to being resendable to a destination that already has its own resolved row recorded, resending indefinitely instead of once per destination',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '    return !resolvedRow;',
+        mutant: '    return true;',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-r2-m6-deadline-not-enforced-per-destination', ticket: '#258',
+        desc: 'sendEvent goes back to never checking the delivery deadline between destinations, so a short budget no longer stops a new destination send from starting',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '      if (deadline != null && Date.now() >= deadline) {',
+        mutant: '      if (false) {',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '258-r2-m8-destination-key-stores-raw-url', ticket: '#258',
+        desc: 'destinationKey goes back to embedding the raw webhook URL (a secret) in the ledger key instead of a short hash, for a destination with no configured name',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  const hash = crypto.createHash('sha256').update(target.url).digest('hex').slice(0, 8);",
+        mutant: '  const hash = target.url;',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-r2-m9-legacy-null-channel-row-not-matched', ticket: '#258',
+        desc: 'a channel-scoped ledger lookup goes back to an exact-match-only filter, so a legacy pre-H5 row (recorded before the channel column existed, and therefore NULL) is invisible to a lookup for any specific destination key, defeating dedup for upgraded installs',
+        file: 'src/services/syncHistory.js',
+        anchor: "          ${filterChannel ? 'AND (channel IS ? OR channel IS NULL)' : ''}",
+        mutant: "          ${filterChannel ? 'AND channel IS ?' : ''}",
+        tests: 'syncHistory.test'
+    },
+    {
+        id: '258-r2-m7-startup-template-check-ignores-rule-channels', ticket: '#258',
+        desc: 'startup template validation goes back to compiling every rule against every channel mode, so a Telegram-only literal-markup restriction rejects a valid template for a rule that can only ever reach slack/email',
+        file: 'src/lib/configLoader.js',
+        anchor: '                const ruleChannels = resolveChannels(rule, sender);',
+        mutant: "                const ruleChannels = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'];",
+        tests: 'configLoader.test'
     },
 
     // ---- #169: the README claim that started #168 ---------------------------

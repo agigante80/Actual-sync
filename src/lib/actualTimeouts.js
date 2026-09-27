@@ -19,7 +19,9 @@ const DEFAULT_PHASE_TIMEOUT_SECONDS = 300;
 
 // The calls runSyncBank makes that talk to the server or the budget file.
 // runBankSync keeps its own shorter per-account timeout; q() is a sync builder.
-const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];
+// getSchedules (#258) reads the same open budget file as aqlQuery, so it gets
+// the same protection.
+const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown', 'getSchedules'];
 
 class PhaseTimeoutError extends Error {
     constructor(phase, timeoutMs) {

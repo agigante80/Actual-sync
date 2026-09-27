@@ -10,6 +10,123 @@
       "type": "string",
       "maxLength": 2000,
       "description": "A user-configurable notification message template (#257). Handlebars syntax: {{ variable }} plus the eq, default, upper and lower helpers, and the if/unless/each/with block helpers. Validated at startup against the consumer's documented variable list; an unknown name, an unregistered helper (lookup and log included), or literal markup Telegram would reject fails startup with the offending token and line. See docs/NOTIFICATIONS.md, section \"Message templates\"."
+    },
+    "scheduleAlertTemplates": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Overrides for one or more of the missing-payment alert's built-in messages (#258). Any key left out keeps the built-in English wording. See docs/SCHEDULE_ALERTS.md, section \"Templates\".",
+      "properties": {
+        "missing": { "$ref": "#/$defs/messageTemplate" },
+        "wrongAmount": { "$ref": "#/$defs/messageTemplate" },
+        "resolved": { "$ref": "#/$defs/messageTemplate" },
+        "cannotCheck": { "$ref": "#/$defs/messageTemplate" },
+        "ruleUnmatched": { "$ref": "#/$defs/messageTemplate" }
+      }
+    },
+    "scheduleAlert": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One missing-payment alert rule (#258): watches a single schedule (schedule) or every schedule whose name starts with a prefix (schedulePrefix, expanding to one alert per match, all sharing this rule's id).",
+      "oneOf": [
+        { "required": ["schedule"], "not": { "required": ["schedulePrefix"] } },
+        { "required": ["schedulePrefix"], "not": { "required": ["schedule"] } }
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,64}$",
+          "description": "Stable alert id, used by the schedule_alerts ledger and the dashboard (#261/#262). Defaults to a slug of schedule/schedulePrefix. Must be unique per server (checked at startup, since a JSON Schema cannot enforce uniqueness across array items)."
+        },
+        "schedule": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact name of one Actual schedule to watch."
+        },
+        "schedulePrefix": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Watch every Actual schedule whose name starts with this prefix (e.g. several rentals sharing a naming convention), each as its own occurrence of this one rule."
+        },
+        "graceDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60,
+          "default": 3,
+          "description": "Days after the occurrence date before it is considered overdue (the deadline is occurrence + graceDays)."
+        },
+        "earlyDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31,
+          "default": 2,
+          "description": "Days before the occurrence date a matching transaction still counts as on time."
+        },
+        "period": {
+          "type": "string",
+          "enum": ["occurrence", "next"],
+          "default": "occurrence",
+          "description": "What the {{period}} template variable names: the occurrence's own month (occurrence), or the following month (next, for a payment due at month end for the month ahead)."
+        },
+        "amountTolerancePct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "How far a posted amount may differ from the schedule's expected amount and still count as on time, as a percentage. Defaults to the schedule's own amountOp in Actual: 0 for an exact amount, 7.5 for \"approximately\"."
+        },
+        "remindEveryDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Repeat a missing alert every N days while it stays unresolved, instead of sending it once. Off (no repeat) by default."
+        },
+        "channels": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["telegram", "email", "slack", "discord", "webhook", "ntfy"]
+          },
+          "description": "Notification channels this alert uses. Defaults to every channel currently configured and enabled."
+        },
+        "templates": { "$ref": "#/$defs/scheduleAlertTemplates" }
+      }
+    },
+    "scheduleAlertsBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alerts"],
+      "description": "Missing-payment alerts for this server (#258): compares Actual's schedules against posted transactions and notifies when an expected payment is late, missing, wrong-amount, or cannot be checked. See docs/SCHEDULE_ALERTS.md.",
+      "properties": {
+        "digest": {
+          "type": "boolean",
+          "default": false,
+          "description": "Merge every alert event from one sync run for this server into a single message per channel, instead of one message per event."
+        },
+        "staleAfterDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60,
+          "default": 3,
+          "description": "How many days old the account's last successful sync may be before a missing payment is reported as cannotCheck (bank connection likely broken) instead of missing. Strictly greater than this many days counts as stale."
+        },
+        "dateFormat": {
+          "type": "string",
+          "default": "D MMM YYYY",
+          "description": "moment.js format string used for every date/time template variable."
+        },
+        "locale": {
+          "type": "string",
+          "default": "en",
+          "description": "Locale tag used when rendering Actual's own cadence wording (the {{cadence}} variable)."
+        },
+        "templates": { "$ref": "#/$defs/scheduleAlertTemplates" },
+        "alerts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/scheduleAlert" }
+        }
+      }
     }
   },
   "properties": {
@@ -127,7 +244,8 @@
                 "enum": ["pretty", "json"]
               }
             }
-          }
+          },
+          "scheduleAlerts": { "$ref": "#/$defs/scheduleAlertsBlock" }
         }
       }
     },

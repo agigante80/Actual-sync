@@ -107,6 +107,11 @@ Array of Actual Budget server configurations. At least one server is required.
   - All properties are optional
   - See [Per-Server Sync Configuration](#per-server-sync-configuration) below
 
+- **scheduleAlerts** (optional, object): Missing-payment alert rules for this server
+  - Compares this server's own Actual schedules against posted transactions after each sync
+  - No cost when omitted: the schedule lookup is skipped entirely for a server with no block
+  - See **[docs/SCHEDULE_ALERTS.md](SCHEDULE_ALERTS.md)** for the full reference
+
 ---
 
 ### sync (optional)
@@ -171,7 +176,23 @@ Multi-channel alerts on sync results. See **[docs/NOTIFICATIONS.md](NOTIFICATION
 **Cross-cutting controls:**
 
 - **`notifyOnSuccess`** (`always` / `errors_only` / `never`) — which sync results reach a channel. Set it on `notifications` as the global default and override it per channel, or per entry inside `webhooks.slack[]` / `webhooks.discord[]` / `webhooks.generic[]`. Defaults to `always`. `never` turns a channel off entirely (failures included); dashboard test notifications always send.
-- **`thresholds`** (when to alert) and **`rateLimit`** (anti-spam) — both apply to **`failure` results only**. They do not affect success or partial results; use `notifyOnSuccess` for those.
+- **`thresholds`** (when to alert) and **`rateLimit`** (anti-spam): both apply to **`failure` results only**. They do not affect success or partial results; use `notifyOnSuccess` for those.
+
+### scheduleAlerts (optional, per server)
+
+Compares a server's own Actual schedules against posted transactions and notifies when an expected
+recurring payment is late, missing, wrong-amount, or cannot be checked (stale bank connection). Set
+under each server that needs it, in `servers[].scheduleAlerts`. See
+**[docs/SCHEDULE_ALERTS.md](SCHEDULE_ALERTS.md)** for the full field reference, event types, and
+message-template variables.
+
+```json
+"scheduleAlerts": {
+  "alerts": [
+    { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+  ]
+}
+```
 
 ### healthCheck (optional)
 
