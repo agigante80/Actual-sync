@@ -4,6 +4,7 @@ const express = require('express');
 const Ajv = require('ajv');
 const addFormats = require('ajv-formats');
 const { resolveSchemaPath } = require('./configBootstrap');
+const { checkUniqueIds } = require('./scheduleAlertRules');
 
 // AJV combinator keywords whose failures are pure structural noise: when an
 // allOf/if-then/anyOf branch fails, AJV (allErrors:true) ALSO emits the concrete
@@ -495,6 +496,11 @@ class ConfigLoader {
                 `Expected 5 fields (minute hour day month dayOfWeek) or 6 with a leading seconds field`
             );
         }
+
+        // scheduleAlerts.alerts[].id uniqueness per server (#258): AJV cannot
+        // express key uniqueness across array items, so it is checked here.
+        // Throws with the exact colliding indices and server name.
+        checkUniqueIds(config.servers);
     }
 
     /**
