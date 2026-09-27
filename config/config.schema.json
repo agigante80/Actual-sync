@@ -5,6 +5,13 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["servers"],
+  "$defs": {
+    "messageTemplate": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "A user-configurable notification message template (#257). Handlebars syntax: {{ variable }} plus the eq, default, upper and lower helpers, and the if/unless/each/with block helpers. Validated at startup against the consumer's documented variable list; an unknown name, an unregistered helper (lookup and log included), or literal markup Telegram would reject fails startup with the offending token and line. See docs/NOTIFICATIONS.md, section \"Message templates\"."
+    }
+  },
   "properties": {
     "$schema": {
       "type": "string",
