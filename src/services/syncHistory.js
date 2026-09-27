@@ -107,10 +107,21 @@ class SyncHistoryService {
     `;
 
     // Missing-payment alert de-duplication ledger (#258). One row per
-    // successfully delivered event, keyed by (server, alert, schedule,
-    // occurrence, event); `deliver()` (src/lib/scheduleAlertDelivery.js)
-    // reads it before sending and writes it only after a successful send, so
-    // a failed send is retried on the next sync instead of being lost.
+    // successfully delivered event *destination*, keyed by (server, alert,
+    // schedule, occurrence, event, channel); `deliver()`
+    // (src/lib/scheduleAlertDelivery.js) reads it before sending and writes
+    // it only after a successful send, so a failed send is retried on the
+    // next sync instead of being lost.
+    //
+    // `channel` (#295 review, H5) identifies the individual destination a
+    // row was recorded for (e.g. `slack:https://hooks.example/a`, or just
+    // `telegram` for a single-destination channel), so one dead destination
+    // no longer forces every other, already-succeeding destination to resend
+    // on the next sync (see scheduleAlertDelivery.js's `dueDestinations`).
+    // It is nullable so a lookup that does not care which destination
+    // recorded an event (e.g. `deriveResolvedEvents`, which only asks "was
+    // `missing` ever recorded for this occurrence, on any channel") can omit
+    // it and match any row.
     const createScheduleAlertsTable = `
       CREATE TABLE IF NOT EXISTS schedule_alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,7 +131,8 @@ class SyncHistoryService {
         occurrence_date TEXT,
         event TEXT NOT NULL,
         delivery TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
+        recorded_at TEXT NOT NULL,
+        channel TEXT
       )
     `;
 
@@ -163,6 +175,17 @@ class SyncHistoryService {
       this.logger.info('Migrated sync_history: added accounts_skipped column');
     }
 
+    // #295 review, H5: schedule_alerts.channel, added to an existing
+    // database created before per-destination ledger keying existed.
+    // Existing rows read as NULL for it, i.e. "any destination", which is
+    // the correct reading for a row written back when there was only ever
+    // one implicit "destination" per event.
+    const scheduleAlertsColumns = this.db.prepare('PRAGMA table_info(schedule_alerts)').all();
+    if (!scheduleAlertsColumns.some((col) => col.name === 'channel')) {
+      this.db.exec('ALTER TABLE schedule_alerts ADD COLUMN channel TEXT');
+      this.logger.info('Migrated schedule_alerts: added channel column');
+    }
+
     // NOTE: account_metadata and schedule_alerts are created via CREATE TABLE
     // IF NOT EXISTS in createTables() (so a missing table is added to
     // existing DBs). If a NEW COLUMN is ever added to either, add an ALTER
@@ -181,17 +204,24 @@ class SyncHistoryService {
    * @param {?string} key.scheduleId
    * @param {?string} key.occurrenceDate
    * @param {string} key.event
+   * @param {string} [key.channel] - #295 review, H5: when given, only a row
+   *   recorded for this exact destination matches; when omitted, any row for
+   *   the event matches regardless of which destination recorded it (used by
+   *   `deriveResolvedEvents`, which only needs to know an event was ever
+   *   recorded at all, not on which channel).
    * @returns {Promise<{recordedAt:string}|null>}
    */
-  async findLatestScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event }) {
+  async findLatestScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, channel }) {
     try {
+      const filterChannel = channel !== undefined;
       const row = this.db.prepare(`
         SELECT recorded_at AS recordedAt FROM schedule_alerts
         WHERE server = ? AND alert_id = ?
           AND schedule_id IS ? AND occurrence_date IS ? AND event = ?
+          ${filterChannel ? 'AND channel IS ?' : ''}
         ORDER BY recorded_at DESC, id DESC
         LIMIT 1
-      `).get(server, alertId, scheduleId ?? null, occurrenceDate ?? null, event);
+      `).get(...[server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, ...(filterChannel ? [channel ?? null] : [])]);
       return row || null;
     } catch (error) {
       this.logger.error('Failed to read schedule_alerts ledger', { error: error.message, server, alertId, event });
@@ -209,14 +239,17 @@ class SyncHistoryService {
    * @param {?string} record.occurrenceDate
    * @param {string} record.event
    * @param {'sent'|'muted'|'disabled'} record.delivery
+   * @param {?string} [record.channel] - #295 review, H5: the destination
+   *   this row was recorded for (see `findLatestScheduleAlert`); `null`/
+   *   omitted for a record with no single destination (e.g. legacy rows).
    * @returns {Promise<number>} inserted row id
    */
-  async recordScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, delivery }) {
+  async recordScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, delivery, channel }) {
     try {
       const result = this.db.prepare(`
-        INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, delivery, this.now().toISOString());
+        INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at, channel)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, delivery, this.now().toISOString(), channel ?? null);
       return result.lastInsertRowid;
     } catch (error) {
       this.logger.error('Failed to record schedule alert', { error: error.message, server, alertId, event });

@@ -182,4 +182,23 @@ describe('expandRules', () => {
     const rules = getRules({ alerts: [{ id: 'rent', schedule: 'Rent - Apartment' }] });
     expect(expandRules(rules, [])).toEqual([expect.objectContaining({ unmatched: true })]);
   });
+
+  // #295 review, H4: a completed schedule must not produce a binding (it
+  // would otherwise still be evaluated and reported "missing" forever).
+  test('a completed schedule is excluded, so a schedule rule matching only a completed one is unmatched', () => {
+    const rules = getRules({ alerts: [{ id: 'rent', schedule: 'Rent - Apartment' }] });
+    const completedSchedules = [{ id: 's1', name: 'Rent - Apartment', completed: true }];
+    expect(expandRules(rules, completedSchedules)).toEqual([expect.objectContaining({ unmatched: true, scheduleId: null })]);
+  });
+
+  test('a schedulePrefix rule skips a completed schedule but still expands the active ones', () => {
+    const rules = getRules({ alerts: [{ id: 'utilities', schedulePrefix: 'Utilities' }] });
+    const mixed = [
+      { id: 's2', name: 'Utilities - Gas', completed: false },
+      { id: 's3', name: 'Utilities - Electric', completed: true }
+    ];
+    const bindings = expandRules(rules, mixed);
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({ scheduleId: 's2', unmatched: false });
+  });
 });

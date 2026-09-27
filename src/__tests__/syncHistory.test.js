@@ -710,15 +710,25 @@ describe('SyncHistoryService', () => {
       expect(typeof found.recordedAt).toBe('string');
     });
 
+    // #295 review, M6: as originally written this asserted
+    // `second.recordedAt >= first.recordedAt`, which passes even if the
+    // lookup wrongly returned the FIRST row both times (`x >= x` is `true`),
+    // so it could not fail regardless of whether "most recent" was
+    // implemented correctly. Driving `now()` explicitly gives two rows with
+    // distinct, known `recorded_at` values, so the test can assert the exact
+    // newest one and would fail if the oldest (or either row, non-deterministically) came back instead.
     test('findLatestScheduleAlert returns the most recently recorded row for a repeated key', async () => {
+      syncHistory.now = () => new Date('2026-01-10T10:00:00.000Z');
       await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent' });
       const first = await syncHistory.findLatestScheduleAlert(key());
+      expect(first.recordedAt).toBe('2026-01-10T10:00:00.000Z');
+
       // A second write for the exact same key (e.g. a reminder resend) must
       // move the ledger forward, not just leave the first row in place.
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      syncHistory.now = () => new Date('2026-01-12T08:00:00.000Z');
       await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent' });
       const second = await syncHistory.findLatestScheduleAlert(key());
-      expect(second.recordedAt >= first.recordedAt).toBe(true);
+      expect(second.recordedAt).toBe('2026-01-12T08:00:00.000Z');
     });
 
     test('matches on a null scheduleId/occurrenceDate key (ruleUnmatched events)', async () => {

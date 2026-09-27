@@ -10,7 +10,9 @@
  * - sends through `sender.sendTemplated` (`notificationService`'s public
  *   entry point), fanning out itself to every configured Slack/Discord/generic
  *   webhook (`sendTemplated` only accepts one URL per call);
- * - records exactly one `sent` row per successfully delivered event.
+ * - records one `sent` row per successfully delivered *destination* (#295
+ *   review, H5), so a dead destination retries alone next sync instead of
+ *   resending to every destination that already succeeded.
  *
  * Channel selection reads `sender.config` (the same shape `NotificationService`
  * itself is constructed with) rather than trusting `sendTemplated`'s own
@@ -33,6 +35,16 @@
  * operator has several Slack/Discord/webhook endpoints configured, the first
  * enabled one of each type receives the combined message (fan-out to every
  * endpoint is preserved for the non-digest case in `sendEvent`).
+ *
+ * #295 review, H5: the ledger is keyed per destination (`schedule_alerts.channel`,
+ * e.g. `slack:https://hooks.example/a`), not just per event. Previously a
+ * single `allOk` flag spanned every destination of every requested channel,
+ * so one dead destination withheld the ledger row for the whole event and
+ * every OTHER, already-succeeding destination resent it again next sync.
+ * `dueDestinations()` now computes, per event, exactly which destinations
+ * still need it (never sent, or a reminder is due) and `sendEvent`/
+ * `sendDigestBatch` record a row for each destination as soon as it
+ * succeeds, so a failing destination retries alone.
  */
 'use strict';
 
@@ -113,6 +125,26 @@ function formatAmount(cents) {
 function formatDate(isoDate, dateFormat, timezone) {
   if (!isoDate) return null;
   return moment.tz(isoDate, timezone).format(dateFormat);
+}
+
+/**
+ * Whole calendar days between two instants in `timezone` (#295 review, M7).
+ * A raw `moment(now).diff(moment(recordedAt), 'days')` counts full 24h
+ * periods, so a row recorded at 23:00 and checked at 01:00 the "next" day is
+ * 0 days apart by the clock but 2 calendar dates apart; with
+ * `remindEveryDays: 1` this let a reminder skip a calendar day (fire roughly
+ * every 2 days) or, depending on where the 24h boundary fell relative to the
+ * sync schedule, fire twice in one day. Comparing `startOf('day')` in the
+ * configured timezone instead makes "1 day" mean "the next calendar day",
+ * matching how an operator reads `remindEveryDays`.
+ *
+ * @param {Date|string} now
+ * @param {Date|string} recordedAt
+ * @param {string} timezone
+ * @returns {number}
+ */
+function calendarDaysBetween(now, recordedAt, timezone) {
+  return moment.tz(now, timezone).startOf('day').diff(moment.tz(recordedAt, timezone).startOf('day'), 'days');
 }
 
 /**
@@ -221,6 +253,58 @@ function resolveChannels(rule, sender) {
 }
 
 /**
+ * Every individual destination a rule can send to right now: one entry per
+ * `(channel, target)` pair `resolveChannels`/`resolveTargets` expose. `key`
+ * uniquely identifies the destination for the ledger (#295 review, H5): the
+ * channel name alone for a single-destination channel, `channel:url` for a
+ * webhook-style channel that can have several.
+ *
+ * @param {Object} rule
+ * @param {{config?:Object}} sender
+ * @returns {Array<{channel:string, target:Object, key:string}>}
+ */
+function destinationsForRule(rule, sender) {
+  const destinations = [];
+  for (const channel of resolveChannels(rule, sender)) {
+    for (const target of resolveTargets(channel, sender)) {
+      destinations.push({ channel, target, key: target.url ? `${channel}:${target.url}` : channel });
+    }
+  }
+  return destinations;
+}
+
+/**
+ * The subset of a rule's destinations still due for one event: never sent to
+ * that destination before (#295 review, H5), or, for `missing`/
+ * `ruleUnmatched`, due for a reminder (`rule.remindEveryDays`, calendar-day
+ * comparison per M7). Shared by `mayRecord` (the entry gate) and
+ * `sendEvent`/`sendDigestBatch` (what actually gets attempted and recorded),
+ * so the two can never disagree about what is due.
+ *
+ * @returns {Promise<Array<{channel:string, target:Object, key:string}>>}
+ */
+async function isDestinationDue(event, rule, destinationKey, history, server, now, timezone) {
+  const latest = await history.findLatestScheduleAlert({
+    server, alertId: event.alertId, scheduleId: event.scheduleId,
+    occurrenceDate: event.occurrence, event: event.event, channel: destinationKey
+  });
+  if (!latest) return true;
+  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return false; // one row per destination, ever
+  const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;
+  if (!remindEveryDays) return false;
+  return calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays;
+}
+
+async function dueDestinations(event, rule, sender, history, server, now, timezone) {
+  const destinations = destinationsForRule(rule, sender);
+  const due = [];
+  for (const destination of destinations) {
+    if (await isDestinationDue(event, rule, destination.key, history, server, now, timezone)) due.push(destination);
+  }
+  return due;
+}
+
+/**
  * Build one `sendTemplated` channel entry for a single event and a single
  * destination.
  *
@@ -268,6 +352,14 @@ function buildChannelOutput(renderer, key, context, channel, target, name) {
  * `resolveChannels`/`resolveTargets` only request channels with a real
  * destination.
  *
+ * #295 review, M2: this `null`-is-success rule only stays safe because
+ * `resolveChannels` already excludes a channel with zero usable
+ * destinations, and `configLoader.js`'s startup validation additionally
+ * rejects a rule whose explicit `channels` names none that are configured.
+ * Without those two guards, a misconfigured "enabled but nothing to send to"
+ * channel could reach here and be counted as delivered when nothing went
+ * out; do not relax either guard without revisiting this function too.
+ *
  * @param {?Object} result
  * @returns {boolean}
  */
@@ -303,34 +395,71 @@ async function sendOnce(sender, channelOutputs, { server, alertId, event, occurr
 }
 
 /**
- * Render, send and record one event, fanning out to every destination of
- * every requested channel. Returns `true` only if every destination
- * succeeded (so the caller may record the ledger row); a single failed
- * destination withholds the row so the whole event retries next sync.
+ * Render, send and record one event, one destination at a time (#295 review,
+ * H5): each destination is checked against the ledger independently, sent
+ * to only if still due, and recorded the moment it succeeds. Returns `true`
+ * if at least one destination was newly recorded (the event counts as
+ * "sent" for `deliver()`'s summary); `false` if nothing due succeeded (the
+ * event counts as "skipped" and every still-failing destination retries next
+ * sync, without disturbing destinations that already succeeded).
+ *
+ * #295 review, M2: when a rule resolves to zero usable destinations at all
+ * (e.g. its explicit `channels` names only unconfigured channels that
+ * startup validation did not catch, or nothing is configured server-wide),
+ * this WARNs once and records nothing, rather than the previous behavior of
+ * silently returning success with nothing sent.
+ *
+ * #295 review, H6: rendering is wrapped per destination so one bad rule's
+ * template (a syntax error `compileTemplateSet`'s startup validation missed,
+ * or a runtime value it cannot render) only skips that destination/event, it
+ * does not throw out of `deliver()`'s loop and block every other rule.
  *
  * @returns {Promise<boolean>}
  */
-async function sendEvent({ event, evaluation, rule, sender, server, timezone, logger }) {
-  const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
-  const channels = resolveChannels(rule, sender);
-  if (channels.length === 0) return true; // nothing configured to send to; nothing to retry either
-
-  const modes = channels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
-  const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
-  const context = buildContext(event, evaluation, rule, { server, timezone });
-  const name = context.name;
-
-  let allOk = true;
-  for (const channel of channels) {
-    for (const target of resolveTargets(channel, sender)) {
-      const channelOutputs = buildChannelOutput(renderer, event.event, context, channel, target, name);
-      const ok = await sendOnce(sender, channelOutputs, {
-        server, alertId: event.alertId, event: event.event, occurrence: event.occurrence, logger
+async function sendEvent({ event, evaluation, rule, sender, server, timezone, logger, history, now }) {
+  try {
+    const destinations = await dueDestinations(event, rule, sender, history, server, now, timezone);
+    if (destinations.length === 0) {
+      logger.warn('Schedule alert has no due/usable destination; nothing sent, no ledger row written', {
+        server, alertId: event.alertId, event: event.event, occurrence: event.occurrence
       });
-      if (!ok) allOk = false;
+      return false;
     }
+
+    const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+    const channels = Array.from(new Set(destinations.map((d) => d.channel)));
+    const modes = channels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
+    const context = buildContext(event, evaluation, rule, { server, timezone });
+
+    let sentAny = false;
+    for (const destination of destinations) {
+      let ok = false;
+      try {
+        const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
+        const channelOutputs = buildChannelOutput(renderer, event.event, context, destination.channel, destination.target, context.name);
+        ok = await sendOnce(sender, channelOutputs, {
+          server, alertId: event.alertId, event: event.event, occurrence: event.occurrence, logger
+        });
+      } catch (error) {
+        logger.warn('Schedule alert render failed; destination skipped, will retry next sync', {
+          server, alertId: event.alertId, event: event.event, channel: destination.channel, error: error.message
+        });
+      }
+      if (ok) {
+        await history.recordScheduleAlert({
+          server, alertId: event.alertId, scheduleId: event.scheduleId, occurrenceDate: event.occurrence,
+          event: event.event, delivery: 'sent', channel: destination.key
+        });
+        sentAny = true;
+      }
+    }
+    return sentAny;
+  } catch (error) {
+    logger.warn('Schedule alert send threw; event skipped, will retry next sync', {
+      server, alertId: event.alertId, event: event.event, error: error.message
+    });
+    return false;
   }
-  return allOk;
 }
 
 /**
@@ -365,42 +494,99 @@ function buildDigestOutput(channel, header, linesByMode, target, server) {
 }
 
 /**
+ * A stable key identifying one event's ledger row, independent of channel
+ * (used only to report per-event sent/skipped back to `deliver()`; the
+ * ledger row itself is additionally keyed per destination, see the module
+ * doc comment).
+ */
+function eventKey(event) {
+  return `${event.alertId}|${event.scheduleId}|${event.occurrence}|${event.event}`;
+}
+
+/**
  * Send one batch of eligible events (already deduplicated and rule-state
- * filtered) as a single merged message per channel, for `digest: true`. See
- * the module doc comment for what "merged" means for a channel with several
- * configured destinations.
+ * filtered) as a single merged message per channel, for `digest: true`.
+ *
+ * #295 review, M1: each rule's own `channels` restriction still applies in
+ * digest mode. Previously the channel set was the UNION of every item's
+ * channels and every channel received the full merged content regardless of
+ * which rules actually allowed it, leaking a channel-restricted rule's
+ * content onto channels its own config never named. Grouping by channel
+ * first, then only including items that allow that channel, fixes this.
+ *
+ * #295 review, H5: a digest still sends to only its one primary destination
+ * per channel type (merging *is* the point of digest - see the module doc
+ * comment on `resolveTargets`), so the ledger is keyed by that single
+ * destination too; only items still due for it are included, and an item
+ * already delivered on this channel in a prior digest is not resent just
+ * because another item in today's batch is still pending on it.
+ *
+ * #295 review, H6: one rule's bad template only drops that item from that
+ * channel's digest (logged), it does not throw and lose the whole batch.
  *
  * @param {Array<{event:Object, evaluation:?Object, rule:Object}>} items
- * @returns {Promise<boolean>}
+ * @returns {Promise<Set<string>>} the `eventKey()`s that got at least one
+ *   newly-recorded destination this call
  */
-async function sendDigestBatch(items, { sender, server, timezone, logger }) {
-  const channelSet = new Set();
-  for (const item of items) resolveChannels(item.rule, sender).forEach((channel) => channelSet.add(channel));
-  const channels = Array.from(channelSet);
-  if (channels.length === 0) return true;
-
-  const modes = channels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
-  const linesByMode = {};
-  for (const mode of modes) linesByMode[mode] = [];
-
+async function sendDigestBatch(items, { sender, server, timezone, logger, history, now }) {
+  const perChannelItems = new Map();
   for (const item of items) {
-    const templates = { ...DEFAULT_TEMPLATES, ...(item.rule.templates || {}) };
-    const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
-    const context = buildContext(item.event, item.evaluation, item.rule, { server, timezone });
-    for (const mode of modes) linesByMode[mode].push(renderer.render(item.event.event, context, mode));
+    for (const channel of resolveChannels(item.rule, sender)) {
+      if (!perChannelItems.has(channel)) perChannelItems.set(channel, []);
+      perChannelItems.get(channel).push(item);
+    }
   }
 
-  const header = `Actual-sync: ${items.length} payment alert(s) for ${server}`;
-  let allOk = true;
-  for (const channel of channels) {
+  const sentKeys = new Set();
+
+  for (const [channel, channelItems] of perChannelItems) {
     // Merging is the point of digest: one message per channel type, to its
     // first enabled destination (see the module doc comment).
     const target = resolveTargets(channel, sender)[0];
+    if (!target) continue; // resolveChannels already guarantees this, defensive only
+    const destinationKey = target.url ? `${channel}:${target.url}` : channel;
+
+    const dueItems = [];
+    for (const item of channelItems) {
+      if (await isDestinationDue(item.event, item.rule, destinationKey, history, server, now, timezone)) dueItems.push(item);
+    }
+    if (dueItems.length === 0) continue;
+
+    const modes = CHANNEL_TO_MODES[channel] || [];
+    const linesByMode = {};
+    for (const mode of modes) linesByMode[mode] = [];
+    const rendered = [];
+    for (const item of dueItems) {
+      try {
+        const templates = { ...DEFAULT_TEMPLATES, ...(item.rule.templates || {}) };
+        const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
+        const context = buildContext(item.event, item.evaluation, item.rule, { server, timezone });
+        for (const mode of modes) linesByMode[mode].push(renderer.render(item.event.event, context, mode));
+        rendered.push(item);
+      } catch (error) {
+        logger.warn('Schedule alert digest render failed for one item; item skipped', {
+          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message
+        });
+      }
+    }
+    if (rendered.length === 0) continue;
+
+    const header = `Actual-sync: ${rendered.length} payment alert(s) for ${server}`;
     const channelOutputs = buildDigestOutput(channel, header, linesByMode, target, server);
     const ok = await sendOnce(sender, channelOutputs, { server, alertId: 'digest', event: 'digest', occurrence: null, logger });
-    if (!ok) allOk = false;
+    if (!ok) continue; // H5: withhold only this channel's rows; other channels are unaffected
+
+    for (const item of rendered) {
+      await history.recordScheduleAlert({
+        server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
+        occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent',
+        channel: destinationKey
+      });
+      sentKeys.add(eventKey(item.event));
+    }
   }
-  return allOk;
+
+  return sentKeys;
 }
 
 /**
@@ -445,27 +631,20 @@ async function deriveResolvedEvents(evaluations, history, server) {
 }
 
 /**
- * Whether a new ledger row may be written for this event, given the ledger's
- * current state for its `(server, alertId, scheduleId, occurrence, event)`
- * key. Every event type gets at most one row ever, except `missing`, which
- * additionally allows a reminder once `rule.remindEveryDays` have passed
- * since the latest row (`ruleUnmatched`, whose `occurrence` is always
- * `null`, is deduplicated the same way: one row per rule per calendar day,
- * via `remindEveryDays: 1` applied by the caller).
+ * Whether this event has at least one destination still worth attempting
+ * (#295 review, H5: this is now per-destination, via `dueDestinations`, not
+ * a single ledger row per event - see the module doc comment). Every event
+ * type gets at most one row per destination ever, except `missing`, which
+ * additionally allows a reminder once `rule.remindEveryDays` calendar days
+ * (M7) have passed since that destination's latest row (`ruleUnmatched`,
+ * whose `occurrence` is always `null`, is deduplicated the same way: one row
+ * per rule per calendar day, via `remindEveryDays: 1` applied by the caller).
  *
  * @returns {Promise<boolean>}
  */
-async function mayRecord(event, rule, history, server, now) {
-  const latest = await history.findLatestScheduleAlert({
-    server, alertId: event.alertId, scheduleId: event.scheduleId, occurrenceDate: event.occurrence, event: event.event
-  });
-  if (!latest) return true;
-  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return false;
-
-  const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;
-  if (!remindEveryDays) return false;
-  const ageDays = moment(now).diff(moment(latest.recordedAt), 'days');
-  return ageDays >= remindEveryDays;
+async function mayRecord(event, rule, sender, history, server, now, timezone) {
+  const due = await dueDestinations(event, rule, sender, history, server, now, timezone);
+  return due.length > 0;
 }
 
 /**
@@ -503,7 +682,19 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
     if (!state.enabled) { skipped += 1; continue; }
     if (state.mutedUntil && moment(now).isBefore(moment(state.mutedUntil))) { skipped += 1; continue; }
 
-    if (!(await mayRecord(event, rule, history, server, now))) { skipped += 1; continue; }
+    // #295 review, M2: a rule resolving to zero usable destinations at all
+    // (not just "nothing due right now") gets one WARN and no ledger row,
+    // rather than silently falling out of `mayRecord`'s dedup check the same
+    // way an already-fully-delivered event does (which needs no WARN).
+    if (destinationsForRule(rule, sender).length === 0) {
+      log.warn('Schedule alert has no due/usable destination; nothing sent, no ledger row written', {
+        server, alertId: event.alertId, event: event.event
+      });
+      skipped += 1;
+      continue;
+    }
+
+    if (!(await mayRecord(event, rule, sender, history, server, now, timezone))) { skipped += 1; continue; }
 
     const evaluation = (evaluations || []).find(
       (e) => e.alertId === event.alertId && e.scheduleId === event.scheduleId
@@ -519,35 +710,27 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
 
   if (digestOn) {
     if (eligible.length === 0) return { sent, skipped };
-    const ok = await sendDigestBatch(eligible, { sender, server, timezone, logger: log });
-    if (!ok) {
-      skipped += eligible.length;
-      return { sent, skipped };
-    }
+    // #295 review, H5/M1: per-destination, per-channel-restriction accounting
+    // now lives inside sendDigestBatch; it records its own ledger rows and
+    // reports back which events got at least one of them.
+    const sentKeys = await sendDigestBatch(eligible, { sender, server, timezone, logger: log, history, now });
     for (const item of eligible) {
-      await history.recordScheduleAlert({
-        server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
-        occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent'
-      });
-      sent += 1;
+      if (sentKeys.has(eventKey(item.event))) sent += 1; else skipped += 1;
     }
     return { sent, skipped };
   }
 
   for (const item of eligible) {
     const ok = await sendEvent({
-      event: item.event, evaluation: item.evaluation, rule: item.rule, sender, server, timezone, logger: log
+      event: item.event, evaluation: item.evaluation, rule: item.rule, sender, server, timezone, logger: log, history, now
     });
-    if (!ok) { skipped += 1; continue; }
-
-    await history.recordScheduleAlert({
-      server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
-      occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent'
-    });
-    sent += 1;
+    if (ok) sent += 1; else skipped += 1;
   }
 
   return { sent, skipped };
 }
 
-module.exports = { deliver, DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS };
+module.exports = {
+  deliver, DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS, CHANNEL_TO_MODES,
+  resolveChannels
+};

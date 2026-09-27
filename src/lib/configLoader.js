@@ -4,7 +4,9 @@ const express = require('express');
 const Ajv = require('ajv');
 const addFormats = require('ajv-formats');
 const { resolveSchemaPath } = require('./configBootstrap');
-const { checkUniqueIds } = require('./scheduleAlertRules');
+const { checkUniqueIds, getRules } = require('./scheduleAlertRules');
+const { DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS, CHANNEL_TO_MODES, resolveChannels } = require('./scheduleAlertDelivery');
+const { compileTemplateSet } = require('./templateRenderer');
 
 // AJV combinator keywords whose failures are pure structural noise: when an
 // allOf/if-then/anyOf branch fails, AJV (allErrors:true) ALSO emits the concrete
@@ -501,6 +503,61 @@ class ConfigLoader {
         // express key uniqueness across array items, so it is checked here.
         // Throws with the exact colliding indices and server name.
         checkUniqueIds(config.servers);
+
+        // #295 review: validate every scheduleAlerts rule at startup rather
+        // than at send time (H6/M2). Throws with the rule id and server name.
+        this.validateScheduleAlerts(config.servers, config.notifications || {});
+    }
+
+    /**
+     * Startup validation for every server's `scheduleAlerts` rules (#295 review).
+     *
+     * - H6: a rule's merged (built-in default + block + alert) template must
+     *   `compileTemplateSet` for every channel `deliver()` could ever send it
+     *   to. Without this, a bad template only surfaces at send time, and
+     *   since `deliver()` throwing mid-loop for one event would otherwise
+     *   abort the whole sync's alert delivery, one bad rule could silently
+     *   block every OTHER rule's alerts for that server, every sync, until
+     *   an operator noticed (`sendEvent`/`sendDigestBatch` also wrap
+     *   rendering per event now, as a second line of defense - see
+     *   scheduleAlertDelivery.js).
+     * - M2: a rule with an explicit `channels` restriction that names only
+     *   channels nothing is configured for can never deliver anything; that
+     *   is a config mistake worth failing startup for, rather than "sending"
+     *   successfully with zero destinations (see `channelSucceeded`'s doc
+     *   comment in scheduleAlertDelivery.js for why the runtime send path
+     *   depends on this never happening).
+     *
+     * @param {Object[]} servers
+     * @param {Object} notificationsConfig - `config.notifications`, the same
+     *   shape `NotificationService`/`sender.config` uses
+     * @throws {Error}
+     */
+    validateScheduleAlerts(servers, notificationsConfig) {
+        const allModes = ALL_CHANNELS.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
+        const sender = { config: notificationsConfig || {} };
+
+        for (const server of servers || []) {
+            const rules = getRules(server.scheduleAlerts);
+            for (const rule of rules) {
+                const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+                try {
+                    compileTemplateSet({ templates, variables: VARIABLES, channels: allModes });
+                } catch (error) {
+                    throw new Error(
+                        `Invalid scheduleAlerts template for rule "${rule.id}" (server "${server.name}"): ${error.message}`
+                    );
+                }
+
+                if (rule.channels && rule.channels.length && resolveChannels(rule, sender).length === 0) {
+                    throw new Error(
+                        `scheduleAlerts rule "${rule.id}" (server "${server.name}") restricts channels to `
+                        + `[${rule.channels.join(', ')}], but none of those channels have a configured destination `
+                        + `in notifications. Configure at least one, or remove the channels restriction.`
+                    );
+                }
+            }
+        }
     }
 
     /**

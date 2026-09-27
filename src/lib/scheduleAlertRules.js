@@ -130,11 +130,19 @@ function checkUniqueIds(servers) {
 function expandRules(rules, schedules) {
   const bindings = [];
   for (const rule of rules) {
+    // A completed schedule (schedule.completed === true) is excluded from
+    // matching entirely (#295 review, H4): Actual keeps a completed schedule
+    // around (e.g. it reached its endOccurrences/endDate) but stops expecting
+    // new occurrences of it, so evaluating it here only ever produced a
+    // false "missing" for an occurrence nobody expects anymore. A rule whose
+    // only match is completed now behaves like a rule matching nothing
+    // (one `unmatched` binding), same as any other non-match.
+    const isActive = (s) => s.completed !== true;
     let matches;
     if (rule.schedulePrefix) {
-      matches = (schedules || []).filter((s) => typeof s.name === 'string' && s.name.startsWith(rule.schedulePrefix));
+      matches = (schedules || []).filter((s) => typeof s.name === 'string' && s.name.startsWith(rule.schedulePrefix) && isActive(s));
     } else if (rule.schedule) {
-      matches = (schedules || []).filter((s) => s.name === rule.schedule);
+      matches = (schedules || []).filter((s) => s.name === rule.schedule && isActive(s));
     } else {
       matches = [];
     }
