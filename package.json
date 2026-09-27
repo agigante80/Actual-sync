@@ -75,6 +75,7 @@
     "dotenv": "^18.0.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
+    "handlebars": "4.7.9",
     "moment-timezone": "^0.6.4",
     "node-schedule": "^2.1.1",
     "nodemailer": "^10.0.10",
