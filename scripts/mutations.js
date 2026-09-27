@@ -1176,6 +1176,112 @@ module.exports = [
         tests: 'templateRenderer'
     },
 
+    // ---- #258: missing-payment alerts ------------------------------------
+    {
+        id: '258-interval-violation-boundary-off-by-one', ticket: '#258',
+        desc: 'the #271 item 1 window-overlap guard uses > instead of >=, so an exact-equal grace+early no longer trips it',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '    if (shortestIntervalDays !== null && binding.graceDays + binding.earlyDays >= shortestIntervalDays) {',
+        mutant: '    if (shortestIntervalDays !== null && binding.graceDays + binding.earlyDays > shortestIntervalDays) {',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-amount-tolerance-boundary-off-by-one', ticket: '#258',
+        desc: 'an amount exactly at the tolerance boundary is no longer accepted, narrowing the allowed range',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '  return Math.abs(Math.abs(amount) - Math.abs(expected)) <= allowed;',
+        mutant: '  return Math.abs(Math.abs(amount) - Math.abs(expected)) < allowed;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-staleness-check-disabled', ticket: '#258',
+        desc: 'a stale bank connection is never detected, so a merely-unsynced account is reported missing instead of cannotCheck',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const stale = !lastSync || today.diff(lastSync, \'days\') > binding.staleAfterDays;',
+        mutant: '      const stale = false;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-schedule-link-ignored', ticket: '#258',
+        desc: "Actual's own transaction-to-schedule link is ignored, falling back to account+payee matching even when linked",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  if (tx.schedule && schedule.id && tx.schedule === schedule.id) return { eligible: true, linked: true };",
+        mutant: "  if (false) return { eligible: true, linked: true };",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-duplicate-alert-id-not-rejected', ticket: '#258',
+        desc: 'checkUniqueIds no longer throws on a duplicate alert id, silently allowing two rules to collide',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: '      if (seen.has(id)) {',
+        mutant: '      if (false) {',
+        tests: 'scheduleAlertRules'
+    },
+    {
+        id: '258-unmatched-rule-not-flagged', ticket: '#258',
+        desc: 'a rule matching no schedule silently expands to zero bindings instead of one unmatched binding, so no ruleUnmatched event fires',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: '    if (matches.length === 0) {',
+        mutant: '    if (false) {',
+        tests: 'scheduleAlertRules'
+    },
+    {
+        id: '258-reminder-interval-not-enforced', ticket: '#258',
+        desc: 'a missing-payment reminder resends on every sync instead of waiting remindEveryDays, spamming every channel',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '  return ageDays >= remindEveryDays;',
+        mutant: '  return true;',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-ruleUnmatched-reminder-uses-configured-interval', ticket: '#258',
+        desc: 'ruleUnmatched reminders stop using the fixed 1-day interval and instead honor (or skip, when unset) the rule\'s own remindEveryDays',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;",
+        mutant: '  const remindEveryDays = rule.remindEveryDays;',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-disabled-webhook-not-skipped', ticket: '#258',
+        desc: 'a generic webhook with enabled:false is sent to anyway, since the enabled check is dropped from resolveTargets',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      return (cfg.webhooks?.generic || []).filter((w) => w.enabled !== false && w.url);",
+        mutant: "      return (cfg.webhooks?.generic || []).filter((w) => w.url);",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-sent-skipped-swapped', ticket: '#258',
+        desc: 'runScheduleAlertsStep swaps sent and skipped in its return value, so syncService would log an inverted count',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '    return { events: events.length, sent: deliverResult.sent, skipped: deliverResult.skipped };',
+        mutant: '    return { events: events.length, sent: deliverResult.skipped, skipped: deliverResult.sent };',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '258-ledger-null-key-matching-broken', ticket: '#258',
+        desc: 'the schedule_alerts ledger lookup uses = instead of IS for nullable key columns, so a NULL scheduleId/occurrenceDate never matches itself',
+        file: 'src/services/syncHistory.js',
+        anchor: '          AND schedule_id IS ? AND occurrence_date IS ? AND event = ?',
+        mutant: '          AND schedule_id = ? AND occurrence_date = ? AND event = ?',
+        tests: 'syncHistory'
+    },
+    {
+        id: '258-ledger-retention-floor-dropped', ticket: '#258',
+        desc: 'the schedule_alerts ledger loses its 120-day retention floor, so a low sync-history retentionDays purges alert history too early',
+        file: 'src/services/syncHistory.js',
+        anchor: '      const scheduleAlertsRetentionDays = Math.max(this.retentionDays, 120);',
+        mutant: '      const scheduleAlertsRetentionDays = this.retentionDays;',
+        tests: 'syncHistory'
+    },
+    {
+        id: '258-weekend-skip-mode-inverted', ticket: '#258',
+        desc: 'a "before" weekend solve mode rolls a Saturday to Monday instead of back to Friday (the before/after branches are swapped)',
+        file: 'src/lib/vendor/actualSchedules.js',
+        anchor: "    if (solveMode === 'after') {\n      return d.nextMonday(date);\n    } else if (solveMode === 'before') {\n      return d.previousFriday(date);\n    }",
+        mutant: "    if (solveMode === 'after') {\n      return d.previousFriday(date);\n    } else if (solveMode === 'before') {\n      return d.nextMonday(date);\n    }",
+        tests: 'actualSchedules.vendor'
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
