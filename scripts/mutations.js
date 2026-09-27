@@ -1181,8 +1181,12 @@ module.exports = [
         id: '258-interval-violation-boundary-off-by-one', ticket: '#258',
         desc: 'the #271 item 1 window-overlap guard uses > instead of >=, so an exact-equal grace+early no longer trips it',
         file: 'src/lib/scheduleAlerts.js',
-        anchor: '    if (shortestIntervalDays !== null && binding.graceDays + binding.earlyDays >= shortestIntervalDays) {',
-        mutant: '    if (shortestIntervalDays !== null && binding.graceDays + binding.earlyDays > shortestIntervalDays) {',
+        // #295 review round 2, M3 widened the guard from `binding.earlyDays`
+        // alone to `effectiveEarlyDays` (Math.max with LINKED_EARLY_WINDOW_DAYS);
+        // this anchor was retargeted to match, since the old text no longer
+        // appears in the file at all (a stale anchor tests nothing).
+        anchor: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays >= shortestIntervalDays) {',
+        mutant: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays > shortestIntervalDays) {',
         tests: 'scheduleAlerts.test'
     },
     {
@@ -1327,7 +1331,10 @@ module.exports = [
         id: '258-h5-destination-key-ignores-target', ticket: '#258',
         desc: 'the per-destination ledger key collapses back to the channel name alone, so a dead multi-target destination (e.g. one of two webhooks) blocks resending to the other',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: '      destinations.push({ channel, target, key: target.url ? `${channel}:${target.url}` : channel });',
+        // #295 review round 2, M8 moved the key computation into destinationKey()
+        // (never storing the raw webhook URL); this anchor was retargeted to the
+        // new call site, since the old inline ternary no longer appears in the file.
+        anchor: '      destinations.push({ channel, target, key: destinationKey(channel, target) });',
         mutant: '      destinations.push({ channel, target, key: channel });',
         tests: 'scheduleAlertDelivery'
     },
@@ -1391,7 +1398,10 @@ module.exports = [
         id: '258-m11-pass1-ignores-link-and-amount-preference', ticket: '#258',
         desc: 'on-time matching goes back to taking the earliest in-window candidate regardless of link/amount, reintroducing false wrongAmount',
         file: 'src/lib/scheduleAlerts.js',
-        anchor: "        const candidate = inWindow.find((c) => c.linked)\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          || inWindow[0]\n          || null;",
+        // #295 review round 2, M1/M3 reworked this block (betterMatchedElsewhere,
+        // strictLinked/closestLinked); this anchor was retargeted to the current
+        // preference chain, since the old text no longer appears in the file.
+        anchor: "        const candidate = strictLinked\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          || closestLinked\n          // Wrong-amount fallback (M11): only take a candidate that is not a\n          // better, correctly-amounted match for some OTHER bound schedule\n          // (#295 review round 2, M1).\n          || inWindow.find((c) => !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))\n          || null;",
         mutant: '        const candidate = inWindow[0] || null;',
         tests: 'scheduleAlerts.test'
     },
@@ -1410,6 +1420,70 @@ module.exports = [
         anchor: '  return { shortestIntervalDays: shortest, longestIntervalDays: longest || MAX_LOOKBACK_DAYS };',
         mutant: '  return { shortestIntervalDays: shortest, longestIntervalDays: longest || 30 };',
         tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-h1-shared-pool-claim-ignores-schedule', ticket: '#258',
+        desc: 'the shared transaction pool goes back to a plain used-set, so a second rule bound to the same schedule cannot reuse a transaction the first rule already claimed for that SAME schedule, reporting every occurrence missing',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        .filter((c) => c.match.eligible && (!globallyUsedTx.has(c.tx) || globallyUsedTx.get(c.tx) === schedule.id))',
+        mutant: '        .filter((c) => c.match.eligible && !globallyUsedTx.has(c.tx))',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-h2-skip-inference-ignores-intervening-linked-payment', ticket: '#258',
+        desc: 'next_date-based skip inference goes back to firing on ANY occurrence before next_date, even when a later linked payment (not an explicit skip) is what advanced next_date, hiding a genuinely missed payment',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '          if (!hasInterveningLinkedPayment) {',
+        mutant: '          if (true) {',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-m1-pass2-late-fallback-ignores-sibling-match', ticket: '#258',
+        desc: 'the pass-2 late fallback goes back to taking any unlinked candidate in window, even one that is a better, correctly-amounted match for a sibling schedule on the same account+payee',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '            && (c.linked || !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))',
+        mutant: '            && true',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-m2-completed-only-match-fires-rule-unmatched', ticket: '#258',
+        desc: 'a rule whose name matched only completed schedules goes back to producing an unmatched: true binding (and a daily ruleUnmatched) instead of no binding at all',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: "      if (rawMatches.length === 0) {\n        bindings.push({ ...rule, scheduleId: null, scheduleName: null, schedule: null, unmatched: true });\n      }",
+        mutant: '        bindings.push({ ...rule, scheduleId: null, scheduleName: null, schedule: null, unmatched: true });',
+        tests: 'scheduleAlertRules.test'
+    },
+    {
+        id: '258-r2-m5-resolved-resent-after-already-resolved-here', ticket: '#258',
+        desc: 'a resolved event goes back to being resendable to a destination that already has its own resolved row recorded, resending indefinitely instead of once per destination',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '    return !resolvedRow;',
+        mutant: '    return true;',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-r2-m6-deadline-not-enforced-per-destination', ticket: '#258',
+        desc: 'sendEvent goes back to never checking the delivery deadline between destinations, so a short budget no longer stops a new destination send from starting',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '      if (deadline != null && Date.now() >= deadline) {',
+        mutant: '      if (false) {',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '258-r2-m8-destination-key-stores-raw-url', ticket: '#258',
+        desc: 'destinationKey goes back to embedding the raw webhook URL (a secret) in the ledger key instead of a short hash, for a destination with no configured name',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  const hash = crypto.createHash('sha256').update(target.url).digest('hex').slice(0, 8);",
+        mutant: '  const hash = target.url;',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-r2-m9-legacy-null-channel-row-not-matched', ticket: '#258',
+        desc: 'a channel-scoped ledger lookup goes back to an exact-match-only filter, so a legacy pre-H5 row (recorded before the channel column existed, and therefore NULL) is invisible to a lookup for any specific destination key, defeating dedup for upgraded installs',
+        file: 'src/services/syncHistory.js',
+        anchor: "          ${filterChannel ? 'AND (channel IS ? OR channel IS NULL)' : ''}",
+        mutant: "          ${filterChannel ? 'AND channel IS ?' : ''}",
+        tests: 'syncHistory.test'
     },
 
     // ---- #169: the README claim that started #168 ---------------------------
