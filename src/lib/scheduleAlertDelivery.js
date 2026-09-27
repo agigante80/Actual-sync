@@ -90,7 +90,7 @@ function destinationKey(channel, target) {
  * text render).
  */
 const CHANNEL_TO_MODES = {
-  telegram: ['telegram'],
+  telegram: ['telegram', 'email_text'], // email_text renders the plain fallback
   email: ['email_html', 'email_text'],
   slack: ['slack'],
   discord: ['discord'],
@@ -368,10 +368,16 @@ async function dueDestinations(event, rule, sender, history, server, now, timezo
 function buildChannelOutput(renderer, key, context, channel, target, name) {
   switch (channel) {
     case 'telegram': {
-      const html = renderer.render(key, context, 'telegram');
-      // No dedicated "telegram plain" mode: strip the small set of HTML tags
-      // templateRenderer's telegram mode allows, so `plain` never carries markup.
-      return { telegram: { html, plain: html.replace(/<\/?[a-z][a-z0-9]*[^>]*>/gi, '') } };
+      // The plain-text fallback (sent after a Telegram 400) is the same
+      // template rendered unescaped in `email_text` mode. Stripping tags off
+      // the HTML with a regex left entities behind and is incomplete
+      // sanitisation (CodeQL js/incomplete-multi-character-sanitization).
+      return {
+        telegram: {
+          html: renderer.render(key, context, 'telegram'),
+          plain: renderer.render(key, context, 'email_text')
+        }
+      };
     }
     case 'email':
       return {
@@ -535,8 +541,12 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
 function buildDigestOutput(channel, header, linesByMode, target, server) {
   switch (channel) {
     case 'telegram': {
-      const html = `${header}\n\n${linesByMode.telegram.join('\n')}`;
-      return { telegram: { html, plain: html.replace(/<\/?[a-z][a-z0-9]*[^>]*>/gi, '') } };
+      return {
+        telegram: {
+          html: `${header}\n\n${linesByMode.telegram.join('\n')}`,
+          plain: `${header}\n\n${linesByMode.email_text.join('\n')}`
+        }
+      };
     }
     case 'email':
       return {
