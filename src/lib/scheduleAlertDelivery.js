@@ -463,9 +463,20 @@ async function sendOnce(sender, channelOutputs, { server, alertId, event, occurr
  * or a runtime value it cannot render) only skips that destination/event, it
  * does not throw out of `deliver()`'s loop and block every other rule.
  *
+ * #295 review round 2, M6: `deadline` (an epoch-ms timestamp, or `undefined`
+ * for "no budget") is checked before EACH destination is started, never
+ * while one is in flight. A destination send already started is always
+ * awaited to completion; the budget only stops NEW destinations from being
+ * started once it has passed. That keeps `deliver()` itself the only clock
+ * that matters: nothing it starts is ever abandoned, so nothing can still be
+ * running after `deliver()`'s own promise settles (see the module doc
+ * comment and `scheduleAlertsStep.js`'s `maybeDeliverScheduleAlerts`, which
+ * used to race this against an external timeout that let the real work keep
+ * running in the background after the race "gave up").
+ *
  * @returns {Promise<boolean>}
  */
-async function sendEvent({ event, evaluation, rule, sender, server, timezone, logger, history, now }) {
+async function sendEvent({ event, evaluation, rule, sender, server, timezone, logger, history, now, deadline }) {
   try {
     const destinations = await dueDestinations(event, rule, sender, history, server, now, timezone);
     if (destinations.length === 0) {
@@ -482,6 +493,12 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
 
     let sentAny = false;
     for (const destination of destinations) {
+      if (deadline != null && Date.now() >= deadline) {
+        logger.warn('Schedule alert delivery budget exhausted; destination deferred to next sync', {
+          server, alertId: event.alertId, event: event.event, channel: destination.channel
+        });
+        break;
+      }
       let ok = false;
       try {
         const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
@@ -573,11 +590,17 @@ function eventKey(event) {
  * #295 review, H6: one rule's bad template only drops that item from that
  * channel's digest (logged), it does not throw and lose the whole batch.
  *
+ * #295 review round 2, M6: `deadline` is checked once per channel, before
+ * that channel's single merged send is started (never while one is in
+ * flight - see `sendEvent`'s doc comment for the full rationale, shared
+ * here).
+ *
  * @param {Array<{event:Object, evaluation:?Object, rule:Object}>} items
+ * @param {number} [deadline] - epoch-ms budget; `undefined` means no budget
  * @returns {Promise<Set<string>>} the `eventKey()`s that got at least one
  *   newly-recorded destination this call
  */
-async function sendDigestBatch(items, { sender, server, timezone, logger, history, now }) {
+async function sendDigestBatch(items, { sender, server, timezone, logger, history, now, deadline }) {
   const perChannelItems = new Map();
   for (const item of items) {
     for (const channel of resolveChannels(item.rule, sender)) {
@@ -589,6 +612,12 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
   const sentKeys = new Set();
 
   for (const [channel, channelItems] of perChannelItems) {
+    if (deadline != null && Date.now() >= deadline) {
+      logger.warn('Schedule alert delivery budget exhausted; remaining digest channels deferred to next sync', {
+        server, channel
+      });
+      break;
+    }
     // Merging is the point of digest: one message per channel type, to its
     // first enabled destination (see the module doc comment).
     const target = resolveTargets(channel, sender)[0];
@@ -718,9 +747,16 @@ async function mayRecord(event, rule, sender, history, server, now, timezone) {
  * @param {Object[]} opts.rules - normalized rules, keyed by `id`, for template/channel/period/digest config
  * @param {string} opts.timezone
  * @param {Object} [opts.logger] - `{ warn(message, meta) }`; defaults to a no-op
+ * @param {number} [opts.deadline] - #295 review round 2, M6: an epoch-ms
+ *   budget checked cooperatively before each destination/channel send is
+ *   STARTED (never while one is in flight); omit for no budget. Once passed,
+ *   remaining eligible events are counted `skipped` and left for the ledger
+ *   to pick up next sync, exactly like any other still-undelivered event -
+ *   nothing this call started is ever abandoned, so nothing can run after
+ *   this promise settles (see `sendEvent`'s doc comment).
  * @returns {Promise<{sent: number, skipped: number}>}
  */
-async function deliver(events, { evaluations, ruleState, history, sender, now, server, rules, timezone, logger }) {
+async function deliver(events, { evaluations, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
   const log = logger || { warn() {} };
   const rulesById = new Map((rules || []).map((r) => [r.id, r]));
   let sent = 0;
@@ -769,16 +805,24 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
     // #295 review, H5/M1: per-destination, per-channel-restriction accounting
     // now lives inside sendDigestBatch; it records its own ledger rows and
     // reports back which events got at least one of them.
-    const sentKeys = await sendDigestBatch(eligible, { sender, server, timezone, logger: log, history, now });
+    const sentKeys = await sendDigestBatch(eligible, { sender, server, timezone, logger: log, history, now, deadline });
     for (const item of eligible) {
       if (sentKeys.has(eventKey(item.event))) sent += 1; else skipped += 1;
     }
     return { sent, skipped };
   }
 
-  for (const item of eligible) {
+  for (let i = 0; i < eligible.length; i += 1) {
+    if (deadline != null && Date.now() >= deadline) {
+      log.warn('Schedule alert delivery budget exhausted; remaining events deferred to next sync', {
+        server, remaining: eligible.length - i
+      });
+      skipped += eligible.length - i;
+      break;
+    }
+    const item = eligible[i];
     const ok = await sendEvent({
-      event: item.event, evaluation: item.evaluation, rule: item.rule, sender, server, timezone, logger: log, history, now
+      event: item.event, evaluation: item.evaluation, rule: item.rule, sender, server, timezone, logger: log, history, now, deadline
     });
     if (ok) sent += 1; else skipped += 1;
   }

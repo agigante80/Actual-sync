@@ -389,3 +389,106 @@ describe('evaluateScheduleAlerts: transaction query construction (#295 review, H
     }
   });
 });
+
+describe('maybeDeliverScheduleAlerts: a short budget defers a send without abandoning one already started (#295 review round 2, M6)', () => {
+  let syncHistory;
+  let dbDir;
+
+  beforeEach(() => {
+    dbDir = createTempDir();
+    syncHistory = new SyncHistoryService({
+      dbPath: path.join(dbDir, 'sync-history.db'),
+      loggerConfig: { level: 'ERROR' }
+    });
+  });
+
+  afterEach(() => {
+    syncHistory.close();
+    cleanupTempDir(dbDir);
+  });
+
+  /** Never actually dials out (no real network), just fakes latency. */
+  function makeSlowSender(delayMs) {
+    const calls = [];
+    return {
+      calls,
+      config: {
+        webhooks: {
+          generic: [
+            { name: 'first', url: 'http://127.0.0.1:1/first', enabled: true },
+            { name: 'second', url: 'http://127.0.0.1:1/second', enabled: true }
+          ]
+        }
+      },
+      sendTemplated: jest.fn(async (channelOutputs) => {
+        calls.push({ at: Date.now(), url: channelOutputs.webhook && channelOutputs.webhook.url });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        return { webhook: { ok: true } };
+      })
+    };
+  }
+
+  test('no sends happen after maybeDeliverScheduleAlerts returns, and the deferred destination is retried (not duplicated) next sync', async () => {
+    const api = makeFakeApi({
+      schedules: [rentSchedule()],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-09') }],
+      transactions: []
+    });
+    const server_ = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'] }] } };
+    const SEND_DELAY_MS = 60;
+    const sender = makeSlowSender(SEND_DELAY_MS);
+
+    const evaluated = await maybeRunScheduleAlerts(server_, {
+      api, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-10T00:00:00.000Z'), logger: quietLogger
+    });
+
+    // The budget (10ms) is far shorter than one send's latency (60ms): the
+    // first destination is already in flight when the budget expires, so it
+    // must still be awaited to completion; the second destination must never
+    // be started this sync.
+    const result = await maybeDeliverScheduleAlerts(evaluated, {
+      syncHistory, notificationService: sender, logger: quietLogger, deliverBudgetMs: 10
+    });
+
+    const callsRightAfterReturn = sender.calls.length;
+    expect(callsRightAfterReturn).toBe(1);
+    expect(sender.calls[0].url).toBe('http://127.0.0.1:1/first');
+    expect(result).toEqual({ events: 1, sent: 1, skipped: 0 });
+
+    // Prove nothing keeps sending in the background after the function
+    // already returned: waiting well past the second (never-started) send's
+    // would-be completion time must not add any further calls. Without the
+    // M6 fix (racing against an external timeout instead of a cooperative
+    // deadline), the still-running first `deliver()` call kept going after
+    // this `await` returned and could go on to start the second send too.
+    await new Promise((resolve) => setTimeout(resolve, SEND_DELAY_MS * 3));
+    expect(sender.calls.length).toBe(callsRightAfterReturn);
+
+    // The destination that was actually sent is recorded; the deferred one is not.
+    const firstRow = await syncHistory.findLatestScheduleAlert({
+      server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05',
+      event: 'missing', channel: 'webhook:#first'
+    });
+    const secondRow = await syncHistory.findLatestScheduleAlert({
+      server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05',
+      event: 'missing', channel: 'webhook:#second'
+    });
+    expect(firstRow).not.toBeNull();
+    expect(secondRow).toBeNull();
+
+    // Next sync, with an ample budget: only the deferred destination sends;
+    // the one that already succeeded is never sent again (no duplicate).
+    const callsBeforeSecondSync = sender.calls.length;
+    const evaluated2 = await maybeRunScheduleAlerts(server_, {
+      api, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-10T00:05:00.000Z'), logger: quietLogger
+    });
+    const result2 = await maybeDeliverScheduleAlerts(evaluated2, {
+      syncHistory, notificationService: sender, logger: quietLogger
+    });
+
+    expect(sender.calls.length).toBe(callsBeforeSecondSync + 1);
+    expect(sender.calls[sender.calls.length - 1].url).toBe('http://127.0.0.1:1/second');
+    expect(result2).toEqual({ events: 1, sent: 1, skipped: 0 });
+  });
+});

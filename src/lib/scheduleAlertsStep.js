@@ -44,13 +44,27 @@ const moment = require('moment-timezone');
 const { getRules } = require('./scheduleAlertRules');
 const { evaluate, MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS } = require('./scheduleAlerts');
 const { deliver } = require('./scheduleAlertDelivery');
-const { withTimeout } = require('./actualTimeouts');
 
 // #295 review, M3: the deliver phase runs after the Actual session has
 // already closed, so a hung request here cannot leave the session open, but
 // it can still hold the (global) sync queue's tail if left unbounded. 30s
 // comfortably covers a normal multi-channel send while guaranteeing the
 // queue frees up for the next server even against a fully dead endpoint.
+//
+// #295 review round 2, M6: this budget used to be enforced with
+// `withTimeout()` racing `deliverScheduleAlerts()` against a timer. Racing
+// only stops AWAITING the real work; it does not stop the real work, which
+// kept running in the background after the race "gave up" - so the sync
+// queue moved on to the next server while sends and ledger writes for THIS
+// server were still in flight, and if that next server's sync (or the next
+// scheduled run of this one) started before the stragglers finished, the
+// still-unrecorded events got sent again (verified: 3 of 4 destinations sent
+// twice). The budget is now a `deadline` (epoch ms) passed into `deliver()`
+// itself, which checks it cooperatively before STARTING each destination/
+// channel send and never abandons one already started (see
+// `scheduleAlertDelivery.js`'s `deliver`/`sendEvent` doc comments). That
+// makes `deliverScheduleAlerts`'s own promise the only thing anyone needs to
+// await: once it settles, nothing it started is still running.
 const DELIVER_BUDGET_MS = 30000;
 
 /**
@@ -165,10 +179,16 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
  * @param {Object} deps.notificationService - object exposing
  *   sendTemplated(channelOutputs) with #257's contract
  * @param {Object} deps.logger - server-scoped logger ({info, warn, ...})
+ * @param {number} [deps.deliverBudgetMs] - #295 review round 2, M6: overrides
+ *   `DELIVER_BUDGET_MS` for this call; tests use a short value to exercise
+ *   the deadline without a real 30s wait. Converted to an epoch-ms
+ *   `deadline` right here, at the moment delivery actually starts, and
+ *   passed straight into `deliver()`, which is the only place that checks it.
  * @returns {Promise<{events: number, sent: number, skipped: number}>}
  */
-async function deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger }) {
+async function deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger, deliverBudgetMs }) {
     const { events, evaluations, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    const deadline = Date.now() + (deliverBudgetMs != null ? deliverBudgetMs : DELIVER_BUDGET_MS);
     const deliverResult = await deliver(events, {
         evaluations,
         ruleState: scheduleAlertRuleState,
@@ -178,7 +198,8 @@ async function deliverScheduleAlerts(evaluated, { syncHistory, notificationServi
         server: serverName,
         rules: scheduleAlertRules,
         timezone,
-        logger
+        logger,
+        deadline
     });
     return { events: events.length, sent: deliverResult.sent, skipped: deliverResult.skipped };
 }
@@ -232,24 +253,33 @@ async function maybeRunScheduleAlerts(server, { api, serverName, timezone, now, 
  * #295 review, M3: called by syncService.js AFTER the Actual session has
  * been shut down and AFTER endTimer()/recordSync(), so a slow or dead
  * notification destination neither inflates the sync's own durationMs nor
- * holds the session open. The whole phase is bounded by DELIVER_BUDGET_MS so
- * a hung request still releases the (global, #265) sync queue for the next
- * server in line instead of blocking it indefinitely - deliver() already
- * retries only the destinations that failed on the next sync (#295 review,
- * H5), so giving up here loses nothing but that one attempt.
+ * holds the session open.
+ *
+ * #295 review round 2, M6: the whole phase is bounded by DELIVER_BUDGET_MS,
+ * but no longer by racing this call against an external timer - that race
+ * only stopped US from awaiting `deliverScheduleAlerts()`, it did not stop
+ * the sends and ledger writes still in flight inside it, so they kept
+ * running after this function had already returned and the (global, #265)
+ * sync queue had moved on. A concurrent or later sync could then see the
+ * same still-undelivered events and send them again (verified: 3 of 4
+ * destinations sent twice). The budget is now a cooperative `deadline`
+ * `deliverScheduleAlerts` passes into `deliver()`, which only refuses to
+ * START a new destination/channel send once it has passed and always awaits
+ * one already started (see `scheduleAlertDelivery.js`'s `deliver` doc
+ * comment). `deliverScheduleAlerts`'s promise is therefore always awaited
+ * here to completion: once it settles, nothing it started is still running,
+ * so nothing can continue after THIS function returns either. Anything not
+ * yet attempted when the budget was hit is simply left for the ledger to
+ * pick up next sync, same as any other still-undelivered event.
  *
  * @param {Object|null} evaluated - result of `maybeRunScheduleAlerts`
  * @param {Object} deps - same shape as `deliverScheduleAlerts`'s deps
  * @returns {Promise<{events: number, sent: number, skipped: number}|null>}
  */
-async function maybeDeliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger }) {
+async function maybeDeliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger, deliverBudgetMs }) {
     if (!evaluated) return null;
     try {
-        const result = await withTimeout(
-            deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger }),
-            DELIVER_BUDGET_MS,
-            'scheduleAlertsDeliver'
-        );
+        const result = await deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger, deliverBudgetMs });
         logger.info('Schedule alerts evaluated', result);
         return result;
     } catch (scheduleAlertError) {
