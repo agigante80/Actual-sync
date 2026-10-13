@@ -138,6 +138,39 @@ describe('validateTemplate', () => {
       }
     });
 
+    // L1 (#294): decorators used to fall through the statement walk's default
+    // branch, pass validation, and throw "Missing decorator" at render time.
+    test('an inline decorator throws unknown_helper at validation, not render', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{*foo}}', { key: 'dec', variables: [] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_helper');
+        expect(err.key).toBe('dec');
+      }
+    });
+
+    test('a decorator block throws unknown_helper at validation', () => {
+      expect.assertions(1);
+      try {
+        validateTemplate('{{#*inline "x"}}a{{/inline}}', { key: 'dec', variables: [] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_helper');
+      }
+    });
+
+    // L2 (#294): Handlebars reports a mismatched block as "... - 3:3", not
+    // "Parse error on line N".
+    test('a mismatched block reports the real line, not line 1', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('a\nb\n{{#if x}}c{{/unless}}', { key: 'mm', variables: ['x'] });
+      } catch (err) {
+        expect(err.reason).toBe('parse_error');
+        expect(err.line).toBe(3);
+      }
+    });
+
     test('a partial reference always throws unknown_helper', () => {
       expect.assertions(1);
       try {

@@ -150,7 +150,9 @@ function validateTemplate(source, { key, variables, channel } = {}) {
   try {
     ast = Handlebars.parse(source);
   } catch (err) {
-    const match = /Parse error on line (\d+)/.exec(err.message);
+    // Handlebars words a lexer error "Parse error on line N" but a mismatched
+    // block "if doesn't match unless - 3:3" (line:column). (#294 L2)
+    const match = /Parse error on line (\d+)/.exec(err.message) || / - (\d+):\d+/.exec(err.message);
     fail(key, err.message.split('\n')[0], match ? Number(match[1]) : 1, 'parse_error');
     return; // unreachable, fail() always throws - keeps control flow explicit
   }
@@ -270,6 +272,12 @@ function validateTemplate(source, { key, variables, channel } = {}) {
       case 'PartialBlockStatement':
         // No partials in v1 (see module docs) - a partial reference is always invalid.
         fail(key, statement.name && statement.name.original || 'partial', statement.loc.start.line, 'unknown_helper');
+        break;
+      case 'Decorator':
+      case 'DecoratorBlock':
+        // `{{*foo}}` / `{{#*inline}}` would otherwise pass the walk and throw
+        // "Missing decorator" at render time. (#294 L1)
+        fail(key, statement.path && statement.path.original || 'decorator', statement.loc.start.line, 'unknown_helper');
         break;
       default:
         break;
