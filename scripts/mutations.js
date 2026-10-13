@@ -1687,6 +1687,46 @@ module.exports = [
         mutant: "this._brandPayload(payload, 'avatar_url');",
         tests: "notificationService.test"
     },
+    {
+        id: "294-digest-records-deferred-items", ticket: '#294',
+        desc: "a capped digest records every rendered item as sent, including the ones cut off by the channel cap",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "const included = rendered.slice(0, count).map((r) => r.item);",
+        mutant: "const included = rendered.map((r) => r.item);",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-digest-ignores-cap", ticket: '#294',
+        desc: "the digest no longer stops adding items at the channel cap, so Discord gets a message cut at 2000",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "digestLength(channel, build(count + 1)) <= cap",
+        mutant: "digestLength(channel, build(count + 1)) <= Infinity",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-slack-cap-4000", ticket: '#294',
+        desc: "the Slack cap goes back to 4000, cutting a 40-item digest short",
+        file: "src/lib/channelEscape.js",
+        anchor: "const SLACK_TEXT_MAX = 40000;",
+        mutant: "const SLACK_TEXT_MAX = 4000;",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-markup-line-from-stripped-value", ticket: '#294',
+        desc: "the Telegram markup check counts lines in the whitespace-stripped value again, so the line after a standalone block tag is wrong",
+        file: "src/lib/templateRenderer.js",
+        anchor: "const text = node.original;",
+        mutant: "const text = node.value;",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-ellipsis-splits-surrogate", ticket: '#294',
+        desc: "truncateWithEllipsis cuts by UTF-16 unit and can leave a lone surrogate",
+        file: "src/lib/channelEscape.js",
+        anchor: "${truncateCodePoints(value, max - 1)}",
+        mutant: "${value.slice(0, max - 1)}",
+        tests: "channelEscape"
+    },
 
 
     // ---- #297: findings left open when the #258 review loop stopped -------

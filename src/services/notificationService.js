@@ -1522,9 +1522,9 @@ Please investigate and resolve the issue.
       try {
         // A rendered template can contain a payee/note value an operator did
         // not vet for @everyone/@here or <@id> mentions. allowed_mentions
-        // suppresses all of them at the Discord API level; this only applies
-        // to this templated path, not sendDiscordFormattedWebhooks's existing
-        // non-templated sends (#257 review).
+        // suppresses all of them at the Discord API level. The non-templated
+        // sends in sendDiscordFormattedWebhooks suppress mentions too, via
+        // _suppressDiscordMentions (#294).
         await this.sendWebhook(url, { content: truncateWithEllipsis(text, DISCORD_CONTENT_MAX), allowed_mentions: { parse: [] } });
         results.discord = { success: true };
       } catch (error) {

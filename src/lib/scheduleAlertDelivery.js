@@ -52,6 +52,19 @@
 const moment = require('moment-timezone');
 const crypto = require('crypto');
 const { compileTemplateSet } = require('./templateRenderer');
+const { DISCORD_CONTENT_MAX, SLACK_TEXT_MAX, TELEGRAM_TEXT_MAX } = require('./channelEscape');
+
+/**
+ * Per-channel message length caps a digest must fit under (#294 review
+ * round 1, M1). Channels not listed have no cap worth fitting.
+ */
+const DIGEST_CAPS = { telegram: TELEGRAM_TEXT_MAX, discord: DISCORD_CONTENT_MAX, slack: SLACK_TEXT_MAX };
+
+/** Longest text field of a built digest payload, in code points. */
+function digestLength(channel, outputs) {
+  const payload = outputs[channel] || {};
+  return Math.max(...[payload.html, payload.plain, payload.text].filter((v) => typeof v === 'string').map((v) => [...v].length), 0);
+}
 
 /** Every channel key `deliver` can request from `sender.sendTemplated`. */
 const ALL_CHANNELS = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'];
@@ -661,16 +674,15 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     if (dueItems.length === 0) continue;
 
     const modes = CHANNEL_TO_MODES[channel] || [];
-    const linesByMode = {};
-    for (const mode of modes) linesByMode[mode] = [];
     const rendered = [];
     for (const item of dueItems) {
       try {
         const templates = { ...DEFAULT_TEMPLATES, ...(item.rule.templates || {}) };
         const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
         const context = buildContext(item.event, item.evaluation, item.rule, { server, timezone });
-        for (const mode of modes) linesByMode[mode].push(renderer.render(item.event.event, context, mode));
-        rendered.push(item);
+        const lines = {};
+        for (const mode of modes) lines[mode] = renderer.render(item.event.event, context, mode);
+        rendered.push({ item, lines });
       } catch (error) {
         logger.warn('Schedule alert digest render failed for one item; item skipped', {
           server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message
@@ -679,12 +691,34 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     }
     if (rendered.length === 0) continue;
 
-    const header = `Actual-sync: ${rendered.length} payment alert(s) for ${server}`;
-    const channelOutputs = buildDigestOutput(channel, header, linesByMode, target, server);
+    // #294 review round 1, M1: add whole items while the digest fits this
+    // channel's length cap; only the items actually included are recorded,
+    // so the rest stay due and go on the next sync instead of being cut off
+    // mid-message and ledgered as sent. The first item is always included
+    // (a single oversized event is truncated by the sender as a safety net).
+    const build = (count) => {
+      const linesByMode = {};
+      for (const mode of modes) linesByMode[mode] = rendered.slice(0, count).map((r) => r.lines[mode]);
+      const header = `Actual-sync: ${count} payment alert(s) for ${server}`;
+      return buildDigestOutput(channel, header, linesByMode, target, server);
+    };
+    const cap = DIGEST_CAPS[channel];
+    let count = rendered.length;
+    if (cap) {
+      count = 1;
+      while (count < rendered.length && digestLength(channel, build(count + 1)) <= cap) count += 1;
+      if (count < rendered.length) {
+        logger.warn('Schedule alert digest exceeds the channel length cap; remaining items deferred to next sync', {
+          server, channel, sentItems: count, deferredItems: rendered.length - count
+        });
+      }
+    }
+    const included = rendered.slice(0, count).map((r) => r.item);
+    const channelOutputs = build(count);
     const ok = await sendOnce(sender, channelOutputs, { server, alertId: 'digest', event: 'digest', occurrence: null, logger });
     if (!ok) continue; // H5: withhold only this channel's rows; other channels are unaffected
 
-    for (const item of rendered) {
+    for (const item of included) {
       await history.recordScheduleAlert({
         server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
         occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent',

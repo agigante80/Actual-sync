@@ -109,7 +109,10 @@ function fail(key, token, line, reason) {
  *   across the mustache. Each block body gets its own stack (#294 L5).
  */
 function checkTelegramMarkup(key, node, tagStack) {
-  const text = node.value;
+  // node.original, not node.value: Handlebars strips a standalone block
+  // tag's whitespace from value, but loc.start still points at the original
+  // source, so only the original text counts lines correctly. (#294 L1)
+  const text = node.original;
   let line = node.loc.start.line;
   let i = 0;
   const tagRe = /^<\/?([a-zA-Z][a-zA-Z0-9]*)(?:\s+[a-zA-Z-]+(?:="[^"]*")?)*\s*>/;

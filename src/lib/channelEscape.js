@@ -117,8 +117,15 @@ function truncateCodePoints(text, max = 4096) {
 /** Discord rejects `content` over 2000 characters with a 400. (#294 L8) */
 const DISCORD_CONTENT_MAX = 2000;
 
-/** Slack recommends keeping a text block under 4000 characters. (#294 L8) */
-const SLACK_TEXT_MAX = 4000;
+/**
+ * Slack truncates a message whose text is over 40,000 characters. (#294 L8;
+ * raised from 4000, the soft block-kit recommendation, in the round-1 review
+ * because a digest cut at 4000 silently dropped alerts.)
+ */
+const SLACK_TEXT_MAX = 40000;
+
+/** Telegram's message text limit. */
+const TELEGRAM_TEXT_MAX = 4096;
 
 /**
  * Cap text at `max` code points, ending in an ellipsis when it was cut. The
@@ -189,5 +196,6 @@ module.exports = {
   truncateCodePoints,
   truncateWithEllipsis,
   DISCORD_CONTENT_MAX,
-  SLACK_TEXT_MAX
+  SLACK_TEXT_MAX,
+  TELEGRAM_TEXT_MAX
 };

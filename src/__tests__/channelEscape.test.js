@@ -156,8 +156,11 @@ describe('truncateWithEllipsis', () => {
   });
 
   test('never splits a surrogate pair at the cut', () => {
-    const out = truncateWithEllipsis('a'.repeat(1998) + '\u{1F600}\u{1F600}', 2000);
+    // 1998 + 3 = 2001 code points: over the cap, so the cut really happens,
+    // and it lands right after the first emoji's high surrogate in UTF-16.
+    const out = truncateWithEllipsis('a'.repeat(1998) + '\u{1F600}'.repeat(3), 2000);
     expect(out.isWellFormed()).toBe(true);
-    expect([...out].length).toBeLessThanOrEqual(2000);
+    expect([...out]).toHaveLength(2000);
+    expect(out.endsWith('\u{1F600}\u2026')).toBe(true);
   });
 });

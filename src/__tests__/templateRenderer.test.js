@@ -346,6 +346,18 @@ describe('validateTemplate', () => {
   });
 
   describe('Telegram literal markup (channel: telegram)', () => {
+    // L1 (#294 review round 1): a standalone block tag's line is stripped from
+    // node.value, so counting lines in the stripped value under-reported.
+    test('reports the real line after a standalone block tag', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{#if x}}\nok\n{{/if}}\n<i>x', { key: 'sa', variables: ['x'], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+        expect(err.line).toBe(4);
+      }
+    });
+
     test('a bare & in literal text throws telegram_markup', () => {
       expect.assertions(2);
       try {

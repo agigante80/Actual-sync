@@ -939,11 +939,11 @@ Escaping happens once, at output time, per channel, never before a helper runs. 
 | Email (HTML part) | HTML escaping on | none | |
 | Email (text part) | raw, no escaping | none | plain text |
 | ntfy | raw, no escaping | none | plain text |
-| Slack | raw, no escaping | `escapeSlack` on the whole rendered string, then capped at 4000 characters with a trailing `…` | plain-text semantics; Slack's own markup is not available to a template author |
+| Slack | raw, no escaping | `escapeSlack` on the whole rendered string, then capped at 40000 characters (Slack's hard limit; Slack truncates anything longer) with a trailing `…` | plain-text semantics; Slack's own markup is not available to a template author |
 | Discord | raw, no escaping | `escapeDiscordMarkdown` on the whole rendered string, then capped at 2000 characters (Discord rejects more with a 400) with a trailing `…` | plain-text semantics; also sent with `allowed_mentions: { parse: [] }` so a rendered value can never ping `@everyone`, `@here`, or a user/role id |
 | Generic webhook | raw, no escaping, for the `text` field | none | raw variable values are also sent as separate structured JSON fields; a field named `text` never overrides the rendered `text` |
 
-Truncation counts Unicode code points, never splits a surrogate pair, and the ellipsis counts toward the cap. Slack escaping covers only `&`, `<` and `>`, so mrkdwn characters (`*`, `_`, `~`, `` ` ``) inside a rendered value such as a payee name still format on Slack. This matches the spec; a payee called `*Rent*` shows as bold.
+Truncation is a safety net for a single oversized message. A schedule-alert digest never relies on it: it is split to fit the channel's cap (see [Digest mode](SCHEDULE_ALERTS.md#digest-mode)). Truncation counts Unicode code points, never splits a surrogate pair, and the ellipsis counts toward the cap. Slack escaping covers only `&`, `<` and `>`, so mrkdwn characters (`*`, `_`, `~`, `` ` ``) inside a rendered value such as a payee name still format on Slack. This matches the spec; a payee called `*Rent*` shows as bold.
 
 The non-templated Discord notifications (sync results, startup, dashboard test) are also sent with `allowed_mentions: { parse: [] }`, so account, payee and error text in an embed can never ping `@everyone`, `@here`, or a user/role id.
 

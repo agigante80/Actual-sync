@@ -214,7 +214,7 @@ describe('sendTemplated delivery (#257)', () => {
   });
 
   // L8 (#294): Discord rejects content over 2000 characters with a 400, and
-  // Slack recommends text under 4000.
+  // Slack truncates messages over 40000 characters.
   test('templated Discord content over 2000 characters is truncated with an ellipsis', async () => {
     const service = makeService();
     await service.sendTemplated({ discord: { url: `${baseUrl}/discord`, text: 'x'.repeat(2500) } });
@@ -233,18 +233,18 @@ describe('sendTemplated delivery (#257)', () => {
     expect(JSON.parse(received.find((r) => r.url === '/discord').body).content).toBe(text);
   });
 
-  test('templated Slack text over 4000 characters is truncated with an ellipsis', async () => {
+  test('templated Slack text over 40000 characters is truncated with an ellipsis', async () => {
     const service = makeService();
-    await service.sendTemplated({ slack: { url: `${baseUrl}/slack`, text: 'z'.repeat(4500) } });
+    await service.sendTemplated({ slack: { url: `${baseUrl}/slack`, text: 'z'.repeat(45000) } });
 
     const body = JSON.parse(received.find((r) => r.url === '/slack').body);
-    expect([...body.text]).toHaveLength(4000);
+    expect([...body.text]).toHaveLength(40000);
     expect(body.text.endsWith('\u2026')).toBe(true);
   });
 
-  test('templated Slack text within 4000 characters is sent unchanged', async () => {
+  test('templated Slack text within 40000 characters is sent unchanged', async () => {
     const service = makeService();
-    const text = 'z'.repeat(4000);
+    const text = 'z'.repeat(40000);
     await service.sendTemplated({ slack: { url: `${baseUrl}/slack`, text } });
 
     expect(JSON.parse(received.find((r) => r.url === '/slack').body).text).toBe(text);
