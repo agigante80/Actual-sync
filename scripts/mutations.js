@@ -1518,6 +1518,128 @@ module.exports = [
         tests: 'configLoader.test'
     },
 
+    // ---- #294: template low findings -----------------------------------------
+    {
+        id: "294-decorator-passes-validation", ticket: '#294',
+        desc: "a decorator ({{*foo}}) passes validation again and throws at render",
+        file: "src/lib/templateRenderer.js",
+        anchor: "        fail(key, statement.path && statement.path.original || 'decorator', statement.loc.start.line, 'unknown_helper');",
+        mutant: "\"\"",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-mismatched-block-line-lost", ticket: '#294',
+        desc: "a mismatched block error reports line 1 again",
+        file: "src/lib/templateRenderer.js",
+        anchor: " || / - (\\d+):\\d+/.exec(err.message);",
+        mutant: "\";\"",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-any-entity-allowed", ticket: '#294',
+        desc: "Telegram validation accepts entities Telegram rejects (&nbsp;)",
+        file: "src/lib/templateRenderer.js",
+        anchor: "const TELEGRAM_ENTITY_RE = /^&(?:amp|lt|gt|quot);/;",
+        mutant: "const TELEGRAM_ENTITY_RE = /^&(?:amp|lt|gt|quot|nbsp);/;",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-entity-rejected", ticket: '#294',
+        desc: "the Telegram entities are rejected again, so a literal & cannot be written",
+        file: "src/lib/templateRenderer.js",
+        anchor: "      if (entity) {",
+        mutant: "      if (false) {",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-unclosed-tag-passes", ticket: '#294',
+        desc: "an unclosed Telegram tag passes validation again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "    if (tagStack.length > 0) {",
+        mutant: "    if (false) {",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-crossed-tags-pass", ticket: '#294',
+        desc: "crossed Telegram tags pass validation again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "if (!open || open.tag !== tag) fail(",
+        mutant: "if (!open) fail(",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-upper-undefined-renders-word", ticket: '#294',
+        desc: "upper of an undefined value renders UNDEFINED again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "  upper: (value) => (value == null ? '' : String(value).toUpperCase()),",
+        mutant: "  upper: (value) => String(value).toUpperCase(),",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-lower-undefined-renders-word", ticket: '#294',
+        desc: "lower of a null value renders NULL again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "  lower: (value) => (value == null ? '' : String(value).toLowerCase())",
+        mutant: "  lower: (value) => String(value).toLowerCase()",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-webhook-field-overrides-text", ticket: '#294',
+        desc: "a webhook field named text overrides the rendered text again",
+        file: "src/services/notificationService.js",
+        anchor: "{ ...(fields || {}), text }",
+        mutant: "{ text, ...(fields || {}) }",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-discord-content-uncapped", ticket: '#294',
+        desc: "templated Discord content is no longer capped at 2000 characters",
+        file: "src/services/notificationService.js",
+        anchor: "content: truncateWithEllipsis(text, DISCORD_CONTENT_MAX)",
+        mutant: "content: text",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-slack-text-uncapped", ticket: '#294',
+        desc: "templated Slack text is no longer capped",
+        file: "src/services/notificationService.js",
+        anchor: "{ text: truncateWithEllipsis(text, SLACK_TEXT_MAX) }",
+        mutant: "{ text }",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-ellipsis-exceeds-cap", ticket: '#294',
+        desc: "the ellipsis is added on top of the cap, so Discord content ends up 2001 characters",
+        file: "src/lib/channelEscape.js",
+        anchor: "truncateCodePoints(value, max - 1)",
+        mutant: "truncateCodePoints(value, max)",
+        tests: "channelEscape"
+    },
+    {
+        id: "294-discord-mentions-allowed", ticket: '#294',
+        desc: "non-templated Discord payloads allow mentions again (@everyone pings)",
+        file: "src/services/notificationService.js",
+        anchor: "if (payload) payload.allowed_mentions = { parse: [] };",
+        mutant: "if (payload) payload.allowed_mentions = { parse: ['everyone'] };",
+        tests: "notificationService.test"
+    },
+    {
+        id: "294-discord-formatted-mentions-missing", ticket: '#294',
+        desc: "the formatted Discord sender stops suppressing mentions",
+        file: "src/services/notificationService.js",
+        anchor: "(#114)\n    this._suppressDiscordMentions(payload);",
+        mutant: "(#114)",
+        tests: "notificationService.test"
+    },
+    {
+        id: "294-discord-legacy-mentions-missing", ticket: '#294',
+        desc: "the dashboard-test Discord sender stops suppressing mentions",
+        file: "src/services/notificationService.js",
+        anchor: "this._brandPayload(payload, 'avatar_url');\n    this._suppressDiscordMentions(payload);",
+        mutant: "this._brandPayload(payload, 'avatar_url');",
+        tests: "notificationService.test"
+    },
+
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
