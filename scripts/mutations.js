@@ -2096,8 +2096,8 @@ module.exports = [
         id: '338-immediate-order-fixed', ticket: '#338',
         desc: 'immediate mode sends events in evaluation order again, so early daily reminders use the budget every run and starve the tail',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "    if (x === y) return 0;\n    return x < y ? -1 : 1;\n  });",
-        mutant: "    return 0;\n  });",
+        anchor: "    if (x.since !== y.since) return x.since < y.since ? -1 : 1;",
+        mutant: "",
         tests: 'scheduleAlertDelivery.test'
     },
     {
@@ -2136,8 +2136,8 @@ module.exports = [
         id: '338-immediate-order-reversed', ticket: '#338',
         desc: 'immediate mode sends the most recently sent event first, so the same few reminders use the budget every day and the rest starve',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "    if (x === y) return 0;\n    return x < y ? -1 : 1;\n  });",
-        mutant: "    if (x === y) return 0;\n    return x < y ? 1 : -1;\n  });",
+        anchor: "    if (x.since !== y.since) return x.since < y.since ? -1 : 1;",
+        mutant: "    if (x.since !== y.since) return x.since < y.since ? 1 : -1;",
         tests: 'scheduleAlertDelivery.test'
     },
     // ---- #169: the README claim that started #168 ---------------------------
