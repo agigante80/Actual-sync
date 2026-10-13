@@ -26,6 +26,19 @@ function escapeSlack(text) {
 }
 
 /**
+ * Escape the three characters Telegram's HTML parse mode treats specially.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function escapeTelegramHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
  * Backslash-escape the characters Discord's Markdown parser treats specially,
  * so a rendered value cannot turn into bold/italic/strikethrough/code/quote/
  * masked-link markup, or a mention-like `>` the operator did not write.
@@ -114,6 +127,35 @@ function truncateCodePoints(text, max = 4096) {
   return output;
 }
 
+/** Discord rejects `content` over 2000 characters with a 400. (#294 L8) */
+const DISCORD_CONTENT_MAX = 2000;
+
+/**
+ * Slack truncates a message whose text is over 40,000 characters. (#294 L8;
+ * raised from 4000, the soft block-kit recommendation, in the round-1 review
+ * because a digest cut at 4000 silently dropped alerts.)
+ */
+const SLACK_TEXT_MAX = 40000;
+
+/** Telegram's message text limit. */
+const TELEGRAM_TEXT_MAX = 4096;
+
+/**
+ * Cap text at `max` code points, ending in an ellipsis when it was cut. The
+ * ellipsis counts toward `max`, so the result never exceeds it, and the cut
+ * never splits a surrogate pair.
+ *
+ * @param {string} text
+ * @param {number} max
+ * @returns {string}
+ */
+function truncateWithEllipsis(text, max) {
+  const value = String(text);
+  if (value.length <= max) return value;
+  if ([...value].length <= max) return value;
+  return `${truncateCodePoints(value, max - 1)}\u2026`;
+}
+
 /**
  * Truncate rendered Telegram HTML to at most `max` characters without ever
  * cutting inside a tag or an HTML entity, and close any `<b>`/`<i>`/... tags
@@ -160,4 +202,14 @@ function truncateTelegramHtml(text, max = 4096) {
   return output + suffix;
 }
 
-module.exports = { escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml, truncateCodePoints };
+module.exports = {
+  escapeSlack,
+  escapeTelegramHtml,
+  escapeDiscordMarkdown,
+  truncateTelegramHtml,
+  truncateCodePoints,
+  truncateWithEllipsis,
+  DISCORD_CONTENT_MAX,
+  SLACK_TEXT_MAX,
+  TELEGRAM_TEXT_MAX
+};

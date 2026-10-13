@@ -951,10 +951,10 @@ module.exports = [
     // ---- #272: a hung Actual API call blocked the queue forever ------------------
     {
         id: '272-download-unbounded', ticket: '#272',
-        desc: 'downloadBudget is no longer timed, so a server that never answers hangs the queue again',
+        desc: 'downloadBudget is called without a timer, so a server that never answers hangs the queue again',
         file: 'src/lib/actualTimeouts.js',
-        anchor: "const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown', 'getSchedules'];",
-        mutant: "const TIMED_METHODS = ['init', 'loadBudget', 'aqlQuery', 'sync', 'shutdown', 'getSchedules'];",
+        anchor: '        wrapped[method] = (...args) => withTimeout(',
+        mutant: "        wrapped[method] = method === 'downloadBudget' ? (...args) => api[method](...args) : (...args) => withTimeout(",
         tests: 'actualTimeouts'
     },
     {
@@ -1009,7 +1009,7 @@ module.exports = [
         id: '272-late-call-untracked', ticket: '#272',
         desc: 'a timed-out call is forgotten, so it can land inside the next sync',
         file: 'src/lib/actualTimeouts.js',
-        anchor: '            if (lateCalls) lateCalls.add(call);',
+        anchor: '            if (lateCalls) lateCalls.add(call, { phase });',
         mutant: '',
         tests: 'actualTimeouts'
     },
@@ -1017,7 +1017,7 @@ module.exports = [
         id: '272-no-busy-check', ticket: '#272',
         desc: 'a sync opens the session while an earlier late call still runs',
         file: 'src/syncService.js',
-        anchor: '        if (!(await lateActualCalls.drain(phaseTimeoutMs))) {',
+        anchor: '        if (!prepared.ok) {',
         mutant: '        if (false) {',
         tests: 'syncQueue'
     },
@@ -1032,10 +1032,10 @@ module.exports = [
     {
         id: '272-never-abandoned', ticket: '#272',
         desc: 'a call that never settles blocks every later sync until restart',
-        file: 'src/syncService.js',
-        anchor: '            const abandoned = lateActualCalls.abandon();',
-        mutant: '            const abandoned = lateActualCalls.size;',
-        tests: 'syncQueue'
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '    return { ok: false, abandoned: lateCalls.abandon() };',
+        mutant: '    return { ok: false, abandoned: lateCalls.size };',
+        tests: 'actualTimeouts'
     },
     {
         id: '272-abandon-keeps-calls', ticket: '#272',
@@ -1044,6 +1044,96 @@ module.exports = [
         anchor: '        this.pending.clear();',
         mutant: '',
         tests: 'actualTimeouts'
+    },
+
+    // ---- #284: hung-call hardening follow-ups --------------------------------------
+    {
+        id: '284-drain-leaks-waiter', ticket: '#284',
+        desc: 'a drain that gives up stays registered as a waiter',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '        this.waiters.delete(wake);',
+        mutant: '',
+        tests: 'actualTimeouts'
+    },
+    {
+        id: '284-no-settle-log', ticket: '#284',
+        desc: 'a late call settling is not logged',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '            this.logSettled(meta, outcome, Date.now() - addedAt);',
+        mutant: '',
+        tests: 'actualTimeouts'
+    },
+    {
+        id: '284-account-drain-skipped', ticket: '#284',
+        desc: 'the account loop starts the next account while a timed-out bank sync still runs',
+        file: 'src/syncService.js',
+        anchor: 'sessionStuck = !(await lateActualCalls.drain(phaseTimeoutMs));',
+        mutant: 'sessionStuck = false;',
+        tests: 'syncQueue'
+    },
+    {
+        id: '284-stuck-loop-continues', ticket: '#284',
+        desc: 'the account loop carries on after a bank sync that never settles',
+        file: 'src/syncService.js',
+        anchor: '                if (sessionStuck) {',
+        mutant: '                if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '284-final-sync-overlaps', ticket: '#284',
+        desc: 'a stuck bank sync no longer skips the final file sync and schedule alerts, so they overlap it',
+        file: 'src/syncService.js',
+        anchor: '        if (sessionStuckAfterLoop) {',
+        mutant: '        if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '284-late-success-lost', ticket: '#284',
+        desc: 'a bank sync that succeeds during the drain is still reported failed',
+        file: 'src/syncService.js',
+        anchor: "if (!sessionStuck && lateBankSync === 'ok') {",
+        mutant: 'if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '284-late-success-double-counted', ticket: '#284',
+        desc: 'a bank sync that succeeds during the drain is counted succeeded and then also failed',
+        file: 'src/syncService.js',
+        anchor: "                                accountName: account.name\n                            });\n                            continue;\n                        }\n                        // It finished during the drain and failed",
+        mutant: "                                accountName: account.name\n                            });\n                        }\n                        // It finished during the drain and failed",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '284-stuck-final-sync-runs', ticket: '#284',
+        desc: 'the final file sync runs even when a bank sync is stuck (the else branch is always taken)',
+        file: 'src/syncService.js',
+        anchor: "        } else {\n            serverLogger.info('Starting final file sync');",
+        mutant: "        } {\n            serverLogger.info('Starting final file sync');",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '284-late-failure-masked', ticket: '#284',
+        desc: 'a late bank sync failure is reported with the timeout message, so a late "No new transactions" is a failure',
+        file: 'src/syncService.js',
+        anchor: "failure = lateBankError;",
+        mutant: "failure = bankSyncError;",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '284-running-sync-not-rendered', ticket: '#284',
+        desc: 'the dashboard never shows the sync holding the queue',
+        file: 'src/services/dashboard.js',
+        anchor: '        if (runningSyncEl) runningSyncEl.textContent = formatRunningSync(data.runningSync);',
+        mutant: '',
+        tests: 'dashboard'
+    },
+    {
+        id: '284-running-sync-blank', ticket: '#284',
+        desc: 'the running-sync text is always empty',
+        file: 'src/services/dashboard.js',
+        anchor: '    return `Syncing: ${running.key}${since}`;',
+        mutant: "    return '';",
+        tests: 'dashboard'
     },
 
     // ---- #242: /ws/logs streamed to anyone ----------------------------------
@@ -1317,8 +1407,8 @@ module.exports = [
         id: '258-reminder-interval-not-enforced', ticket: '#258',
         desc: 'a missing-payment reminder resends on every sync instead of waiting remindEveryDays, spamming every channel',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: '  return calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays;',
-        mutant: '  return true;',
+        anchor: 'due: calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays,',
+        mutant: 'due: true,',
         tests: 'scheduleAlertDelivery'
     },
     {
@@ -1595,8 +1685,8 @@ module.exports = [
         id: '258-r2-m5-resolved-resent-after-already-resolved-here', ticket: '#258',
         desc: 'a resolved event goes back to being resendable to a destination that already has its own resolved row recorded, resending indefinitely instead of once per destination',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: '    return !resolvedRow;',
-        mutant: '    return true;',
+        anchor: 'due: !resolvedRow,',
+        mutant: 'due: true,',
         tests: 'scheduleAlertDelivery'
     },
     {
@@ -1633,6 +1723,209 @@ module.exports = [
         mutant: "                const ruleChannels = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'];",
         tests: 'configLoader.test'
     },
+
+    // ---- #294: template low findings -----------------------------------------
+    {
+        id: "294-decorator-passes-validation", ticket: '#294',
+        desc: "a decorator ({{*foo}}) passes validation again and throws at render",
+        file: "src/lib/templateRenderer.js",
+        anchor: "        fail(key, statement.path && statement.path.original || 'decorator', statement.loc.start.line, 'unknown_helper');",
+        mutant: "",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-mismatched-block-line-lost", ticket: '#294',
+        desc: "a mismatched block error reports line 1 again",
+        file: "src/lib/templateRenderer.js",
+        anchor: " || / - (\\d+):\\d+/.exec(err.message);",
+        mutant: ";",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-any-entity-allowed", ticket: '#294',
+        desc: "Telegram validation accepts entities Telegram rejects (&nbsp;)",
+        file: "src/lib/templateRenderer.js",
+        anchor: "const TELEGRAM_ENTITY_RE = /^&(?:amp|lt|gt|quot);/;",
+        mutant: "const TELEGRAM_ENTITY_RE = /^&(?:amp|lt|gt|quot|nbsp);/;",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-entity-rejected", ticket: '#294',
+        desc: "the Telegram entities are rejected again, so a literal & cannot be written",
+        file: "src/lib/templateRenderer.js",
+        anchor: "      if (entity) {",
+        mutant: "      if (false) {",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-unclosed-tag-passes", ticket: '#294',
+        desc: "an unclosed Telegram tag passes validation again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "    if (tagStack.length > 0) {",
+        mutant: "    if (false) {",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-crossed-tags-pass", ticket: '#294',
+        desc: "crossed Telegram tags pass validation again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "if (!open || open.tag !== tag) fail(",
+        mutant: "if (!open) fail(",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-upper-undefined-renders-word", ticket: '#294',
+        desc: "upper of an undefined value renders UNDEFINED again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "  upper: (value) => (value == null ? '' : String(value).toUpperCase()),",
+        mutant: "  upper: (value) => String(value).toUpperCase(),",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-lower-undefined-renders-word", ticket: '#294',
+        desc: "lower of a null value renders NULL again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "  lower: (value) => (value == null ? '' : String(value).toLowerCase())",
+        mutant: "  lower: (value) => String(value).toLowerCase()",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-webhook-field-overrides-text", ticket: '#294',
+        desc: "a webhook field named text overrides the rendered text again",
+        file: "src/services/notificationService.js",
+        anchor: "{ ...(fields || {}), text }",
+        mutant: "{ text, ...(fields || {}) }",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-discord-content-uncapped", ticket: '#294',
+        desc: "templated Discord content is no longer capped at 2000 characters",
+        file: "src/services/notificationService.js",
+        anchor: "content: truncateWithEllipsis(text, DISCORD_CONTENT_MAX)",
+        mutant: "content: text",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-slack-text-uncapped", ticket: '#294',
+        desc: "templated Slack text is no longer capped",
+        file: "src/services/notificationService.js",
+        anchor: "{ text: truncateWithEllipsis(text, SLACK_TEXT_MAX) }",
+        mutant: "{ text }",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-ellipsis-exceeds-cap", ticket: '#294',
+        desc: "the ellipsis is added on top of the cap, so Discord content ends up 2001 characters",
+        file: "src/lib/channelEscape.js",
+        anchor: "truncateCodePoints(value, max - 1)",
+        mutant: "truncateCodePoints(value, max)",
+        tests: "channelEscape"
+    },
+    {
+        id: "294-discord-mentions-allowed", ticket: '#294',
+        desc: "non-templated Discord payloads allow mentions again (@everyone pings)",
+        file: "src/services/notificationService.js",
+        anchor: "if (payload) payload.allowed_mentions = { parse: [] };",
+        mutant: "if (payload) payload.allowed_mentions = { parse: ['everyone'] };",
+        tests: "notificationService.test"
+    },
+    {
+        id: "294-discord-formatted-mentions-missing", ticket: '#294',
+        desc: "the formatted Discord sender stops suppressing mentions",
+        file: "src/services/notificationService.js",
+        anchor: "(#114)\n    this._suppressDiscordMentions(payload);",
+        mutant: "(#114)",
+        tests: "notificationService.test"
+    },
+    {
+        id: "294-discord-legacy-mentions-missing", ticket: '#294',
+        desc: "the dashboard-test Discord sender stops suppressing mentions",
+        file: "src/services/notificationService.js",
+        anchor: "this._brandPayload(payload, 'avatar_url');\n    this._suppressDiscordMentions(payload);",
+        mutant: "this._brandPayload(payload, 'avatar_url');",
+        tests: "notificationService.test"
+    },
+    {
+        id: "294-digest-records-deferred-items", ticket: '#294',
+        desc: "a capped digest records every rendered item as sent, including the ones cut off by the channel cap",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "const included = rendered.slice(0, count).map((r) => r.item);",
+        mutant: "const included = rendered.map((r) => r.item);",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-digest-no-fair-order", ticket: '#294',
+        desc: "the digest no longer sends never-sent and longest-waiting items first, so daily reminders starve the deferred tail",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "return x === y ? 0 : (x < y ? -1 : 1);",
+        mutant: "return 0;",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-telegram-digest-header-unescaped", ticket: '#294',
+        desc: "the Telegram digest header interpolates the server name into HTML unescaped again",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "for ${escapeTelegramHtml(server)}`",
+        mutant: "for ${server}`",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-email-digest-header-unescaped", ticket: '#294',
+        desc: "the email digest html body interpolates the server name unescaped again",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "html: `<p>${htmlHeader}</p><ul>",
+        mutant: "html: `<p>${header}</p><ul>",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-slack-digest-header-unescaped", ticket: '#294',
+        desc: "the Slack digest header carries the raw server name again, so <!channel> in a name pings the channel",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "return buildDigestOutput(channel, channel === 'slack' ? slackHeader : header,",
+        mutant: "return buildDigestOutput(channel, header,",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-digest-reminders-not-oldest-first", ticket: '#294',
+        desc: "already-sent digest items no longer rotate by oldest last send, so the first items take every reminder slot",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "const sentAtMs = (d) => (d.lastSentAt == null ? -Infinity : Date.parse(d.lastSentAt));",
+        mutant: "const sentAtMs = (d) => (d.lastSentAt == null ? -Infinity : 0);",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-digest-ignores-cap", ticket: '#294',
+        desc: "the digest no longer stops adding items at the channel cap, so Discord gets a message cut at 2000",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "digestLength(channel, build(count + 1)) <= cap",
+        mutant: "digestLength(channel, build(count + 1)) <= Infinity",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-slack-cap-4000", ticket: '#294',
+        desc: "the Slack cap goes back to 4000, cutting a 40-item digest short",
+        file: "src/lib/channelEscape.js",
+        anchor: "const SLACK_TEXT_MAX = 40000;",
+        mutant: "const SLACK_TEXT_MAX = 4000;",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-markup-line-from-stripped-value", ticket: '#294',
+        desc: "the Telegram markup check counts lines in the whitespace-stripped value again, so the line after a standalone block tag is wrong",
+        file: "src/lib/templateRenderer.js",
+        anchor: "const text = node.original;",
+        mutant: "const text = node.value;",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-ellipsis-splits-surrogate", ticket: '#294',
+        desc: "truncateWithEllipsis cuts by UTF-16 unit and can leave a lone surrogate",
+        file: "src/lib/channelEscape.js",
+        anchor: "${truncateCodePoints(value, max - 1)}",
+        mutant: "${value.slice(0, max - 1)}",
+        tests: "channelEscape"
+    },
+
 
     // ---- #297: findings left open when the #258 review loop stopped -------
     {

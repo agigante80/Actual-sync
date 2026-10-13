@@ -647,6 +647,28 @@ describe('NotificationService', () => {
     });
   });
 
+  // #294: a payee/account name in an embed or message must never ping
+  // @everyone/@here/a user, with or without branding.
+  describe('Discord allowed_mentions on non-templated senders (#294)', () => {
+    const notification = { serverName: 'S', timestamp: 't', errorMessage: 'e', consecutiveFailures: 1, thresholds: { failureRate: 0, consecutiveExceeded: false, rateExceeded: false } };
+
+    test.each([true, false])('sendDiscordFormattedWebhooks sends allowed_mentions parse [] (branding %s)', async (branding) => {
+      const service = new NotificationService({ branding, webhooks: { discord: [{ name: 'd', url: 'https://discord.com/api/webhooks/x' }] } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendDiscordFormattedWebhooks({ embeds: [] });
+      expect(spy.mock.calls[0][1].allowed_mentions).toEqual({ parse: [] });
+      spy.mockRestore();
+    });
+
+    test.each([true, false])('sendDiscordWebhooks sends allowed_mentions parse [] (branding %s)', async (branding) => {
+      const service = new NotificationService({ branding, webhooks: { discord: [{ name: 'd', url: 'https://discord.com/api/webhooks/x' }] } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendDiscordWebhooks(notification);
+      expect(spy.mock.calls[0][1].allowed_mentions).toEqual({ parse: [] });
+      spy.mockRestore();
+    });
+  });
+
   describe('notification icon branding (#114)', () => {
     const LOGO = 'actual-sync-icon.png';
 
