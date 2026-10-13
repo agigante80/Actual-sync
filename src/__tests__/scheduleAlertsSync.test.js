@@ -522,19 +522,22 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
       transactions: []
     });
     const server_ = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'] }] } };
-    const SEND_DELAY_MS = 60;
+    // Generous margins so pre-send overhead (ledger reads) never eats the budget
+    // before the first send starts (flaky at 10ms/60ms): budget 300ms, send 600ms.
+    const SEND_DELAY_MS = 600;
+    const DELIVER_BUDGET_MS = 300;
     const sender = makeSlowSender(SEND_DELAY_MS);
 
     const evaluated = await maybeRunScheduleAlerts(server_, {
       api, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-10T00:00:00.000Z'), logger: quietLogger
     });
 
-    // The budget (10ms) is far shorter than one send's latency (60ms): the
+    // The budget (300ms) is shorter than one send's latency (600ms): the
     // first destination is already in flight when the budget expires, so it
     // must still be awaited to completion; the second destination must never
     // be started this sync.
     const result = await maybeDeliverScheduleAlerts(evaluated, {
-      syncHistory, notificationService: sender, logger: quietLogger, deliverBudgetMs: 10
+      syncHistory, notificationService: sender, logger: quietLogger, deliverBudgetMs: DELIVER_BUDGET_MS
     });
 
     const callsRightAfterReturn = sender.calls.length;
@@ -576,5 +579,5 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
     expect(sender.calls.length).toBe(callsBeforeSecondSync + 1);
     expect(sender.calls[sender.calls.length - 1].url).toBe('http://127.0.0.1:1/second');
     expect(result2).toEqual({ events: 1, sent: 1, skipped: 0 });
-  });
+  }, 20000);
 });
