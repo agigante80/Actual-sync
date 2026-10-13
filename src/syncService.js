@@ -19,7 +19,7 @@ const { resolveTimezone, describeTimezoneFallback } = require('./lib/timezone');
 const { createShutdownGate, resolveShutdownWaitMs } = require('./lib/shutdownGate');
 const { createAutoRetry } = require('./lib/autoRetry');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
-const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts } = require('./lib/scheduleAlertsStep');
+const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts, persistPaymentSnapshot } = require('./lib/scheduleAlertsStep');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -660,12 +660,22 @@ async function runSyncBank(server, options = {}) {
         // changes the sync's own result (syncStatus, syncHistory.recordSync).
         // The step itself lives in ./lib/scheduleAlertsStep so it can be
         // exercised directly in scheduleAlertsSync.test.js.
+        const paymentOutcome = {};
         scheduleAlertsEvaluated = await maybeRunScheduleAlerts(server, {
             api,
             serverName: name,
             timezone: resolveTimezone(config),
             logger: serverLogger,
-            syncHistory
+            syncHistory,
+            outcome: paymentOutcome
+        });
+        // Payment snapshot for the dashboard (#260): synchronous, best-effort,
+        // never changes the sync result (see persistPaymentSnapshot).
+        persistPaymentSnapshot(server, scheduleAlertsEvaluated, {
+            syncHistory,
+            serverName: name,
+            outcome: paymentOutcome,
+            logger: serverLogger
         });
 
         // Calculate sync duration and log performance
