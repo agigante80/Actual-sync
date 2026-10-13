@@ -275,3 +275,6 @@ shares the sync process's own local zone.
   `missing` row. If the payment arrives before the renamed or rotated destination received its
   re-sent `missing`, that destination gets neither, and the message the old key received is never
   closed by a `resolved`.
+  Databases written by a pre-release development build of this feature (ledger keys of the form
+  `slack:#ops`, before the hash was always appended) may see one extra re-send of open alerts after
+  upgrading; no released version wrote those keys (#297 round 1, L2).
