@@ -164,8 +164,9 @@ match the code, not as an integration surface:
 | POST | `/api/dashboard/test-notification` | Send a test notification (`email`, `discord`, `slack`, `telegram`, `ntfy`, `generic`) |
 
 `GET /api/dashboard/payments` serves the snapshot of the last missing-payment evaluation
-(#258) that each sync persists (#260), so a dashboard can list every watched schedule without
-reaching Actual. Its data is as fresh as the last sync; `lastRun` carries the times. With the
+(#258) that a sync persists after evaluating (#260), so a dashboard can list every watched schedule without
+reaching Actual. Its data is as fresh as `lastRun.at`; a sync that skips or aborts before the evaluation
+(including a stuck bank sync, #284) leaves the items and `lastRun` unchanged. With the
 default `auth.type: none` the route is open to anyone who can reach the port, so enable dashboard
 auth when `scheduleAlerts` is used (it exposes schedule, payee and account names and amounts).
 

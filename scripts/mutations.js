@@ -2039,6 +2039,22 @@ module.exports = [
 
     // ---- #260: payment alert snapshot and GET /api/dashboard/payments -----
     {
+        id: '260-sync-drops-evaluation-outcome', ticket: '#260',
+        desc: 'syncService stops passing the outcome object to the evaluation, so a failed evaluation leaves lastRun.ok true',
+        file: 'src/syncService.js',
+        anchor: "                logger: serverLogger,\n                syncHistory,\n                outcome: paymentOutcome\n",
+        mutant: "                logger: serverLogger,\n                syncHistory\n",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '260-sync-persists-when-stuck', ticket: '#260',
+        desc: 'the payment snapshot is persisted even when a bank sync is stuck',
+        file: 'src/syncService.js',
+        anchor: '        if (sessionStuckAfterLoop) {\n            serverLogger.warn(\'Skipping the final file sync',
+        mutant: '        persistPaymentSnapshot(server, null, { syncHistory, serverName: name, outcome: {}, logger: serverLogger });\n        if (sessionStuckAfterLoop) {\n            serverLogger.warn(\'Skipping the final file sync',
+        tests: 'syncLateBankSync'
+    },
+    {
         id: '260-no-transaction', ticket: '#260',
         desc: 'replacePaymentSnapshot runs its writes without a transaction, so a mid-way failure leaves partial rows',
         file: 'src/services/syncHistory.js',
