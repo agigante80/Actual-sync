@@ -909,10 +909,16 @@ async function loadHistoryTab() {
         }
         
         const response = await fetch(url, getFetchOptions());
-        const history = await response.json();
+        const history = response.ok ? await response.json() : null;
         if (seq !== historyRequestSeq) return;
 
         const tbody = document.getElementById('history-body');
+        // A 401/503 reply is an error object, not rows: say so instead of
+        // leaving the previous filter's rows under the new label.
+        if (!Array.isArray(history)) {
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center;">Failed to load sync history (HTTP ${escapeHtml(response.status)})</td></tr>`;
+            return;
+        }
         if (history.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No sync history available</td></tr>';
             return;

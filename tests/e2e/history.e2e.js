@@ -70,4 +70,17 @@ describe('dashboard history tab (#263)', () => {
       expect(server).toBe(name);
     });
   });
+
+  test('the Reset History select keeps a quoted server name intact (#288)', async () => {
+    await withDashboard('history-markup', async ({ page, fixture }) => {
+      await clickTab(page, 'Settings');
+      const name = fixture.state.quoted;
+      await page.waitForFunction(
+        (n) => [...document.querySelectorAll('#reset-server-select option')].some((o) => o.value === n),
+        {}, name
+      );
+      await page.select('#reset-server-select', name);
+      expect(await page.$eval('#reset-server-select', (el) => el.value)).toBe(name);
+    });
+  });
 });
