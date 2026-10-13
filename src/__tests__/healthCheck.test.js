@@ -329,6 +329,33 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('vendored Chart.js (#244)', () => {
+    beforeEach(async () => {
+      await healthCheck.start();
+    });
+
+    test('serves chart.js from node_modules as javascript, cached', async () => {
+      const result = await httpGet(`http://127.0.0.1:${testPort}/vendor/chart.umd.min.js`);
+      expect(result.statusCode).toBe(200);
+      expect(result.headers['content-type']).toContain('javascript');
+      expect(result.headers['cache-control']).toContain('max-age');
+      expect(result.body.length).toBeGreaterThan(0);
+    });
+
+    test('an unknown path under /vendor is a 404, not a 500', async () => {
+      const result = await httpGet(`http://127.0.0.1:${testPort}/vendor/nope.js`);
+      expect(result.statusCode).toBe(404);
+    });
+
+    test('a traversal attempt cannot read package.json', async () => {
+      // http.get normalises nothing; send the raw encoded form too.
+      for (const p of ['/vendor/../../package.json', '/vendor/..%2f..%2fpackage.json']) {
+        const result = await httpGet(`http://127.0.0.1:${testPort}${p}`);
+        expect(result.statusCode).toBe(404);
+      }
+    });
+  });
+
   describe('/health endpoint', () => {
     beforeEach(async () => {
       await healthCheck.start();

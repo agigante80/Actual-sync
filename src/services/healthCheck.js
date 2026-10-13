@@ -234,7 +234,7 @@ class HealthCheckService {
       // The dashboard fetches /icon.png as its favicon + header logo on every
       // load; exempt this cacheable static asset so it never competes with the
       // dashboard API calls for the per-IP abuse budget. (#113)
-      skip: (req) => req.path === '/icon.png'
+      skip: (req) => req.path === '/icon.png' || req.path === '/vendor/chart.umd.min.js'
     });
 
     // Apply rate limiting to all routes
@@ -353,6 +353,21 @@ class HealthCheckService {
     this.app.get('/icon.png', (req, res) => {
       res.sendFile(path.join(__dirname, 'icon.png'), {
         headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' }
+      }, (err) => {
+        if (err && !res.headersSent) res.status(err.statusCode || 500).end();
+      });
+    });
+
+    // Chart.js, served from the npm dependency instead of a CDN so the dashboard
+    // works offline and no third party can run script in the admin page. A single
+    // fixed route (not a directory mount), so no other file under node_modules is
+    // reachable and there is nothing to traverse. No auth, like /icon.png. (#244)
+    // chart.js's package "exports" map does not expose its dist/ files, so the
+    // bundle is located beside the resolved main entry (dist/chart.cjs).
+    const chartJsPath = path.join(path.dirname(require.resolve('chart.js')), 'chart.umd.min.js');
+    this.app.get('/vendor/chart.umd.min.js', (req, res) => {
+      res.sendFile(chartJsPath, {
+        headers: { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'public, max-age=86400' }
       }, (err) => {
         if (err && !res.headersSent) res.status(err.statusCode || 500).end();
       });
