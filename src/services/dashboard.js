@@ -5,6 +5,7 @@
  */
 let ws = null;
 let wsConnecting = false; // a ticket request is in flight (#242)
+let reconnectTimer = null; // the one pending retry, if any (#280)
 let reconnectAttempts = 0;
 let reconnectDelay = 1000; // Start with 1 second
 const maxReconnectDelay = 30000; // Cap at 30 seconds
@@ -49,8 +50,13 @@ function switchTab(tabName, button) {
 // Page visibility handling - pause log streaming when tab is hidden
 document.addEventListener('visibilitychange', () => {
     isPageVisible = !document.hidden;
-    if (isPageVisible && ws && ws.readyState !== WebSocket.OPEN) {
+    // One loop only: skip while a socket is open or still connecting, or a
+    // ticket request is in flight. A pending retry is replaced, not doubled. (#280)
+    const busy = wsConnecting || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING));
+    if (isPageVisible && !busy) {
         console.log('Tab became visible, reconnecting WebSocket...');
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
         connectWebSocket();
     }
 });
@@ -380,7 +386,13 @@ async function fetchWsTicket() {
     return data.ticket;
 }
 
+function scheduleReconnect(delay) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectWebSocket, delay);
+}
+
 async function connectWebSocket() {
+    reconnectTimer = null;
     // Don't reconnect if tab is hidden
     if (!isPageVisible) {
         console.log('Tab hidden, deferring WebSocket connection');
@@ -445,7 +457,7 @@ async function connectWebSocket() {
             reconnectAttempts++;
             const delay = Math.min(reconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
             console.log(`Reconnect attempt ${reconnectAttempts} in ${delay}ms`);
-            setTimeout(connectWebSocket, delay);
+            scheduleReconnect(delay);
         };
     } catch (error) {
         console.error('Failed to create WebSocket:', error);
@@ -453,7 +465,7 @@ async function connectWebSocket() {
         // refused ticket request does not poll the server every second.
         reconnectAttempts++;
         const delay = Math.min(reconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
-        setTimeout(connectWebSocket, delay);
+        scheduleReconnect(delay);
     } finally {
         wsConnecting = false;
     }

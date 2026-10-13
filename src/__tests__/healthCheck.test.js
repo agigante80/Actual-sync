@@ -2102,5 +2102,99 @@ describe('HealthCheckService', () => {
       b.ws.close();
       d.ws.close();
     });
+
+    // ---- #280 hardening follow-ups ----
+    test('a ticket is spent by a handshake refused for its Origin (#280)', async () => {
+      await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const ticket = await mintTicket();
+      expect(await tryConnect(`/ws/logs?ticket=${ticket}`, { origin: 'https://evil.example' }))
+        .toEqual({ open: false, status: 403 });
+      expect(await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin()))
+        .toEqual({ open: false, status: 401 });
+    });
+
+    test('a ticket is spent by a handshake refused for the connection cap (#280)', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      hc.maxWsConnectionsPerIp = 0;
+      const ticket = await mintTicket();
+      expect(await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin()))
+        .toEqual({ open: false, status: 429 });
+      hc.maxWsConnectionsPerIp = 10;
+      expect(await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin()))
+        .toEqual({ open: false, status: 401 });
+    });
+
+    test('same-origin compares the port too (#280)', async () => {
+      await startWith({ enabled: true, auth: { type: 'none' } });
+      const result = await tryConnect('/ws/logs', { origin: `http://127.0.0.1:${testPort + 1}` });
+      expect(result).toEqual({ open: false, status: 403 });
+    });
+
+    test('Origin null (sandboxed iframe, file page) is refused (#280)', async () => {
+      await startWith({ enabled: true, auth: { type: 'none' } });
+      const result = await tryConnect('/ws/logs', { origin: 'null' });
+      expect(result).toEqual({ open: false, status: 403 });
+    });
+
+    test('the per-address cap counts the forwarded client when trustProxy is set (#280)', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', trustProxy: 1,
+        dashboardConfig: { enabled: true, auth: { type: 'none' } }, loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+      hc.maxWsConnectionsPerIp = 1;
+      const a = await tryConnect('/ws/logs', { 'x-forwarded-for': '1.2.3.4' });
+      expect(a.open).toBe(true);
+      expect(await tryConnect('/ws/logs', { 'x-forwarded-for': '1.2.3.4' })).toEqual({ open: false, status: 429 });
+      const other = await tryConnect('/ws/logs', { 'x-forwarded-for': '5.6.7.8' });
+      expect(other.open).toBe(true);
+      a.ws.close();
+      other.ws.close();
+    });
+
+    test('without trustProxy a forged X-Forwarded-For does not dodge the cap (#280)', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'none' } });
+      hc.maxWsConnectionsPerIp = 1;
+      const a = await tryConnect('/ws/logs', { 'x-forwarded-for': '1.2.3.4' });
+      expect(a.open).toBe(true);
+      expect(await tryConnect('/ws/logs', { 'x-forwarded-for': '5.6.7.8' })).toEqual({ open: false, status: 429 });
+      a.ws.close();
+    });
+  });
+
+  describe('dashboard credential responses (#280)', () => {
+    function rawGet(path, headers = {}) {
+      return new Promise((resolve, reject) => {
+        http.get({ host: '127.0.0.1', port: testPort, path, headers }, (res) => {
+          let data = '';
+          res.on('data', (c) => { data += c; });
+          res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, body: data }));
+        }).on('error', reject);
+      });
+    }
+
+    test('basic auth: invalid credentials get 401, a WWW-Authenticate challenge and Invalid credentials', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'pw' } }
+      });
+      await hc.start();
+      const wrong = 'Basic ' + Buffer.from('admin:nope').toString('base64');
+      const res = await rawGet('/api/dashboard/status', { authorization: wrong });
+      expect(res.statusCode).toBe(401);
+      expect(res.headers['www-authenticate']).toBe('Basic realm="Dashboard"');
+      expect(JSON.parse(res.body)).toEqual({ error: 'Invalid credentials' });
+    });
+
+    test('token auth: a wrong token gets 401 with the Invalid token body', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        dashboardConfig: { enabled: true, auth: { type: 'token', token: 'right' } }
+      });
+      await hc.start();
+      const res = await rawGet('/api/dashboard/status', { authorization: 'Bearer wrong' });
+      expect(res.statusCode).toBe(401);
+      expect(JSON.parse(res.body)).toEqual({ error: 'Invalid token' });
+    });
   });
 });

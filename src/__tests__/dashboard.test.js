@@ -59,4 +59,14 @@ describe('dashboard.html is CSP-clean (#243)', () => {
     expect(js).not.toMatch(/javascript:/i);
     expect(js).not.toMatch(/\beval\(|new Function\(/);
   });
+
+  // The page runs no browser in jest, so pin the source: one reconnect loop. (#280)
+  test('the visibility handler does not start a second reconnect loop', () => {
+    const js = fs.readFileSync(path.join(__dirname, '..', 'services', 'dashboard.js'), 'utf8');
+    expect(js).toMatch(/ws\.readyState === WebSocket\.CONNECTING/);
+    expect(js).toMatch(/wsConnecting \|\|/);
+    // the only retry timer is the single tracked one in scheduleReconnect
+    expect(js.match(/setTimeout\(connectWebSocket/g)).toHaveLength(1);
+    expect(js).toMatch(/clearTimeout\(reconnectTimer\)/);
+  });
 });

@@ -1072,6 +1072,38 @@ module.exports = [
         tests: 'dashboardCredentials'
     },
     {
+        id: '280-ws-ticket-spent-late', ticket: '#280',
+        desc: 'the handshake only looks the ticket up instead of spending it first, so a refused handshake leaves it valid',
+        file: 'src/services/healthCheck.js',
+        anchor: '      ticketOk = Boolean(ticket) && this.wsTickets.consume(ticket);',
+        mutant: '      ticketOk = Boolean(ticket) && this.wsTickets.tickets.has(ticket);',
+        tests: 'healthCheck'
+    },
+    {
+        id: '280-ws-cap-ignores-trustproxy', ticket: '#280',
+        desc: 'the per-address cap uses the TCP peer address and ignores healthCheck.trustProxy',
+        file: 'src/services/healthCheck.js',
+        anchor: '    return probe.ip || req.socket.remoteAddress;',
+        mutant: '    return req.socket.remoteAddress;',
+        tests: 'healthCheck'
+    },
+    {
+        id: '280-ws-origin-ignores-port', ticket: '#280',
+        desc: 'same-origin compares hostname only, so a different port on the same host passes',
+        file: 'src/services/healthCheck.js',
+        anchor: '    if (host && parsed.host === host) return true;',
+        mutant: "    if (host && parsed.hostname === host.split(':')[0]) return true;",
+        tests: 'healthCheck'
+    },
+    {
+        id: '280-visibility-doubles-loop', ticket: '#280',
+        desc: 'the visibility handler reconnects while a socket is still connecting',
+        file: 'src/services/dashboard.js',
+        anchor: ' || ws.readyState === WebSocket.CONNECTING',
+        mutant: '',
+        tests: 'dashboard'
+    },
+    {
         id: '246-basic-auth-short-circuits', ticket: '#246',
         desc: 'a wrong username skips the password comparison, a timing signal for valid usernames',
         file: 'src/lib/dashboardCredentials.js',
@@ -1092,8 +1124,8 @@ module.exports = [
         id: '242-ws-header-oracle', ticket: '#242',
         desc: 'the handshake accepts an Authorization header again, an unthrottled password oracle',
         file: 'src/services/healthCheck.js',
-        anchor: '    if (ticket && this.wsTickets.consume(ticket)) return done(true);\n',
-        mutant: '    if (ticket && this.wsTickets.consume(ticket)) return done(true);\n    if (checkCredentials(req.headers, authConfig).ok) return done(true);\n',
+        anchor: '    if (ticketOk) return done(true);\n',
+        mutant: '    if (ticketOk) return done(true);\n    if (checkCredentials(req.headers, authConfig).ok) return done(true);\n',
         tests: 'healthCheck'
     },
     {
