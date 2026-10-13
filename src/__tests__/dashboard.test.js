@@ -173,7 +173,13 @@ describe('dashboard.html is CSP-clean (#243)', () => {
       h.open(h.sockets[0]);
       h.sockets[0].close(); // CLOSING, so a replacement may start
       let release;
-      h.ctx.fetch = () => new Promise(r => { release = () => r({ ok: true, json: async () => ({ ticket: 'late' }) }); });
+      const realFetch = h.ctx.fetch;
+      let held = false;
+      h.ctx.fetch = (url, ...rest) => {
+        if (held || !/ws-ticket/.test(url)) return realFetch(url, ...rest); // pollers and later tickets are not held
+        held = true;
+        return new Promise(r => { release = () => r({ ok: true, json: async () => ({ ticket: 'late' }) }); });
+      };
       const pending = h.ctx.connectWebSocket(); // ticket request held open
       await h.tick();
       h.closed(h.sockets[0]); // old socket closes meanwhile and schedules a retry
