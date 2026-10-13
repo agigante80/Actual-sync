@@ -351,6 +351,144 @@ describe('deliver: digest', () => {
   });
 });
 
+describe('deliver: digest fits each capped channel (#294 review round 1, M1)', () => {
+  const MANY = 40;
+
+  function manyItems() {
+    const events = [];
+    const evaluations = [];
+    for (let i = 0; i < MANY; i++) {
+      const id = `a${i}`;
+      events.push(missingEvent({ alertId: id, scheduleId: `s${i}` }));
+      evaluations.push(rentEvaluation({ alertId: id, scheduleId: `s${i}`, name: `Schedule number ${i} with a longish name` }));
+    }
+    const rules = getRules({
+      digest: true,
+      alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['discord'] }))
+    });
+    return { events, evaluations, rules };
+  }
+
+  async function run(history, sender, now) {
+    const { events, evaluations, rules } = manyItems();
+    return deliver(events, {
+      evaluations, ruleState: enabledState, history, sender, now, server: 'Main', rules, timezone: 'UTC', logger: quietLogger
+    });
+  }
+
+  test('a 40-item Discord digest sends only the items that fit, records only those, and the next run sends the rest', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] } });
+
+    const first = await run(history, sender, '2026-01-10');
+    expect(sender.calls).toHaveLength(1);
+    const text1 = sender.calls[0].discord.text;
+    expect(text1.length).toBeLessThanOrEqual(2000);
+    expect(text1).not.toMatch(/\u2026$/);
+    expect(first.sent).toBeGreaterThan(0);
+    expect(first.sent).toBeLessThan(MANY);
+    expect(history.rows).toHaveLength(first.sent);
+    // The header count matches what is actually in the message.
+    expect(text1.split('\n')[0]).toContain(`${first.sent} payment alert(s)`);
+
+    let total = first.sent;
+    for (let i = 0; i < 10 && total < MANY; i++) {
+      const next = await run(history, sender, '2026-01-10');
+      expect(sender.calls[sender.calls.length - 1].discord.text.length).toBeLessThanOrEqual(2000);
+      total += next.sent;
+    }
+    expect(total).toBe(MANY);
+    expect(history.rows).toHaveLength(MANY);
+    expect(new Set(history.rows.map((r) => r.alertId)).size).toBe(MANY);
+  });
+
+  test('daily reminders do not starve the deferred tail: all 40 alerts reach the ledger within a bounded number of days (#294 review round 2, H1)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] } });
+    const { events, evaluations } = manyItems();
+    const rulesDaily = getRules({
+      digest: true,
+      alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['discord'], remindEveryDays: 1 }))
+    });
+
+    const MAX_DAYS = 6;
+    for (let day = 0; day < MAX_DAYS; day++) {
+      const instant = new Date(Date.UTC(2026, 0, 10 + day)).toISOString();
+      history.clock = instant;
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: instant, server: 'Main', rules: rulesDaily, timezone: 'UTC', logger: quietLogger
+      });
+      if (new Set(history.rows.map((r) => r.alertId)).size === MANY) break;
+    }
+    expect(new Set(history.rows.map((r) => r.alertId)).size).toBe(MANY);
+  });
+
+  test('once every alert has been sent, reminders rotate by oldest last send so every alert keeps getting reminded (#294 review round 3, L1)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] } });
+    const { events, evaluations } = manyItems();
+    const rulesDaily = getRules({
+      digest: true,
+      alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['discord'], remindEveryDays: 1 }))
+    });
+
+    // Past the point where everything was sent once, only the oldest-sent
+    // order lets the reminders reach every alert again.
+    for (let day = 0; day < 16; day++) {
+      const instant = new Date(Date.UTC(2026, 0, 10 + day)).toISOString();
+      history.clock = instant;
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: instant, server: 'Main', rules: rulesDaily, timezone: 'UTC', logger: quietLogger
+      });
+    }
+    const perAlert = new Map();
+    for (const r of history.rows) perAlert.set(r.alertId, (perAlert.get(r.alertId) || 0) + 1);
+    expect(perAlert.size).toBe(MANY);
+    expect(Math.min(...perAlert.values())).toBeGreaterThanOrEqual(3);
+  });
+
+  test('a 40-item Telegram digest also stays under 4096 in both html and plain, recording only what was sent', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const { events, evaluations } = manyItems();
+    const rules = getRules({ digest: true, alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['telegram'] })) });
+    const result = await deliver(events, {
+      evaluations, ruleState: enabledState, history, sender, now: '2026-01-10', server: 'Main', rules, timezone: 'UTC', logger: quietLogger
+    });
+    expect(result.sent).toBeGreaterThan(0);
+    expect(result.sent).toBeLessThan(MANY);
+    expect(sender.calls[0].telegram.html.length).toBeLessThanOrEqual(4096);
+    expect(sender.calls[0].telegram.plain.length).toBeLessThanOrEqual(4096);
+    expect(history.rows).toHaveLength(result.sent);
+  });
+
+  test('a digest that fits entirely is unchanged: one message, every item recorded', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { slack: [{ name: 's', url: 'https://slack/x', enabled: true }] } });
+    const { events, evaluations } = manyItems();
+    const rules = getRules({ digest: true, alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['slack'] })) });
+    const result = await deliver(events, {
+      evaluations, ruleState: enabledState, history, sender, now: '2026-01-10', server: 'Main', rules, timezone: 'UTC', logger: quietLogger
+    });
+    expect(result.sent).toBe(MANY); // Slack's cap is 40000, so 40 lines all fit
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  test('a single oversized item is still sent alone (truncation is only the safety net)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] } });
+    const rules = getRules({
+      digest: true,
+      alerts: [{ id: 'rent', schedule: 'Rent', channels: ['discord'], templates: { missing: 'x'.repeat(2500) } }]
+    });
+    const result = await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'Main', rules, timezone: 'UTC', logger: quietLogger
+    });
+    expect(result.sent).toBe(1);
+    expect(history.rows).toHaveLength(1);
+  });
+});
+
 describe('deliver: resolved events', () => {
   test('a late payment that had a missing alert produces a resolved event once, then never again', async () => {
     const history = makeFakeHistory();
@@ -524,6 +662,46 @@ describe('deliver: resolved retries per destination against the real ledger (#29
     const finalResult = await deliver([], { ...baseArgs, evaluations: [lateEvaluation], now: '2026-01-13' });
     expect(finalResult).toEqual({ sent: 0, skipped: 1 });
     expect(sender.calls).toHaveLength(5);
+  });
+});
+
+describe('deliver: Telegram digest header escapes the server name (#294 review round 2, L)', () => {
+  test('a server name with & and < is escaped in the html header and left raw in the plain fallback', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'] }] });
+    await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'A&B <home>', rules, timezone: 'UTC', logger: quietLogger
+    });
+    const header = sender.calls[0].telegram.html.split('\n')[0];
+    expect(header).toContain('A&amp;B &lt;home&gt;');
+    expect(header).not.toContain('<home>');
+    expect(sender.calls[0].telegram.plain.split('\n')[0]).toContain('A&B <home>');
+  });
+
+  test('the email digest html header escapes the server name; the text body keeps it raw', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ email: { enabled: true } });
+    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['email'] }] });
+    await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'A&B <home>', rules, timezone: 'UTC', logger: quietLogger
+    });
+    const { html, text } = sender.calls[0].email;
+    expect(html).toContain('<p>Actual-sync: 1 payment alert(s) for A&amp;B &lt;home&gt;</p>');
+    expect(html).not.toContain('<home>');
+    expect(text.split('\n')[0]).toContain('A&B <home>');
+  });
+
+  test('the Slack digest header escapes the server name so <!channel> cannot ping (#294 review round 3, L2)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { slack: [{ name: 'a', url: 'https://slack/a', enabled: true }] } });
+    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['slack'] }] });
+    await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'Main <!channel>', rules, timezone: 'UTC', logger: quietLogger
+    });
+    const out = JSON.stringify(sender.calls[0].slack);
+    expect(out).toContain('Main &lt;!channel&gt;');
+    expect(out).not.toContain('<!channel>');
   });
 });
 

@@ -11,7 +11,12 @@ const http = require('http');
 const { URL } = require('url');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
-const { truncateCodePoints } = require('../lib/channelEscape');
+const {
+  truncateCodePoints,
+  truncateWithEllipsis,
+  DISCORD_CONTENT_MAX,
+  SLACK_TEXT_MAX
+} = require('../lib/channelEscape');
 
 // Public icon + name used to brand notifications. Recipient services (Slack/
 // Discord/ntfy) fetch the icon, so it must be a public URL — not the dashboard's
@@ -717,6 +722,17 @@ class NotificationService {
   }
 
   /**
+   * Stop a Discord payload from pinging anyone. Account, payee and error text
+   * is not vetted, so `@everyone`, `@here` or `<@id>` inside it could mention
+   * real users; `allowed_mentions.parse: []` suppresses all of them at the
+   * Discord API level. Applied whatever the branding setting. (#294)
+   * @param {Object} payload - Discord webhook payload (mutated in place)
+   */
+  _suppressDiscordMentions(payload) {
+    if (payload) payload.allowed_mentions = { parse: [] };
+  }
+
+  /**
    * Send Slack webhooks with formatted payload
    * @param {Object} payload - Formatted Slack payload
    * @returns {Promise<Array>} Send results
@@ -761,6 +777,7 @@ class NotificationService {
     const results = [];
     const webhooks = this.config.webhooks.discord || [];
     this._brandPayload(payload, 'avatar_url'); // Discord honors username + avatar_url (#114)
+    this._suppressDiscordMentions(payload);
 
     for (const webhook of webhooks) {
       if (webhook.enabled === false) continue;
@@ -1145,6 +1162,7 @@ Please investigate and resolve the issue.
     // Brand the same way as the formatted path, so the dashboard "test
     // notification" looks identical to a real alert. (#114)
     this._brandPayload(payload, 'avatar_url');
+    this._suppressDiscordMentions(payload);
 
     const results = [];
     for (const webhook of this.config.webhooks.discord) {
@@ -1456,7 +1474,7 @@ Please investigate and resolve the issue.
    *   no `parse_mode`, and a WARN is logged. Any other failure is not retried.
    * @param {Object} [channelOutputs.email] - `{ subject, text, html }`
    * @param {Object} [channelOutputs.webhook] - `{ url, text, fields }`. Sent as
-   *   `{ text, ...fields }`: raw variables travel as structured JSON fields
+   *   `{ ...fields, text }` (the rendered text always wins): raw variables travel as structured JSON fields
    *   alongside the rendered text.
    * @param {Object} [channelOutputs.slack] - `{ url, text }`
    * @param {Object} [channelOutputs.discord] - `{ url, text }`. Sent with
@@ -1480,7 +1498,7 @@ Please investigate and resolve the issue.
     if (channelOutputs.webhook) {
       const { url, text, fields } = channelOutputs.webhook;
       try {
-        await this.sendWebhook(url, { text, ...(fields || {}) });
+        await this.sendWebhook(url, { ...(fields || {}), text });
         results.webhook = { success: true };
       } catch (error) {
         this.logger.error('Failed to send templated webhook', { error: error.message });
@@ -1491,7 +1509,7 @@ Please investigate and resolve the issue.
     if (channelOutputs.slack) {
       const { url, text } = channelOutputs.slack;
       try {
-        await this.sendWebhook(url, { text });
+        await this.sendWebhook(url, { text: truncateWithEllipsis(text, SLACK_TEXT_MAX) });
         results.slack = { success: true };
       } catch (error) {
         this.logger.error('Failed to send templated Slack webhook', { error: error.message });
@@ -1504,10 +1522,10 @@ Please investigate and resolve the issue.
       try {
         // A rendered template can contain a payee/note value an operator did
         // not vet for @everyone/@here or <@id> mentions. allowed_mentions
-        // suppresses all of them at the Discord API level; this only applies
-        // to this templated path, not sendDiscordFormattedWebhooks's existing
-        // non-templated sends (#257 review).
-        await this.sendWebhook(url, { content: text, allowed_mentions: { parse: [] } });
+        // suppresses all of them at the Discord API level. The non-templated
+        // sends in sendDiscordFormattedWebhooks suppress mentions too, via
+        // _suppressDiscordMentions (#294).
+        await this.sendWebhook(url, { content: truncateWithEllipsis(text, DISCORD_CONTENT_MAX), allowed_mentions: { parse: [] } });
         results.discord = { success: true };
       } catch (error) {
         this.logger.error('Failed to send templated Discord webhook', { error: error.message });
