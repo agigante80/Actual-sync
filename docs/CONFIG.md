@@ -127,6 +127,10 @@ Global synchronization behavior configuration. These settings apply to all serve
   - Can be overridden per server
   - Example: `5`
 
+- **autoRetry** (optional, object; also per server)
+  - After a failed *scheduled* sync (every account failed, or the sync itself errored), the service schedules another run: `enabled` (default `true`), `maxAttempts` (default `1`), `delayMinutes` (default `31`).
+  - A failed manual sync (dashboard, Telegram, `--force-run`) never schedules a retry, and a manual sync cancels a pending one. A partial sync (some accounts failed) is not retried. Pending retries are cancelled on shutdown.
+
 - **baseRetryDelayMs** (optional, integer, default: 3000)
   - Base delay in milliseconds for exponential backoff
   - Range: 1000-10000ms (1-10 seconds)

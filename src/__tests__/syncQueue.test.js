@@ -292,3 +292,25 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
         expect(opened).toBeGreaterThan(body[0].indexOf("busy.code = 'ACTUAL_SESSION_BUSY'"));
     });
 });
+
+describe('SyncQueue idle() and size() (#273)', () => {
+    const { SyncQueue } = require('../lib/syncQueue');
+
+    test('idle resolves only after the running task finishes, and never rejects', async () => {
+        const queue = new SyncQueue();
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        const run = queue.run('A', async () => { await gate; throw new Error('boom'); });
+        run.catch(() => {});
+        expect(queue.size()).toBe(1);
+        let idle = false;
+        const waiting = queue.idle().then(() => { idle = true; });
+        await Promise.resolve();
+        expect(idle).toBe(false);
+        release();
+        await waiting;
+        expect(idle).toBe(true);
+        await Promise.resolve();
+        expect(queue.size()).toBe(0);
+    });
+});

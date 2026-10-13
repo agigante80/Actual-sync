@@ -798,6 +798,24 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #273: auto-retry never fired because syncBank never rejected --------
+    {
+        id: '273-sync-result-not-returned', ticket: '#273',
+        desc: 'runSyncBank swallows its outcome again (returns undefined), so the retry policy never sees a failure',
+        file: 'src/syncService.js',
+        anchor: "    return { status: syncOutcome };",
+        mutant: "    return undefined;",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-failure-status-ignored', ticket: '#273',
+        desc: 'the retry policy no longer treats a returned failure status as a failure',
+        file: 'src/lib/autoRetry.js',
+        anchor: "failed = result?.status === 'failure';",
+        mutant: "failed = false;",
+        tests: 'autoRetry'
+    },
+
     // ---- #248: trivy-action ran from a floating branch ----------------------
     {
         id: '248-trivy-floating-branch', ticket: '#248',

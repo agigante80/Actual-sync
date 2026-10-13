@@ -69,6 +69,21 @@ class SyncQueue {
     }
 
     /**
+     * @returns {number} how many keys are waiting or running
+     */
+    size() {
+        return this.pending.size;
+    }
+
+    /**
+     * @returns {Promise<void>} settles once every task queued so far has finished
+     *   (never rejects), so shutdown can wait for the running sync (#273)
+     */
+    idle() {
+        return this.tail;
+    }
+
+    /**
      * @returns {{ key: string, startedAt: string } | null} the task running now, so
      *   a stuck sync is visible on the dashboard (#272)
      */
