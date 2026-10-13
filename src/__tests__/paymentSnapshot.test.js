@@ -108,8 +108,11 @@ describe('payment snapshot persistence (#260)', () => {
 
   test('a mid-transaction failure rolls everything back', () => {
     syncHistory.replacePaymentSnapshot('Main', [evaluation({ alertId: 'keep' })]);
-    syncHistory.db.exec('DROP TABLE payment_alert_run');
-    expect(() => syncHistory.replacePaymentSnapshot('Main', [evaluation({ alertId: 'new' })])).toThrow();
+    // The first row upserts fine; the second violates NOT NULL on state inside
+    // the transaction, so only a real rollback leaves ['keep'] (#343 review, M1).
+    expect(() => syncHistory.replacePaymentSnapshot('Main', [
+      evaluation({ alertId: 'new' }), evaluation({ alertId: 'bad', state: null })
+    ])).toThrow();
     const ids = syncHistory.db.prepare('SELECT alert_id FROM payment_alert_status').all().map((r) => r.alert_id);
     expect(ids).toEqual(['keep']);
   });

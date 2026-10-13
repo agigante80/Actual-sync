@@ -734,9 +734,10 @@ describe('persistPaymentSnapshot and error codes (#260)', () => {
 
   test('a SQLite failure mid-transaction leaves no partial rows, logs WARN and does not throw', () => {
     syncHistory.replacePaymentSnapshot('Main', [evalRow({ alertId: 'keep' })]);
-    syncHistory.db.exec('DROP TABLE payment_alert_run');
+    // Fail inside the transaction (second row hits NOT NULL on state after the
+    // first upserted), so only a real rollback leaves ['keep'] (#343 review, M1).
     expect(() => persistPaymentSnapshot(configured, {
-      evaluations: [evalRow({ alertId: 'new' })], warnings: []
+      evaluations: [evalRow({ alertId: 'new' }), evalRow({ alertId: 'bad', state: null })], warnings: []
     }, { syncHistory, serverName: 'Main', outcome: {}, logger })).not.toThrow();
     const ids = syncHistory.db.prepare('SELECT alert_id FROM payment_alert_status').all().map((r) => r.alert_id);
     expect(ids).toEqual(['keep']);
@@ -745,19 +746,8 @@ describe('persistPaymentSnapshot and error codes (#260)', () => {
 
   test('is a no-op without syncHistory', () => {
     expect(() => persistPaymentSnapshot(configured, { evaluations: [], warnings: [] }, { serverName: 'Main', outcome: {}, logger })).not.toThrow();
-  });
-
-  test('reading the snapshot makes no call to Actual', async () => {
-    await syncOnce(configured, fakeApi());
-    const stub = {
-      getSchedules: jest.fn(() => { throw new Error('Actual must not be called'); }),
-      aqlQuery: jest.fn(() => { throw new Error('Actual must not be called'); }),
-      q: jest.fn(() => { throw new Error('Actual must not be called'); })
-    };
-    expect(syncHistory.getPaymentSnapshot('Main').items).toHaveLength(1);
-    expect(syncHistory.getLastSentAlerts('Main')).toBeInstanceOf(Map);
-    expect(stub.getSchedules).not.toHaveBeenCalled();
-    expect(stub.aqlQuery).not.toHaveBeenCalled();
-    expect(stub.q).not.toHaveBeenCalled();
+    // Without the guard it would throw on syncHistory.deletePaymentSnapshot/replace
+    // and be swallowed into a WARN, so assert nothing is logged (#343 review, L1).
+    expect(warnings).toEqual([]);
   });
 });

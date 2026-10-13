@@ -2039,6 +2039,22 @@ module.exports = [
 
     // ---- #260: payment alert snapshot and GET /api/dashboard/payments -----
     {
+        id: '260-no-transaction', ticket: '#260',
+        desc: 'replacePaymentSnapshot runs its writes without a transaction, so a mid-way failure leaves partial rows',
+        file: 'src/services/syncHistory.js',
+        anchor: '      const replace = this.db.transaction(() => {',
+        mutant: '      const replace = ((fn) => fn)(() => {',
+        tests: 'paymentSnapshot|scheduleAlertsSync'
+    },
+    {
+        id: '260-persist-no-synchistory-guard', ticket: '#260',
+        desc: 'persistPaymentSnapshot drops its missing-syncHistory guard and logs a WARN instead of returning quietly',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '    if (!syncHistory) return;',
+        mutant: '',
+        tests: 'scheduleAlertsSync'
+    },
+    {
         id: '260-replace-keeps-removed', ticket: '#260',
         desc: 'a pair no longer evaluated is never deleted, so a removed rule lingers on the dashboard',
         file: 'src/services/syncHistory.js',
