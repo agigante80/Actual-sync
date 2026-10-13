@@ -1181,10 +1181,8 @@ module.exports = [
         id: '258-interval-violation-boundary-off-by-one', ticket: '#258',
         desc: 'the #271 item 1 window-overlap guard uses > instead of >=, so an exact-equal grace+early no longer trips it',
         file: 'src/lib/scheduleAlerts.js',
-        // #295 review round 2, M3 widened the guard from `binding.earlyDays`
-        // alone to `effectiveEarlyDays` (Math.max with LINKED_EARLY_WINDOW_DAYS);
-        // this anchor was retargeted to match, since the old text no longer
-        // appears in the file at all (a stale anchor tests nothing).
+        // #297 F4: the guard uses the rule's own earlyDays again (via the
+        // `effectiveEarlyDays` alias); the linked-early window is clamped instead.
         anchor: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays >= shortestIntervalDays) {',
         mutant: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays > shortestIntervalDays) {',
         tests: 'scheduleAlerts.test'
@@ -1415,8 +1413,16 @@ module.exports = [
         id: '258-m12-linked-early-window-not-widened', ticket: '#258',
         desc: "a linked transaction's early window goes back to the rule's own (possibly narrower) earlyDays instead of Actual's +/-2 day linking tolerance",
         file: 'src/lib/scheduleAlerts.js',
-        anchor: "        const earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');",
-        mutant: '        const earlyStartLinked = earlyStart;',
+        anchor: "        let earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');",
+        mutant: '        let earlyStartLinked = earlyStart;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f4-linked-early-not-clamped-to-previous-deadline', ticket: '#297',
+        desc: "a linked payment's early window is no longer clamped to start after the previous occurrence's deadline, so a payment inside the previous grace is pulled onto the next occurrence",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "          if (earlyStartLinked.isBefore(afterPrevDeadline, 'day')) earlyStartLinked = afterPrevDeadline;",
+        mutant: '          void afterPrevDeadline;',
         tests: 'scheduleAlerts.test'
     },
     {

@@ -843,22 +843,72 @@ describe("evaluate: R2-M1 (wrong-amount / late fallback must not steal a sibling
   });
 });
 
-describe('evaluate: R2-M3 (overlap guard accounts for the linked-early window)', () => {
-  test('graceDays + LINKED_EARLY_WINDOW_DAYS >= shortest interval trips the guard even when graceDays + earlyDays alone would not', () => {
+describe('evaluate: R2-M3 / #297 F4 (the linked-early window never reaches back over the previous deadline)', () => {
+  // #297 F4: the overlap guard used to count the +/-2 day linked allowance as
+  // earlyDays, so every daily schedule (and a weekly one with graceDays 5,
+  // earlyDays 0) was rejected as an interval violation with a WARN each sync.
+  // The linked early start is now clamped to the day after the previous
+  // occurrence's deadline instead, so the windows cannot overlap by construction.
+  test('weekly, graceDays 5, earlyDays 0 is evaluated (no interval violation, no warning)', () => {
     const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } }); // 7-day interval
     const { events, warnings } = evaluate({
-      // 5 + 0 = 5 < 7 (old guard would NOT trip); 5 + max(0, 2) = 7 >= 7 (new guard trips).
       rules: rentRule({ graceDays: 5, earlyDays: 0 }),
       schedules: [schedule],
-      // Linked, meant for the 12 Jan occurrence (2 days early); without the
-      // widened guard this was wrongly claimed by the 5 Jan occurrence instead.
-      transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }],
+      transactions: [],
+      accounts: [account({ last_sync: epochMs('2026-01-20') })],
+      now: '2026-01-21',
+      timezone: TZ
+    });
+    expect(warnings).toEqual([]);
+    expect(events.some((e) => e.reason === 'interval-violation')).toBe(false);
+  });
+
+  test('a daily schedule with graceDays 0 and earlyDays 0 is evaluated, not rejected', () => {
+    const schedule = rentSchedule({ date: { start: '2026-01-01', frequency: 'daily' } });
+    const { events, warnings, evaluations } = evaluate({
+      rules: rentRule({ graceDays: 0, earlyDays: 0 }),
+      schedules: [schedule],
+      transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-09', schedule: 's1' }],
       accounts: [account({ last_sync: epochMs('2026-01-09') })],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(warnings).toEqual([]);
+    expect(events.some((e) => e.reason === 'interval-violation')).toBe(false);
+    expect(evaluations[0].state).not.toBe('cannotCheck');
+  });
+
+  test('a linked payment inside the previous occurrence\'s grace settles that occurrence, not the next one', () => {
+    const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } });
+    const { evaluations } = evaluate({
+      rules: rentRule({ graceDays: 5, earlyDays: 0 }),
+      schedules: [schedule],
+      // 10 Jan is 2 days before the 12 Jan occurrence but still inside 5 Jan's grace (deadline 10 Jan).
+      transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-01-11') })],
       now: '2026-01-11',
       timezone: TZ
     });
-    expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'interval-violation' })]);
-    expect(warnings).toHaveLength(1);
+    const byDate = Object.fromEntries(evaluations[0].occurrences.map((o) => [o.date, o]));
+    expect(byDate['2026-01-05']).toMatchObject({ state: 'received', receivedDate: '2026-01-10' });
+    expect(byDate['2026-01-12'].state).toBe('upcoming');
+  });
+
+  test('a linked payment after the previous deadline, up to 2 days early, settles the next occurrence', () => {
+    const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } });
+    const { evaluations } = evaluate({
+      rules: rentRule({ graceDays: 5, earlyDays: 0 }),
+      schedules: [schedule],
+      transactions: [
+        { id: 't0', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: 's1' },
+        { id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-11', schedule: 's1' }
+      ],
+      accounts: [account({ last_sync: epochMs('2026-01-11') })],
+      now: '2026-01-11',
+      timezone: TZ
+    });
+    const byDate = Object.fromEntries(evaluations[0].occurrences.map((o) => [o.date, o]));
+    expect(byDate['2026-01-12']).toMatchObject({ state: 'received', receivedDate: '2026-01-11' });
   });
 });
 

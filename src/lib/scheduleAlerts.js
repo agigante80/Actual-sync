@@ -407,24 +407,17 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
     try {
       const { shortestIntervalDays, longestIntervalDays } = computeIntervalStats(dateConfig, today, timezone);
 
-      // The overlap check must use the SAME early boundary the window math
-      // below actually uses for a linked candidate - max(earlyDays,
-      // LINKED_EARLY_WINDOW_DAYS), not the rule's own earlyDays alone.
-      // Otherwise a rule could pass this guard (graceDays + earlyDays <
-      // interval) while its *linked* window (widened to
-      // LINKED_EARLY_WINDOW_DAYS by M12) still reached back far enough to
-      // overlap the previous occurrence's deadline, letting a linked payment
-      // meant for occurrence N+1 be claimed by occurrence N instead (#295
-      // review round 2, M3).
-      const effectiveEarlyDays = Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS);
+      // The overlap check uses the rule's own earlyDays only. The linked-early
+      // allowance (LINKED_EARLY_WINDOW_DAYS) is NOT part of it: that window is
+      // clamped per occurrence to start after the previous occurrence's
+      // deadline (see earlyStartLinked below), so it cannot overlap by
+      // construction. Counting it here made every daily schedule (and e.g. a
+      // weekly one with graceDays 5) a permanent interval violation (#297 F4).
+      const effectiveEarlyDays = binding.earlyDays;
       if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays >= shortestIntervalDays) {
         warnings.push({
           ruleId: binding.id,
           scheduleId: binding.scheduleId,
-          // Reports the EFFECTIVE earlyDays (after the linked-early floor),
-          // not the rule's raw earlyDays: that is the value the check above
-          // actually used, and keeps this message accurate for a rule whose
-          // configured earlyDays is below LINKED_EARLY_WINDOW_DAYS.
           message: `Rule "${binding.id}": graceDays (${binding.graceDays}) + earlyDays (${effectiveEarlyDays}) >= `
             + `the schedule's shortest interval between occurrences (${shortestIntervalDays} days); `
             + 'the on-time and late windows of consecutive occurrences would overlap, so this rule was skipped.'
@@ -495,7 +488,14 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
         // Widened early boundary for a *linked* candidate only (M12, see
         // LINKED_EARLY_WINDOW_DAYS above); an unlinked candidate keeps using
         // the rule's own, possibly narrower, `earlyDays`.
-        const earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');
+        // Clamped to the day after the previous occurrence's deadline, so a
+        // linked payment inside the previous occurrence's grace is never
+        // pulled forward onto this one (#297 F4, replaces the R2-M3 guard).
+        let earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');
+        if (index > 0) {
+          const afterPrevDeadline = occurrenceDays[index - 1].clone().add(binding.graceDays + 1, 'days');
+          if (earlyStartLinked.isBefore(afterPrevDeadline, 'day')) earlyStartLinked = afterPrevDeadline;
+        }
         const next = occurrenceDays[index + 1] || null;
         const lateEnd = next
           ? next.clone().subtract(binding.earlyDays, 'days').subtract(1, 'day')

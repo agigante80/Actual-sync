@@ -224,15 +224,17 @@ shares the sync process's own local zone.
 ## Design notes and known limitations
 
 - **Overlapping windows are caught per schedule, at evaluation time, not at config load.** A rule
-  whose `graceDays + earlyDays` (widened, when larger, to the linked-transaction early allowance -
-  see the next bullet) is greater than or equal to its schedule's own shortest interval between
+  whose `graceDays + earlyDays` is greater than or equal to its schedule's own shortest interval between
   occurrences would let one payment satisfy two occurrences, or invert the late window. A schedule's
   cadence is only known once `getSchedules()` returns during a sync - `config.json` alone carries no
   cadence information - so this cannot be rejected at config-load time the way a structural error (a
   missing required field, a duplicate `id`) can. Instead, the violation is detected the first time
   the rule is evaluated: the rule is skipped for that sync (one `cannotCheck` event, `reason:
   "interval-violation"`) and a warning is logged, rather than risk a double-counted payment or an
-  inverted late window.
+  inverted late window. The +/-2 day linked-transaction early allowance is not part of this sum: a
+  linked payment's early window is clamped to start the day after the previous occurrence's
+  deadline, so it cannot overlap by construction (#297 F4; before, every daily schedule was
+  rejected with a warning on each sync).
 - **A rule's `channels` list must name at least one configured destination, checked at config-load
   time (#295 review, M2), and every template is validated at startup only against the channels a
   rule can actually reach (#295 review round 2, M7).** If a rule's explicit `channels` names only
