@@ -37,6 +37,7 @@ const {
   maybeDeliverScheduleAlerts
 } = require('../lib/scheduleAlertsStep');
 const { MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS } = require('../lib/scheduleAlerts');
+const { destinationKey } = require('../lib/scheduleAlertDelivery');
 const { SyncHistoryService } = require('../services/syncHistory');
 const { NotificationService } = require('../services/notificationService');
 const { createTempDir, cleanupTempDir } = require('./helpers/testHelpers');
@@ -553,11 +554,11 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
     // The destination that was actually sent is recorded; the deferred one is not.
     const firstRow = await syncHistory.findLatestScheduleAlert({
       server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05',
-      event: 'missing', channel: 'webhook:#first'
+      event: 'missing', channel: destinationKey('webhook', { name: 'first', url: 'http://127.0.0.1:1/first' })
     });
     const secondRow = await syncHistory.findLatestScheduleAlert({
       server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05',
-      event: 'missing', channel: 'webhook:#second'
+      event: 'missing', channel: destinationKey('webhook', { name: 'second', url: 'http://127.0.0.1:1/second' })
     });
     expect(firstRow).not.toBeNull();
     expect(secondRow).toBeNull();

@@ -1560,6 +1560,14 @@ module.exports = [
         tests: 'syncHistory.test'
     },
 
+    {
+        id: '297-f3-destination-key-collapses-duplicate-names', ticket: '#297',
+        desc: 'the destination key is the webhook name alone again when one is set, so two webhooks of one channel sharing a name collapse into one ledger key and a failed one is never retried',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  return `${channel}:#${target.name || ''}:${hash}`;",
+        mutant: "  return target.name ? `${channel}:#${target.name}` : `${channel}:#${hash}`;",
+        tests: 'scheduleAlertDelivery'
+    },
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',

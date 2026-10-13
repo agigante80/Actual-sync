@@ -226,10 +226,13 @@ describe('deliver: fan-out and partial failure', () => {
     // below for why (a single shared row let one dead destination make every
     // other, already-succeeding destination resend on every sync).
     //
-    // #295 review round 2, M8: the key is `channel:#name`, never the raw
+    // #295 review round 2, M8: the key is `channel:#name:hash`, never the raw
     // webhook URL (a secret) - see `destinationKey`.
     expect(history.rows).toHaveLength(2);
-    expect(history.rows.map((r) => r.channel).sort()).toEqual(['slack:#a', 'slack:#b']);
+    expect(history.rows.map((r) => r.channel).sort()).toEqual([
+      destinationKey('slack', { name: 'a', url: 'https://slack/a' }),
+      destinationKey('slack', { name: 'b', url: 'https://slack/b' })
+    ].sort());
   });
 
   test('a failed destination is withheld for retry without blocking the destination(s) that succeeded', async () => {
@@ -250,7 +253,7 @@ describe('deliver: fan-out and partial failure', () => {
     expect(result).toEqual({ sent: 1, skipped: 0 });
     expect(sender.calls).toHaveLength(2);
     expect(history.rows).toHaveLength(1);
-    expect(history.rows[0].channel).toBe('slack:#b'); // #295 review round 2, M8: keyed by name, never the URL
+    expect(history.rows[0].channel).toBe(destinationKey('slack', { name: 'b', url: 'https://slack/b' })); // #295 review round 2, M8: keyed by name, never the URL
 
     // Sync 2: "a" is retried (it never got a ledger row); "b" must NOT be
     // resent, since it already has one. This is the exact bug H5 reports:
@@ -267,7 +270,10 @@ describe('deliver: fan-out and partial failure', () => {
     expect(sender.calls).toHaveLength(4);
     expect(sender.calls[3].slack.url).toBe('https://slack/a');
     expect(history.rows).toHaveLength(2);
-    expect(history.rows.map((r) => r.channel).sort()).toEqual(['slack:#a', 'slack:#b']);
+    expect(history.rows.map((r) => r.channel).sort()).toEqual([
+      destinationKey('slack', { name: 'a', url: 'https://slack/a' }),
+      destinationKey('slack', { name: 'b', url: 'https://slack/b' })
+    ].sort());
 
     // Sync 4: both destinations already have a row and remindEveryDays is
     // unset - nothing left to attempt.
@@ -591,10 +597,38 @@ describe('deliver: reminders compare calendar dates in the configured timezone (
   });
 });
 
+describe('deliver: duplicate webhook names (#297 F3)', () => {
+  test('two webhooks sharing a name are tracked separately: the one that failed is retried, the other is not resent', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      webhooks: { slack: [{ name: 'alerts', url: 'https://slack/a', enabled: true }, { name: 'alerts', url: 'https://slack/b', enabled: true }] }
+    });
+    sender.result = (outputs) => (outputs.slack.url === 'https://slack/b' ? { slack: { success: false } } : { slack: { success: true } });
+    const args = {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender,
+      server: 'Main', rules: rentRules({ channels: ['slack'] }), timezone: 'UTC', logger: quietLogger
+    };
+
+    await deliver([missingEvent()], { ...args, now: '2026-01-10' });
+    expect(history.rows).toHaveLength(1); // only A succeeded
+
+    sender.result = null;
+    const second = await deliver([missingEvent()], { ...args, now: '2026-01-11' });
+    expect(second).toEqual({ sent: 1, skipped: 0 });
+    expect(sender.calls.map((c) => c.slack.url)).toEqual(['https://slack/a', 'https://slack/b', 'https://slack/b']);
+    expect(new Set(history.rows.map((r) => r.channel)).size).toBe(2);
+  });
+
+  test('destinationKey differs for two targets with the same name but different URLs', () => {
+    expect(destinationKey('slack', { name: 'alerts', url: 'https://slack/a' }))
+      .not.toBe(destinationKey('slack', { name: 'alerts', url: 'https://slack/b' }));
+  });
+});
+
 describe('destinationKey (#295 review round 2, M8)', () => {
-  test('a named webhook target is keyed by its name, never its URL', () => {
+  test('a named webhook target is keyed by its name plus a URL hash, never its URL', () => {
     const key = destinationKey('slack', { name: 'ops-alerts', url: 'https://hooks.example/services/T00/B00/secret' });
-    expect(key).toBe('slack:#ops-alerts');
+    expect(key).toMatch(/^slack:#ops-alerts:[0-9a-f]{8}$/);
     expect(key).not.toContain('hooks.example');
     expect(key).not.toContain('secret');
   });
@@ -602,7 +636,7 @@ describe('destinationKey (#295 review round 2, M8)', () => {
   test('an unnamed webhook target is keyed by a short hash of its URL, and the key never contains the URL', () => {
     const url = 'https://hooks.example/services/T00/B00/another-secret-path';
     const key = destinationKey('slack', { url });
-    expect(key).toMatch(/^slack:#[0-9a-f]{8}$/);
+    expect(key).toMatch(/^slack:#:[0-9a-f]{8}$/);
     expect(key).not.toContain(url);
     expect(key).not.toContain('hooks.example');
     expect(key).not.toContain('secret');

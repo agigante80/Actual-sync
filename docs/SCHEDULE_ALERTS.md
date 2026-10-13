@@ -123,9 +123,10 @@ see [SYNC_HISTORY.md](./SYNC_HISTORY.md)) by `(server, alertId, scheduleId, occu
 channel)` before it is sent, where `channel` identifies the exact destination: the channel name
 alone for a single-destination channel such as `telegram` or `email`, or for a webhook-style channel
 such as `slack`/`discord`/`webhook` that can have several destinations, the channel name plus the
-operator's configured `name` for that webhook, or, when no name is set, a short non-reversible hash
-of its URL (never the URL itself - the ledger is never a place secrets are stored, #295 review round
-2, M8). A key that already has a row is not sent again to that destination, **except**:
+operator's configured `name` for that webhook (if any) plus a short non-reversible hash of its URL
+(never the URL itself - the ledger is never a place secrets are stored, #295 review round 2, M8).
+The hash is always part of the key, so two webhooks of one channel that share a name are still
+tracked and retried separately (#297 F3). A key that already has a row is not sent again to that destination, **except**:
 
 - a `missing` event, when `remindEveryDays` is set and that many days have passed since the latest
   recorded row for that destination;
@@ -258,11 +259,15 @@ shares the sync process's own local zone.
 - **Rule enable/mute state and dashboard-managed rules are out of scope for this release.** Every
   rule from `config.json` is always enabled and never muted; a future release can add real
   enable/mute state and dashboard-created rules without changing the evaluation or delivery engine.
-- **A new or rotated webhook destination gets its currently-open alerts re-sent once (#295 review
-  round 2, M8).** The ledger key for a webhook-style destination is the operator's configured `name`
-  when set, or otherwise a short hash of its URL - never the URL itself, since the ledger is a
-  plain-text SQLite database and the URL is a secret. Adding a webhook, renaming one, or rotating its
-  URL with no name set changes its key to one the ledger has never recorded, so any alert still open
-  for that destination is delivered once more before settling back into the normal per-destination
-  de-duplication and reminder cycle. This is accepted: it is strictly safer than storing the secret
-  in the ledger, or silently losing track of an in-flight alert across a rename/rotation.
+- **A new, renamed or rotated webhook destination gets its currently-open alerts re-sent once, but
+  not their `resolved` message (#295 review round 2, M8; #297 F3, F6).** The ledger key for a
+  webhook-style destination is its configured `name` (if any) plus a short hash of its URL - never
+  the URL itself, since the ledger is a plain-text SQLite database and the URL is a secret. Adding a
+  webhook, renaming one, or rotating its URL changes its key to one the ledger has never recorded, so
+  any alert still open for that destination is delivered once more before settling back into the
+  normal per-destination de-duplication and reminder cycle. This is accepted: it is strictly safer
+  than storing the secret in the ledger, or silently losing track of an in-flight alert across a
+  rename/rotation. The flip side: a `resolved` message goes only to a destination that holds its own
+  `missing` row. If the payment arrives before the renamed or rotated destination received its
+  re-sent `missing`, that destination gets neither, and the message the old key received is never
+  closed by a `resolved`.

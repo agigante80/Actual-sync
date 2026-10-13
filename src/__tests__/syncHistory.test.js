@@ -827,9 +827,9 @@ describe('SyncHistoryService', () => {
     // still show green. These exercise both.
     describe('channel column (#295 review, H5 / round 2 M9)', () => {
       test('a lookup with a specific channel does not match a row recorded for a different channel', async () => {
-        await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent', channel: 'slack:https://hooks.example/a' });
-        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:https://hooks.example/b' })).toBeNull();
-        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:https://hooks.example/a' })).not.toBeNull();
+        await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent', channel: 'slack:#ops:aaaaaaaa' });
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:#ops:bbbbbbbb' })).toBeNull();
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:#ops:aaaaaaaa' })).not.toBeNull();
       });
 
       test('a lookup with no channel at all matches a row recorded for any specific channel', async () => {
@@ -847,7 +847,7 @@ describe('SyncHistoryService', () => {
           INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at, channel)
           VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
         `).run('Main', 'rent', 's1', '2026-01-05', 'missing', 'sent', new Date().toISOString());
-        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:https://hooks.example/a' })).not.toBeNull();
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:#ops:aaaaaaaa' })).not.toBeNull();
         expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'telegram' })).not.toBeNull();
       });
 
