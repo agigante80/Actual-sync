@@ -63,6 +63,10 @@
 
 ## Configuration Reference
 
+### timezone (optional)
+
+IANA timezone name, for example `"America/New_York"` or `"UTC"`. Cron schedules run in it, and the startup log, the startup notification's "next sync" and the Telegram replies show times in it. Default: the process timezone (`TZ`, else the system zone), which is what schedules used before this key existed. An unknown name fails config loading with a message naming `timezone`, even with `CONFIG_STRICT=false`.
+
 ### servers (required)
 
 Array of Actual Budget server configurations. At least one server is required.
@@ -256,7 +260,7 @@ These are global runtime flags, not per-server config:
 |----------|-------------|
 | `CONFIG_STRICT` | Migration escape hatch. Default (unset) = strict: a schema-invalid config stops startup (#121). Set to `false` (or `0`/`no`/`off`) to **temporarily** downgrade schema validation errors to warnings so the service starts while you fix the config. It only affects schema validation, not the business-logic checks, and should be removed once the config is valid. |
 | `PUID` / `PGID` | User/group IDs to run as (Docker/Unraid; default `1001:1001`, Unraid `99:100`). |
-| `TZ` | Container timezone for scheduling and log timestamps. |
+| `TZ` | Container timezone for scheduling and log timestamps. Used when the `timezone` config key is not set. |
 
 ---
 

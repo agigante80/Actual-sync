@@ -15,24 +15,13 @@ const { enhanceActualApiError, explainBudgetNotOpen } = require('./lib/actualApi
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
 const { SyncQueue } = require('./lib/syncQueue');
+const { resolveTimezone } = require('./lib/timezone');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts } = require('./lib/scheduleAlertsStep');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
 const VERSION = resolveVersion();
-
-/**
- * IANA timezone every scheduleAlerts date/deadline/staleness calculation runs
- * in (#258). A future global `config.timezone` (#266, not yet landed) wins
- * once it exists; until then this falls back to the host's own zone, exactly
- * as `resolveTimezone` will once #266 adds the config key.
- * @param {Object} cfg - the loaded config object
- * @returns {string} an IANA timezone name, e.g. "Europe/Madrid"
- */
-function resolveTimezone(cfg) {
-    return (cfg && cfg.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone;
-}
 
 /**
  * Format next sync time in human-readable format
@@ -158,6 +147,7 @@ try {
                 botToken: config.notifications.telegram.botToken,
                 chatId: config.notifications.telegram.chatId || config.notifications.telegram.chatIds?.[0],
                 chatIds: config.notifications.telegram.chatIds,
+                timezone: resolveTimezone(config),
                 // Resolve the same way NotificationService.shouldNotifyChannel() does
                 // (per-channel -> global -> 'always'), so /notify reports the mode that
                 // actually gates dispatch rather than a second, divergent default (#169).
@@ -1086,7 +1076,7 @@ async function run() {
                 servers: serversWithSchedule.map(s => s.name) 
             });
             
-            const job = schedule.scheduleJob(scheduleStr, async () => {
+            const job = schedule.scheduleJob({ rule: scheduleStr, tz: resolveTimezone(config) }, async () => {
                 logger.info('Scheduled sync starting', { 
                     schedule: scheduleStr,
                     servers: serversWithSchedule.map(s => s.name)
@@ -1121,9 +1111,9 @@ async function run() {
         scheduledJobsRef.length = 0; // Clear the array
         scheduledJobsRef.push(...scheduledJobs); // Add all scheduled jobs
 
-        const now = moment().tz('Europe/Madrid');
+        const now = moment().tz(resolveTimezone(config));
         logger.info('Sync service initialized', {
-            timezone: 'Europe/Madrid',
+            timezone: resolveTimezone(config),
             currentTime: now.format(),
             scheduleCount: scheduledJobs.length,
             schedules: scheduledJobs.map(sj => ({
@@ -1160,8 +1150,10 @@ async function run() {
                     `  • ${sj.servers.map(s => s.name).join(', ')}\n    ${cronstrue.toString(sj.schedule)} (${sj.schedule})`
                 ).join('\n');
                 const nextSync = scheduledJobs[0]?.job.nextInvocation();
-                const nextSyncStr = nextSync ? nextSync.toLocaleString('en-US', { 
-                    timeZone: 'Europe/Madrid',
+                // node-schedule hands back a CronDate whose toLocaleString ignores its
+                // options, so convert to a real Date first (#266).
+                const nextSyncStr = nextSync ? (nextSync.toDate ? nextSync.toDate() : nextSync).toLocaleString('en-US', { 
+                    timeZone: resolveTimezone(config),
                     dateStyle: 'short',
                     timeStyle: 'short'
                 }) : 'N/A';

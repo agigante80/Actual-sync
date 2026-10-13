@@ -1,5 +1,6 @@
 {
   "$schema": "./config.schema.json",
+  "timezone": "Europe/Madrid",
   "servers": [
     {
       "name": "Main",

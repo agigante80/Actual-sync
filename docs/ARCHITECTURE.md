@@ -57,7 +57,7 @@ Actual-sync is a scheduled automation service that orchestrates bank transaction
 
 **Key Features**:
 - Cron-based job scheduling
-- Timezone-aware execution (Europe/Madrid)
+- Timezone-aware execution (config `timezone`, default the process timezone)
 - Next invocation calculation and logging
 
 **Location**: `sync_all_banks.js` (lines 143-156)
@@ -326,7 +326,7 @@ Actual-sync/
 
 **Purpose**: Timezone-aware date/time handling
 
-**Usage**: Log current time in Europe/Madrid timezone for debugging
+**Usage**: Log current time in the configured timezone for debugging
 
 ---
 

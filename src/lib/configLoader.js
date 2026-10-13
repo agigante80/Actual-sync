@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const Ajv = require('ajv');
+const { isValidTimezone } = require('./timezone');
 const addFormats = require('ajv-formats');
 const { resolveSchemaPath } = require('./configBootstrap');
 const { checkUniqueIds, getRules } = require('./scheduleAlertRules');
@@ -448,6 +449,16 @@ class ConfigLoader {
             console.warn(
                 `⚠️  Warning: healthCheck.host is set to "${hcHost}".\n` +
                 `   In containers use "0.0.0.0" — a specific host IP may not be bindable (EADDRNOTAVAIL) and the dashboard will be unreachable.`
+            );
+        }
+
+        // timezone (#266): checked here too, because CONFIG_STRICT=false turns
+        // schema errors into warnings and an unknown zone would throw later in
+        // node-schedule and toLocaleString.
+        if (config.timezone !== undefined && !isValidTimezone(config.timezone)) {
+            throw new Error(
+                `Invalid timezone: ${JSON.stringify(config.timezone)}\n` +
+                `Use an IANA timezone name such as "America/New_York", "Asia/Tokyo" or "UTC".`
             );
         }
 

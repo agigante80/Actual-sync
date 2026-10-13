@@ -134,6 +134,12 @@
       "type": "string",
       "description": "Optional JSON Schema reference for editor autocomplete/validation. Ignored at runtime."
     },
+    "timezone": {
+      "type": "string",
+      "minLength": 1,
+      "description": "IANA timezone name (e.g. \"Europe/Madrid\", \"America/New_York\") used for cron schedules and for every time shown in logs and notifications. Defaults to the process timezone (TZ, else the system zone). Checked at config load.",
+      "examples": ["Europe/Madrid", "America/New_York", "UTC"]
+    },
     "servers": {
       "type": "array",
       "description": "Array of Actual Budget server configurations",
