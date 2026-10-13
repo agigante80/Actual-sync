@@ -1191,7 +1191,7 @@ module.exports = [
         id: '286-sweeper-not-cleared', ticket: '#286',
         desc: 'shutdown() leaves the failure sweep timer running',
         file: 'src/services/healthCheck.js',
-        anchor: '    if (this.sweeper) clearInterval(this.sweeper);\n    this.sweeper = null;',
+        anchor: '    if (this.sweeper) clearInterval(this.sweeper);\n',
         mutant: '',
         tests: 'healthCheck'
     },

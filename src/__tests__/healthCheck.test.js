@@ -1119,8 +1119,13 @@ describe('HealthCheckService', () => {
     test('stop() clears the failure sweep timer, and a restart re-arms it (#286)', async () => {
       const hc = tokenService();
       expect(hc.authFailures.sweeper).not.toBeNull();
+      const timer = hc.authFailures.sweeper;
+      const clearSpy = jest.spyOn(global, 'clearInterval');
       await hc.start();
       await hc.stop();
+      // Nulling the field alone would leak the interval on every restart.
+      expect(clearSpy).toHaveBeenCalledWith(timer);
+      clearSpy.mockRestore();
       expect(hc.authFailures.sweeper).toBeNull();
       hc.authFailures.increment('k');
       expect(hc.authFailures.sweeper).not.toBeNull();

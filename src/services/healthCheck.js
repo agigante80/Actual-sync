@@ -1330,8 +1330,9 @@ This test verifies that notifications are configured correctly and can reach the
    *   guard. A request with no Origin is not from a browser and is let through
    *   to the credential check.
    * - more than maxWsConnectionsPerIp open sockets from one address: 429
-   * - auth type basic/token: a valid ?ticket= from /api/dashboard/ws-ticket,
-   *   or a valid Authorization header (non-browser clients). Otherwise 401.
+   * - auth type basic/token: a valid single-use ?ticket= from
+   *   /api/dashboard/ws-ticket. An Authorization header is not accepted on the
+   *   handshake (it would be an unthrottled password oracle). Otherwise 401.
    * @param {{origin?: string, req: import('http').IncomingMessage}} info
    * @param {Function} done - ws callback (result, code, message)
    */
