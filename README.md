@@ -118,7 +118,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Modern Web Dashboard** - Tabbed interface with Overview, Analytics, History, and Settings
 - ✅ **2-Column Overview Layout** - Service health, server list, recent activity, and live logs
 - ✅ **Sync Status Badges** - Color-coded badges showing success/partial/failure for each server
-- ✅ **Interactive Charts** - Success rates by server, duration trends, and sync timeline visualizations
+- ✅ **Interactive Charts** - Success rates by server, duration trends, and sync timeline visualizations; Chart.js is bundled with the service, so the UI needs no internet access
 - ✅ **Date Format Preferences** - 11 customizable date formats including 3-letter months (persisted in browser)
 - ✅ **Orphaned Server Cleanup** - Identify and remove historical data for decommissioned budgets
 - ✅ **Health Check Endpoints** - HTTP endpoints for monitoring (`/health`, `/metrics`, `/ready`)

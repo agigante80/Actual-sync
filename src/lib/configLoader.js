@@ -466,6 +466,21 @@ class ConfigLoader {
         // content is checked here with Express's own parser, so a typo fails at
         // startup instead of at the first request.
         const trustProxy = config.healthCheck && config.healthCheck.trustProxy;
+        // Shape check runs in logic validation too, because CONFIG_STRICT=false turns
+        // schema errors into warnings: 1.5 would trust 2 hops in Express, and an
+        // object throws in the HealthCheckService constructor. (#278)
+        const trustProxyShapeOk =
+            trustProxy === undefined ||
+            typeof trustProxy === 'boolean' ||
+            typeof trustProxy === 'string' ||
+            Array.isArray(trustProxy) ||
+            (Number.isInteger(trustProxy) && trustProxy >= 0 && trustProxy <= 10);
+        if (!trustProxyShapeOk) {
+            throw new Error(
+                `Invalid healthCheck.trustProxy value: ${JSON.stringify(trustProxy)}\n` +
+                `Use false, true, an integer hop count from 0 to 10, an IP or CIDR string, or an array of them.`
+            );
+        }
         if (typeof trustProxy === 'string' || Array.isArray(trustProxy)) {
             try {
                 express().set('trust proxy', trustProxy);

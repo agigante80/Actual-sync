@@ -211,8 +211,10 @@ class SyncHistoryService {
    * @param {string} key.event
    * @param {string} [key.channel] - #295 review, H5: when given, a row
    *   recorded for this exact destination matches, and so does a legacy row
-   *   recorded before per-destination keying existed (`channel IS NULL`,
-   *   #295 review round 2, M9 - otherwise upgrading an existing database
+   *   recorded before per-destination keying existed (`channel IS NULL` AND
+   *   `delivery = 'sent'`, #295 review round 2, M9; #297 F7 limited the
+   *   wildcard to delivered rows so a NULL-channel muted/skip row can never
+   *   suppress a real destination - otherwise upgrading an existing database
    *   made every previously-delivered alert resend once per destination,
    *   since no old row could ever match a specific destination key again).
    *   When `channel` is omitted entirely, any row for the event matches
@@ -228,13 +230,36 @@ class SyncHistoryService {
         SELECT recorded_at AS recordedAt FROM schedule_alerts
         WHERE server = ? AND alert_id = ?
           AND schedule_id IS ? AND occurrence_date IS ? AND event = ?
-          ${filterChannel ? 'AND (channel IS ? OR channel IS NULL)' : ''}
+          ${filterChannel ? "AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))" : ''}
         ORDER BY recorded_at DESC, id DESC
         LIMIT 1
       `).get(...[server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, ...(filterChannel ? [channel] : [])]);
       return row || null;
     } catch (error) {
       this.logger.error('Failed to read schedule_alerts ledger', { error: error.message, server, alertId, event });
+      throw error;
+    }
+  }
+
+  /**
+   * Remembered skip decisions for one server (#297 F1): every `skipped` row,
+   * as `{scheduleId, occurrenceDate}`. `evaluate()` takes these back in as
+   * `skips` so an occurrence inferred as skipped stays skipped after a later
+   * payment advances the schedule's `next_date`.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @returns {Promise<Array<{scheduleId:string, occurrenceDate:string}>>}
+   */
+  async listScheduleAlertSkips({ server }) {
+    try {
+      return this.db.prepare(`
+        SELECT DISTINCT schedule_id AS scheduleId, occurrence_date AS occurrenceDate
+        FROM schedule_alerts
+        WHERE server = ? AND event = 'skipped' AND schedule_id IS NOT NULL AND occurrence_date IS NOT NULL
+      `).all(server);
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts skips', { error: error.message, server });
       throw error;
     }
   }
@@ -248,7 +273,7 @@ class SyncHistoryService {
    * @param {?string} record.scheduleId
    * @param {?string} record.occurrenceDate
    * @param {string} record.event
-   * @param {'sent'|'muted'|'disabled'} record.delivery
+   * @param {'sent'|'muted'|'disabled'|'inferred'} record.delivery
    * @param {?string} [record.channel] - #295 review, H5: the destination
    *   this row was recorded for (see `findLatestScheduleAlert`); `null`/
    *   omitted for a record with no single destination (e.g. legacy rows).

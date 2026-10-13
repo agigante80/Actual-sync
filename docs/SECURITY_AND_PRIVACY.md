@@ -79,6 +79,10 @@ The WebSocket log stream carries log metadata (server names, account names, sync
 
 Credentials are compared in constant time (SHA-256 digests with `crypto.timingSafeEqual`), and the basic-auth username and password are both always compared.
 
+### Dashboard assets
+
+The dashboard loads no external scripts. Chart.js is declared in `package.json`, so Dependabot, `npm audit` and Trivy cover it like every other dependency, and it is served from the application at the single fixed route `/vendor/chart.umd.min.js` (no directory is exposed). Opening the dashboard contacts no third party, so nothing about the operator's address or use of the tool leaves the host. (#244)
+
 ### Transport Encryption
 
 **Policy**: All external communication MUST use HTTPS/TLS
@@ -605,7 +609,7 @@ npm audit --audit-level=high
 
 **Runs**: After Docker test build completes
 
-**Supply chain**: the scanner's own GitHub Action is pinned to a commit SHA, not a branch, so a compromised upstream branch cannot run code in CI. No workflow may reference a branch; a test enforces both rules. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
+**Supply chain**: the scanner's own GitHub Action is pinned to a commit SHA, not a branch, so a compromised upstream branch cannot run code in CI. A test fails the suite if a workflow references `master`, `main`, `develop`, `development` or `HEAD`, and enforces the trivy SHA pin. Other actions are still on version tags until #249 pins them all. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
 
 **Location**: `security-scan` job in CI/CD workflow
 

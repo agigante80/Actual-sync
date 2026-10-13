@@ -42,7 +42,7 @@
 
 const moment = require('moment-timezone');
 const { getRules } = require('./scheduleAlertRules');
-const { evaluate, MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS } = require('./scheduleAlerts');
+const { evaluate, skipKey, MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS } = require('./scheduleAlerts');
 const { deliver } = require('./scheduleAlertDelivery');
 
 // #295 review, M3: the deliver phase runs after the Actual session has
@@ -94,9 +94,12 @@ function scheduleAlertRuleState() {
  *   (see resolveTimezone in src/lib/timezone.js)
  * @param {Object} args.logger - server-scoped logger ({info, warn, ...})
  * @param {Date} [args.now] - injectable clock, defaults to `new Date()`
+ * @param {Object} [args.syncHistory] - #297 F1: read-only use here, to load the
+ *   remembered skip decisions (`listScheduleAlertSkips`); without it nothing is
+ *   remembered and every skip is re-inferred from `next_date` each sync
  * @returns {Promise<Object>} the evaluated result to pass to `deliverScheduleAlerts`
  */
-async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, logger }) {
+async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, logger, syncHistory }) {
     const scheduleAlertRules = getRules(server.scheduleAlerts);
     const alertNow = now || new Date();
 
@@ -151,20 +154,34 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
             .select(['id', 'account', 'payee', 'amount', 'date', 'schedule'])
     );
 
-    const { events, evaluations, warnings } = evaluate({
+    // #297 F1: skip decisions remembered from earlier syncs. A failure to read
+    // them degrades to re-inferring from next_date (the pre-#297 behaviour)
+    // rather than losing this sync's whole evaluation.
+    let skips = [];
+    if (syncHistory && typeof syncHistory.listScheduleAlertSkips === 'function') {
+        try {
+            const rows = await syncHistory.listScheduleAlertSkips({ server: serverName });
+            skips = rows.map((r) => skipKey(r.scheduleId, r.occurrenceDate));
+        } catch (error) {
+            logger.warn('Could not read remembered schedule skips; inferring from next_date only', { error: error.message });
+        }
+    }
+
+    const { events, evaluations, warnings, skipDecisions } = evaluate({
         rules: scheduleAlertRules,
         schedules: hydratedSchedules,
         transactions: alertTransactions,
         accounts: accountsForAlerts,
         now: alertNow,
-        timezone
+        timezone,
+        skips
     });
 
     for (const warning of warnings) {
         logger.warn(warning.message, { ruleId: warning.ruleId, scheduleId: warning.scheduleId });
     }
 
-    return { events, evaluations, scheduleAlertRules, timezone, serverName, now: alertNow };
+    return { events, evaluations, skipDecisions, scheduleAlertRules, timezone, serverName, now: alertNow };
 }
 
 /**
@@ -187,7 +204,22 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
  * @returns {Promise<{events: number, sent: number, skipped: number}>}
  */
 async function deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger, deliverBudgetMs }) {
-    const { events, evaluations, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    const { events, evaluations, skipDecisions, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    // #297 F1: persist newly inferred skips FIRST and independently of the
+    // delivery budget and of delivery itself: a failed write only means the
+    // skip is inferred again next sync, it must never block the alerts.
+    for (const decision of skipDecisions || []) {
+        try {
+            await syncHistory.recordScheduleAlert({
+                server: serverName, alertId: decision.alertId, scheduleId: decision.scheduleId,
+                occurrenceDate: decision.occurrence, event: 'skipped', delivery: 'inferred'
+            });
+        } catch (error) {
+            logger.warn('Could not record schedule skip decision; it will be inferred again next sync', {
+                scheduleId: decision.scheduleId, occurrence: decision.occurrence, error: error.message
+            });
+        }
+    }
     const deadline = Date.now() + (deliverBudgetMs != null ? deliverBudgetMs : DELIVER_BUDGET_MS);
     const deliverResult = await deliver(events, {
         evaluations,
@@ -215,7 +247,7 @@ async function deliverScheduleAlerts(evaluated, { syncHistory, notificationServi
  * @returns {Promise<{events: number, sent: number, skipped: number}>}
  */
 async function runScheduleAlertsStep({ api, server, serverName, timezone, syncHistory, notificationService, logger, now }) {
-    const evaluated = await evaluateScheduleAlerts({ api, server, serverName, timezone, now, logger });
+    const evaluated = await evaluateScheduleAlerts({ api, server, serverName, timezone, now, logger, syncHistory });
     return deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger });
 }
 
@@ -237,10 +269,10 @@ async function runScheduleAlertsStep({ api, server, serverName, timezone, syncHi
  *   `maybeDeliverScheduleAlerts`, or null when there was nothing to evaluate
  *   (not configured, or evaluation itself failed - already logged here)
  */
-async function maybeRunScheduleAlerts(server, { api, serverName, timezone, now, logger }) {
+async function maybeRunScheduleAlerts(server, { api, serverName, timezone, now, logger, syncHistory }) {
     if (!server.scheduleAlerts) return null;
     try {
-        return await evaluateScheduleAlerts({ api, server, serverName, timezone, now, logger });
+        return await evaluateScheduleAlerts({ api, server, serverName, timezone, now, logger, syncHistory });
     } catch (scheduleAlertError) {
         logger.warn('Schedule alerts evaluation failed; sync result is unaffected', {
             error: scheduleAlertError.message

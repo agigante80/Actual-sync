@@ -14,11 +14,10 @@
  * `require` shim satisfies the former and lets the latter's own try/catch
  * absorb the rest, so the unmodified source runs as-is in the page.
  *
- * Network is locked down: the Chart.js CDN URL the dashboard hardcodes is
- * intercepted and served from the local dependency (pinned to the same
- * version), and every other cross-origin request is aborted and recorded, so
- * a spec that accidentally reaches the network fails loudly instead of being
- * silently slow or flaky.
+ * Network is locked down: every request outside the fixture server is aborted
+ * and recorded, so a spec that accidentally reaches the network fails loudly
+ * instead of being silently slow or flaky. Chart.js is served by the
+ * dashboard itself from its npm dependency (#244), so nothing is intercepted.
  */
 
 const fs = require('fs');
@@ -34,17 +33,6 @@ function loadPuppeteer() {
 }
 
 const ARTIFACTS_DIR = path.join(__dirname, '..', 'artifacts');
-
-// The exact CDN URL src/services/dashboard.html hardcodes for chart.js@4.4.0.
-// That version ships dist/chart.umd.js only (no .min.js), so the request is
-// served with the unminified bundle. (#263)
-const CHART_JS_CDN_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
-const CHART_JS_PATH = path.join(
-  path.dirname(path.dirname(require.resolve('chart.js'))),
-  'dist',
-  'chart.umd.js'
-);
-const CHART_JS_SOURCE = fs.readFileSync(CHART_JS_PATH, 'utf8');
 
 const FAKE_TIMERS_SOURCE = fs.readFileSync(
   require.resolve('@sinonjs/fake-timers/src/fake-timers-src.js'),
@@ -94,8 +82,7 @@ async function closeBrowser() {
  * Open a page configured for deterministic, network-locked e2e runs.
  * @param {import('puppeteer').Browser} browser
  * @param {{ baseUrl?: string, now?: number }} [options] - `baseUrl` is the
- *   fixture server origin; any request outside it (other than the pinned
- *   Chart.js CDN URL) is aborted and recorded on `page.__externalRequests`.
+ *   fixture server origin; any request outside it is aborted and recorded on `page.__externalRequests`.
  */
 async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
   const page = await browser.newPage();
@@ -115,11 +102,6 @@ async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
   page.on('request', (req) => {
     const url = req.url();
 
-    if (url === CHART_JS_CDN_URL) {
-      req.respond({ status: 200, contentType: 'application/javascript', body: CHART_JS_SOURCE });
-      return;
-    }
-
     // Chrome requests /favicon.ico for the tab on every top-level navigation,
     // regardless of what the navigated URL actually serves. Left alone, this
     // is a same-origin request the fixture server would answer (and count),
@@ -136,8 +118,7 @@ async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
       return;
     }
 
-    // A spec should only ever talk to its own fixture server and the pinned
-    // Chart.js file above. Anything else (a real CDN, a typo'd URL, a route
+    // A spec should only ever talk to its own fixture server. Anything else (a real CDN, a typo'd URL, a route
     // that changed) is aborted and recorded so the spec fails instead of
     // hanging or quietly depending on the network. (#263)
     externalRequests.push(url);
