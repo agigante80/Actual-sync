@@ -34,7 +34,8 @@ const {
   runScheduleAlertsStep,
   evaluateScheduleAlerts,
   maybeRunScheduleAlerts,
-  maybeDeliverScheduleAlerts
+  maybeDeliverScheduleAlerts,
+  persistPaymentSnapshot
 } = require('../lib/scheduleAlertsStep');
 const { MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS } = require('../lib/scheduleAlerts');
 const { destinationKey } = require('../lib/scheduleAlertDelivery');
@@ -592,4 +593,161 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
       nowSpy.mockRestore();
     }
   }, 20000);
+});
+
+describe('persistPaymentSnapshot and error codes (#260)', () => {
+  let syncHistory;
+  let dbDir;
+  let warnings;
+  const logger = { info() {}, error() {}, warn(message, meta) { warnings.push({ message, meta }); } };
+  const NOW = new Date('2026-01-10T00:00:00.000Z');
+  const configured = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'] }] } };
+
+  beforeEach(() => {
+    warnings = [];
+    dbDir = createTempDir();
+    syncHistory = new SyncHistoryService({
+      dbPath: path.join(dbDir, 'sync-history.db'),
+      loggerConfig: { level: 'ERROR' }
+    });
+  });
+
+  afterEach(() => {
+    syncHistory.close();
+    cleanupTempDir(dbDir);
+  });
+
+  const fakeApi = (extra = {}) => makeFakeApi({
+    schedules: [rentSchedule()],
+    payees: [{ id: 'pay1', name: 'Landlord' }],
+    accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-09') }],
+    ...extra
+  });
+
+  /** The production sequence: evaluate with an outcome, then persist. */
+  async function syncOnce(server_, api, now = NOW, hist = syncHistory) {
+    const outcome = {};
+    const evaluated = await maybeRunScheduleAlerts(server_, {
+      api, serverName: 'Main', timezone: 'UTC', now, logger, syncHistory: hist, outcome
+    });
+    persistPaymentSnapshot(server_, evaluated, { syncHistory: hist, serverName: 'Main', outcome, logger });
+    return { evaluated, outcome };
+  }
+
+  const evalRow = (overrides = {}) => ({
+    alertId: 'r1', scheduleId: 's1', name: 'N', cadenceText: null, account: 'A', payee: 'P',
+    expectedAmount: 100, nextDate: null, deadline: null, state: 'missing', occurrences: [], ...overrides
+  });
+
+  test('a real evaluation is stored with the state the notifications use', async () => {
+    await syncOnce(configured, fakeApi());
+    const { items, run } = syncHistory.getPaymentSnapshot('Main');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ alertId: 'rent', scheduleId: 's1', name: 'Rent', state: 'missing', expectedAmount: -50000 });
+    expect(run.ok).toBe(true);
+  });
+
+  test('removing the scheduleAlerts block deletes both tables rows for the server', async () => {
+    await syncOnce(configured, fakeApi());
+    expect(syncHistory.getPaymentSnapshot('Main').run).not.toBeNull();
+    await syncOnce({}, fakeApi());
+    expect(syncHistory.getPaymentSnapshot('Main')).toEqual({ items: [], run: null });
+  });
+
+  test('a getRules failure tagged rules_invalid records only the run row', async () => {
+    await syncOnce(configured, fakeApi());
+    const before = syncHistory.getPaymentSnapshot('Main');
+    // getRules throws (a TypeError in normalizeRule) on a null alert entry; a sync
+    // cannot normally reach this because startup validation rejects it first.
+    const bad = { scheduleAlerts: { alerts: [null] } };
+    const { outcome } = await syncOnce(bad, fakeApi());
+    expect(outcome).toEqual({ failed: true, errorCode: 'rules_invalid' });
+    const after = syncHistory.getPaymentSnapshot('Main');
+    expect(after.items).toEqual(before.items);
+    expect(after.run).toMatchObject({ ok: false, errorCode: 'rules_invalid', lastSuccessAt: before.run.lastSuccessAt });
+  });
+
+  test('an untagged error from evaluate() maps to evaluation_failed', async () => {
+    const api = fakeApi({ schedules: [null] }); // evaluate() throws a plain TypeError outside its per-rule catch
+    const { evaluated, outcome } = await syncOnce(configured, api);
+    expect(evaluated).toBeNull();
+    expect(outcome).toEqual({ failed: true, errorCode: 'evaluation_failed' });
+  });
+
+  test('getSchedules rejecting with an error already tagged actual_read_failed keeps that code', async () => {
+    const err = Object.assign(new Error('read'), { code: 'actual_read_failed' });
+    const api = fakeApi({ getSchedules: jest.fn().mockRejectedValue(err) });
+    const { outcome } = await syncOnce(configured, api);
+    expect(outcome.errorCode).toBe('actual_read_failed');
+  });
+
+  test('an untagged Actual read error is tagged actual_read_failed', async () => {
+    const api = fakeApi({ getSchedules: jest.fn().mockRejectedValue(new Error('down')) });
+    const { outcome } = await syncOnce(configured, api);
+    expect(outcome.errorCode).toBe('actual_read_failed');
+  });
+
+  test.each(['PHASE_TIMEOUT', 'ECONNRESET'])('a foreign code %s is not stored (allowlist)', async (code) => {
+    const api = fakeApi({ getSchedules: jest.fn().mockRejectedValue(Object.assign(new Error('x'), { code })) });
+    const { outcome } = await syncOnce(configured, api);
+    expect(outcome.errorCode).toBe('evaluation_failed');
+  });
+
+  test('a failed run leaves previous items and records the code, never the message', async () => {
+    await syncOnce(configured, fakeApi());
+    const api = fakeApi({ getSchedules: jest.fn().mockRejectedValue(new Error('secret detail')) });
+    await syncOnce(configured, api);
+    const { items, run } = syncHistory.getPaymentSnapshot('Main');
+    expect(items).toHaveLength(1);
+    expect(JSON.stringify(run)).not.toMatch(/secret detail/);
+    expect(run.errorCode).toBe('actual_read_failed');
+  });
+
+  test('a rule that threw keeps its previous row and counts as errored; the others upsert', () => {
+    syncHistory.replacePaymentSnapshot('Main', [evalRow({ alertId: 'r1' }), evalRow({ alertId: 'r2', state: 'upcoming' })]);
+    persistPaymentSnapshot(configured, {
+      evaluations: [evalRow({ alertId: 'r2', state: 'received' })],
+      warnings: [{ ruleId: 'r1', scheduleId: 's1', message: 'threw' }]
+    }, { syncHistory, serverName: 'Main', outcome: {}, logger });
+    const { items, run } = syncHistory.getPaymentSnapshot('Main');
+    expect(items.map((i) => [i.alertId, i.state])).toEqual([['r1', 'missing'], ['r2', 'received']]);
+    expect(run.rulesErrored).toBe(1);
+  });
+
+  test('an interval-violation rule (warning plus cannotCheck evaluation) is upserted and not errored', () => {
+    persistPaymentSnapshot(configured, {
+      evaluations: [evalRow({ state: 'cannotCheck' })],
+      warnings: [{ ruleId: 'r1', scheduleId: 's1', message: 'overlap' }]
+    }, { syncHistory, serverName: 'Main', outcome: {}, logger });
+    const { items, run } = syncHistory.getPaymentSnapshot('Main');
+    expect(items[0].state).toBe('cannotCheck');
+    expect(run.rulesErrored).toBe(0);
+  });
+
+  test('a real interval-violation rule flows through the step as cannotCheck, not errored', async () => {
+    const api = fakeApi({ schedules: [rentSchedule({ date: { frequency: 'daily', start: '2026-01-01', endMode: 'never', interval: 1, patterns: [] } })] });
+    await syncOnce({ scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'], graceDays: 5 }] } }, api);
+    const { items, run } = syncHistory.getPaymentSnapshot('Main');
+    expect(items[0].state).toBe('cannotCheck');
+    expect(run.rulesErrored).toBe(0);
+  });
+
+  test('a SQLite failure mid-transaction leaves no partial rows, logs WARN and does not throw', () => {
+    syncHistory.replacePaymentSnapshot('Main', [evalRow({ alertId: 'keep' })]);
+    // Fail inside the transaction (second row hits NOT NULL on state after the
+    // first upserted), so only a real rollback leaves ['keep'] (#343 review, M1).
+    expect(() => persistPaymentSnapshot(configured, {
+      evaluations: [evalRow({ alertId: 'new' }), evalRow({ alertId: 'bad', state: null })], warnings: []
+    }, { syncHistory, serverName: 'Main', outcome: {}, logger })).not.toThrow();
+    const ids = syncHistory.db.prepare('SELECT alert_id FROM payment_alert_status').all().map((r) => r.alert_id);
+    expect(ids).toEqual(['keep']);
+    expect(warnings.some((w) => /payment alert snapshot/.test(w.message))).toBe(true);
+  });
+
+  test('is a no-op without syncHistory', () => {
+    expect(() => persistPaymentSnapshot(configured, { evaluations: [], warnings: [] }, { serverName: 'Main', outcome: {}, logger })).not.toThrow();
+    // Without the guard it would throw on syncHistory.deletePaymentSnapshot/replace
+    // and be swallowed into a WARN, so assert nothing is logged (#343 review, L1).
+    expect(warnings).toEqual([]);
+  });
 });

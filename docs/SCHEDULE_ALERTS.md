@@ -22,6 +22,7 @@ unconfirmable instead of missing.
 - [Templates](#templates)
 - [Variables](#variables)
 - [Timezone](#timezone)
+- [Payment snapshot and the dashboard API](#payment-snapshot-and-the-dashboard-api)
 - [Design notes and known limitations](#design-notes-and-known-limitations)
 
 ## How it works
@@ -235,6 +236,39 @@ is computed in one timezone: the top-level `timezone` config key, falling back t
 machine's own local IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) when unset. A
 `timezone` config key does not exist yet as of this release, so in practice every server currently
 shares the sync process's own local zone.
+
+## Payment snapshot and the dashboard API
+
+Each sync saves what the evaluation concluded, so `GET /api/dashboard/payments` (see
+[HEALTH_CHECK.md](HEALTH_CHECK.md)) can answer without a connection to Actual.
+
+**What is persisted** (SQLite sync-history file, tables `payment_alert_status` and
+`payment_alert_run`): per watched schedule its rule id, schedule id, name, cadence text, account,
+payee, expected amount (integer cents, or a min/max range), next date, deadline, state and up to 6
+occurrences; per server the latest run (time, ok, error code, errored-rule count, last success).
+This copies schedule, payee and account names and amounts out of the budget; the data is not
+encrypted at rest, like the account snapshot. Enable dashboard auth when `scheduleAlerts` is
+used: with the default `auth.type: none` the route is open to anyone who can reach the port.
+
+**Replacement rules.** A successful run replaces the server's rows. Rows of disabled or muted
+rules are kept, because they are still evaluated. A rule that threw during an otherwise
+successful run keeps its previous row (counted in `rulesErrored`); an interval-violation rule is
+stored as `cannotCheck` and is not counted as errored. A successful run with zero evaluations
+empties the set. A failed run keeps the previous rows and `lastSuccessAt`, and records one error
+code: `rules_invalid` (the rules could not be loaded; defensive, startup validation normally
+catches it), `actual_read_failed` (reading Actual failed) or `evaluation_failed` (anything else,
+including errors that carry their own code such as a phase timeout). Raw error messages are only
+logged, never stored or served.
+
+**`lastAlertAt`** is not stored: it is the latest `sent` row (resolved notices included, inferred
+skips not) of the `schedule_alerts` ledger, read at request time. The ledger is purged after
+`max(retentionDays, 120)` days, so it becomes `null` once the last alert is older than that.
+
+**Erasure.** Removing a rule deletes its row on the next successful run; removing the
+`scheduleAlerts` block deletes the server's rows on the next sync; the history reset (one server
+or all) deletes them. Rows of a server removed from the config entirely are erased only by a
+reset: once its `sync_history` is purged it drops off the dashboard's orphan list, but
+`POST /api/dashboard/reset-history` with the typed server name still erases them.
 
 ## Design notes and known limitations
 

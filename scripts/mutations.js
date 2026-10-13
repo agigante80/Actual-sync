@@ -2083,5 +2083,135 @@ module.exports = [
         anchor: '- **Notifies** you of sync results via Telegram',
         mutant: '- **Notifies** you of failures via Telegram',
         tests: 'docDriftGuards'
+    },
+
+    // ---- #260: payment alert snapshot and GET /api/dashboard/payments -----
+    {
+        id: '260-sync-drops-evaluation-outcome', ticket: '#260',
+        desc: 'syncService stops passing the outcome object to the evaluation, so a failed evaluation leaves lastRun.ok true',
+        file: 'src/syncService.js',
+        anchor: "                logger: serverLogger,\n                syncHistory,\n                outcome: paymentOutcome\n",
+        mutant: "                logger: serverLogger,\n                syncHistory\n",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '260-sync-persists-when-stuck', ticket: '#260',
+        desc: 'the payment snapshot is persisted even when a bank sync is stuck',
+        file: 'src/syncService.js',
+        anchor: '        if (sessionStuckAfterLoop) {\n            serverLogger.warn(\'Skipping the final file sync',
+        mutant: '        persistPaymentSnapshot(server, null, { syncHistory, serverName: name, outcome: {}, logger: serverLogger });\n        if (sessionStuckAfterLoop) {\n            serverLogger.warn(\'Skipping the final file sync',
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '260-no-transaction', ticket: '#260',
+        desc: 'replacePaymentSnapshot runs its writes without a transaction, so a mid-way failure leaves partial rows',
+        file: 'src/services/syncHistory.js',
+        anchor: '      const replace = this.db.transaction(() => {',
+        mutant: '      const replace = ((fn) => fn)(() => {',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-persist-no-synchistory-guard', ticket: '#260',
+        desc: 'persistPaymentSnapshot drops its missing-syncHistory guard and logs a WARN instead of returning quietly',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '    if (!syncHistory) return;',
+        mutant: '',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-replace-keeps-removed', ticket: '#260',
+        desc: 'a pair no longer evaluated is never deleted, so a removed rule lingers on the dashboard',
+        file: 'src/services/syncHistory.js',
+        anchor: '          if (!keep.has(pairKey(row.alert_id, row.schedule_id))) {',
+        mutant: '          if (false) {',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-range-not-normalised', ticket: '#260',
+        desc: 'an isbetween range is stored in config order instead of min/max',
+        file: 'src/services/syncHistory.js',
+        anchor: '            min = Math.min(amount.num1, amount.num2);',
+        mutant: '            min = amount.num1;',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-lastsent-includes-inferred', ticket: '#260',
+        desc: 'lastAlertAt counts inferred skip rows as sent alerts',
+        file: 'src/services/syncHistory.js',
+        anchor: "        WHERE server = ? AND delivery = 'sent'",
+        mutant: '        WHERE server = ?',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-reset-keeps-payment-rows', ticket: '#260',
+        desc: 'resetServerHistory leaves the payment snapshot rows behind',
+        file: 'src/services/syncHistory.js',
+        anchor: '        delPaymentItems.run(s);',
+        mutant: '        void s;',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-failure-clears-last-success', ticket: '#260',
+        desc: 'a failed run wipes last_success_at',
+        file: 'src/services/syncHistory.js',
+        anchor: '          evaluated_at = excluded.evaluated_at, ok = 0, error_code = excluded.error_code',
+        mutant: '          evaluated_at = excluded.evaluated_at, ok = 0, error_code = excluded.error_code, last_success_at = NULL',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-errored-pairs-count-interval-violation', ticket: '#260',
+        desc: 'an interval-violation rule (warning plus cannotCheck evaluation) is counted as errored',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '                if (evaluatedPairs.has(key) || seen.has(key)) continue;',
+        mutant: '                if (seen.has(key)) continue;',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-error-code-passthrough', ticket: '#260',
+        desc: 'a raw error code (PHASE_TIMEOUT, ECONNRESET) is stored instead of the closed list',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "    return PAYMENT_ERROR_CODES.includes(code) ? code : 'evaluation_failed';",
+        mutant: "    return code || 'evaluation_failed';",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-block-removed-keeps-snapshot', ticket: '#260',
+        desc: 'removing the scheduleAlerts block no longer erases the server snapshot',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '            syncHistory.deletePaymentSnapshot(serverName);',
+        mutant: '            void serverName;',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-failure-overwrites-items', ticket: '#260',
+        desc: 'a failed evaluation replaces the items with an empty set instead of only recording the run',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '            syncHistory.recordPaymentRunFailure(serverName, outcome.errorCode);',
+        mutant: '            syncHistory.replacePaymentSnapshot(serverName, [], {});',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-outcome-failure-lost', ticket: '#260',
+        desc: 'maybeRunScheduleAlerts no longer reports that it failed',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '            outcome.failed = true;',
+        mutant: '            outcome.failed = false;',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-days-late-reversed', ticket: '#260',
+        desc: 'daysLate is computed with the dates swapped (negative)',
+        file: 'src/services/healthCheck.js',
+        anchor: '                  ? daysBetween(o.deadline, o.receivedDate)',
+        mutant: '                  ? daysBetween(o.receivedDate, o.deadline)',
+        tests: 'paymentsRoute'
+    },
+    {
+        id: '260-bracket-server-accepted', ticket: '#260',
+        desc: '?server[]=x and ?server[a]=b are silently ignored instead of rejected',
+        file: 'src/services/healthCheck.js',
+        anchor: '      if (bracketed || (requested !== undefined',
+        mutant: '      if ((requested !== undefined',
+        tests: 'paymentsRoute'
     }
 ];

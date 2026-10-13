@@ -35,11 +35,18 @@ function makeLogger() {
  * `script(actual, advance)` drives the late settlements.
  * Resolves to { recorded, actual }.
  */
-async function runSync(accountIds, bankCalls, script) {
+async function runSync(accountIds, bankCalls, script, { failEvaluation = false } = {}) {
     jest.resetModules();
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'late-bank-'));
     const recordSync = jest.fn();
+    // #260: maybeRunScheduleAlerts marks failure on the caller's outcome object
+    // (as the real step does); persistPaymentSnapshot records what it received.
+    const maybeRun = jest.fn(async (server, opts) => {
+        if (failEvaluation && opts.outcome) { opts.outcome.failed = true; opts.outcome.errorCode = 'boom'; }
+        return null;
+    });
+    const persist = jest.fn();
     const actual = {
         init: jest.fn().mockResolvedValue(undefined),
         downloadBudget: jest.fn().mockResolvedValue(undefined),
@@ -80,7 +87,8 @@ async function runSync(accountIds, bankCalls, script) {
         NotificationService: function () { this.recordSyncResult = jest.fn(); this.notifySync = jest.fn().mockResolvedValue(undefined); }
     }));
     jest.doMock('../lib/scheduleAlertsStep', () => ({
-        maybeRunScheduleAlerts: jest.fn().mockResolvedValue(null),
+        maybeRunScheduleAlerts: maybeRun,
+        persistPaymentSnapshot: persist,
         maybeDeliverScheduleAlerts: jest.fn().mockResolvedValue(undefined)
     }));
     const argv = process.argv;
@@ -104,7 +112,7 @@ async function runSync(accountIds, bankCalls, script) {
             await until(() => recordSync.mock.calls.length > 0 || i > 3);
         }
         expect(exit).not.toHaveBeenCalled();
-        return { recorded: recordSync.mock.calls[0]?.[0], actual };
+        return { recorded: recordSync.mock.calls[0]?.[0], actual, persist };
     } finally {
         process.argv = argv;
         exit.mockRestore();
@@ -175,5 +183,27 @@ describe('a timed-out runBankSync that settles late (#284)', () => {
         expect(recorded.accountsFailed).toBe(1);
         expect(recorded.errorMessage).toContain('bank said no');
         expect(recorded.errorMessage).not.toMatch(/timed out/i);
+    });
+});
+
+describe('payment snapshot wiring in the real sync (#260)', () => {
+    afterEach(() => jest.dontMock('@actual-app/api'));
+
+    test('a failed evaluation reaches persistPaymentSnapshot as a failed outcome', async () => {
+        const { persist } = await runSync(['a1'], { a1: () => Promise.resolve() },
+            async (advance, started) => { await started(); await advance(2000); },
+            { failEvaluation: true });
+        expect(persist).toHaveBeenCalledTimes(1);
+        const opts = persist.mock.calls[0][2];
+        expect(opts.outcome.failed).toBe(true);
+        expect(opts.outcome.errorCode).toBe('boom');
+        expect(opts.serverName).toBe('s1');
+    });
+
+    test('a stuck bank sync (#284) does not persist a snapshot', async () => {
+        const never = deferred();
+        const { persist } = await runSync(['a1'], { a1: () => never.promise },
+            async (advance, started) => { await started(); await advance(60000); await advance(3000); });
+        expect(persist).not.toHaveBeenCalled();
     });
 });

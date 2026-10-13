@@ -1133,6 +1133,74 @@ This test verifies that notifications are configured correctly and can reach the
       }
     });
 
+    // Payment alert snapshot (#260): what the #258 evaluation last said about
+    // every watched schedule, persisted during each sync, so the dashboard
+    // needs no connection to Actual. `lastAlertAt` is joined from the
+    // schedule_alerts ledger at request time, not stored (the snapshot is saved
+    // before the ledger is written for the same sync).
+    this.app.get('/api/dashboard/payments', this.dashboardAuth(), (req, res) => {
+      if (!this.getServers) {
+        return res.status(503).json({ error: 'Server list not available' });
+      }
+      if (!this.syncHistory) {
+        return res.status(503).json({ error: 'Sync history not available' });
+      }
+
+      // Only a single non-empty string selects a server: ?server=a&server=b,
+      // ?server[]=x, ?server[a]=b and ?server= are all rejected.
+      // Express 5's default "simple" query parser does not nest, so
+      // `server[]=x` and `server[a]=b` arrive as the literal keys "server[]" and
+      // "server[a]"; they are rejected by name rather than ignored.
+      const requested = req.query.server;
+      const bracketed = Object.keys(req.query).some((k) => k.startsWith('server['));
+      if (bracketed || (requested !== undefined && (typeof requested !== 'string' || requested === ''))) {
+        return res.status(400).json({ error: 'Invalid server parameter' });
+      }
+
+      try {
+        // Matched by name against the configured list (never as an object key),
+        // so `__proto__` is just an unknown server.
+        let servers = this.getServers() || [];
+        if (requested !== undefined) {
+          const match = servers.find((s) => s.name === requested);
+          if (!match) return res.status(404).json({ error: 'Server not found' });
+          servers = [match];
+        }
+
+        const daysBetween = (from, to) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000);
+
+        const result = servers.map((server) => {
+          if (!server.scheduleAlerts) {
+            return { server: server.name, configured: false, lastRun: null, items: [] };
+          }
+          const { items, run } = this.syncHistory.getPaymentSnapshot(server.name);
+          const lastSent = this.syncHistory.getLastSentAlerts(server.name);
+          return {
+            server: server.name,
+            configured: true,
+            lastRun: run,
+            items: items.map((item) => ({
+              ...item,
+              lastAlertAt: lastSent.get(JSON.stringify([item.alertId, item.scheduleId])) || null,
+              // Constants until #262 (source) and #261 (rule state) land.
+              source: 'config',
+              ruleState: { enabled: true, mutedUntil: null, reason: null },
+              occurrences: item.occurrences.map((o) => ({
+                ...o,
+                daysLate: o.state === 'late' && o.receivedDate && o.deadline
+                  ? daysBetween(o.deadline, o.receivedDate)
+                  : null
+              }))
+            }))
+          };
+        });
+        res.json({ servers: result });
+      } catch (error) {
+        this.logger.error('Failed to get payments', { error: error.message });
+        res.status(500).json({ error: 'Failed to retrieve payments' });
+      }
+    });
+
     // Notification activity and how much rate-limit budget is left (#188).
     // Rate limiting was otherwise invisible: a user whose failure alerts were
     // being suppressed had no surface telling them so. `rateLimit` is echoed

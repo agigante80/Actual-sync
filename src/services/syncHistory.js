@@ -136,6 +136,49 @@ class SyncHistoryService {
       )
     `;
 
+    // Missing-payment alert snapshot (#260): what the #258 evaluation last
+    // said about every watched schedule, so the dashboard can show it without
+    // a connection to Actual. Replaced per server on every successful
+    // evaluation (replacePaymentSnapshot). `expected_amount` is integer cents
+    // (NULL for a range or an absent amount); an `isbetween` range is stored
+    // normalised in expected_min/expected_max. `occurrences_json` is the
+    // evaluation's occurrences[] unchanged. No last_alert_at: that is joined
+    // from the schedule_alerts ledger at request time (getLastSentAlerts).
+    const createPaymentAlertStatusTable = `
+      CREATE TABLE IF NOT EXISTS payment_alert_status (
+        server TEXT NOT NULL,
+        alert_id TEXT NOT NULL,
+        schedule_id TEXT NOT NULL,
+        name TEXT,
+        cadence_text TEXT,
+        account TEXT,
+        payee TEXT,
+        expected_amount INTEGER,
+        expected_min INTEGER,
+        expected_max INTEGER,
+        next_date TEXT,
+        deadline TEXT,
+        state TEXT NOT NULL,
+        occurrences_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (server, alert_id, schedule_id)
+      )
+    `;
+
+    // One row per server describing the latest evaluation attempt. `evaluated_at`
+    // is the latest attempt; `last_success_at` the latest success (kept when a
+    // later run fails, NULL until the first success). (#260)
+    const createPaymentAlertRunTable = `
+      CREATE TABLE IF NOT EXISTS payment_alert_run (
+        server TEXT PRIMARY KEY,
+        evaluated_at TEXT NOT NULL,
+        ok INTEGER NOT NULL,
+        error_code TEXT,
+        rules_errored INTEGER NOT NULL DEFAULT 0,
+        last_success_at TEXT
+      )
+    `;
+
     const createIndexes = [
       'CREATE INDEX IF NOT EXISTS idx_timestamp ON sync_history(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_server_name ON sync_history(server_name)',
@@ -149,7 +192,9 @@ class SyncHistoryService {
     this.db.exec(createSyncHistoryTable);
     this.db.exec(createAccountMetadataTable);
     this.db.exec(createScheduleAlertsTable);
-    this.logger.debug('Created sync_history, account_metadata and schedule_alerts tables');
+    this.db.exec(createPaymentAlertStatusTable);
+    this.db.exec(createPaymentAlertRunTable);
+    this.logger.debug('Created sync_history, account_metadata, schedule_alerts and payment snapshot tables');
 
     createIndexes.forEach(idx => {
       this.db.exec(idx);
@@ -389,6 +434,185 @@ class SyncHistoryService {
         error: error.message,
         serverName
       });
+      throw error;
+    }
+  }
+
+  /**
+   * Replace a server's payment alert snapshot with the latest #258 evaluation,
+   * in ONE transaction (#260): upsert every evaluation, delete the server's
+   * rows whose (alertId, scheduleId) pair is in neither `evaluations` nor
+   * `runInfo.erroredPairs`, then upsert the run row as a success. Rows of
+   * disabled or muted rules are kept because #258 still evaluates them. A
+   * rule that threw (an errored pair) keeps its previous row. A successful
+   * run with zero evaluations replaces the set (all rows go, errored pairs
+   * excepted).
+   * @param {string} serverName
+   * @param {Array<Object>} evaluations - evaluate().evaluations
+   * @param {{erroredPairs?: Array<{alertId:string, scheduleId:string}>}} [runInfo]
+   * @returns {number} number of evaluations stored
+   */
+  replacePaymentSnapshot(serverName, evaluations = [], runInfo = {}) {
+    try {
+      const erroredPairs = runInfo.erroredPairs || [];
+      const pairKey = (alertId, scheduleId) => JSON.stringify([alertId, scheduleId]);
+      const keep = new Set(erroredPairs.map((p) => pairKey(p.alertId, p.scheduleId)));
+      for (const e of evaluations) keep.add(pairKey(e.alertId, e.scheduleId));
+      const now = this.now().toISOString();
+
+      const upsert = this.db.prepare(`
+        INSERT OR REPLACE INTO payment_alert_status (
+          server, alert_id, schedule_id, name, cadence_text, account, payee,
+          expected_amount, expected_min, expected_max, next_date, deadline,
+          state, occurrences_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const listPairs = this.db.prepare('SELECT alert_id, schedule_id FROM payment_alert_status WHERE server = ?');
+      const delRow = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ? AND alert_id = ? AND schedule_id = ?');
+      const upsertRun = this.db.prepare(`
+        INSERT INTO payment_alert_run (server, evaluated_at, ok, error_code, rules_errored, last_success_at)
+        VALUES (?, ?, 1, NULL, ?, ?)
+        ON CONFLICT(server) DO UPDATE SET
+          evaluated_at = excluded.evaluated_at, ok = 1, error_code = NULL,
+          rules_errored = excluded.rules_errored, last_success_at = excluded.last_success_at
+      `);
+
+      const replace = this.db.transaction(() => {
+        for (const e of evaluations) {
+          const amount = e.expectedAmount;
+          let cents = null;
+          let min = null;
+          let max = null;
+          if (typeof amount === 'number') {
+            cents = amount;
+          } else if (amount && typeof amount === 'object') {
+            min = Math.min(amount.num1, amount.num2);
+            max = Math.max(amount.num1, amount.num2);
+          }
+          upsert.run(
+            serverName, e.alertId, e.scheduleId, e.name ?? null, e.cadenceText ?? null,
+            e.account ?? null, e.payee ?? null, cents, min, max, e.nextDate ?? null,
+            e.deadline ?? null, e.state, JSON.stringify(e.occurrences || []), now
+          );
+        }
+        for (const row of listPairs.all(serverName)) {
+          if (!keep.has(pairKey(row.alert_id, row.schedule_id))) {
+            delRow.run(serverName, row.alert_id, row.schedule_id);
+          }
+        }
+        upsertRun.run(serverName, now, erroredPairs.length, now);
+      });
+      replace();
+      this.logger.debug('Payment snapshot persisted', { serverName, count: evaluations.length });
+      return evaluations.length;
+    } catch (error) {
+      this.logger.error('Failed to persist payment snapshot', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Record a failed evaluation (#260): upserts only the run row (ok = 0, the
+   * error code, evaluated_at). Item rows, rules_errored and last_success_at
+   * are untouched, so the dashboard keeps the last good snapshot.
+   * @param {string} serverName
+   * @param {string} errorCode - one of the closed list in scheduleAlertsStep
+   */
+  recordPaymentRunFailure(serverName, errorCode) {
+    try {
+      this.db.prepare(`
+        INSERT INTO payment_alert_run (server, evaluated_at, ok, error_code, rules_errored, last_success_at)
+        VALUES (?, ?, 0, ?, 0, NULL)
+        ON CONFLICT(server) DO UPDATE SET
+          evaluated_at = excluded.evaluated_at, ok = 0, error_code = excluded.error_code
+      `).run(serverName, this.now().toISOString(), errorCode);
+    } catch (error) {
+      this.logger.error('Failed to record payment run failure', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Delete both payment snapshot tables' rows for a server in one transaction
+   * (#260), used when the server's scheduleAlerts block is removed.
+   * @param {string} serverName
+   */
+  deletePaymentSnapshot(serverName) {
+    try {
+      const delItems = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ?');
+      const delRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');
+      this.db.transaction((s) => {
+        delItems.run(s);
+        delRun.run(s);
+      })(serverName);
+    } catch (error) {
+      this.logger.error('Failed to delete payment snapshot', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Read a server's stored payment snapshot (#260).
+   * @param {string} serverName
+   * @returns {{items: Array<Object>, run: Object|null}} `run` is null before
+   *   the first evaluation. `expectedAmount` is cents, null, or
+   *   `{num1, num2}` (min, max) for a range.
+   */
+  getPaymentSnapshot(serverName) {
+    try {
+      const rows = this.db.prepare(`
+        SELECT * FROM payment_alert_status WHERE server = ? ORDER BY alert_id, schedule_id
+      `).all(serverName);
+      const items = rows.map((r) => ({
+        alertId: r.alert_id,
+        scheduleId: r.schedule_id,
+        name: r.name,
+        cadenceText: r.cadence_text,
+        account: r.account,
+        payee: r.payee,
+        expectedAmount: r.expected_min != null
+          ? { num1: r.expected_min, num2: r.expected_max }
+          : r.expected_amount,
+        nextDate: r.next_date,
+        deadline: r.deadline,
+        state: r.state,
+        occurrences: JSON.parse(r.occurrences_json)
+      }));
+      const runRow = this.db.prepare('SELECT * FROM payment_alert_run WHERE server = ?').get(serverName);
+      const run = runRow ? {
+        at: runRow.evaluated_at,
+        ok: runRow.ok === 1,
+        errorCode: runRow.error_code,
+        lastSuccessAt: runRow.last_success_at,
+        rulesErrored: runRow.rules_errored
+      } : null;
+      return { items, run };
+    } catch (error) {
+      this.logger.error('Failed to read payment snapshot', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Latest DELIVERED alert per (alertId, scheduleId) for a server (#260),
+   * computed at request time from the schedule_alerts ledger because the
+   * snapshot is saved before the ledger is written for the same sync. Includes
+   * "resolved" notices; null once the last alert is older than the ledger
+   * retention. `inferred` rows (#297 skips) are not alerts.
+   * @param {string} serverName
+   * @returns {Map<string, string>} key is JSON `[alertId, scheduleId]`, value an ISO time
+   */
+  getLastSentAlerts(serverName) {
+    try {
+      const rows = this.db.prepare(`
+        SELECT alert_id, schedule_id, MAX(recorded_at) AS last_sent_at
+        FROM schedule_alerts
+        WHERE server = ? AND delivery = 'sent'
+        GROUP BY alert_id, schedule_id
+      `).all(serverName);
+      return new Map(rows.map((r) => [JSON.stringify([r.alert_id, r.schedule_id]), r.last_sent_at]));
+    } catch (error) {
+      this.logger.error('Failed to read last sent alerts', { error: error.message, serverName });
       throw error;
     }
   }
@@ -801,10 +1025,14 @@ class SyncHistoryService {
       const delHistory = this.db.prepare('DELETE FROM sync_history WHERE server_name = ?');
       const delMeta = this.db.prepare('DELETE FROM account_metadata WHERE server_name = ?');
       const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts WHERE server = ?');
+      const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ?');
+      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');
       const reset = this.db.transaction((s) => {
         const r = delHistory.run(s);
         delMeta.run(s);
         delScheduleAlerts.run(s);
+        delPaymentItems.run(s);
+        delPaymentRun.run(s);
         return r;
       });
       const result = reset(serverName);
@@ -834,10 +1062,14 @@ class SyncHistoryService {
       const delHistory = this.db.prepare('DELETE FROM sync_history');
       const delMeta = this.db.prepare('DELETE FROM account_metadata');
       const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts');
+      const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status');
+      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');
       const reset = this.db.transaction(() => {
         const r = delHistory.run();
         delMeta.run();
         delScheduleAlerts.run();
+        delPaymentItems.run();
+        delPaymentRun.run();
         return r;
       });
       const result = reset();
