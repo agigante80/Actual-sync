@@ -1001,6 +1001,14 @@ module.exports = [
         mutant: '    const passOk = userOk && safeEqual(password, authConfig.password);',
         tests: 'dashboardCredentials'
     },
+    {
+        id: '281-basic-auth-splits-every-colon', ticket: '#281',
+        desc: 'the password is cut at its first colon, so a password containing one never logs in',
+        file: 'src/lib/dashboardCredentials.js',
+        anchor: '    const password = sep === -1 ? undefined : credentials.slice(sep + 1);',
+        mutant: "    const password = sep === -1 ? undefined : credentials.slice(sep + 1).split(':')[0];",
+        tests: 'dashboardCredentials'
+    },
 
     {
         id: '242-ws-header-oracle', ticket: '#242',
