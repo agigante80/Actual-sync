@@ -1725,6 +1725,15 @@ module.exports = [
         mutant: "      strictTransportSecurity: hsts ? { maxAge: 15552000 } : false",
         tests: 'healthCheck.test'
     },
+    // ---- #288: the History tab server filter was ignored by the route -------
+    {
+        id: '288-history-server-filter-dropped', ticket: '#288',
+        desc: 'the history route drops serverName again, so the server filter shows every server',
+        file: 'src/services/healthCheck.js',
+        anchor: "if (typeof serverName === 'string' && serverName !== '') filters.serverName = serverName;",
+        mutant: "if (false) filters.serverName = serverName;",
+        tests: 'healthCheck.test'
+    },
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',

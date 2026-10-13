@@ -12,6 +12,8 @@ module.exports = {
   // Every failed row in the seed; the spec checks the table against it.
   failureCount: Array.from({ length: COUNT }, (_, i) => i).filter(isFailure).length,
   totalRows: COUNT,
+  // Rows seeded for one server; seedRun assigns row i to NAMES[i % NAMES.length]. (#288)
+  rowsFor: (name) => Array.from({ length: COUNT }, (_, i) => i).filter(i => NAMES[i % NAMES.length] === name).length,
   seed(s) {
     seedRun(s, NAMES, {
       count: COUNT,
