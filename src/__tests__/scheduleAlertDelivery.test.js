@@ -919,3 +919,67 @@ describe('exported constants: DEFAULT_TEMPLATES / VARIABLES / ALL_CHANNELS', () 
     }
   });
 });
+
+describe('deliver: delivery budget starvation (#337, #338)', () => {
+  // Virtual clock: `Date.now()` only moves when a fake send "takes time", so
+  // the budget cutoff is deterministic instead of depending on real timers.
+  let clock;
+  let nowSpy;
+  beforeEach(() => { clock = 1.8e12; nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => clock); });
+  afterEach(() => { nowSpy.mockRestore(); });
+  const sleep = async (ms) => { clock += ms; };
+
+  test('a first channel that hangs past the budget every run does not starve the second channel in a digest (#337)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      telegram: { enabled: true },
+      webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] }
+    });
+    sender.result = null;
+    const original = sender.sendTemplated.bind(sender);
+    sender.sendTemplated = async (outputs) => {
+      if (outputs.telegram) {
+        sender.calls.push(outputs);
+        await sleep(60); // hangs until the 40ms budget is gone
+        return { telegram: { success: false } };
+      }
+      return original(outputs);
+    };
+    const rules = rentRules({}, { digest: true });
+
+    let discordRun = 0;
+    for (let run = 1; run <= 3 && !discordRun; run += 1) {
+      await deliver([missingEvent()], {
+        evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10',
+        server: 'starve-337', rules, timezone: 'UTC', logger: quietLogger, deadline: Date.now() + 40
+      });
+      if (history.rows.some((r) => String(r.channel).startsWith('discord'))) discordRun = run;
+    }
+    expect(discordRun).toBeGreaterThan(0);
+    expect(discordRun).toBeLessThanOrEqual(2);
+  });
+
+  test('slow sends with remindEveryDays: 1 still reach every event within a bounded number of days in immediate mode (#338)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const original = sender.sendTemplated.bind(sender);
+    sender.sendTemplated = async (outputs) => { await sleep(25); return original(outputs); };
+    const COUNT = 6;
+    const ids = Array.from({ length: COUNT }, (_, i) => `r${i}`);
+    const rules = getRules({ alerts: ids.map((id) => ({ id, schedule: 'Rent', remindEveryDays: 1 })) });
+    const events = ids.map((id) => missingEvent({ alertId: id }));
+    const evaluations = ids.map((id) => rentEvaluation({ alertId: id }));
+
+    let day = 0;
+    for (; day < 4; day += 1) {
+      const instant = new Date(Date.UTC(2026, 0, 10 + day)).toISOString();
+      history.clock = instant;
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: instant, server: 'imm-338',
+        rules, timezone: 'UTC', logger: quietLogger, deadline: Date.now() + 40
+      });
+      if (new Set(history.rows.map((r) => r.alertId)).size === COUNT) break;
+    }
+    expect(new Set(history.rows.map((r) => r.alertId)).size).toBe(COUNT);
+  });
+});

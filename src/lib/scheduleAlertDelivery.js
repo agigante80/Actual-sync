@@ -625,6 +625,35 @@ function eventKey(event) {
 }
 
 /**
+ * #337: per server, the sequence number of the last digest send STARTED per
+ * channel. In memory on purpose: it only has to break the tie between
+ * channels that the ledger cannot (a channel that never succeeds has no
+ * ledger row, so "least recently delivered" cannot tell it from one the
+ * deadline never reached). A process restart resets it to insertion order.
+ */
+const digestAttempts = new Map();
+let digestAttemptSeq = 0;
+
+/**
+ * #338: when an eligible event's longest-waiting due destination last got it
+ * (epoch ms; -Infinity when some due destination never has). A failing
+ * ledger lookup sorts the event last rather than throwing.
+ */
+async function waitingSince(item, sender, history, server, now, timezone) {
+  let oldest = Infinity;
+  try {
+    for (const destination of destinationsForRule(item.rule, sender)) {
+      const state = await destinationDueState(item.event, item.rule, destination.key, history, server, now, timezone);
+      if (!state.due) continue;
+      oldest = Math.min(oldest, state.lastSentAt == null ? -Infinity : Date.parse(state.lastSentAt));
+    }
+  } catch (_error) {
+    return Infinity;
+  }
+  return oldest;
+}
+
+/**
  * Send one batch of eligible events (already deduplicated and rule-state
  * filtered) as a single merged message per channel, for `digest: true`.
  *
@@ -666,7 +695,17 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
 
   const sentKeys = new Set();
 
-  for (const [channel, channelItems] of perChannelItems) {
+  // #337: visit the channel attempted longest ago first (never-attempted
+  // before all), not in Map insertion order. A channel whose send hangs or
+  // fails until the budget is spent is stamped as attempted below, so next
+  // run it yields to the channels the deadline cut off. Array.prototype.sort
+  // is stable, so ties keep insertion order.
+  const attempts = digestAttempts.get(server) || new Map();
+  digestAttempts.set(server, attempts);
+  const orderedChannels = Array.from(perChannelItems.entries())
+    .sort((a, b) => (attempts.get(a[0]) || 0) - (attempts.get(b[0]) || 0));
+
+  for (const [channel, channelItems] of orderedChannels) {
     if (deadline != null && Date.now() >= deadline) {
       logger.warn('Schedule alert delivery budget exhausted; remaining digest channels deferred to next sync', {
         server, channel
@@ -747,6 +786,8 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     }
     const included = rendered.slice(0, count).map((r) => r.item);
     const channelOutputs = build(count);
+    digestAttemptSeq += 1;
+    attempts.set(channel, digestAttemptSeq);
     const ok = await sendOnce(sender, channelOutputs, { server, alertId: 'digest', event: 'digest', occurrence: null, logger });
     if (!ok) continue; // H5: withhold only this channel's rows; other channels are unaffected
 
@@ -927,6 +968,18 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
     }
     return { sent, skipped };
   }
+
+  // #338: same ordering as the digest (#294 round 2, H1): events never sent
+  // first, then the one whose due destination has waited longest. Without it a
+  // daily reminder (`remindEveryDays: 1`) that sorts early re-uses the budget
+  // every run and the tail is never reached. Stable, so ties keep order.
+  const priority = new Map();
+  for (const item of eligible) priority.set(item, await waitingSince(item, sender, history, server, now, timezone));
+  eligible.sort((a, b) => {
+    const x = priority.get(a);
+    const y = priority.get(b);
+    return x === y ? 0 : (x < y ? -1 : 1);
+  });
 
   for (let i = 0; i < eligible.length; i += 1) {
     if (deadline != null && Date.now() >= deadline) {

@@ -1937,6 +1937,39 @@ module.exports = [
         mutant: "if (false) filters.serverName = serverName;",
         tests: 'healthCheck.test'
     },
+    // ---- #337/#338: digest and immediate delivery starvation at the budget ---
+    {
+        id: '337-digest-channel-order-fixed', ticket: '#337',
+        desc: 'the digest visits channels in insertion order again, so a channel that eats the whole budget starves later channels every run',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    .sort((a, b) => (attempts.get(a[0]) || 0) - (attempts.get(b[0]) || 0));",
+        mutant: "    .sort(() => 0);",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '337-digest-attempt-not-stamped', ticket: '#337',
+        desc: 'a digest send that fails is no longer stamped as attempted, so the rotation never moves off the failing channel',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    attempts.set(channel, digestAttemptSeq);",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '338-immediate-order-fixed', ticket: '#338',
+        desc: 'immediate mode sends events in evaluation order again, so early daily reminders use the budget every run and starve the tail',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    return x === y ? 0 : (x < y ? -1 : 1);\n  });\n\n  for (let i = 0; i < eligible.length",
+        mutant: "    return 0;\n  });\n\n  for (let i = 0; i < eligible.length",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '338-never-sent-not-first', ticket: '#338',
+        desc: 'a destination that never got the event no longer sorts ahead of ones that did',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "oldest = Math.min(oldest, state.lastSentAt == null ? -Infinity : Date.parse(state.lastSentAt));",
+        mutant: "oldest = Math.min(oldest, state.lastSentAt == null ? Infinity : Date.parse(state.lastSentAt));",
+        tests: 'scheduleAlertDelivery.test'
+    },
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',

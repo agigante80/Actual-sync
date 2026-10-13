@@ -164,6 +164,22 @@ This means digest lines are ordered by that rule, not by schedule, and the order
 sync to sync. The header count always matches what the message contains. A single
 event larger than the limit on its own is still sent, truncated with a trailing `…`.
 
+### Delivery budget and send order
+
+Delivery is bounded by a time budget (30 seconds per sync). A send already started is always
+finished; once the budget is spent, nothing new is started and the rest waits for the next sync.
+Order matters under that cutoff, so neither mode lets the same alerts use the budget every run:
+
+- **Immediate mode** sends events whose due destination never received them first, then the ones
+  that have waited longest since their last send (the same rule digests use for items). A daily
+  reminder (`remindEveryDays: 1`) therefore cannot crowd out an alert further down the list. Alerts
+  are sent in that order, not in evaluation order, and the order can change from sync to sync.
+- **Digest mode** visits channels starting with the one attempted longest ago (never-attempted
+  first), not in configuration order. A channel that hangs or fails until the budget runs out is
+  stamped as attempted, so on the next sync the channels the budget never reached go first and still
+  receive the digest. This attempt order is kept in memory, so a restart goes back to the
+  configured order, and it only breaks ties: ledger rows still decide what is due.
+
 ## Startup validation
 
 Config loading fails fast on two classes of mistakes that would otherwise only surface at send time,
