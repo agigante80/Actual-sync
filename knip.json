@@ -5,7 +5,8 @@
     "src/__tests__/**/*.test.js",
     "tests/e2e/**/*.e2e.js",
     "jest.e2e.config.js",
-    "tests/e2e/fixtures/states/**/*.js"
+    "tests/e2e/fixtures/states/**/*.js",
+    "src/services/dashboard.js"
   ],
   "project": [
     "src/**/*.js",

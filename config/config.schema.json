@@ -483,6 +483,11 @@
           ],
           "examples": [false, 1, "172.18.0.2", ["loopback", "172.18.0.2"]]
         },
+        "hsts": {
+          "type": "boolean",
+          "description": "Send the Strict-Transport-Security header (max-age 180 days, no includeSubDomains). Off by default because the service is plain HTTP in most deployments; enable it only when browsers reach it over HTTPS (normally TLS and HSTS are the reverse proxy's job).",
+          "default": false
+        },
         "dashboard": {
           "type": "object",
           "additionalProperties": false,

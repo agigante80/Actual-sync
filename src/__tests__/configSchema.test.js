@@ -128,6 +128,16 @@ describe('config schema reconciliation (#116)', () => {
         });
     });
 
+    describe('healthCheck.hsts (#243)', () => {
+        test.each([true, false])('accepts %p', (value) => {
+            expect(validates(baseConfig({ healthCheck: { hsts: value } }))).toBe(true);
+        });
+
+        test.each(['yes', 1, 'true', null, { maxAge: 1 }])('rejects %p', (value) => {
+            expect(validates(baseConfig({ healthCheck: { hsts: value } }))).toBe(false);
+        });
+    });
+
     describe('healthCheck.trustProxy shapes (#245)', () => {
         test.each([false, true, 1, '10.0.0.0/8', ['loopback', '172.16.0.0/12']])('accepts %p', (value) => {
             expect(validates(baseConfig({ healthCheck: { trustProxy: value } }))).toBe(true);
