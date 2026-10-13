@@ -154,6 +154,16 @@ outgoing notification is merged. When several destinations of the same channel t
 (for example two Slack webhooks), the digest sends to the first enabled one of that type; fan-out to
 every configured destination is preserved for the non-digest case.
 
+A digest never silently drops an alert to fit a channel. Telegram (4096 characters, checked on both
+the HTML and the plain-text version), Discord (2000) and Slack (40000) have length limits, so for
+those channels the digest adds whole events while they fit and records only the events it actually
+included, and logs a WARN with the sent and deferred counts. The remaining events stay due and go
+out in the next sync's digest. Events never sent to that destination go first, then the ones that
+have waited longest since their last send, so daily reminders cannot crowd out the deferred tail.
+This means digest lines are ordered by that rule, not by schedule, and the order can change from
+sync to sync. The header count always matches what the message contains. A single
+event larger than the limit on its own is still sent, truncated with a trailing `…`.
+
 ## Startup validation
 
 Config loading fails fast on two classes of mistakes that would otherwise only surface at send time,
@@ -185,6 +195,11 @@ Override any of the five built-in messages (`missing`, `wrongAmount`, `resolved`
 A template left out keeps its built-in English wording. Every template is validated at startup
 against the [variable list below](#variables); an unknown variable, an unregistered helper, or (for
 Telegram) literal markup Telegram would reject all fail fast, naming the offending token and line.
+
+Telegram templates have two extra rules: a literal `&` must be written `&amp;` (also `&lt;`, `&gt;`,
+`&quot;`), and allowed tags such as `<b>` must be closed. The entities show literally on every other
+channel. Links (`<a href="{{url}}">`) are not supported in templates for now. See
+[NOTIFICATIONS.md](./NOTIFICATIONS.md#telegram-markup-rules) and its "Links in templates" decision.
 
 ## Variables
 

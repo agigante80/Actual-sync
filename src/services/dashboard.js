@@ -5,6 +5,7 @@
  */
 let ws = null;
 let wsConnecting = false; // a ticket request is in flight (#242)
+let reconnectTimer = null; // the one pending retry, if any (#280)
 let reconnectAttempts = 0;
 let reconnectDelay = 1000; // Start with 1 second
 const maxReconnectDelay = 30000; // Cap at 30 seconds
@@ -49,8 +50,13 @@ function switchTab(tabName, button) {
 // Page visibility handling - pause log streaming when tab is hidden
 document.addEventListener('visibilitychange', () => {
     isPageVisible = !document.hidden;
-    if (isPageVisible && ws && ws.readyState !== WebSocket.OPEN) {
+    // One loop only: skip while a socket is open or still connecting, or a
+    // ticket request is in flight. A pending retry is replaced, not doubled. (#280)
+    const busy = wsConnecting || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING));
+    if (isPageVisible && !busy) {
         console.log('Tab became visible, reconnecting WebSocket...');
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
         connectWebSocket();
     }
 });
@@ -99,6 +105,10 @@ async function updateDashboard() {
         statusBadge.textContent = displayStatus;
         statusBadge.className = `status-badge status-${displayStatus === 'READY' ? 'healthy' : data.status.toLowerCase()}`;
 
+        // Name the sync holding the queue, so a stuck one is visible (#272, #284)
+        const runningSyncEl = document.getElementById('running-sync');
+        if (runningSyncEl) runningSyncEl.textContent = formatRunningSync(data.runningSync);
+
         // Update servers list (now with fresh schedule info)
         updateServersList(data.servers);
 
@@ -111,6 +121,15 @@ async function updateDashboard() {
     } catch (error) {
         console.error('Failed to update dashboard:', error);
     }
+}
+
+// Text for the sync holding the queue, or '' when none. Plain text only: it is
+// assigned with textContent, never innerHTML, because the key is a server name. (#284)
+function formatRunningSync(running) {
+    if (!running || typeof running.key !== 'string') return '';
+    const started = new Date(running.startedAt);
+    const since = Number.isNaN(started.getTime()) ? '' : ` since ${started.toLocaleTimeString()}`;
+    return `Syncing: ${running.key}${since}`;
 }
 
 // Escape user-supplied text (account/server names) before innerHTML. (#99)
@@ -380,7 +399,13 @@ async function fetchWsTicket() {
     return data.ticket;
 }
 
+function scheduleReconnect(delay) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectWebSocket, delay);
+}
+
 async function connectWebSocket() {
+    reconnectTimer = null;
     // Don't reconnect if tab is hidden
     if (!isPageVisible) {
         console.log('Tab hidden, deferring WebSocket connection');
@@ -390,6 +415,9 @@ async function connectWebSocket() {
     // A ticket request is async, so guard against a second connect
     // (e.g. from the visibility handler) starting while one is in flight.
     if (wsConnecting) return;
+    // A live or connecting socket already owns the stream (e.g. a retry timer
+    // firing after the visibility handler reconnected). (#280)
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     wsConnecting = true;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -397,19 +425,27 @@ async function connectWebSocket() {
     try {
         const ticket = await fetchWsTicket();
         const wsUrl = `${protocol}//${window.location.host}/ws/logs?ticket=${encodeURIComponent(ticket)}`;
-        ws = new WebSocket(wsUrl);
+        // Handlers are bound to their own socket: a socket replaced while it was
+        // still CLOSING must not schedule a retry or stop the new one's keep-alive. (#280)
+        const sock = new WebSocket(wsUrl);
+        ws = sock;
 
-        ws.onopen = () => {
+        sock.onopen = () => {
+            if (sock !== ws) return;
             console.log('WebSocket connected');
             reconnectAttempts = 0;
             reconnectDelay = 1000; // Reset backoff
+            // A fresh socket starts with a fresh pong clock; a stale value from
+            // before a keep-alive timeout would close it at its first tick. (#280)
+            lastPingTime = Date.now();
             addLogEntry('info', 'Connected to log stream');
             
             // Start keep-alive ping
             startKeepAlive();
         };
 
-        ws.onmessage = (event) => {
+        sock.onmessage = (event) => {
+            if (sock !== ws) return;
             try {
                 const data = JSON.parse(event.data);
                 
@@ -429,12 +465,14 @@ async function connectWebSocket() {
             }
         };
 
-        ws.onerror = (error) => {
+        sock.onerror = (error) => {
+            if (sock !== ws) return;
             console.error('WebSocket error:', error);
             addLogEntry('error', 'WebSocket connection error');
         };
 
-        ws.onclose = () => {
+        sock.onclose = () => {
+            if (sock !== ws) return;
             console.log('WebSocket disconnected');
             addLogEntry('warn', 'Disconnected from log stream. Reconnecting...');
             
@@ -445,7 +483,7 @@ async function connectWebSocket() {
             reconnectAttempts++;
             const delay = Math.min(reconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
             console.log(`Reconnect attempt ${reconnectAttempts} in ${delay}ms`);
-            setTimeout(connectWebSocket, delay);
+            scheduleReconnect(delay);
         };
     } catch (error) {
         console.error('Failed to create WebSocket:', error);
@@ -453,7 +491,7 @@ async function connectWebSocket() {
         // refused ticket request does not poll the server every second.
         reconnectAttempts++;
         const delay = Math.min(reconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
-        setTimeout(connectWebSocket, delay);
+        scheduleReconnect(delay);
     } finally {
         wsConnecting = false;
     }
@@ -894,7 +932,11 @@ async function loadAnalyticsTab() {
 }
 
 // Load History Tab
+// Each change of the filter or limit select starts a load; only the newest
+// one may render, so a slow earlier response cannot overwrite it. (#288)
+let historyRequestSeq = 0;
 async function loadHistoryTab() {
+    const seq = ++historyRequestSeq;
     try {
         const serverFilter = document.getElementById('history-server-filter')?.value || '';
         const limit = document.getElementById('history-limit')?.value || 50;
@@ -905,9 +947,16 @@ async function loadHistoryTab() {
         }
         
         const response = await fetch(url, getFetchOptions());
-        const history = await response.json();
+        const history = response.ok ? await response.json() : null;
+        if (seq !== historyRequestSeq) return;
 
         const tbody = document.getElementById('history-body');
+        // A 401/503 reply is an error object, not rows: say so instead of
+        // leaving the previous filter's rows under the new label.
+        if (!Array.isArray(history)) {
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center;">Failed to load sync history (HTTP ${escapeHtml(response.status)})</td></tr>`;
+            return;
+        }
         if (history.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No sync history available</td></tr>';
             return;
@@ -916,15 +965,15 @@ async function loadHistoryTab() {
         tbody.innerHTML = history.map(record => `
             <tr>
                 <td>${formatTime(record.timestamp)}</td>
-                <td>${record.server_name}</td>
+                <td>${escapeHtml(record.server_name)}</td>
                 <td>
-                    <span class="status-icon ${record.status}"></span>
-                    ${record.status}
+                    <span class="status-icon ${escapeHtml(record.status)}"></span>
+                    ${escapeHtml(record.status)}
                 </td>
                 <td>${record.duration_ms ? record.duration_ms + 'ms' : '-'}</td>
                 <td>${formatAccountCounts(record.accounts_succeeded, record.accounts_failed, record.accounts_skipped)}</td>
-                <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${record.error_message || '-'}">
-                    ${record.error_message ? `<span style="color: #ef4444;">${record.error_message}</span>` : '-'}
+                <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(record.error_message || '-')}">
+                    ${record.error_message ? `<span style="color: #ef4444;">${escapeHtml(record.error_message)}</span>` : '-'}
                 </td>
             </tr>
         `).join('');
@@ -993,7 +1042,7 @@ async function loadSettingsTab() {
         if (select && data.servers) {
             select.innerHTML = '<option value="">Select a server...</option>' +
                 Object.keys(data.servers).map(name => 
-                    `<option value="${name}">${name}</option>`
+                    `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`
                 ).join('');
         }
         
@@ -1003,7 +1052,7 @@ async function loadSettingsTab() {
             const currentValue = historyFilter.value;
             historyFilter.innerHTML = '<option value="">All Servers</option>' +
                 Object.keys(data.servers).map(name => 
-                    `<option value="${name}" ${currentValue === name ? 'selected' : ''}>${name}</option>`
+                    `<option value="${escapeHtml(name)}" ${currentValue === name ? 'selected' : ''}>${escapeHtml(name)}</option>`
                 ).join('');
         }
         
@@ -1398,7 +1447,8 @@ const CLICK_ACTIONS = {
 };
 const CHANGE_ACTIONS = {
     renderAccounts: () => renderAccounts(),
-    onDateFormatChange: () => onDateFormatChange()
+    onDateFormatChange: () => onDateFormatChange(),
+    loadHistoryTab: () => loadHistoryTab()
 };
 
 document.addEventListener('click', (e) => {

@@ -1131,7 +1131,12 @@ This test verifies that notifications are configured correctly and can reach the
 
       try {
         const limit = parseInt(req.query.limit) || 10;
-        const history = this.syncHistory.getHistory({ limit });
+        const filters = { limit };
+        // The History tab's server filter (#288). A repeated ?serverName=a&serverName=b
+        // arrives as an array; only a single non-empty string is a filter.
+        const { serverName } = req.query;
+        if (typeof serverName === 'string' && serverName !== '') filters.serverName = serverName;
+        const history = this.syncHistory.getHistory(filters);
         res.json(history);
       } catch (error) {
         this.logger.error('Failed to get sync history', {
@@ -1198,9 +1203,6 @@ This test verifies that notifications are configured correctly and can reach the
     });
   }
 
-  /**
-   * Get overall service status based on recent sync results
-   */
   /** getRunningSync() guarded, so a failing callback cannot break the status route. (#272) */
   safeRunningSync() {
     try {
@@ -1211,6 +1213,9 @@ This test verifies that notifications are configured correctly and can reach the
     }
   }
 
+  /**
+   * Get overall service status based on recent sync results
+   */
   getOverallStatus() {
     if (this.status.syncCount === 0) return 'PENDING';
     if (this.status.failureCount > 0 && this.status.successCount === 0) return 'UNHEALTHY';
@@ -1329,20 +1334,37 @@ This test verifies that notifications are configured correctly and can reach the
    *   403, at every auth type. This is the Cross-Site WebSocket Hijacking
    *   guard. A request with no Origin is not from a browser and is let through
    *   to the credential check.
-   * - more than maxWsConnectionsPerIp open sockets from one address: 429
+   * - more than maxWsConnectionsPerIp open sockets from one address (the
+   *   trustProxy-resolved client address): 429
    * - auth type basic/token: a valid single-use ?ticket= from
-   *   /api/dashboard/ws-ticket. An Authorization header is not accepted on the
-   *   handshake (it would be an unthrottled password oracle). Otherwise 401.
+   *   /api/dashboard/ws-ticket. Otherwise 401. The ticket is consumed first,
+   *   so it dies with any refusal. An Authorization header is not accepted on
+   *   the handshake (it would be an unthrottled password oracle).
    * @param {{origin?: string, req: import('http').IncomingMessage}} info
    * @param {Function} done - ws callback (result, code, message)
    */
   verifyWsClient(info, done) {
     const req = info.req;
-    const remoteAddress = req.socket.remoteAddress;
+    const remoteAddress = this.resolveWsClientIp(req);
     const refuse = (code, message) => {
       this.logger.warn('WebSocket handshake refused', { status: code, reason: message, remoteAddress });
       done(false, code, message);
     };
+
+    const authConfig = this.dashboardConfig.auth || {};
+    const needsTicket = (authConfig.type || 'none') !== 'none';
+
+    // Spend the ticket before any other check, so a handshake refused for its
+    // Origin, the cap or a disabled dashboard cannot leave a usable ticket
+    // behind in a proxy access log (the URL carries it). (#280)
+    let ticketOk = false;
+    if (needsTicket) {
+      let ticket = null;
+      try {
+        ticket = new URL(req.url, 'http://localhost').searchParams.get('ticket');
+      } catch { /* malformed URL: no ticket */ }
+      ticketOk = Boolean(ticket) && this.wsTickets.consume(ticket);
+    }
 
     if (!this.dashboardConfig.enabled) return refuse(403, 'Dashboard is disabled');
 
@@ -1354,20 +1376,31 @@ This test verifies that notifications are configured correctly and can reach the
       return refuse(429, 'Too many connections');
     }
 
-    const authConfig = this.dashboardConfig.auth || {};
-    if ((authConfig.type || 'none') === 'none') return done(true);
+    if (!needsTicket) return done(true);
 
-    let ticket = null;
-    try {
-      ticket = new URL(req.url, 'http://localhost').searchParams.get('ticket');
-    } catch { /* malformed URL: no ticket */ }
     // Ticket only. An Authorization header is deliberately NOT accepted here:
     // WebSocket upgrades bypass the Express rate limiter, so a header check on
     // the handshake would be an unthrottled password oracle. Scripts get a
     // ticket from /api/dashboard/ws-ticket with their header instead. (#242)
-    if (ticket && this.wsTickets.consume(ticket)) return done(true);
+    if (ticketOk) return done(true);
 
     return refuse(401, 'Authentication required');
+  }
+
+  /**
+   * The client address for the per-address socket cap and the handshake log.
+   * Resolved the way Express resolves req.ip, so it honours healthCheck.trustProxy
+   * (X-Forwarded-For only from trusted hops) and is the raw peer address when
+   * that is off. A WebSocket upgrade never passes through Express, so req.ip is
+   * not set on it. (#280)
+   * @param {import('http').IncomingMessage} req
+   * @returns {string}
+   */
+  resolveWsClientIp(req) {
+    const probe = Object.create(this.app.request);
+    probe.headers = req.headers;
+    probe.socket = req.socket;
+    return probe.ip || req.socket.remoteAddress;
   }
 
   /**
@@ -1456,12 +1489,12 @@ This test verifies that notifications are configured correctly and can reach the
 
         this.wss.on('connection', (ws, req) => {
           this.logger.info('WebSocket client connected', {
-            remoteAddress: req.socket.remoteAddress
+            remoteAddress: this.resolveWsClientIp(req)
           });
 
           this.wsClients.add(ws);
           ws.isAlive = true;
-          const ip = req.socket.remoteAddress;
+          const ip = this.resolveWsClientIp(req);
           this.wsConnectionsPerIp.set(ip, (this.wsConnectionsPerIp.get(ip) || 0) + 1);
           ws.once('close', () => {
             const left = (this.wsConnectionsPerIp.get(ip) || 1) - 1;
