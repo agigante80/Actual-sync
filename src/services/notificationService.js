@@ -717,6 +717,17 @@ class NotificationService {
   }
 
   /**
+   * Stop a Discord payload from pinging anyone. Account, payee and error text
+   * is not vetted, so `@everyone`, `@here` or `<@id>` inside it could mention
+   * real users; `allowed_mentions.parse: []` suppresses all of them at the
+   * Discord API level. Applied whatever the branding setting. (#294)
+   * @param {Object} payload - Discord webhook payload (mutated in place)
+   */
+  _suppressDiscordMentions(payload) {
+    if (payload) payload.allowed_mentions = { parse: [] };
+  }
+
+  /**
    * Send Slack webhooks with formatted payload
    * @param {Object} payload - Formatted Slack payload
    * @returns {Promise<Array>} Send results
@@ -761,6 +772,7 @@ class NotificationService {
     const results = [];
     const webhooks = this.config.webhooks.discord || [];
     this._brandPayload(payload, 'avatar_url'); // Discord honors username + avatar_url (#114)
+    this._suppressDiscordMentions(payload);
 
     for (const webhook of webhooks) {
       if (webhook.enabled === false) continue;
@@ -1145,6 +1157,7 @@ Please investigate and resolve the issue.
     // Brand the same way as the formatted path, so the dashboard "test
     // notification" looks identical to a real alert. (#114)
     this._brandPayload(payload, 'avatar_url');
+    this._suppressDiscordMentions(payload);
 
     const results = [];
     for (const webhook of this.config.webhooks.discord) {
