@@ -1033,8 +1033,8 @@ module.exports = [
         id: '272-never-abandoned', ticket: '#272',
         desc: 'a call that never settles blocks every later sync until restart',
         file: 'src/lib/actualTimeouts.js',
-        anchor: '    return { ok: false, cleaned, abandoned: lateCalls.abandon() };',
-        mutant: '    return { ok: false, cleaned, abandoned: lateCalls.size };',
+        anchor: '    return { ok: false, abandoned: lateCalls.abandon() };',
+        mutant: '    return { ok: false, abandoned: lateCalls.size };',
         tests: 'actualTimeouts'
     },
     {
@@ -1047,22 +1047,6 @@ module.exports = [
     },
 
     // ---- #284: hung-call hardening follow-ups --------------------------------------
-    {
-        id: '284-no-cleanup-shutdown', ticket: '#284',
-        desc: 'a late call that finished is not followed by a shutdown, so a budget it left open stays open under the next init',
-        file: 'src/lib/actualTimeouts.js',
-        anchor: '            await shutdown();\n            cleaned = true;',
-        mutant: '            cleaned = true;',
-        tests: 'actualTimeouts'
-    },
-    {
-        id: '284-cleanup-not-rechecked', ticket: '#284',
-        desc: 'a cleanup shutdown that times out is not re-checked, so it can close the next sync budget',
-        file: 'src/lib/actualTimeouts.js',
-        anchor: '        ok = await lateCalls.drain(timeoutMs);\n    }',
-        mutant: '        ok = true;\n    }',
-        tests: 'actualTimeouts'
-    },
     {
         id: '284-drain-leaks-waiter', ticket: '#284',
         desc: 'a drain that gives up stays registered as a waiter',
@@ -1093,6 +1077,22 @@ module.exports = [
         file: 'src/syncService.js',
         anchor: '                if (sessionStuck) {',
         mutant: '                if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '284-final-sync-overlaps', ticket: '#284',
+        desc: 'a stuck bank sync no longer skips the final file sync and schedule alerts, so they overlap it',
+        file: 'src/syncService.js',
+        anchor: '        if (sessionStuckAfterLoop) {',
+        mutant: '        if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '284-late-success-lost', ticket: '#284',
+        desc: 'a bank sync that succeeds during the drain is still reported failed',
+        file: 'src/syncService.js',
+        anchor: "if (!sessionStuck && lateBankSync === 'ok') {",
+        mutant: 'if (false) {',
         tests: 'syncQueue'
     },
     {

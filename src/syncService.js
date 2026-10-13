@@ -375,13 +375,13 @@ async function runSyncBank(server, options = {}) {
 
         // A call from an earlier sync that timed out may still be running in the
         // shared session. Give it one more phase timeout; if it is still busy,
-        // fail this sync rather than mix two budgets. When it did finish, close
-        // the session it may have left open before init. (#272, #284)
+        // fail this sync rather than mix two budgets. (#272, #284) No extra
+        // shutdown runs here (Actual's is a no-op before init); a budget a late
+        // call left open is closed by Actual's own close-budget step in
+        // download-budget / load-budget.
         const prepared = await prepareSession({
             lateCalls: lateActualCalls,
-            timeoutMs: phaseTimeoutMs,
-            shutdown: () => api.shutdown(),
-            logger: serverLogger
+            timeoutMs: phaseTimeoutMs
         });
         if (!prepared.ok) {
             // Refuse this one sync, then stop waiting: a call that does not
@@ -390,9 +390,6 @@ async function runSyncBank(server, options = {}) {
             const busy = new Error(`An earlier Actual API call is still running after its timeout; skipped this sync so two budgets are not mixed in one session`);
             busy.code = 'ACTUAL_SESSION_BUSY';
             throw busy;
-        }
-        if (prepared.cleaned) {
-            serverLogger.info('Closed a session left open by a late Actual API call before connecting');
         }
 
         serverLogger.info(`Connecting to Actual server`, { url });
@@ -566,10 +563,12 @@ async function runSyncBank(server, options = {}) {
             }, serverLogger);
         }
             
+        let sessionStuckAfterLoop = false;
         if (accounts && accounts.length > 0) {
             for (const [accountIndex, account] of accounts.entries()) {
                 accountsProcessed++;
                 let sessionStuck = false;
+                let lateBankSync = null; // 'ok' once a timed-out runBankSync later succeeds (#284)
                 const accountTimer = serverLogger.startTimer(`account-sync-${account.id}`);
                 serverLogger.info(`Starting bank sync for account`, { 
                     accountId: account.id,
@@ -582,9 +581,9 @@ async function runSyncBank(server, options = {}) {
                     });
                     
                     // Wrap runBankSync with timeout (60 seconds) to catch hung promises
-                    const result = await withTimeout(
-                        actual.runBankSync({ accountId: account.id }), 60000, 'runBankSync', lateActualCalls
-                    );
+                    const bankCall = Promise.resolve(actual.runBankSync({ accountId: account.id }));
+                    bankCall.then(() => { lateBankSync = 'ok'; }, () => { lateBankSync = 'failed'; });
+                    const result = await withTimeout(bankCall, 60000, 'runBankSync', lateActualCalls);
                     
                     // Add a small delay to allow any background operations to complete
                     // This works around a race condition in Actual API where runBankSync
@@ -625,6 +624,18 @@ async function runSyncBank(server, options = {}) {
                     // account starts; if it does not, stop the loop. (#284)
                     if (bankSyncError instanceof PhaseTimeoutError) {
                         sessionStuck = !(await lateActualCalls.drain(phaseTimeoutMs));
+                        // It finished during the drain and worked: the account
+                        // is fine, so do not report it failed. (#284)
+                        if (!sessionStuck && lateBankSync === 'ok') {
+                            accountsSucceeded++;
+                            succeededAccounts.push(account.name);
+                            accountTimer();
+                            serverLogger.info('Bank sync finished after its timeout; counted as succeeded', {
+                                accountId: account.id,
+                                accountName: account.name
+                            });
+                            continue;
+                        }
                     }
 
                     serverLogger.warn('runBankSync threw error', {
@@ -660,6 +671,7 @@ async function runSyncBank(server, options = {}) {
                     serverLogger.error('A timed-out bank sync is still running; skipped the remaining accounts', {
                         skipped: accounts.length - accountIndex - 1
                     });
+                    sessionStuckAfterLoop = true;
                     break;
                 }
             }
@@ -667,37 +679,44 @@ async function runSyncBank(server, options = {}) {
             serverLogger.warn('No accounts found to sync');
         }
 
-        serverLogger.info('Starting final file sync');
-        try {
-            await api.sync();
-            serverLogger.info('Final file sync completed');
-        } catch (syncError) {
-            throw enhanceActualApiError(syncError, {
-                phase: 'sync',
-                serverUrl: url,
-                syncId,
-                isEncrypted: isEncrypted
-            }, serverLogger);
-        }
+        // A bank sync still running in the session must not overlap a second
+        // call, so skip the explicit sync and the alert reads: Actual's own
+        // shutdown() syncs before it closes the budget. (#284)
+        if (sessionStuckAfterLoop) {
+            serverLogger.warn('Skipping the final file sync and schedule alerts: a timed-out bank sync is still running');
+        } else {
+            serverLogger.info('Starting final file sync');
+            try {
+                await api.sync();
+                serverLogger.info('Final file sync completed');
+            } catch (syncError) {
+                throw enhanceActualApiError(syncError, {
+                    phase: 'sync',
+                    serverUrl: url,
+                    syncId,
+                    isEncrypted: isEncrypted
+                }, serverLogger);
+            }
 
-        // Missing-payment alerts (#258): evaluated once per sync, after the
-        // final file sync so schedules and transactions are current. Only the
-        // read side (getSchedules/queries/evaluate) runs here, while the
-        // Actual session is still open; the write side (render/send/record)
-        // is run after this try/catch/finally block, once the session is
-        // closed and the sync's own durationMs is already recorded (#295
-        // review, M3 - see the call site after this function's `finally`).
-        // This is best-effort throughout: any failure is logged and never
-        // changes the sync's own result (syncStatus, syncHistory.recordSync).
-        // The step itself lives in ./lib/scheduleAlertsStep so it can be
-        // exercised directly in scheduleAlertsSync.test.js.
-        scheduleAlertsEvaluated = await maybeRunScheduleAlerts(server, {
-            api,
-            serverName: name,
-            timezone: resolveTimezone(config),
-            logger: serverLogger,
-            syncHistory
-        });
+            // Missing-payment alerts (#258): evaluated once per sync, after the
+            // final file sync so schedules and transactions are current. Only the
+            // read side (getSchedules/queries/evaluate) runs here, while the
+            // Actual session is still open; the write side (render/send/record)
+            // is run after this try/catch/finally block, once the session is
+            // closed and the sync's own durationMs is already recorded (#295
+            // review, M3 - see the call site after this function's `finally`).
+            // This is best-effort throughout: any failure is logged and never
+            // changes the sync's own result (syncStatus, syncHistory.recordSync).
+            // The step itself lives in ./lib/scheduleAlertsStep so it can be
+            // exercised directly in scheduleAlertsSync.test.js.
+            scheduleAlertsEvaluated = await maybeRunScheduleAlerts(server, {
+                api,
+                serverName: name,
+                timezone: resolveTimezone(config),
+                logger: serverLogger,
+                syncHistory
+            });
+        }
 
         // Calculate sync duration and log performance
         let durationMs = endTimer({ 

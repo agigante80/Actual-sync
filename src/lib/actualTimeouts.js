@@ -123,39 +123,26 @@ class LateCalls {
 }
 
 /**
- * Get the shared session clean before a sync opens it. (#272, #284)
+ * Check the shared session is free before a sync opens it. (#272, #284)
  *
  * With nothing late, there is nothing to do. With late calls, wait up to
- * `timeoutMs` for them. If that works, run a bounded shutdown first: a late
- * download that landed after the previous sync's shutdown (between about 2x and
- * 3x the phase timeout) leaves its budget open, and init would then run on top
- * of it. If the calls (or that shutdown) are still running, give up on them:
- * abandon the tracking so one refused sync is the cost, not every sync.
+ * `timeoutMs` for them. If they are still running, give up on them: abandon
+ * the tracking so one refused sync is the cost, not every sync.
+ *
+ * There is deliberately no cleanup `shutdown` here. Actual's shutdown() only
+ * acts after init() has set its module state, so before init it is a no-op.
+ * A budget a late download left open is closed by Actual itself: api/download-budget
+ * and load-budget run close-budget first whenever a budget is open. (#284 review)
  *
  * @param {Object} args
  * @param {LateCalls} args.lateCalls
  * @param {number} args.timeoutMs
- * @param {Function} args.shutdown - bounded api.shutdown
- * @param {Object} [args.logger]
- * @returns {Promise<{ok: boolean, cleaned: boolean, abandoned: number}>}
+ * @returns {Promise<{ok: boolean, abandoned: number}>}
  */
-async function prepareSession({ lateCalls, timeoutMs, shutdown, logger }) {
-    if (lateCalls.size === 0) return { ok: true, cleaned: false, abandoned: 0 };
-    let ok = await lateCalls.drain(timeoutMs);
-    let cleaned = false;
-    if (ok) {
-        try {
-            await shutdown();
-            cleaned = true;
-        } catch (error) {
-            // A failing shutdown is not fatal (nothing open is the common
-            // case); a timed-out one is tracked and re-checked just below.
-            if (logger) logger.debug('Shutdown before init failed', { error: error?.message || String(error) });
-        }
-        ok = await lateCalls.drain(timeoutMs);
-    }
-    if (ok) return { ok: true, cleaned, abandoned: 0 };
-    return { ok: false, cleaned, abandoned: lateCalls.abandon() };
+async function prepareSession({ lateCalls, timeoutMs }) {
+    if (lateCalls.size === 0) return { ok: true, abandoned: 0 };
+    if (await lateCalls.drain(timeoutMs)) return { ok: true, abandoned: 0 };
+    return { ok: false, abandoned: lateCalls.abandon() };
 }
 
 /**

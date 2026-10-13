@@ -233,7 +233,8 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
         expect(body).not.toBeNull();
         const raw = body[0].match(/\bactual\.\w+/g) || [];
         expect(raw).toEqual(['actual.runBankSync']);
-        expect(body[0]).toMatch(/withTimeout\(\s*actual\.runBankSync\(/);
+        expect(body[0]).toMatch(/const bankCall = Promise\.resolve\(actual\.runBankSync\(/);
+        expect(body[0]).toMatch(/withTimeout\(bankCall, 60000, 'runBankSync'/);
     });
 
     test('routes the calls through timedActual with the configured timeout', () => {
@@ -265,7 +266,7 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
 
     test('timed-out calls are tracked, drained before the slot is released, and checked before init', () => {
         expect(body[0]).toMatch(/timedActual\(actual, phaseTimeoutMs, lateActualCalls\)/);
-        expect(body[0]).toMatch(/withTimeout\(\s*actual\.runBankSync\([^)]*\), 60000, 'runBankSync', lateActualCalls/);
+        expect(body[0]).toMatch(/withTimeout\(bankCall, 60000, 'runBankSync', lateActualCalls/);
         const busyCheck = body[0].indexOf('await prepareSession({');
         const init = body[0].indexOf('await api.init(');
         expect(busyCheck).toBeGreaterThan(-1);
@@ -285,13 +286,26 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
             body[0].indexOf("busy.code = 'ACTUAL_SESSION_BUSY'")
         );
         expect(block).toMatch(/lateCalls: lateActualCalls/);
-        expect(block).toMatch(/shutdown: \(\) => api\.shutdown\(\)/);
+        expect(block).not.toMatch(/shutdown/); // Actual's shutdown is a no-op before init (#284)
         expect(block).toMatch(/if \(!prepared\.ok\)/);
     });
 
     test('a timed-out runBankSync gets a drain before the next account, and a stuck one stops the loop (#284)', () => {
         expect(body[0]).toMatch(/if \(bankSyncError instanceof PhaseTimeoutError\) \{\s*sessionStuck = !\(await lateActualCalls\.drain\(phaseTimeoutMs\)\);/);
         expect(body[0]).toMatch(/if \(sessionStuck\) \{[\s\S]*?\bbreak;/);
+    });
+
+    test('a stuck bank sync skips the final file sync and the schedule alerts (#284)', () => {
+        expect(body[0]).toMatch(/sessionStuckAfterLoop = true;\s*break;/);
+        const skip = body[0].indexOf('if (sessionStuckAfterLoop) {');
+        expect(skip).toBeGreaterThan(-1);
+        expect(skip).toBeLessThan(body[0].lastIndexOf('await api.sync();'));
+        expect(skip).toBeLessThan(body[0].indexOf('await maybeRunScheduleAlerts('));
+    });
+
+    test('a timed-out bank sync that finishes OK during the drain counts as succeeded (#284)', () => {
+        expect(body[0]).toMatch(/bankCall\.then\(\(\) => \{ lateBankSync = 'ok'; \}/);
+        expect(body[0]).toMatch(/if \(!sessionStuck && lateBankSync === 'ok'\) \{\s*accountsSucceeded\+\+;/);
     });
 
     test('a sync that never opened the session does not shut it down', () => {

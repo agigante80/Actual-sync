@@ -240,51 +240,24 @@ describe('prepareSession (#284)', () => {
     };
 
     test('does nothing when no call is late', async () => {
-        const shutdown = jest.fn();
-        const r = await prepareSession({ lateCalls: new LateCalls(), timeoutMs: 50, shutdown });
-        expect(r).toEqual({ ok: true, cleaned: false, abandoned: 0 });
-        expect(shutdown).not.toHaveBeenCalled();
+        const r = await prepareSession({ lateCalls: new LateCalls(), timeoutMs: 50 });
+        expect(r).toEqual({ ok: true, abandoned: 0 });
     });
 
-    test('shuts the stale session down before init when the late call finished in time', async () => {
+    test('is ok when the late call finishes within the wait', async () => {
         const late = new LateCalls();
         const call = deferred();
         late.add(call.promise, { phase: 'downloadBudget' });
-        const shutdown = jest.fn(async () => {});
-        const prepared = prepareSession({ lateCalls: late, timeoutMs: 1000, shutdown });
+        const prepared = prepareSession({ lateCalls: late, timeoutMs: 1000 });
         call.resolve();
-        await expect(prepared).resolves.toEqual({ ok: true, cleaned: true, abandoned: 0 });
-        expect(shutdown).toHaveBeenCalledTimes(1);
-    });
-
-    test('a failing shutdown is not fatal', async () => {
-        const late = new LateCalls();
-        late.add(Promise.resolve(), { phase: 'sync' });
-        const logger = { debug: jest.fn() };
-        const r = await prepareSession({
-            lateCalls: late, timeoutMs: 50, shutdown: async () => { throw new Error('nothing open'); }, logger
-        });
-        expect(r).toEqual({ ok: true, cleaned: false, abandoned: 0 });
-        expect(logger.debug).toHaveBeenCalled();
+        await expect(prepared).resolves.toEqual({ ok: true, abandoned: 0 });
     });
 
     test('refuses and abandons when the late call is still running', async () => {
         const late = new LateCalls();
         late.add(never(), { phase: 'sync' });
-        const shutdown = jest.fn();
-        const r = await prepareSession({ lateCalls: late, timeoutMs: 20, shutdown });
-        expect(r).toEqual({ ok: false, cleaned: false, abandoned: 1 });
-        expect(shutdown).not.toHaveBeenCalled();
-        expect(late.size).toBe(0);
-    });
-
-    test('refuses when the cleanup shutdown itself times out, and abandons it', async () => {
-        const late = new LateCalls();
-        late.add(Promise.resolve(), { phase: 'sync' });
-        const timed = timedActual({ q: () => ({}), ...Object.fromEntries(TIMED_METHODS.map(m => [m, never])) }, 20, late);
-        const r = await prepareSession({ lateCalls: late, timeoutMs: 20, shutdown: () => timed.shutdown() });
-        expect(r.ok).toBe(false);
-        expect(r.abandoned).toBe(1);
+        const r = await prepareSession({ lateCalls: late, timeoutMs: 20 });
+        expect(r).toEqual({ ok: false, abandoned: 1 });
         expect(late.size).toBe(0);
     });
 });
