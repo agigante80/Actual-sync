@@ -605,7 +605,7 @@ npm audit --audit-level=high
 
 **Runs**: After Docker test build completes
 
-**Supply chain**: the scanner's own GitHub Action is pinned to a commit SHA, not a branch, so a compromised upstream branch cannot run code in CI. A test fails the suite if a workflow references `master`, `main`, `develop`, `development` or `HEAD`, and enforces the trivy SHA pin. Other actions are still on version tags until #249 pins them all. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
+**Supply chain** (#249): every GitHub Action in every workflow is pinned to a full commit SHA with a version comment, so a repointed tag or compromised upstream branch cannot run new code in CI, where Docker Hub, GitHub App and Codecov credentials are in scope. `scripts/check-action-pins.sh` fails CI on any unpinned reference, and Dependabot's `github-actions` entry keeps the pins current. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
 
 **Location**: `security-scan` job in CI/CD workflow
 

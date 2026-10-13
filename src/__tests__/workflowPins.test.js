@@ -31,6 +31,17 @@ describe('workflow action pins (#248)', () => {
         expect(floating).toEqual([]);
     });
 
+    // Full sweep (#249). The authoritative CI guard is scripts/check-action-pins.sh
+    // (workflow "Action pins"); this repeats the core rule so `npm test` catches
+    // it locally too.
+    it.each(workflows)('%s pins every action to a 40-hex SHA with a version comment', (file) => {
+        const unpinned = usesLines(file)
+            .filter(({ line }) => !/uses:\s*(\.\/|docker:\/\/)/.test(line))
+            .filter(({ line }) => !/uses:\s*["']?[\w.-]+\/[\w./-]+@[0-9a-f]{40}["']?\s+# v\d+(\.\d+)*\s*$/.test(line))
+            .map(({ line, n }) => `${file}:${n} ${line}`);
+        expect(unpinned).toEqual([]);
+    });
+
     it('pins trivy-action to a full commit SHA', () => {
         const trivy = workflows.flatMap(file => usesLines(file)
             .filter(({ line }) => line.includes('aquasecurity/trivy-action@')));

@@ -1306,6 +1306,7 @@ git push origin feature/amazing-feature
 - **Documentation** - Update relevant docs in `docs/` directory
 - **Commit Messages** - Use conventional commits (feat, fix, docs, chore, etc.)
 - **Pull Requests** - Include description, tests, and documentation updates
+- **GitHub Actions** - Reference every action by full commit SHA with a `# vX.Y.Z` comment, never a tag or branch (CI fails otherwise; see [docs/CI_CD.md](docs/CI_CD.md#pinning-third-party-actions))
 
 See **[CLAUDE.md](CLAUDE.md)** for developer and AI-agent guidelines (commands, architecture, conventions).
 
