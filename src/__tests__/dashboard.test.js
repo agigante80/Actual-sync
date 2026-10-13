@@ -100,7 +100,7 @@ describe('dashboard.html is CSP-clean (#243)', () => {
         encodeURIComponent
       };
       vm.createContext(ctx);
-      vm.runInContext(src + '\n;this.connectWebSocket = connectWebSocket;', ctx);
+      vm.runInContext(src + '\n;addLogEntry = function () {};\nthis.connectWebSocket = connectWebSocket;', ctx);
       const tick = () => new Promise(r => setImmediate(r));
       return {
         ctx, sockets, listeners, tick,
