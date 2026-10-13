@@ -1096,6 +1096,30 @@ module.exports = [
         tests: 'syncQueue'
     },
     {
+        id: '284-late-success-double-counted', ticket: '#284',
+        desc: 'a bank sync that succeeds during the drain is counted succeeded and then also failed',
+        file: 'src/syncService.js',
+        anchor: "                                accountName: account.name\n                            });\n                            continue;\n                        }\n                        // It finished during the drain and failed",
+        mutant: "                                accountName: account.name\n                            });\n                        }\n                        // It finished during the drain and failed",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '284-stuck-final-sync-runs', ticket: '#284',
+        desc: 'the final file sync runs even when a bank sync is stuck (the else branch is always taken)',
+        file: 'src/syncService.js',
+        anchor: "        } else {\n            serverLogger.info('Starting final file sync');",
+        mutant: "        } {\n            serverLogger.info('Starting final file sync');",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '284-late-failure-masked', ticket: '#284',
+        desc: 'a late bank sync failure is reported with the timeout message, so a late "No new transactions" is a failure',
+        file: 'src/syncService.js',
+        anchor: "failure = lateBankError;",
+        mutant: "failure = bankSyncError;",
+        tests: 'syncLateBankSync'
+    },
+    {
         id: '284-running-sync-not-rendered', ticket: '#284',
         desc: 'the dashboard never shows the sync holding the queue',
         file: 'src/services/dashboard.js',

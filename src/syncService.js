@@ -568,7 +568,8 @@ async function runSyncBank(server, options = {}) {
             for (const [accountIndex, account] of accounts.entries()) {
                 accountsProcessed++;
                 let sessionStuck = false;
-                let lateBankSync = null; // 'ok' once a timed-out runBankSync later succeeds (#284)
+                let lateBankSync = null; // 'ok' / 'failed' once a timed-out runBankSync settles (#284)
+                let lateBankError = null; // what it failed with
                 const accountTimer = serverLogger.startTimer(`account-sync-${account.id}`);
                 serverLogger.info(`Starting bank sync for account`, { 
                     accountId: account.id,
@@ -582,7 +583,7 @@ async function runSyncBank(server, options = {}) {
                     
                     // Wrap runBankSync with timeout (60 seconds) to catch hung promises
                     const bankCall = Promise.resolve(actual.runBankSync({ accountId: account.id }));
-                    bankCall.then(() => { lateBankSync = 'ok'; }, () => { lateBankSync = 'failed'; });
+                    bankCall.then(() => { lateBankSync = 'ok'; }, (err) => { lateBankSync = 'failed'; lateBankError = err; });
                     const result = await withTimeout(bankCall, 60000, 'runBankSync', lateActualCalls);
                     
                     // Add a small delay to allow any background operations to complete
@@ -603,25 +604,10 @@ async function runSyncBank(server, options = {}) {
                         durationMs: accountDuration
                     });
                 } catch (bankSyncError) { // catch bankSyncError
-                    const errorMsg = bankSyncError?.message || bankSyncError?.toString() || String(bankSyncError) || 'Unknown error';
-
-                    // "No new transactions" is a healthy outcome, not a failure —
-                    // count it as a success so a quiet linked account isn't reported
-                    // as failed. (#98)
-                    if (errorMsg && /no new transactions|no transactions found|nothing to sync/i.test(errorMsg)) {
-                        accountsSucceeded++;
-                        succeededAccounts.push(account.name);
-                        accountTimer();
-                        serverLogger.info('No new transactions for account', {
-                            accountId: account.id,
-                            accountName: account.name
-                        });
-                        continue;
-                    }
-
                     // A timed-out runBankSync is still running in the one shared
                     // session. Give it a phase timeout to finish before the next
                     // account starts; if it does not, stop the loop. (#284)
+                    let failure = bankSyncError;
                     if (bankSyncError instanceof PhaseTimeoutError) {
                         sessionStuck = !(await lateActualCalls.drain(phaseTimeoutMs));
                         // It finished during the drain and worked: the account
@@ -636,14 +622,36 @@ async function runSyncBank(server, options = {}) {
                             });
                             continue;
                         }
+                        // It finished during the drain and failed: report and
+                        // classify its real error (so a late "No new
+                        // transactions" still gets the #98 rule below), not the
+                        // timeout. (#284)
+                        if (!sessionStuck && lateBankSync === 'failed' && lateBankError) {
+                            failure = lateBankError;
+                        }
+                    }
+                    const errorMsg = failure?.message || failure?.toString() || String(failure) || 'Unknown error';
+
+                    // "No new transactions" is a healthy outcome, not a failure -
+                    // count it as a success so a quiet linked account isn't reported
+                    // as failed. (#98)
+                    if (errorMsg && /no new transactions|no transactions found|nothing to sync/i.test(errorMsg)) {
+                        accountsSucceeded++;
+                        succeededAccounts.push(account.name);
+                        accountTimer();
+                        serverLogger.info('No new transactions for account', {
+                            accountId: account.id,
+                            accountName: account.name
+                        });
+                        continue;
                     }
 
                     serverLogger.warn('runBankSync threw error', {
                         accountId: account.id,
                         accountName: account.name,
                         error: errorMsg,
-                        errorCode: bankSyncError?.code || 'UNKNOWN',
-                        errorStack: bankSyncError?.stack || 'No stack trace available'
+                        errorCode: failure?.code || 'UNKNOWN',
+                        errorStack: failure?.stack || 'No stack trace available'
                     });
                     accountsFailed++;
                     failedAccounts.push({
@@ -655,8 +663,8 @@ async function runSyncBank(server, options = {}) {
                         accountId: account.id,
                         accountName: account.name,
                         error: errorMsg,
-                        errorCode: bankSyncError?.code || 'UNKNOWN',
-                        errorStack: bankSyncError?.stack || 'No stack trace available'
+                        errorCode: failure?.code || 'UNKNOWN',
+                        errorStack: failure?.stack || 'No stack trace available'
                     });
                 }
                 if (sessionStuck) {
@@ -679,9 +687,10 @@ async function runSyncBank(server, options = {}) {
             serverLogger.warn('No accounts found to sync');
         }
 
-        // A bank sync still running in the session must not overlap a second
-        // call, so skip the explicit sync and the alert reads: Actual's own
-        // shutdown() syncs before it closes the budget. (#284)
+        // A bank sync still running in the session is not given a second
+        // explicit sync or the alert reads. The finally block's drain and
+        // api.shutdown() (which syncs, then closes the budget) can still run
+        // while it is in flight: that overlap is pre-existing and remains. (#284)
         if (sessionStuckAfterLoop) {
             serverLogger.warn('Skipping the final file sync and schedule alerts: a timed-out bank sync is still running');
         } else {
