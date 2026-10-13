@@ -225,7 +225,7 @@ HTTP server for health probes, Prometheus metrics, and the web dashboard.
   - `"basic"` requires **username** and **password**.
   - `"token"` requires **token** (sent as `Authorization: Bearer <token>`).
   - A missing or blank credential locks the dashboard out (every request gets 500 `Invalid authentication configuration`), so set the credentials when you enable auth.
-- **dashboard.allowedOrigins** (array of `scheme://host[:port]`, default: `[]`) - extra browser origins allowed to open the `/ws/logs` live log stream. Same-origin is always allowed, and a request with no `Origin` header (a script, not a browser) is not origin-checked. Any other browser origin is refused with 403 at every auth type; this is the guard against Cross-Site WebSocket Hijacking. Add an entry only if the dashboard page is served under a different origin than the host the browser connects to, for example `["https://budget.example.com"]`.
+- **dashboard.allowedOrigins** (array of `scheme://host[:port]`, default: `[]`) - extra browser origins allowed to open the `/ws/logs` live log stream. Same-origin is always allowed, and a request with no `Origin` header (a script, not a browser) is not origin-checked. Any other browser origin is refused with 403 at every auth type; this is the guard against Cross-Site WebSocket Hijacking. Same-origin means `Origin` equals the `Host` header the service receives, port included, so a proxy that rewrites `Host` causes a 403 (see the troubleshooting in [DASHBOARD.md](DASHBOARD.md)). Add an entry only if the dashboard page is served under a different origin than the host the browser connects to, for example `["https://budget.example.com"]`.
 
 ```json
 "healthCheck": {

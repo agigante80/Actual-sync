@@ -1162,6 +1162,54 @@ module.exports = [
         tests: 'dashboardCredentials'
     },
     {
+        id: '280-ws-ticket-spent-late', ticket: '#280',
+        desc: 'the handshake only looks the ticket up instead of spending it first, so a refused handshake leaves it valid',
+        file: 'src/services/healthCheck.js',
+        anchor: '      ticketOk = Boolean(ticket) && this.wsTickets.consume(ticket);',
+        mutant: '      ticketOk = Boolean(ticket) && this.wsTickets.tickets.has(ticket);',
+        tests: 'healthCheck'
+    },
+    {
+        id: '280-ws-cap-ignores-trustproxy', ticket: '#280',
+        desc: 'the per-address cap uses the TCP peer address and ignores healthCheck.trustProxy',
+        file: 'src/services/healthCheck.js',
+        anchor: '    return probe.ip || req.socket.remoteAddress;',
+        mutant: '    return req.socket.remoteAddress;',
+        tests: 'healthCheck'
+    },
+    {
+        id: '280-ws-origin-ignores-port', ticket: '#280',
+        desc: 'same-origin compares hostname only, so a different port on the same host passes',
+        file: 'src/services/healthCheck.js',
+        anchor: '    if (host && parsed.host === host) return true;',
+        mutant: "    if (host && parsed.hostname === host.split(':')[0]) return true;",
+        tests: 'healthCheck'
+    },
+    {
+        id: '280-stale-socket-close-reschedules', ticket: '#280',
+        desc: 'a replaced socket closing late still schedules a retry, orphaning the live socket',
+        file: 'src/services/dashboard.js',
+        anchor: '        sock.onclose = () => {\n            if (sock !== ws) return;\n',
+        mutant: '        sock.onclose = () => {\n',
+        tests: 'dashboard'
+    },
+    {
+        id: '280-ws-connect-guard-removed', ticket: '#280',
+        desc: 'connectWebSocket no longer returns when a socket is open or connecting, so a late retry orphans a socket',
+        file: 'src/services/dashboard.js',
+        anchor: '    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;\n',
+        mutant: '',
+        tests: 'dashboard'
+    },
+    {
+        id: '280-ws-pong-clock-not-reset', ticket: '#280',
+        desc: 'a new socket keeps the stale lastPingTime, so after one keep-alive timeout every socket closes at its first tick',
+        file: 'src/services/dashboard.js',
+        anchor: '            lastPingTime = Date.now();\n            addLogEntry',
+        mutant: '            addLogEntry',
+        tests: 'dashboard'
+    },
+    {
         id: '246-basic-auth-short-circuits', ticket: '#246',
         desc: 'a wrong username skips the password comparison, a timing signal for valid usernames',
         file: 'src/lib/dashboardCredentials.js',
@@ -1182,8 +1230,8 @@ module.exports = [
         id: '242-ws-header-oracle', ticket: '#242',
         desc: 'the handshake accepts an Authorization header again, an unthrottled password oracle',
         file: 'src/services/healthCheck.js',
-        anchor: '    if (ticket && this.wsTickets.consume(ticket)) return done(true);\n',
-        mutant: '    if (ticket && this.wsTickets.consume(ticket)) return done(true);\n    if (checkCredentials(req.headers, authConfig).ok) return done(true);\n',
+        anchor: '    if (ticketOk) return done(true);\n',
+        mutant: '    if (ticketOk) return done(true);\n    if (checkCredentials(req.headers, authConfig).ok) return done(true);\n',
         tests: 'healthCheck'
     },
     {
