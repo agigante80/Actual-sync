@@ -123,9 +123,10 @@ see [SYNC_HISTORY.md](./SYNC_HISTORY.md)) by `(server, alertId, scheduleId, occu
 channel)` before it is sent, where `channel` identifies the exact destination: the channel name
 alone for a single-destination channel such as `telegram` or `email`, or for a webhook-style channel
 such as `slack`/`discord`/`webhook` that can have several destinations, the channel name plus the
-operator's configured `name` for that webhook, or, when no name is set, a short non-reversible hash
-of its URL (never the URL itself - the ledger is never a place secrets are stored, #295 review round
-2, M8). A key that already has a row is not sent again to that destination, **except**:
+operator's configured `name` for that webhook (if any) plus a short non-reversible hash of its URL
+(never the URL itself - the ledger is never a place secrets are stored, #295 review round 2, M8).
+The hash is always part of the key, so two webhooks of one channel that share a name are still
+tracked and retried separately (#297 F3). A key that already has a row is not sent again to that destination, **except**:
 
 - a `missing` event, when `remindEveryDays` is set and that many days have passed since the latest
   recorded row for that destination;
@@ -228,15 +229,19 @@ shares the sync process's own local zone.
 ## Design notes and known limitations
 
 - **Overlapping windows are caught per schedule, at evaluation time, not at config load.** A rule
-  whose `graceDays + earlyDays` (widened, when larger, to the linked-transaction early allowance -
-  see the next bullet) is greater than or equal to its schedule's own shortest interval between
+  whose `graceDays + earlyDays` is greater than or equal to its schedule's own shortest interval between
   occurrences would let one payment satisfy two occurrences, or invert the late window. A schedule's
   cadence is only known once `getSchedules()` returns during a sync - `config.json` alone carries no
   cadence information - so this cannot be rejected at config-load time the way a structural error (a
   missing required field, a duplicate `id`) can. Instead, the violation is detected the first time
   the rule is evaluated: the rule is skipped for that sync (one `cannotCheck` event, `reason:
   "interval-violation"`) and a warning is logged, rather than risk a double-counted payment or an
-  inverted late window.
+  inverted late window. The +/-2 day linked-transaction early allowance does count towards that sum, but
+  only for schedules whose shortest interval is longer than the allowance: a weekly rule with
+  `graceDays: 5` (5 + 2 >= 7) is rejected, because its on-time window would swallow the next
+  occurrence's early linked payment. For intervals of 2 days or less (daily) the allowance is not
+  counted, since it would reject every daily schedule on every sync (#297 F4); instead a linked
+  payment's early window is clamped to start the day after the previous occurrence's deadline.
 - **A rule's `channels` list must name at least one configured destination, checked at config-load
   time (#295 review, M2), and every template is validated at startup only against the channels a
   rule can actually reach (#295 review round 2, M7).** If a rule's explicit `channels` names only
@@ -248,26 +253,33 @@ shares the sync process's own local zone.
   channel list, so a Telegram-only restriction (for example, no literal `&`/`<` in the rendered
   text) is only enforced for a rule that can actually reach Telegram, never for one restricted to
   slack/email or on a server with no Telegram destination configured.
-- **A missed occurrence can be masked by a later linked payment, not only by an explicit "Skip next
-  date" (#295 review round 2, H2).** Actual advances a schedule's `next_date` both when an operator
-  explicitly skips an occurrence and whenever a later occurrence gets linked to a posted payment,
-  with no other trace distinguishing the two cases. Schedule alerts treats an occurrence before
-  `next_date` as `skipped` only when no transaction linked to that schedule falls between the
-  occurrence's deadline and `next_date`; if one does, that later payment - not a deliberate skip -
-  is what moved `next_date`, and the occurrence falls through to the normal `missing`/`cannotCheck`
-  check instead of being hidden. The accepted trade-off: a genuine explicit skip whose next payment
-  happens to post early (dated between the skipped occurrence's deadline and `next_date`) looks
-  identical to the masked-miss case above, and will also fall through rather than being reported as
-  `skipped` - an occasional false `missing` on an explicitly-skipped occurrence (which the operator
-  can dismiss) is accepted in exchange for never silently hiding a genuine miss.
+- **Telling an explicit skip from a miss (#295 review round 2, H2; #297 F1).** Actual advances a
+  schedule's `next_date` both when an operator explicitly skips an occurrence and whenever a later
+  occurrence gets linked to a posted payment, with no other trace distinguishing the two. Schedule
+  alerts therefore remembers the first observation. The first time an unpaid occurrence is past its
+  deadline with `next_date` already beyond it and no linked payment dated between the deadline and
+  `next_date`, it is a skip: the occurrence is reported `skipped` and a `skipped` row is written to the
+  ledger. That decision is honoured on every later sync, even after a February payment moves
+  `next_date` on to March, so January is never reported `missing`. The accepted limitation: a skip
+  first seen only after a later linked payment already advanced `next_date` (no sync ran in between,
+  or schedule alerts was enabled afterwards) looks identical to a real miss and is reported `missing`
+  (or `cannotCheck`), which the operator can dismiss. Hiding a genuine miss would be worse than that
+  occasional false `missing`. Skip rows live in the same ledger and are purged with it.
 - **Rule enable/mute state and dashboard-managed rules are out of scope for this release.** Every
   rule from `config.json` is always enabled and never muted; a future release can add real
   enable/mute state and dashboard-created rules without changing the evaluation or delivery engine.
-- **A new or rotated webhook destination gets its currently-open alerts re-sent once (#295 review
-  round 2, M8).** The ledger key for a webhook-style destination is the operator's configured `name`
-  when set, or otherwise a short hash of its URL - never the URL itself, since the ledger is a
-  plain-text SQLite database and the URL is a secret. Adding a webhook, renaming one, or rotating its
-  URL with no name set changes its key to one the ledger has never recorded, so any alert still open
-  for that destination is delivered once more before settling back into the normal per-destination
-  de-duplication and reminder cycle. This is accepted: it is strictly safer than storing the secret
-  in the ledger, or silently losing track of an in-flight alert across a rename/rotation.
+- **A new, renamed or rotated webhook destination gets its currently-open alerts re-sent once, but
+  not their `resolved` message (#295 review round 2, M8; #297 F3, F6).** The ledger key for a
+  webhook-style destination is its configured `name` (if any) plus a short hash of its URL - never
+  the URL itself, since the ledger is a plain-text SQLite database and the URL is a secret. Adding a
+  webhook, renaming one, or rotating its URL changes its key to one the ledger has never recorded, so
+  any alert still open for that destination is delivered once more before settling back into the
+  normal per-destination de-duplication and reminder cycle. This is accepted: it is strictly safer
+  than storing the secret in the ledger, or silently losing track of an in-flight alert across a
+  rename/rotation. The flip side: a `resolved` message goes only to a destination that holds its own
+  `missing` row. If the payment arrives before the renamed or rotated destination received its
+  re-sent `missing`, that destination gets neither, and the message the old key received is never
+  closed by a `resolved`.
+  Databases written by a pre-release development build of this feature (ledger keys of the form
+  `slack:#ops`, before the hash was always appended) may see one extra re-send of open alerts after
+  upgrading; no released version wrote those keys (#297 round 1, L2).

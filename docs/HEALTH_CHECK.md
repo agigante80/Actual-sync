@@ -138,6 +138,7 @@ returns the Prometheus text format. No authentication. See
 ### Other public endpoints
 
 - `GET /icon.png` — the project icon (served locally; used by the dashboard and notifications).
+- `GET /vendor/chart.umd.min.js`: the Chart.js bundle from the installed npm package, used by the dashboard charts. Fixed path, no directory listing, cached for one day.
 
 ### Internal dashboard API (`/api/dashboard/*`)
 

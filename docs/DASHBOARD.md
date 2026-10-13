@@ -14,6 +14,10 @@ The dashboard is a responsive single-page application that offers:
 - **🔐 Authentication** - Optional basic auth or token-based authentication
 - **🎨 Dark Theme** - Modern UI optimized for long monitoring sessions
 
+## No external network dependencies
+
+The dashboard loads nothing from the internet. Chart.js is a regular npm dependency of the service and is served from the app itself at `/vendor/chart.umd.min.js`, the same way the logo is served at `/icon.png`. The page therefore renders fully, charts included, on an air-gapped host or with all outbound traffic blocked, and no third party is contacted when you open it.
+
 ## Live Logs authentication
 
 The Live Logs panel streams from `/ws/logs`, which is authenticated like the rest of the dashboard. Before each connect the page fetches a single-use, 30 second ticket from `/api/dashboard/ws-ticket` using the same credentials as every other dashboard request, then opens the stream with it. You do not configure anything for this.
