@@ -22,6 +22,24 @@ updates:
       time: "01:00"
       timezone: "Europe/Madrid"
     open-pull-requests-limit: 5
+    # Cooldown (#251): do not propose a version until it has been published for
+    # this many days. npm supply chain attacks (the Shai-Hulud waves, the June
+    # 2026 Red Hat namespace compromise) are typically detected and unpublished
+    # within hours to a couple of days, so a short wait skips most of them.
+    # 5 days for patch and minor, 7 for major, a single `default-days` for
+    # anything without a semver class. This is a probabilistic control, not a
+    # guarantee: a malicious version that stays undetected longer than the
+    # window still lands, so it sits alongside `npm audit` and dependency review,
+    # not in place of them.
+    #
+    # Cooldown applies to VERSION updates only. Dependabot never delays a
+    # security update, and entry 2 below deliberately carries no `cooldown`
+    # (src/__tests__/dependabotConfig.test.js enforces the asymmetry).
+    cooldown:
+      default-days: 5
+      semver-major-days: 7
+      semver-minor-days: 5
+      semver-patch-days: 5
     # Direct dependencies only — Dependabot never opens a PR for a transitive.
     #
     # That is a statement about WHO moves a transitive, not WHETHER it moves.
@@ -78,6 +96,11 @@ updates:
   # updates — and sets `open-pull-requests-limit: 0` to switch its own version
   # updates off, leaving entry 1 as the only source of version-update PRs.
   #
+  # This entry has NO `cooldown`, on purpose (#251). A security update answers a
+  # known advisory, so waiting days increases exposure instead of reducing it.
+  # Entry 1 has a cooldown and this one does not: the asymmetry is correct, not
+  # an oversight, and a test fails if a cooldown is added here.
+  #
   # Do not "tidy" this by merging it into entry 1. Merging the two would restore
   # exactly the hole that produced PR #192.
   #
@@ -128,6 +151,11 @@ updates:
       day: "monday"
       time: "01:00"
       timezone: "Europe/Madrid"
+    # Same repointing/compromise risk as npm (tj-actions/changed-files, 2025),
+    # and nothing in CI needs an action release within hours. Actions have no
+    # reliable semver classes for Dependabot's purposes, so one window applies.
+    cooldown:
+      default-days: 5
     reviewers:
       - "agigante80"
     labels:
@@ -136,3 +164,9 @@ updates:
     commit-message:
       prefix: "chore(ci)"
       include: "scope"
+
+  # DECISION (#251): no `docker` ecosystem entry yet. Tracking the Dockerfile
+  # base image would open PRs for new `node` major versions, and the Node
+  # version is a deliberate choice shared with CI (NODE_VERSION) and the
+  # engines field, so it needs an `ignore` policy decided first. Tracked as its
+  # own ticket rather than bundled here.
