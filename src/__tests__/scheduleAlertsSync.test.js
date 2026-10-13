@@ -37,6 +37,7 @@ const {
   maybeDeliverScheduleAlerts
 } = require('../lib/scheduleAlertsStep');
 const { MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS } = require('../lib/scheduleAlerts');
+const { destinationKey } = require('../lib/scheduleAlertDelivery');
 const { SyncHistoryService } = require('../services/syncHistory');
 const { NotificationService } = require('../services/notificationService');
 const { createTempDir, cleanupTempDir } = require('./helpers/testHelpers');
@@ -187,6 +188,91 @@ describe('scheduleAlertsSync: end-to-end delivery (#258)', () => {
 
     expect(second).toEqual({ events: 1, sent: 0, skipped: 1 });
     expect(received).toHaveLength(1); // still just the first sync's send
+  });
+});
+
+describe('scheduleAlertsSync: #297 F1 remembered skip across syncs', () => {
+  let syncHistory;
+  let dbDir;
+  const sender = { config: { webhooks: { generic: [{ url: 'http://127.0.0.1:1/hook', enabled: true }] } }, sendTemplated: jest.fn(async () => ({ webhook: { success: true } })) };
+
+  beforeEach(() => {
+    dbDir = createTempDir();
+    syncHistory = new SyncHistoryService({ dbPath: path.join(dbDir, 'sync-history.db'), loggerConfig: { level: 'ERROR' } });
+    sender.sendTemplated.mockClear();
+  });
+  afterEach(() => {
+    syncHistory.close();
+    cleanupTempDir(dbDir);
+  });
+
+  const monthly = (nextDate) => rentSchedule({ date: { start: '2026-01-01', frequency: 'monthly' }, next_date: nextDate });
+  const server_ = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'] }] } };
+  const run = (api, now) => runScheduleAlertsStep({
+    api, server: server_, serverName: 'Main', timezone: 'UTC', syncHistory, notificationService: sender, logger: quietLogger, now: new Date(now)
+  });
+
+  test('January skipped in Actual, February paid and linked: January is never reported missing', async () => {
+    // Sync 1 (Jan 10): user skipped January, so next_date is already 2026-02-01.
+    const first = await run(makeFakeApi({
+      schedules: [monthly('2026-02-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-09') }]
+    }), '2026-01-10T00:00:00.000Z');
+    expect(first).toEqual({ events: 0, sent: 0, skipped: 0 });
+    expect(await syncHistory.listScheduleAlertSkips({ server: 'Main' }))
+      .toEqual([{ scheduleId: 's1', occurrenceDate: '2026-01-01' }]);
+
+    // Sync 2 (Feb 10): February paid and linked on 02-01, next_date advanced to 03-01.
+    const second = await run(makeFakeApi({
+      schedules: [monthly('2026-03-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-02-09') }],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }]
+    }), '2026-02-10T00:00:00.000Z');
+    expect(second.events).toBe(0);
+    expect(sender.sendTemplated).not.toHaveBeenCalled();
+  });
+
+  test('without the first observation (no ledger row) the same February state still reports January missing', async () => {
+    const result = await run(makeFakeApi({
+      schedules: [monthly('2026-03-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-02-09') }],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }]
+    }), '2026-02-10T00:00:00.000Z');
+    expect(result.events).toBe(1);
+  });
+
+  test('a skip decision is recorded once, not again on every sync', async () => {
+    const api = makeFakeApi({
+      schedules: [monthly('2026-02-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-20') }]
+    });
+    await run(api, '2026-01-25T00:00:00.000Z');
+    await run(api, '2026-01-26T00:00:00.000Z');
+    const rows = syncHistory.db.prepare("SELECT * FROM schedule_alerts WHERE event = 'skipped'").all();
+    expect(rows).toHaveLength(1);
+  });
+
+  test('a failure while recording the skip does not stop the alerts from being delivered', async () => {
+    jest.spyOn(syncHistory, 'recordScheduleAlert');
+    syncHistory.recordScheduleAlert.mockImplementationOnce(async () => { throw new Error('disk full'); });
+    const result = await runScheduleAlertsStep({
+      api: makeFakeApi({
+        schedules: [monthly('2026-02-01'), rentSchedule({ id: 's2', name: 'Gym', payee: 'pay2', date: '2026-01-05' })],
+        payees: [{ id: 'pay1', name: 'Landlord' }, { id: 'pay2', name: 'Gym Ltd' }],
+        accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-20') }]
+      }),
+      server: { scheduleAlerts: { alerts: [
+        { id: 'rent', schedule: 'Rent', channels: ['webhook'] },
+        { id: 'gym', schedule: 'Gym', channels: ['webhook'] }
+      ] } },
+      serverName: 'Main', timezone: 'UTC', syncHistory, notificationService: sender, logger: quietLogger,
+      now: new Date('2026-01-25T00:00:00.000Z')
+    });
+    expect(result.sent).toBe(1); // Gym's missing alert still went out
   });
 });
 
@@ -408,7 +494,7 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
   });
 
   /** Never actually dials out (no real network), just fakes latency. */
-  function makeSlowSender(delayMs) {
+  function makeSlowSender(delayMs, { onSend } = {}) {
     const calls = [];
     return {
       calls,
@@ -422,6 +508,7 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
       },
       sendTemplated: jest.fn(async (channelOutputs) => {
         calls.push({ at: Date.now(), url: channelOutputs.webhook && channelOutputs.webhook.url });
+        if (onSend) onSend(calls.length);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         return { webhook: { ok: true } };
       })
@@ -436,19 +523,30 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
       transactions: []
     });
     const server_ = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'] }] } };
-    const SEND_DELAY_MS = 60;
-    const sender = makeSlowSender(SEND_DELAY_MS);
+    // Deterministic clock (#297 round 2 L-a): the budget is far longer than
+    // any pre-send overhead, and the clock jumps past it the moment the first
+    // send starts. So the first destination is always in flight when the
+    // budget expires, and the second is never started, however slow the host.
+    const SEND_DELAY_MS = 100;
+    const DELIVER_BUDGET_MS = 60000;
+    const realNow = Date.now.bind(Date);
+    let skewMs = 0;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + skewMs);
+    const sender = makeSlowSender(SEND_DELAY_MS, {
+      onSend: (count) => { if (count === 1) skewMs += DELIVER_BUDGET_MS + 1; }
+    });
+    try {
 
     const evaluated = await maybeRunScheduleAlerts(server_, {
       api, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-10T00:00:00.000Z'), logger: quietLogger
     });
 
-    // The budget (10ms) is far shorter than one send's latency (60ms): the
-    // first destination is already in flight when the budget expires, so it
+    // The budget expires while the first send is in flight (the clock jumps
+    // inside the sender): the first destination is already in flight, so it
     // must still be awaited to completion; the second destination must never
     // be started this sync.
     const result = await maybeDeliverScheduleAlerts(evaluated, {
-      syncHistory, notificationService: sender, logger: quietLogger, deliverBudgetMs: 10
+      syncHistory, notificationService: sender, logger: quietLogger, deliverBudgetMs: DELIVER_BUDGET_MS
     });
 
     const callsRightAfterReturn = sender.calls.length;
@@ -468,11 +566,11 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
     // The destination that was actually sent is recorded; the deferred one is not.
     const firstRow = await syncHistory.findLatestScheduleAlert({
       server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05',
-      event: 'missing', channel: 'webhook:#first'
+      event: 'missing', channel: destinationKey('webhook', { name: 'first', url: 'http://127.0.0.1:1/first' })
     });
     const secondRow = await syncHistory.findLatestScheduleAlert({
       server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05',
-      event: 'missing', channel: 'webhook:#second'
+      event: 'missing', channel: destinationKey('webhook', { name: 'second', url: 'http://127.0.0.1:1/second' })
     });
     expect(firstRow).not.toBeNull();
     expect(secondRow).toBeNull();
@@ -490,5 +588,8 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
     expect(sender.calls.length).toBe(callsBeforeSecondSync + 1);
     expect(sender.calls[sender.calls.length - 1].url).toBe('http://127.0.0.1:1/second');
     expect(result2).toEqual({ events: 1, sent: 1, skipped: 0 });
-  });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }, 20000);
 });

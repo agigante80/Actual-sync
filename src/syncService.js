@@ -670,7 +670,8 @@ async function runSyncBank(server, options = {}) {
             api,
             serverName: name,
             timezone: resolveTimezone(config),
-            logger: serverLogger
+            logger: serverLogger,
+            syncHistory
         });
 
         // Calculate sync duration and log performance
@@ -962,7 +963,10 @@ async function runSyncBank(server, options = {}) {
     // cannot inflate this sync's duration or hold the session open. It is
     // still bounded (DELIVER_BUDGET_MS, inside maybeDeliverScheduleAlerts)
     // so it cannot block the next server queued behind this one (#265)
-    // indefinitely either.
+    // indefinitely either. The budget only stops NEW sends; an in-flight
+    // email send is bounded by the transport's connection/greeting/socket
+    // timeouts (15s/15s/30s, notificationService.initializeEmailTransporter,
+    // #297 F5) and a webhook by its 15s request timeout.
     await maybeDeliverScheduleAlerts(scheduleAlertsEvaluated, {
         syncHistory,
         notificationService,
