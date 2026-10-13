@@ -629,7 +629,7 @@ npm audit --audit-level=high
 
 **Runs**: After Docker test build completes
 
-**Supply chain**: the scanner's own GitHub Action is pinned to a commit SHA, not a branch, so a compromised upstream branch cannot run code in CI. A test fails the suite if a workflow references `master`, `main`, `develop`, `development` or `HEAD`, and enforces the trivy SHA pin. Other actions are still on version tags until #249 pins them all. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
+**Supply chain** (#249): every GitHub Action in every workflow is pinned to a full commit SHA with a version comment, so a repointed tag or compromised upstream branch cannot run new code in CI, where Docker Hub, GitHub App and Codecov credentials are in scope. `scripts/check-action-pins.sh` fails CI on any unpinned reference, and Dependabot's `github-actions` entry keeps the pins current. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
 
 **Location**: `security-scan` job in CI/CD workflow
 
@@ -1045,16 +1045,7 @@ For complete CI/CD documentation including security scanning setup, see:
 
 ### Reporting Vulnerabilities
 
-If you discover a security vulnerability:
-
-1. **Do NOT** create a public GitHub issue
-2. Email project maintainer directly (configure in your project)
-3. Provide detailed description and reproduction steps
-4. Allow reasonable time for fix before public disclosure
-
-### Security Response Team
-
-[Configure your security contact information here]
+The reporting policy lives in one place: **[SECURITY.md](../SECURITY.md)** at the repository root (supported versions, the private channel, what to include and what to leave out, response targets, and coordinated disclosure). Report privately through GitHub's [Report a vulnerability](https://github.com/agigante80/Actual-sync/security/advisories/new) form, never as a public issue or pull request.
 
 ---
 

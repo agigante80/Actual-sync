@@ -1106,7 +1106,8 @@ See **[docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md)** for details
 Please report security vulnerabilities privately via GitHub's
 **[Report a vulnerability](https://github.com/agigante80/Actual-sync/security/advisories/new)**
 form (Security tab → Report a vulnerability). Do not open public GitHub issues
-for security vulnerabilities.
+for security vulnerabilities. The full policy (supported versions, what to include
+and what to leave out, response targets) is in **[SECURITY.md](SECURITY.md)**.
 
 ---
 
@@ -1309,6 +1310,7 @@ git push origin feature/amazing-feature
 - **Documentation** - Update relevant docs in `docs/` directory
 - **Commit Messages** - Use conventional commits (feat, fix, docs, chore, etc.)
 - **Pull Requests** - Include description, tests, and documentation updates
+- **GitHub Actions** - Reference every action by full commit SHA with a `# vX.Y.Z` comment, never a tag or branch (CI fails otherwise; see [docs/CI_CD.md](docs/CI_CD.md#pinning-third-party-actions))
 
 See **[CLAUDE.md](CLAUDE.md)** for developer and AI-agent guidelines (commands, architecture, conventions).
 
