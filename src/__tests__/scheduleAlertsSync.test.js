@@ -494,7 +494,7 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
   });
 
   /** Never actually dials out (no real network), just fakes latency. */
-  function makeSlowSender(delayMs) {
+  function makeSlowSender(delayMs, { onSend } = {}) {
     const calls = [];
     return {
       calls,
@@ -508,6 +508,7 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
       },
       sendTemplated: jest.fn(async (channelOutputs) => {
         calls.push({ at: Date.now(), url: channelOutputs.webhook && channelOutputs.webhook.url });
+        if (onSend) onSend(calls.length);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         return { webhook: { ok: true } };
       })
@@ -522,18 +523,26 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
       transactions: []
     });
     const server_ = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'] }] } };
-    // Generous margins so pre-send overhead (ledger reads) never eats the budget
-    // before the first send starts (flaky at 10ms/60ms): budget 300ms, send 600ms.
-    const SEND_DELAY_MS = 600;
-    const DELIVER_BUDGET_MS = 300;
-    const sender = makeSlowSender(SEND_DELAY_MS);
+    // Deterministic clock (#297 round 2 L-a): the budget is far longer than
+    // any pre-send overhead, and the clock jumps past it the moment the first
+    // send starts. So the first destination is always in flight when the
+    // budget expires, and the second is never started, however slow the host.
+    const SEND_DELAY_MS = 100;
+    const DELIVER_BUDGET_MS = 60000;
+    const realNow = Date.now.bind(Date);
+    let skewMs = 0;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + skewMs);
+    const sender = makeSlowSender(SEND_DELAY_MS, {
+      onSend: (count) => { if (count === 1) skewMs += DELIVER_BUDGET_MS + 1; }
+    });
+    try {
 
     const evaluated = await maybeRunScheduleAlerts(server_, {
       api, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-10T00:00:00.000Z'), logger: quietLogger
     });
 
-    // The budget (300ms) is shorter than one send's latency (600ms): the
-    // first destination is already in flight when the budget expires, so it
+    // The budget expires while the first send is in flight (the clock jumps
+    // inside the sender): the first destination is already in flight, so it
     // must still be awaited to completion; the second destination must never
     // be started this sync.
     const result = await maybeDeliverScheduleAlerts(evaluated, {
@@ -579,5 +588,8 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
     expect(sender.calls.length).toBe(callsBeforeSecondSync + 1);
     expect(sender.calls[sender.calls.length - 1].url).toBe('http://127.0.0.1:1/second');
     expect(result2).toEqual({ events: 1, sent: 1, skipped: 0 });
+    } finally {
+      nowSpy.mockRestore();
+    }
   }, 20000);
 });

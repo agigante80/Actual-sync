@@ -885,6 +885,8 @@ describe('evaluate: R2-M3 / #297 F4 / round 1 M2 (overlap guard and the linked-e
       timezone: TZ
     });
     expect(warnings).toHaveLength(1);
+    // #297 round 2 L-b: the operator's own earlyDays (0), not the effective 2.
+    expect(warnings[0].message).toMatch(/graceDays \(5\) \+ earlyDays \(0, raised to the 2-day linked-payment allowance\) >= /);
     expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'interval-violation' })]);
   });
 

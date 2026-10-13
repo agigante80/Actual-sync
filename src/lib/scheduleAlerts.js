@@ -437,7 +437,13 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
         warnings.push({
           ruleId: binding.id,
           scheduleId: binding.scheduleId,
-          message: `Rule "${binding.id}": graceDays (${binding.graceDays}) + earlyDays (${effectiveEarlyDays}) >= `
+          // Print the operator's own earlyDays, plus the allowance when it is
+          // what tipped the sum over (#297 round 2 L-b): the effective value
+          // is never a setting they can find in config.json.
+          message: `Rule "${binding.id}": graceDays (${binding.graceDays}) + earlyDays (${binding.earlyDays}`
+            + (effectiveEarlyDays !== binding.earlyDays
+              ? `, raised to the ${LINKED_EARLY_WINDOW_DAYS}-day linked-payment allowance) >= `
+              : ') >= ')
             + `the schedule's shortest interval between occurrences (${shortestIntervalDays} days); `
             + 'the on-time and late windows of consecutive occurrences would overlap, so this rule was skipped.'
         });
@@ -509,7 +515,9 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
         // the rule's own, possibly narrower, `earlyDays`.
         // Clamped to the day after the previous occurrence's deadline, so a
         // linked payment inside the previous occurrence's grace is never
-        // pulled forward onto this one (#297 F4, replaces the R2-M3 guard).
+        // pulled forward onto this one (#297 F4). Only matters for intervals
+        // of 2 days or less: longer intervals are rejected by the guard above
+        // (#297 round 1 M2), so the clamp can never kick in for them.
         let earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');
         if (index > 0) {
           const afterPrevDeadline = occurrenceDays[index - 1].clone().add(binding.graceDays + 1, 'days');
