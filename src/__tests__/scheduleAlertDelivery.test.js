@@ -625,27 +625,57 @@ describe('deliver: duplicate webhook names (#297 F3)', () => {
   });
 });
 
-describe('deliver: ledger lookup failures fail closed (#297 F7 follow-up)', () => {
-  // A lookup that cannot answer must never turn into "not recorded, send it":
-  // that would resend on every sync while the ledger is unreadable. The alert
-  // is withheld and retried on the next sync instead (no row, no send).
-  test.each(['immediate', 'digest'])('%s: a throwing findLatestScheduleAlert sends nothing and does not reject', async (mode) => {
+describe('deliver: a failing ledger lookup withholds only that event (#297 round 1, L1)', () => {
+  // A lookup that cannot answer must never turn into "not recorded, send it"
+  // (a resend on every sync while the ledger is unreadable), and must not take
+  // the other events down with it: the one event is withheld, logged at WARN,
+  // gets no ledger row, and is retried next sync.
+  function setup(blockOverrides = {}) {
     const history = makeFakeHistory();
-    history.findLatestScheduleAlert = async () => { throw new Error('db locked'); };
+    const realFind = history.findLatestScheduleAlert.bind(history);
+    history.findLatestScheduleAlert = async (key) => {
+      if (key.alertId === 'broken') throw new Error('db locked');
+      return realFind(key);
+    };
     const sender = makeFakeSender({ webhooks: { slack: [{ name: 'ops', url: 'https://slack/a', enabled: true }] } });
-    const rules = rentRules({ channels: ['slack'] }, mode === 'digest' ? { digest: true } : {});
-    let result;
-    try {
-      result = await deliver([missingEvent()], {
-        evaluations: [rentEvaluation()], ruleState: enabledState, history, sender,
-        server: 'Main', rules, timezone: 'UTC', logger: quietLogger, now: '2026-01-10'
-      });
-    } catch (error) {
-      result = { threw: true };
-    }
-    expect(sender.calls).toHaveLength(0);
-    expect(history.rows).toHaveLength(0);
-    expect(result.sent || 0).toBe(0);
+    const warnings = [];
+    const logger = { warn: (message, meta) => warnings.push({ message, meta }) };
+    const rules = getRules({
+      ...blockOverrides,
+      alerts: [
+        { id: 'broken', schedule: 'Rent', channels: ['slack'] },
+        { id: 'rent', schedule: 'Rent', channels: ['slack'] }
+      ]
+    });
+    return { history, sender, warnings, logger, rules };
+  }
+
+  test.each([['immediate', {}], ['digest', { digest: true }]])('%s: the failing event is withheld, the other is delivered', async (mode, block) => {
+    const { history, sender, warnings, logger, rules } = setup(block);
+    const result = await deliver([missingEvent({ alertId: 'broken' }), missingEvent()], {
+      evaluations: [rentEvaluation({ alertId: 'broken' }), rentEvaluation()], ruleState: enabledState, history, sender,
+      server: 'Main', rules, timezone: 'UTC', logger, now: '2026-01-10'
+    });
+    expect(result).toEqual({ sent: 1, skipped: 1 });
+    expect(history.rows.map((r) => r.alertId)).toEqual(['rent']);
+    expect(sender.calls).toHaveLength(1);
+    expect(warnings.some((w) => /ledger lookup failed/i.test(w.message) && w.meta.alertId === 'broken')).toBe(true);
+  });
+
+  test('a failing lookup while deriving a resolved event skips only that occurrence', async () => {
+    const { history, sender, warnings, logger, rules } = setup();
+    history.rows.push({ server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05', event: 'missing', delivery: 'sent', channel: destinationKey('slack', { name: 'ops', url: 'https://slack/a' }), recordedAt: '2026-01-06T00:00:00.000Z' });
+    const received = (alertId) => rentEvaluation({
+      alertId, state: 'received',
+      occurrences: [{ date: '2026-01-05', deadline: '2026-01-08', state: 'received', receivedDate: '2026-01-07', receivedAmount: -50000 }]
+    });
+    const result = await deliver([], {
+      evaluations: [received('broken'), received('rent')], ruleState: enabledState, history, sender,
+      server: 'Main', rules, timezone: 'UTC', logger, now: '2026-01-10'
+    });
+    expect(result.sent).toBe(1);
+    expect(history.rows.filter((r) => r.event === 'resolved').map((r) => r.alertId)).toEqual(['rent']);
+    expect(warnings.some((w) => /ledger lookup failed/i.test(w.message))).toBe(true);
   });
 });
 

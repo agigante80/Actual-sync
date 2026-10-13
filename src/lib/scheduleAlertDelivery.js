@@ -718,14 +718,24 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
  * @param {string} server
  * @returns {Promise<Object[]>} synthesized `resolved` events, shaped like `evaluate()`'s AlertEvent
  */
-async function deriveResolvedEvents(evaluations, history, server) {
+async function deriveResolvedEvents(evaluations, history, server, logger) {
   const resolved = [];
   for (const evaluation of evaluations) {
     for (const occ of evaluation.occurrences || []) {
       if (occ.state !== 'received' && occ.state !== 'late') continue;
-      const missingRow = await history.findLatestScheduleAlert({
-        server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId, occurrenceDate: occ.date, event: 'missing'
-      });
+      // #297 round 1, L1: a lookup that fails withholds only this occurrence
+      // (retried next sync), never the whole batch.
+      let missingRow;
+      try {
+        missingRow = await history.findLatestScheduleAlert({
+          server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId, occurrenceDate: occ.date, event: 'missing'
+        });
+      } catch (error) {
+        logger.warn('Schedule alert ledger lookup failed; resolved check withheld until the next sync', {
+          server, alertId: evaluation.alertId, event: 'resolved', occurrence: occ.date, error: error.message
+        });
+        continue;
+      }
       if (!missingRow) continue;
 
       const daysOverdue = occ.receivedDate ? moment(occ.receivedDate).diff(moment(occ.deadline), 'days') : 0;
@@ -789,7 +799,7 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
   let sent = 0;
   let skipped = 0;
 
-  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server);
+  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log);
   const allEvents = [...(events || []), ...resolvedEvents];
 
   const eligible = [];
@@ -813,7 +823,20 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
       continue;
     }
 
-    if (!(await mayRecord(event, rule, sender, history, server, now, timezone))) { skipped += 1; continue; }
+    // #297 round 1, L1: a failing ledger lookup withholds this one event
+    // (WARN, no row, no send; retried next sync) instead of rejecting the
+    // whole batch or, worse, being read as "never recorded" and resent.
+    let due;
+    try {
+      due = await mayRecord(event, rule, sender, history, server, now, timezone);
+    } catch (error) {
+      log.warn('Schedule alert ledger lookup failed; event withheld until the next sync', {
+        server, alertId: event.alertId, event: event.event, occurrence: event.occurrence, error: error.message
+      });
+      skipped += 1;
+      continue;
+    }
+    if (!due) { skipped += 1; continue; }
 
     const evaluation = (evaluations || []).find(
       (e) => e.alertId === event.alertId && e.scheduleId === event.scheduleId

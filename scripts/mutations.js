@@ -1442,6 +1442,22 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
+        id: '297-l1-ledger-lookup-failure-rejects-batch', ticket: '#297',
+        desc: "a failing ledger lookup rejects the whole deliver() batch again instead of withholding only that event",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      log.warn('Schedule alert ledger lookup failed; event withheld until the next sync', {",
+        mutant: "      throw error;\n      log.warn('Schedule alert ledger lookup failed; event withheld until the next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '297-l1-resolved-lookup-failure-rejects-batch', ticket: '#297',
+        desc: "a failing ledger lookup while deriving resolved events rejects the whole deliver() batch again",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        logger.warn('Schedule alert ledger lookup failed; resolved check withheld until the next sync', {",
+        mutant: "        throw error;\n        logger.warn('Schedule alert ledger lookup failed; resolved check withheld until the next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
         id: '297-f4-linked-early-not-clamped-to-previous-deadline', ticket: '#297',
         desc: "a linked payment's early window is no longer clamped to start after the previous occurrence's deadline, so a payment inside the previous grace is pulled onto the next occurrence",
         file: 'src/lib/scheduleAlerts.js',
