@@ -1108,6 +1108,42 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('Dashboard History API server filter (#288)', () => {
+    const historyService = (mockSyncHistory) => makeService({
+      port: testPort,
+      host: '127.0.0.1',
+      syncHistory: mockSyncHistory,
+      dashboardConfig: { enabled: true, auth: { type: 'none' } },
+      loggerConfig: { level: 'ERROR' }
+    });
+
+    test('passes serverName through to getHistory', async () => {
+      const mockSyncHistory = { getHistory: jest.fn().mockReturnValue([{ server_name: 'A' }]) };
+      const hc = historyService(mockSyncHistory);
+      await hc.start();
+
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/history?limit=25&serverName=A%20B`);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual([{ server_name: 'A' }]);
+      expect(mockSyncHistory.getHistory).toHaveBeenCalledWith({ limit: 25, serverName: 'A B' });
+      await hc.stop();
+    });
+
+    test('omits the filter when serverName is blank, absent or repeated', async () => {
+      const mockSyncHistory = { getHistory: jest.fn().mockReturnValue([]) };
+      const hc = historyService(mockSyncHistory);
+      await hc.start();
+
+      for (const qs of ['limit=5&serverName=', 'limit=5', 'limit=5&serverName=A&serverName=B']) {
+        mockSyncHistory.getHistory.mockClear();
+        const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/history?${qs}`);
+        expect(res.statusCode).toBe(200);
+        expect(mockSyncHistory.getHistory).toHaveBeenCalledWith({ limit: 5 });
+      }
+      await hc.stop();
+    });
+  });
+
   describe('Dashboard Accounts API (#99)', () => {
     test('returns the persisted account snapshot grouped by server (200)', async () => {
       const mockSyncHistory = {

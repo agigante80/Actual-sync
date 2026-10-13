@@ -534,10 +534,10 @@
             <div class="card">
                 <h2>Sync History</h2>
                 <div style="margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
-                    <select id="history-server-filter" style="padding: 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
+                    <select id="history-server-filter" data-change="loadHistoryTab" style="padding: 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
                         <option value="">All Servers</option>
                     </select>
-                    <select id="history-limit" style="padding: 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
+                    <select id="history-limit" data-change="loadHistoryTab" style="padding: 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
                         <option value="10">Last 10</option>
                         <option value="25">Last 25</option>
                         <option value="50" selected>Last 50</option>

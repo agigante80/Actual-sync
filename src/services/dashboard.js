@@ -916,7 +916,11 @@ async function loadAnalyticsTab() {
 }
 
 // Load History Tab
+// Each change of the filter or limit select starts a load; only the newest
+// one may render, so a slow earlier response cannot overwrite it. (#288)
+let historyRequestSeq = 0;
 async function loadHistoryTab() {
+    const seq = ++historyRequestSeq;
     try {
         const serverFilter = document.getElementById('history-server-filter')?.value || '';
         const limit = document.getElementById('history-limit')?.value || 50;
@@ -927,9 +931,16 @@ async function loadHistoryTab() {
         }
         
         const response = await fetch(url, getFetchOptions());
-        const history = await response.json();
+        const history = response.ok ? await response.json() : null;
+        if (seq !== historyRequestSeq) return;
 
         const tbody = document.getElementById('history-body');
+        // A 401/503 reply is an error object, not rows: say so instead of
+        // leaving the previous filter's rows under the new label.
+        if (!Array.isArray(history)) {
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center;">Failed to load sync history (HTTP ${escapeHtml(response.status)})</td></tr>`;
+            return;
+        }
         if (history.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No sync history available</td></tr>';
             return;
@@ -938,15 +949,15 @@ async function loadHistoryTab() {
         tbody.innerHTML = history.map(record => `
             <tr>
                 <td>${formatTime(record.timestamp)}</td>
-                <td>${record.server_name}</td>
+                <td>${escapeHtml(record.server_name)}</td>
                 <td>
-                    <span class="status-icon ${record.status}"></span>
-                    ${record.status}
+                    <span class="status-icon ${escapeHtml(record.status)}"></span>
+                    ${escapeHtml(record.status)}
                 </td>
                 <td>${record.duration_ms ? record.duration_ms + 'ms' : '-'}</td>
                 <td>${formatAccountCounts(record.accounts_succeeded, record.accounts_failed, record.accounts_skipped)}</td>
-                <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${record.error_message || '-'}">
-                    ${record.error_message ? `<span style="color: #ef4444;">${record.error_message}</span>` : '-'}
+                <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(record.error_message || '-')}">
+                    ${record.error_message ? `<span style="color: #ef4444;">${escapeHtml(record.error_message)}</span>` : '-'}
                 </td>
             </tr>
         `).join('');
@@ -1015,7 +1026,7 @@ async function loadSettingsTab() {
         if (select && data.servers) {
             select.innerHTML = '<option value="">Select a server...</option>' +
                 Object.keys(data.servers).map(name => 
-                    `<option value="${name}">${name}</option>`
+                    `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`
                 ).join('');
         }
         
@@ -1025,7 +1036,7 @@ async function loadSettingsTab() {
             const currentValue = historyFilter.value;
             historyFilter.innerHTML = '<option value="">All Servers</option>' +
                 Object.keys(data.servers).map(name => 
-                    `<option value="${name}" ${currentValue === name ? 'selected' : ''}>${name}</option>`
+                    `<option value="${escapeHtml(name)}" ${currentValue === name ? 'selected' : ''}>${escapeHtml(name)}</option>`
                 ).join('');
         }
         
@@ -1420,7 +1431,8 @@ const CLICK_ACTIONS = {
 };
 const CHANGE_ACTIONS = {
     renderAccounts: () => renderAccounts(),
-    onDateFormatChange: () => onDateFormatChange()
+    onDateFormatChange: () => onDateFormatChange(),
+    loadHistoryTab: () => loadHistoryTab()
 };
 
 document.addEventListener('click', (e) => {

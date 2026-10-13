@@ -154,7 +154,7 @@ match the code, not as an integration surface:
 | GET  | `/api/dashboard/orphaned-servers` | History for servers no longer in config |
 | GET  | `/api/dashboard/schedules` | Per-server schedules / next run |
 | GET  | `/api/dashboard/metrics` | Aggregated metrics for the Analytics tab |
-| GET  | `/api/dashboard/history` | Sync history records |
+| GET  | `/api/dashboard/history` | Sync history records (`?limit=N`, optional `?serverName=` to filter to one server) |
 | GET  | `/api/dashboard/accounts` | Discovered bank accounts |
 | GET  | `/api/dashboard/notifications` | Failure-alert rate-limit usage + recent sync outcomes per server |
 | POST | `/api/dashboard/sync` | Trigger a manual sync |
