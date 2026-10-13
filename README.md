@@ -118,6 +118,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Modern Web Dashboard** - Tabbed interface with Overview, Analytics, History, and Settings
 - ✅ **2-Column Overview Layout** - Service health, server list, recent activity, and live logs
 - ✅ **Sync Status Badges** - Color-coded badges showing success/partial/failure for each server
+- ✅ **Security Headers** - The dashboard is served with a strict Content-Security-Policy (no inline script), clickjacking protection, `nosniff` and no `X-Powered-By` (via helmet); HSTS is opt-in with `healthCheck.hsts`
 - ✅ **Interactive Charts** - Success rates by server, duration trends, and sync timeline visualizations; Chart.js is bundled with the service, so the UI needs no internet access
 - ✅ **Date Format Preferences** - 11 customizable date formats including 3-letter months (persisted in browser)
 - ✅ **Orphaned Server Cleanup** - Identify and remove historical data for decommissioned budgets
@@ -363,6 +364,8 @@ Configuration is managed via `config/config.json` with JSON schema validation.
   }
 }
 ```
+
+Optional top-level `"timezone"` (an IANA name such as `"America/New_York"`) sets the zone cron schedules run in and times are shown in; default is the process timezone (`TZ`). See [CONFIG.md](docs/CONFIG.md#timezone-optional).
 
 **Configuration Notes:**
 
@@ -1103,7 +1106,8 @@ See **[docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md)** for details
 Please report security vulnerabilities privately via GitHub's
 **[Report a vulnerability](https://github.com/agigante80/Actual-sync/security/advisories/new)**
 form (Security tab → Report a vulnerability). Do not open public GitHub issues
-for security vulnerabilities.
+for security vulnerabilities. The full policy (supported versions, what to include
+and what to leave out, response targets) is in **[SECURITY.md](SECURITY.md)**.
 
 ---
 
@@ -1306,6 +1310,7 @@ git push origin feature/amazing-feature
 - **Documentation** - Update relevant docs in `docs/` directory
 - **Commit Messages** - Use conventional commits (feat, fix, docs, chore, etc.)
 - **Pull Requests** - Include description, tests, and documentation updates
+- **GitHub Actions** - Reference every action by full commit SHA with a `# vX.Y.Z` comment, never a tag or branch (CI fails otherwise; see [docs/CI_CD.md](docs/CI_CD.md#pinning-third-party-actions))
 
 See **[CLAUDE.md](CLAUDE.md)** for developer and AI-agent guidelines (commands, architecture, conventions).
 

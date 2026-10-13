@@ -136,10 +136,9 @@ function sanitizeName(name) {
 
 /**
  * Switch the dashboard to a tab by its visible label (e.g. "History"). The
- * dashboard's switchTab() reads the global `event` its onclick attribute
- * provides, so the button is clicked through the DOM rather than calling
- * switchTab() directly from page.evaluate, which would leave `event` unset.
- * (#263)
+ * button is clicked through the DOM so the dashboard's delegated click
+ * listener (data-action="switchTab") runs exactly as it does for a user.
+ * (#263, #243)
  * @param {import('puppeteer').Page} page
  * @param {string} label - text the tab button contains, e.g. "History"
  */

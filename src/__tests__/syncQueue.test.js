@@ -165,7 +165,7 @@ describe('syncService routes every sync through the queue (#265)', () => {
         const calls = source.match(/runSyncBank\(/g) || [];
         // One definition plus one call inside syncBank's queue.run.
         expect(calls).toHaveLength(2);
-        expect(source).toMatch(/syncQueue\.run\(server\.name, \(\) => runSyncBank\(server, options\)\)/);
+        expect(source).toMatch(/shutdownGate\.run\(server\.name, \(\) => runSyncBank\(server, options\)\)/);
     });
 
     test('the Actual API is only used inside runSyncBank and its helpers, never around the queue', () => {
@@ -290,5 +290,22 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
         expect(opened).toBeGreaterThan(-1);
         expect(opened).toBeLessThan(body[0].indexOf('await api.init('));
         expect(opened).toBeGreaterThan(body[0].indexOf("busy.code = 'ACTUAL_SESSION_BUSY'"));
+    });
+});
+
+describe('SyncQueue size() (#273)', () => {
+    const { SyncQueue } = require('../lib/syncQueue');
+
+    test('size counts waiting and running keys and returns to 0 after a failing task', async () => {
+        const queue = new SyncQueue();
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        const run = queue.run('A', async () => { await gate; throw new Error('boom'); });
+        const settled = run.catch(() => {});
+        expect(queue.size()).toBe(1);
+        release();
+        await settled;
+        await Promise.resolve();
+        expect(queue.size()).toBe(0);
     });
 });

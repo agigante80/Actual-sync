@@ -69,6 +69,13 @@ class SyncQueue {
     }
 
     /**
+     * @returns {number} how many keys are waiting or running
+     */
+    size() {
+        return this.pending.size;
+    }
+
+    /**
      * @returns {{ key: string, startedAt: string } | null} the task running now, so
      *   a stuck sync is visible on the dashboard (#272)
      */

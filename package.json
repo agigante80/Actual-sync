@@ -32,6 +32,7 @@
       "src/**/*.js",
       "!src/**/*.test.js",
       "!src/syncService.js",
+      "!src/services/dashboard.js",
       "!src/__tests__/**",
       "!index.js"
     ],
@@ -87,6 +88,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.1",
     "handlebars": "4.7.10",
+    "helmet": "^8.3.0",
     "moment-timezone": "^0.6.5",
     "node-schedule": "^2.1.1",
     "nodemailer": "^10.1.0",

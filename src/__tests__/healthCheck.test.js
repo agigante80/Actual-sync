@@ -329,6 +329,101 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('security headers (#243)', () => {
+    // Raw GET that keeps headers and the body as text.
+    const rawGet = (urlPath, headers = {}) => new Promise((resolve, reject) => {
+      http.get({ hostname: '127.0.0.1', port: testPort, path: urlPath, headers }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, text: data }));
+      }).on('error', reject);
+    });
+
+    const csp = (res) => res.headers['content-security-policy'] || '';
+    const directive = (res, name) => csp(res).split(';').map((d) => d.trim()).find((d) => d.startsWith(`${name} `));
+
+    test('a public route carries nosniff, referrer-policy, a CSP and no x-powered-by', async () => {
+      await healthCheck.start();
+      const res = await rawGet('/health');
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['referrer-policy']).toBeDefined();
+      expect(csp(res)).not.toBe('');
+      expect(res.headers['x-powered-by']).toBeUndefined();
+    });
+
+    test('an authenticated route carries the same headers, and denies framing', async () => {
+      const svc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'pw' } }
+      });
+      await svc.start();
+      const auth = Buffer.from('admin:pw').toString('base64');
+      const res = await rawGet('/dashboard', { Authorization: `Basic ${auth}` });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['x-frame-options']).toBe('DENY');
+      expect(csp(res)).toContain("frame-ancestors 'none'");
+      expect(res.headers['x-powered-by']).toBeUndefined();
+    });
+
+    test('headers are present on an error response too (a 401 is not exempt)', async () => {
+      const svc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'pw' } }
+      });
+      await svc.start();
+      const res = await rawGet('/dashboard');
+      expect(res.statusCode).toBe(401);
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(csp(res)).toContain("frame-ancestors 'none'");
+    });
+
+    test("script-src is 'self' only: no unsafe-inline, no unsafe-eval, no remote host", async () => {
+      await healthCheck.start();
+      const res = await rawGet('/health');
+      expect(directive(res, 'script-src')).toBe("script-src 'self'");
+      expect(directive(res, 'script-src-attr')).toBe("script-src-attr 'none'");
+      expect(csp(res)).not.toContain('unsafe-eval');
+    });
+
+    test('connect-src is same-origin so the /ws/logs stream is allowed and nothing else', async () => {
+      await healthCheck.start();
+      expect(directive(await rawGet('/health'), 'connect-src')).toBe("connect-src 'self'");
+    });
+
+    test('upgrade-insecure-requests is NOT sent: the service is plain HTTP on a LAN', async () => {
+      await healthCheck.start();
+      expect(csp(await rawGet('/health'))).not.toContain('upgrade-insecure-requests');
+    });
+
+    test('HSTS is off by default', async () => {
+      await healthCheck.start();
+      expect((await rawGet('/health')).headers['strict-transport-security']).toBeUndefined();
+    });
+
+    test('HSTS is sent with a max-age when enabled in config', async () => {
+      const svc = makeService({ port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' }, hsts: true });
+      await svc.start();
+      expect((await rawGet('/health')).headers['strict-transport-security']).toBe('max-age=15552000');
+    });
+
+    test('serves the dashboard script as javascript from one fixed route', async () => {
+      await healthCheck.start();
+      const res = await rawGet('/dashboard.js');
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toContain('javascript');
+      expect(res.text.length).toBeGreaterThan(0);
+    });
+
+    test('the dashboard script is not rate limited (it loads with every page view)', async () => {
+      const svc = makeService({ port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' }, rateLimitMax: 1 });
+      await svc.start();
+      await rawGet('/health');
+      expect((await rawGet('/dashboard.js')).statusCode).toBe(200);
+      expect((await rawGet('/vendor/chart.umd.min.js')).statusCode).toBe(200);
+    });
+  });
+
   describe('vendored Chart.js (#244)', () => {
     beforeEach(async () => {
       await healthCheck.start();
@@ -1010,6 +1105,42 @@ describe('HealthCheckService', () => {
       const hc = makeService({ port: testPort, loggerConfig: { level: 'ERROR' } });
       expect(hc.authFailureLimit).toBe(10);
       expect(hc.authFailureWindowMs).toBe(15 * 60 * 1000);
+    });
+  });
+
+  describe('Dashboard History API server filter (#288)', () => {
+    const historyService = (mockSyncHistory) => makeService({
+      port: testPort,
+      host: '127.0.0.1',
+      syncHistory: mockSyncHistory,
+      dashboardConfig: { enabled: true, auth: { type: 'none' } },
+      loggerConfig: { level: 'ERROR' }
+    });
+
+    test('passes serverName through to getHistory', async () => {
+      const mockSyncHistory = { getHistory: jest.fn().mockReturnValue([{ server_name: 'A' }]) };
+      const hc = historyService(mockSyncHistory);
+      await hc.start();
+
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/history?limit=25&serverName=A%20B`);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual([{ server_name: 'A' }]);
+      expect(mockSyncHistory.getHistory).toHaveBeenCalledWith({ limit: 25, serverName: 'A B' });
+      await hc.stop();
+    });
+
+    test('omits the filter when serverName is blank, absent or repeated', async () => {
+      const mockSyncHistory = { getHistory: jest.fn().mockReturnValue([]) };
+      const hc = historyService(mockSyncHistory);
+      await hc.start();
+
+      for (const qs of ['limit=5&serverName=', 'limit=5', 'limit=5&serverName=A&serverName=B']) {
+        mockSyncHistory.getHistory.mockClear();
+        const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/history?${qs}`);
+        expect(res.statusCode).toBe(200);
+        expect(mockSyncHistory.getHistory).toHaveBeenCalledWith({ limit: 5 });
+      }
+      await hc.stop();
     });
   });
 

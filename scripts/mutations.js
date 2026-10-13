@@ -560,9 +560,9 @@ module.exports = [
     {
         id: '188-panel-never-loads', ticket: '#188',
         desc: 'the endpoint exists but the dashboard never calls it — the #182 mistake again',
-        file: 'src/services/dashboard.html',
-        anchor: '            loadNotificationStats();\n            try {',
-        mutant: '            try {',
+        file: 'src/services/dashboard.js',
+        anchor: '    loadNotificationStats();\n    try {',
+        mutant: '    try {',
         tests: 'docDriftGuards'
     },
 
@@ -798,6 +798,74 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #266: timezone hardcoded to Europe/Madrid ---------------------------
+    {
+        id: '266-timezone-config-ignored', ticket: '#266',
+        desc: 'the configured timezone is ignored and the process zone is always used',
+        file: 'src/lib/timezone.js',
+        anchor: "    if (cfg && cfg.timezone) return cfg.timezone;",
+        mutant: "    if (cfg && false) return cfg.timezone;",
+        tests: 'timezone'
+    },
+    {
+        id: '266-timezone-process-zone-unvalidated', ticket: '#266',
+        desc: 'a blank or invalid process TZ is returned unvalidated instead of falling back to UTC',
+        file: 'src/lib/timezone.js',
+        anchor: "    return isValidTimezone(processZone) ? processZone : 'UTC';",
+        mutant: "    return processZone;",
+        tests: 'timezone'
+    },
+    {
+        id: '266-timezone-unvalidated', ticket: '#266',
+        desc: 'an unknown timezone name passes config validation',
+        file: 'src/lib/configLoader.js',
+        anchor: "if (config.timezone !== undefined && !isValidTimezone(config.timezone)) {",
+        mutant: "if (false) {",
+        tests: 'timezone'
+    },
+    {
+        id: '266-telegram-timezone-fixed', ticket: '#266',
+        desc: 'Telegram replies ignore the configured timezone',
+        file: 'src/services/telegramBot.js',
+        anchor: "    return resolveTimezone(this.config);",
+        mutant: "    return 'UTC';",
+        tests: 'telegramBot'
+    },
+
+    // ---- #273: auto-retry never fired because syncBank never rejected --------
+    {
+        id: '273-sync-result-not-returned', ticket: '#273',
+        desc: 'runSyncBank swallows its outcome again (returns undefined), so the retry policy never sees a failure',
+        file: 'src/syncService.js',
+        anchor: "    return { status: syncOutcome };",
+        mutant: "    return undefined;",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-failure-status-ignored', ticket: '#273',
+        desc: 'the retry policy no longer treats a returned failure status as a failure',
+        file: 'src/lib/autoRetry.js',
+        anchor: "failed = result?.status === 'failure';",
+        mutant: "failed = false;",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-sigterm-not-registered', ticket: '#273',
+        desc: 'the SIGTERM handler is no longer registered, so docker stop kills a running sync',
+        file: 'src/syncService.js',
+        anchor: "process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));",
+        mutant: "// SIGTERM handler removed",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-shutdown-gate-open', ticket: '#273',
+        desc: 'shutdown no longer closes the gate, so syncs queued after the signal still start',
+        file: 'src/lib/shutdownGate.js',
+        anchor: "        closed = true;",
+        mutant: "        closed = false;",
+        tests: 'shutdownGate'
+    },
+
     // ---- #278: trustProxy shape bypassed validation in non-strict mode -------
     {
         id: '278-trust-proxy-shape-unchecked', ticket: '#278',
@@ -823,7 +891,7 @@ module.exports = [
         id: '265-sync-bypasses-queue', ticket: '#265',
         desc: 'syncBank calls runSyncBank directly, so two syncs can run at once again',
         file: 'src/syncService.js',
-        anchor: '    return syncQueue.run(server.name, () => runSyncBank(server, options));',
+        anchor: '    return shutdownGate.run(server.name, () => runSyncBank(server, options));',
         mutant: '    return runSyncBank(server, options);',
         tests: 'syncQueue'
     },
@@ -1834,6 +1902,40 @@ module.exports = [
         anchor: "  return `${channel}:#${target.name || ''}:${hash}`;",
         mutant: "  return target.name ? `${channel}:#${target.name}` : `${channel}:#${hash}`;",
         tests: 'scheduleAlertDelivery'
+    },
+    // ---- #243: helmet security headers -------------------------------------
+    {
+        id: '243-frame-ancestors-allowed', ticket: '#243',
+        desc: 'the CSP lets any site frame the dashboard again (clickjacking)',
+        file: 'src/services/healthCheck.js',
+        anchor: "          frameAncestors: [\"'none'\"]",
+        mutant: "          frameAncestors: ['*']",
+        tests: 'healthCheck.test'
+    },
+    {
+        id: '243-inline-script-allowed', ticket: '#243',
+        desc: 'the CSP allows inline scripts again',
+        file: 'src/services/healthCheck.js',
+        anchor: "          scriptSrc: [\"'self'\"],",
+        mutant: "          scriptSrc: [\"'self'\", \"'unsafe-inline'\"],",
+        tests: 'healthCheck.test'
+    },
+    {
+        id: '243-hsts-include-subdomains', ticket: '#243',
+        desc: 'HSTS sends includeSubDomains again, locking plain-HTTP sibling hosts out',
+        file: 'src/services/healthCheck.js',
+        anchor: "      strictTransportSecurity: hsts ? { maxAge: 15552000, includeSubDomains: false } : false",
+        mutant: "      strictTransportSecurity: hsts ? { maxAge: 15552000 } : false",
+        tests: 'healthCheck.test'
+    },
+    // ---- #288: the History tab server filter was ignored by the route -------
+    {
+        id: '288-history-server-filter-dropped', ticket: '#288',
+        desc: 'the history route drops serverName again, so the server filter shows every server',
+        file: 'src/services/healthCheck.js',
+        anchor: "if (typeof serverName === 'string' && serverName !== '') filters.serverName = serverName;",
+        mutant: "if (false) filters.serverName = serverName;",
+        tests: 'healthCheck.test'
     },
     // ---- #169: the README claim that started #168 ---------------------------
     {

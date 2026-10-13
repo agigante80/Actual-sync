@@ -267,6 +267,20 @@ describe('TelegramBotService', () => {
         expect(payload.text).toContain('Total Syncs: 10');
       });
       
+      test('formats the last sync time in the configured timezone (#266)', async () => {
+        const status = { ...mockHealthCheck.getStatus(), lastSyncTime: '2026-01-15T12:00:00Z', lastSyncStatus: 'success' };
+        for (const [timezone, expected] of [['UTC', /12:00:00 PM/], ['Asia/Tokyo', /9:00:00 PM/]]) {
+          mockRequest.write.mockClear();
+          const bot = new TelegramBotService(
+            { botToken: '123:ABC', chatId: '456', timezone },
+            { healthCheck: { getStatus: jest.fn().mockReturnValue(status) } }
+          );
+          await bot.handleStatus([]);
+          const payload = JSON.parse(mockRequest.write.mock.calls[0][0]);
+          expect(payload.text).toMatch(expected);
+        }
+      });
+
       test('should handle missing health check service', async () => {
         const bot = new TelegramBotService(
           { botToken: '123:ABC', chatId: '456' },

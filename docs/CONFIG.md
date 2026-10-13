@@ -63,6 +63,10 @@
 
 ## Configuration Reference
 
+### timezone (optional)
+
+IANA timezone name, for example `"America/New_York"` or `"UTC"`. Cron schedules run in it, and the startup log, the startup notification's "next sync" and the Telegram replies show times in it. Default: the process timezone (`TZ`, else the system zone), which is what schedules used before this key existed. If `TZ` is blank (for example an empty Unraid field) or not a valid IANA name (a typo such as `Europe/Madird`), the service uses `UTC` and logs one startup WARN naming the bad value. POSIX forms such as `TZ=:/etc/localtime` or `TZ=GMT+2` count as invalid too, so schedules run in UTC even though the clock itself is local: use an IANA name in `TZ` or set the `timezone` key. An unknown name fails config loading with a message naming `timezone`, even with `CONFIG_STRICT=false`.
+
 ### servers (required)
 
 Array of Actual Budget server configurations. At least one server is required.
@@ -126,6 +130,10 @@ Global synchronization behavior configuration. These settings apply to all serve
   - Higher values = more resilience, longer failure detection
   - Can be overridden per server
   - Example: `5`
+
+- **autoRetry** (optional, object; also per server)
+  - After a failed *scheduled* sync (every account failed, or the sync itself errored), the service schedules another run: `enabled` (default `true`), `maxAttempts` (default `1`), `delayMinutes` (default `31`).
+  - A failed manual sync (dashboard, Telegram, `--force-run`) never schedules a retry, and a manual sync cancels a pending one. A partial sync (some accounts failed) is not retried. Pending retries are cancelled on shutdown.
 
 - **baseRetryDelayMs** (optional, integer, default: 3000)
   - Base delay in milliseconds for exponential backoff
@@ -208,6 +216,7 @@ HTTP server for health probes, Prometheus metrics, and the web dashboard.
   - an IP/CIDR string or array, for example `"172.20.0.10"` (the proxy container's fixed IP) or `["loopback", "10.0.0.5"]`: trust only those proxy addresses. The Express keyword `loopback` also works. Avoid `uniquelocal` and wide ranges such as `172.16.0.0/12`: they cover the Docker bridge networks, so any container on the host could forge `X-Forwarded-For`.
   - `true`: trusts every hop. **Do not use it if the port is reachable without the proxy**: any client could then send its own `X-Forwarded-For`, pick any IP and bypass rate limiting. Startup warns when it is set.
   An invalid IP/CIDR fails at startup with a message naming `healthCheck.trustProxy`.
+- **hsts** (boolean, default: `false`): send the `Strict-Transport-Security` header (`max-age=15552000`, 180 days, without `includeSubDomains`, so other hosts under the same domain are not affected). Leave it off unless browsers reach the dashboard over HTTPS. Sent over plain HTTP it does nothing, and the service is plain HTTP in most deployments; TLS and HSTS are normally the reverse proxy's job (set it there, or enable this when the service is the TLS endpoint behind a proxy that does not add it). Once a browser has seen it, that host refuses plain HTTP for 180 days, so enable it only when HTTPS is permanent.
 - **dashboard.enabled** (boolean, default: `true`) — serve the web dashboard.
 - **dashboard.auth.type** (string, default: `"none"`) — `"none"`, `"basic"`, or `"token"`.
   - `"basic"` requires **username** and **password**.
@@ -256,7 +265,8 @@ These are global runtime flags, not per-server config:
 |----------|-------------|
 | `CONFIG_STRICT` | Migration escape hatch. Default (unset) = strict: a schema-invalid config stops startup (#121). Set to `false` (or `0`/`no`/`off`) to **temporarily** downgrade schema validation errors to warnings so the service starts while you fix the config. It only affects schema validation, not the business-logic checks, and should be removed once the config is valid. |
 | `PUID` / `PGID` | User/group IDs to run as (Docker/Unraid; default `1001:1001`, Unraid `99:100`). |
-| `TZ` | Container timezone for scheduling and log timestamps. |
+| `TZ` | Container timezone for scheduling and log timestamps. Used when the `timezone` config key is not set. A blank or invalid value falls back to `UTC` with a startup WARN. |
+| `SHUTDOWN_WAIT_MS` | How long a SIGTERM waits for a running sync before closing the session (default `8000`). Keep it about 2 s below the container's stop timeout. See [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#stopping-the-container). |
 
 ---
 
