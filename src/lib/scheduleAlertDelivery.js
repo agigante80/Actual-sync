@@ -598,7 +598,7 @@ function buildDigestOutput(channel, header, linesByMode, target, server, htmlHea
         email: {
           subject: `Actual-sync: payment alerts for ${server}`,
           text: `${header}\n\n${linesByMode.email_text.join('\n')}`,
-          html: `<p>${header}</p><ul>${linesByMode.email_html.map((line) => `<li>${line}</li>`).join('')}</ul>`
+          html: `<p>${htmlHeader}</p><ul>${linesByMode.email_html.map((line) => `<li>${line}</li>`).join('')}</ul>`
         }
       };
     case 'slack':
@@ -725,9 +725,10 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
       const linesByMode = {};
       for (const mode of modes) linesByMode[mode] = rendered.slice(0, count).map((r) => r.lines[mode]);
       const header = `Actual-sync: ${count} payment alert(s) for ${server}`;
-      // Telegram's html is parsed as HTML: an unescaped `&` or `<` in the
-      // server name would make every digest fall back to plain text.
-      const htmlHeader = channel === 'telegram' ? `Actual-sync: ${count} payment alert(s) for ${escapeTelegramHtml(server)}` : header;
+      // Telegram's html and the email html body are parsed as HTML: an unescaped
+      // `&` or `<` in the server name would make every Telegram digest fall back
+      // to plain text and would inject markup into the email.
+      const htmlHeader = (channel === 'telegram' || channel === 'email') ? `Actual-sync: ${count} payment alert(s) for ${escapeTelegramHtml(server)}` : header;
       return buildDigestOutput(channel, header, linesByMode, target, server, htmlHeader);
     };
     const cap = DIGEST_CAPS[channel];

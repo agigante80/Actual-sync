@@ -1712,6 +1712,14 @@ module.exports = [
         tests: "scheduleAlertDelivery"
     },
     {
+        id: "294-email-digest-header-unescaped", ticket: '#294',
+        desc: "the email digest html body interpolates the server name unescaped again",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "html: `<p>${htmlHeader}</p><ul>",
+        mutant: "html: `<p>${header}</p><ul>",
+        tests: "scheduleAlertDelivery"
+    },
+    {
         id: "294-digest-ignores-cap", ticket: '#294',
         desc: "the digest no longer stops adding items at the channel cap, so Discord gets a message cut at 2000",
         file: "src/lib/scheduleAlertDelivery.js",

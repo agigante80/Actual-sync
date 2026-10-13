@@ -654,6 +654,19 @@ describe('deliver: Telegram digest header escapes the server name (#294 review r
     expect(header).not.toContain('<home>');
     expect(sender.calls[0].telegram.plain.split('\n')[0]).toContain('A&B <home>');
   });
+
+  test('the email digest html header escapes the server name; the text body keeps it raw', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ email: { enabled: true } });
+    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['email'] }] });
+    await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'A&B <home>', rules, timezone: 'UTC', logger: quietLogger
+    });
+    const { html, text } = sender.calls[0].email;
+    expect(html).toContain('<p>Actual-sync: 1 payment alert(s) for A&amp;B &lt;home&gt;</p>');
+    expect(html).not.toContain('<home>');
+    expect(text.split('\n')[0]).toContain('A&B <home>');
+  });
 });
 
 describe('deliver: digest respects each rule\'s own channel restriction (#295 review, M1)', () => {
