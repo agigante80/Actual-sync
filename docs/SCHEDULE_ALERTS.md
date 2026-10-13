@@ -185,6 +185,11 @@ A template left out keeps its built-in English wording. Every template is valida
 against the [variable list below](#variables); an unknown variable, an unregistered helper, or (for
 Telegram) literal markup Telegram would reject all fail fast, naming the offending token and line.
 
+Telegram templates have two extra rules: a literal `&` must be written `&amp;` (also `&lt;`, `&gt;`,
+`&quot;`), and allowed tags such as `<b>` must be closed. The entities show literally on every other
+channel. Links (`<a href="{{url}}">`) are not supported in templates for now. See
+[NOTIFICATIONS.md](./NOTIFICATIONS.md#telegram-markup-rules) and its "Links in templates" decision.
+
 ## Variables
 
 Every variable is always present in the render context, as `null` when it does not apply to the
