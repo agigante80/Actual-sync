@@ -894,6 +894,25 @@ describe('evaluate: R2-M3 / #297 F4 (the linked-early window never reaches back 
     expect(byDate['2026-01-12'].state).toBe('upcoming');
   });
 
+  test('a second linked payment still inside the previous grace is not pulled forward onto the next occurrence', () => {
+    const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } });
+    const { evaluations } = evaluate({
+      rules: rentRule({ graceDays: 5, earlyDays: 0 }),
+      schedules: [schedule],
+      // 5 Jan is settled by t0; t1 (10 Jan) is within 5 Jan's grace (deadline 10 Jan), so 12 Jan must not claim it.
+      transactions: [
+        { id: 't0', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: 's1' },
+        { id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }
+      ],
+      accounts: [account({ last_sync: epochMs('2026-01-11') })],
+      now: '2026-01-11',
+      timezone: TZ
+    });
+    const byDate = Object.fromEntries(evaluations[0].occurrences.map((o) => [o.date, o]));
+    expect(byDate['2026-01-05'].state).toBe('received');
+    expect(byDate['2026-01-12'].state).toBe('upcoming');
+  });
+
   test('a linked payment after the previous deadline, up to 2 days early, settles the next occurrence', () => {
     const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } });
     const { evaluations } = evaluate({
