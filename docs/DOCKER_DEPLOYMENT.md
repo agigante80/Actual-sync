@@ -443,6 +443,12 @@ Each budget on the same Actual Budget server needs a separate entry:
 }
 ```
 
+## Stopping the container
+
+On SIGTERM or SIGINT the service stops accepting new syncs (including the rest of a scheduled run that has not started yet), cancels the cron jobs and pending retries, and waits up to 8 seconds for the sync that is running to finish. If it is still running after that, the Actual session is closed and the service exits.
+
+Plain `docker stop` gives a container 10 seconds before SIGKILL, which is why the wait is 8 seconds. A longer `stop_grace_period` does not help: the wait is a fixed 8 seconds, so the extra time is unused. A sync that needs longer than 8 seconds is interrupted and finishes cleanly on the next run.
+
 ## Updating
 
 ### Automated Updates

@@ -77,15 +77,58 @@ describe('autoRetry (#273)', () => {
         expect(retry.cancel('Main')).toBe(false);
     });
 
-    test('an automated caller that shares a failed manual run (#265 dedupe) still schedules the retry; the manual caller does not', async () => {
-        const { retry, timers, syncBank } = setup();
-        const manualRun = Promise.resolve({ status: 'failure' }); // what the queue hands both callers
-        syncBank.mockReturnValue(manualRun);
+    describe('with the real SyncQueue (#265 dedupe)', () => {
+        const { SyncQueue } = require('../lib/syncQueue');
+        function queued() {
+            const queue = new SyncQueue();
+            const timers = [];
+            const gate = {};
+            gate.promise = new Promise((r) => { gate.open = r; });
+            // The task is held until gate.open so both callers can join one run.
+            const syncBank = (server) => queue.run(server.name, async () => { await gate.promise; return { status: 'failure' }; });
+            const retry = createAutoRetry({
+                syncBank,
+                getSyncConfig: () => ({ autoRetry: { enabled: true, maxAttempts: 2, delayMinutes: 31 } }),
+                logger: { info: jest.fn(), error: jest.fn() },
+                setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+                clearTimer: () => {}
+            });
+            return { queue, syncBank, retry, timers, gate };
+        }
+
+        test('manual run queued first, automated caller joins it: exactly one retry timer', async () => {
+            const { syncBank, retry, timers, gate } = queued();
+            const manual = syncBank(server);
+            const automated = retry.runAutomated(server);
+            gate.open();
+            expect(await manual).toEqual({ status: 'failure' });
+            await automated;
+            expect(timers).toHaveLength(1);
+        });
+
+        test('automated run pending first, manual caller joins it: the automated owner schedules exactly one retry', async () => {
+            const { syncBank, retry, timers, gate } = queued();
+            const automated = retry.runAutomated(server);
+            const manual = syncBank(server);
+            gate.open();
+            expect(await manual).toEqual({ status: 'failure' });
+            await automated;
+            expect(timers).toHaveLength(1);
+        });
+
+        test('a failed manual run on its own schedules nothing', async () => {
+            const { syncBank, timers, gate } = queued();
+            const manual = syncBank(server);
+            gate.open();
+            await manual;
+            expect(timers).toHaveLength(0);
+        });
+    });
+
+    test('a skipped result (shutdown) is not a failure and schedules nothing', async () => {
+        const { retry, timers } = setup({ results: [{ status: 'skipped' }] });
         await retry.runAutomated(server);
-        expect(timers).toHaveLength(1);
-        // A manual caller calls syncBank directly and never touches the retry module.
-        await manualRun;
-        expect(timers).toHaveLength(1);
+        expect(timers).toHaveLength(0);
     });
 });
 
@@ -104,7 +147,12 @@ describe('syncService wiring (#273)', () => {
     });
 
     test('shutdown waits for the queue and stops pending retries', () => {
-        expect(src).toContain('syncQueue.idle()');
+        expect(src).toContain('shutdownGate.drain(SHUTDOWN_WAIT_MS)');
+        expect(src).toContain('shutdownGate.close()');
         expect(src).toContain('autoRetry.cancelAll()');
+        expect(src).toContain('shutdownGate.run(server.name');
+        expect(src).toContain('const SHUTDOWN_WAIT_MS = 8000;');
+        expect(src).toContain("process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));");
+        expect(src).toContain("process.on('SIGINT', () => gracefulShutdown('SIGINT'));");
     });
 });

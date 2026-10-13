@@ -815,6 +815,22 @@ module.exports = [
         mutant: "failed = false;",
         tests: 'autoRetry'
     },
+    {
+        id: '273-sigterm-not-registered', ticket: '#273',
+        desc: 'the SIGTERM handler is no longer registered, so docker stop kills a running sync',
+        file: 'src/syncService.js',
+        anchor: "process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));",
+        mutant: "// SIGTERM handler removed",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-shutdown-gate-open', ticket: '#273',
+        desc: 'shutdown no longer closes the gate, so syncs queued after the signal still start',
+        file: 'src/lib/shutdownGate.js',
+        anchor: "        closed = true;",
+        mutant: "        closed = false;",
+        tests: 'shutdownGate'
+    },
 
     // ---- #248: trivy-action ran from a floating branch ----------------------
     {
@@ -831,7 +847,7 @@ module.exports = [
         id: '265-sync-bypasses-queue', ticket: '#265',
         desc: 'syncBank calls runSyncBank directly, so two syncs can run at once again',
         file: 'src/syncService.js',
-        anchor: '    return syncQueue.run(server.name, () => runSyncBank(server, options));',
+        anchor: '    return shutdownGate.run(server.name, () => runSyncBank(server, options));',
         mutant: '    return runSyncBank(server, options);',
         tests: 'syncQueue'
     },

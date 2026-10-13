@@ -165,7 +165,7 @@ describe('syncService routes every sync through the queue (#265)', () => {
         const calls = source.match(/runSyncBank\(/g) || [];
         // One definition plus one call inside syncBank's queue.run.
         expect(calls).toHaveLength(2);
-        expect(source).toMatch(/syncQueue\.run\(server\.name, \(\) => runSyncBank\(server, options\)\)/);
+        expect(source).toMatch(/shutdownGate\.run\(server\.name, \(\) => runSyncBank\(server, options\)\)/);
     });
 
     test('the Actual API is only used inside runSyncBank and its helpers, never around the queue', () => {
@@ -293,23 +293,18 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
     });
 });
 
-describe('SyncQueue idle() and size() (#273)', () => {
+describe('SyncQueue size() (#273)', () => {
     const { SyncQueue } = require('../lib/syncQueue');
 
-    test('idle resolves only after the running task finishes, and never rejects', async () => {
+    test('size counts waiting and running keys and returns to 0 after a failing task', async () => {
         const queue = new SyncQueue();
         let release;
         const gate = new Promise((r) => { release = r; });
         const run = queue.run('A', async () => { await gate; throw new Error('boom'); });
-        run.catch(() => {});
+        const settled = run.catch(() => {});
         expect(queue.size()).toBe(1);
-        let idle = false;
-        const waiting = queue.idle().then(() => { idle = true; });
-        await Promise.resolve();
-        expect(idle).toBe(false);
         release();
-        await waiting;
-        expect(idle).toBe(true);
+        await settled;
         await Promise.resolve();
         expect(queue.size()).toBe(0);
     });

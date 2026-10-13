@@ -15,6 +15,7 @@ const { enhanceActualApiError, explainBudgetNotOpen } = require('./lib/actualApi
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
 const { SyncQueue } = require('./lib/syncQueue');
+const { createShutdownGate } = require('./lib/shutdownGate');
 const { createAutoRetry } = require('./lib/autoRetry');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts } = require('./lib/scheduleAlertsStep');
@@ -99,6 +100,7 @@ let scheduledJobsRef = []; // Variable to store scheduled jobs (populated during
 // session, so two syncs at once corrupt each other (#265). The logger is read
 // at call time because it is created inside the config block below.
 const syncQueue = new SyncQueue({ logger: { info: (message, context) => logger?.info(message, context) } });
+const shutdownGate = createShutdownGate({ queue: syncQueue });
 // Actual API calls that timed out but are still running (#272). They share the
 // one Actual session with every later sync, so the queue waits for them.
 const lateActualCalls = new LateCalls();
@@ -286,7 +288,7 @@ const cancelPendingRetry = (serverName) => autoRetry.cancel(serverName);
  * already waiting or running is not queued twice: the caller gets that run.
  */
 function syncBank(server, options = {}) {
-    return syncQueue.run(server.name, () => runSyncBank(server, options));
+    return shutdownGate.run(server.name, () => runSyncBank(server, options));
 }
 
 async function runSyncBank(server, options = {}) {
@@ -1119,10 +1121,15 @@ async function run() {
 }
 
 // Graceful shutdown (#273). A sync in flight holds the process-wide Actual
-// session; exiting under it leaves a half-written budget in dataDir. Wait for
-// the queue to go idle, but only for SHUTDOWN_WAIT_MS: a hung sync must not
-// make the container ignore SIGTERM until it is SIGKILLed.
-const SHUTDOWN_WAIT_MS = 30000;
+// session; exiting under it leaves a half-written budget in dataDir. The gate
+// refuses new syncs, then we wait for the running one, but only for
+// SHUTDOWN_WAIT_MS: a hung sync must not make the container ignore SIGTERM.
+//
+// 8000 ms, not more: `docker stop` sends SIGTERM and SIGKILLs after 10 s by
+// default. A longer wait would be killed before the actual.shutdown() fallback
+// below ever ran. A stop_grace_period above 10 s does not help either: this
+// wait is a fixed cap, so a longer grace period is simply unused.
+const SHUTDOWN_WAIT_MS = 8000;
 let shuttingDown = false;
 
 async function gracefulShutdown(signal) {
@@ -1137,14 +1144,14 @@ async function gracefulShutdown(signal) {
             telegramBot.stop();
         }
 
+        // Refuse syncs that would start after the signal (a serial cron loop,
+        // a dashboard request) and stop the cron jobs from firing new ones.
+        shutdownGate.close();
+        scheduledJobsRef.forEach(sj => { try { sj.job.cancel(); } catch (e) { /* already gone */ } });
+
         if (syncQueue.running() || syncQueue.size() > 0) {
             logger.info('Waiting for the running sync to finish', { timeoutMs: SHUTDOWN_WAIT_MS });
-            let timer;
-            const finished = await Promise.race([
-                syncQueue.idle().then(() => true),
-                new Promise((resolve) => { timer = setTimeout(() => resolve(false), SHUTDOWN_WAIT_MS); })
-            ]);
-            clearTimeout(timer);
+            const finished = await shutdownGate.drain(SHUTDOWN_WAIT_MS);
             if (!finished) {
                 logger.warn('Sync still running after the shutdown wait; closing the Actual session');
                 try { await actual.shutdown(); } catch (shutdownError) {
