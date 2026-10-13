@@ -2108,6 +2108,30 @@ module.exports = [
         mutant: "oldest = Math.min(oldest, state.lastSentAt == null ? Infinity : Date.parse(state.lastSentAt));",
         tests: 'scheduleAlertDelivery.test'
     },
+    {
+        id: '337-immediate-destination-order-fixed', ticket: '#337',
+        desc: 'immediate mode visits destinations in configured order again, so a hanging first destination starves later ones every run',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      .sort((a, b) => (attempts.get(`dest|${a.key}`) || 0) - (attempts.get(`dest|${b.key}`) || 0));",
+        mutant: "      .sort(() => 0);",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '337-immediate-attempt-not-stamped', ticket: '#337',
+        desc: 'an immediate-mode destination send is no longer stamped as attempted, so the rotation never moves off a hanging destination',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      attempts.set(`dest|${destination.key}`, digestAttemptSeq);",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '338-immediate-order-reversed', ticket: '#338',
+        desc: 'immediate mode sends the most recently sent event first, so the same few reminders use the budget every day and the rest starve',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    if (x === y) return 0;\n    return x < y ? -1 : 1;\n  });",
+        mutant: "    if (x === y) return 0;\n    return x < y ? 1 : -1;\n  });",
+        tests: 'scheduleAlertDelivery.test'
+    },
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',

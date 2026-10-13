@@ -982,4 +982,63 @@ describe('deliver: delivery budget starvation (#337, #338)', () => {
     }
     expect(new Set(history.rows.map((r) => r.alertId)).size).toBe(COUNT);
   });
+
+  test('a first destination that hangs past the budget every run does not starve the second destination in immediate mode (#337, M1)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      telegram: { enabled: true },
+      webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] }
+    });
+    const original = sender.sendTemplated.bind(sender);
+    sender.sendTemplated = async (outputs) => {
+      if (outputs.telegram) {
+        sender.calls.push(outputs);
+        await sleep(60); // hangs until the 40ms budget is gone
+        return { telegram: { success: false } };
+      }
+      return original(outputs);
+    };
+    const ids = ['a1', 'a2', 'a3'];
+    const rules = getRules({ alerts: ids.map((id) => ({ id, schedule: 'Rent' })) });
+    const events = ids.map((id) => missingEvent({ alertId: id }));
+    const evaluations = ids.map((id) => rentEvaluation({ alertId: id }));
+
+    let discordRun = 0;
+    for (let run = 1; run <= 4 && !discordRun; run += 1) {
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: '2026-01-10',
+        server: 'starve-337-imm', rules, timezone: 'UTC', logger: quietLogger, deadline: Date.now() + 40
+      });
+      if (history.rows.some((r) => String(r.channel).startsWith('discord'))) discordRun = run;
+    }
+    expect(discordRun).toBeGreaterThan(0);
+    expect(discordRun).toBeLessThanOrEqual(2);
+  });
+
+  test('over many days, immediate-mode reminders rotate by oldest last send so every alert keeps getting reminded (#338, M2)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const original = sender.sendTemplated.bind(sender);
+    sender.sendTemplated = async (outputs) => { await sleep(25); return original(outputs); };
+    const COUNT = 6;
+    const ids = Array.from({ length: COUNT }, (_, i) => `r${i}`);
+    const rules = getRules({ alerts: ids.map((id) => ({ id, schedule: 'Rent', remindEveryDays: 1 })) });
+    const events = ids.map((id) => missingEvent({ alertId: id }));
+    const evaluations = ids.map((id) => rentEvaluation({ alertId: id }));
+
+    // Budget fits 2 sends a day. Past the first cycle, only the
+    // oldest-sent-first order keeps reaching every alert.
+    for (let day = 0; day < 12; day += 1) {
+      const instant = new Date(Date.UTC(2026, 0, 10 + day)).toISOString();
+      history.clock = instant;
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: instant, server: 'imm-338-rot',
+        rules, timezone: 'UTC', logger: quietLogger, deadline: Date.now() + 40
+      });
+    }
+    const perAlert = new Map();
+    for (const r of history.rows) perAlert.set(r.alertId, (perAlert.get(r.alertId) || 0) + 1);
+    expect(perAlert.size).toBe(COUNT);
+    expect(Math.min(...perAlert.values())).toBeGreaterThanOrEqual(3);
+  });
 });

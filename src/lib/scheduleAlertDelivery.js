@@ -542,8 +542,18 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
     const modes = channels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
     const context = buildContext(event, evaluation, rule, { server, timezone });
 
+    // #337: immediate mode visits the destination attempted longest ago
+    // first (never-attempted before all), sharing the digest attempt map
+    // under a 'dest|' key prefix. Without this, a hanging first destination
+    // spends the budget every run and later ones never get a row. Sort is
+    // stable, so ties keep configured order.
+    const attempts = digestAttempts.get(server) || new Map();
+    digestAttempts.set(server, attempts);
+    const ordered = [...destinations]
+      .sort((a, b) => (attempts.get(`dest|${a.key}`) || 0) - (attempts.get(`dest|${b.key}`) || 0));
+
     let sentAny = false;
-    for (const destination of destinations) {
+    for (const destination of ordered) {
       if (deadline != null && Date.now() >= deadline) {
         logger.warn('Schedule alert delivery budget exhausted; destination deferred to next sync', {
           server, alertId: event.alertId, event: event.event, channel: destination.channel
@@ -551,6 +561,8 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
         break;
       }
       let ok = false;
+      digestAttemptSeq += 1;
+      attempts.set(`dest|${destination.key}`, digestAttemptSeq);
       try {
         const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
         const channelOutputs = buildChannelOutput(renderer, event.event, context, destination.channel, destination.target, context.name);
