@@ -1632,6 +1632,31 @@ module.exports = [
         mutant: "  return target.name ? `${channel}:#${target.name}` : `${channel}:#${hash}`;",
         tests: 'scheduleAlertDelivery'
     },
+    // ---- #243: helmet security headers -------------------------------------
+    {
+        id: '243-frame-ancestors-allowed', ticket: '#243',
+        desc: 'the CSP lets any site frame the dashboard again (clickjacking)',
+        file: 'src/services/healthCheck.js',
+        anchor: "          frameAncestors: [\"'none'\"]",
+        mutant: "          frameAncestors: ['*']",
+        tests: 'healthCheck.test'
+    },
+    {
+        id: '243-inline-script-allowed', ticket: '#243',
+        desc: 'the CSP allows inline scripts again',
+        file: 'src/services/healthCheck.js',
+        anchor: "          scriptSrc: [\"'self'\"],",
+        mutant: "          scriptSrc: [\"'self'\", \"'unsafe-inline'\"],",
+        tests: 'healthCheck.test'
+    },
+    {
+        id: '243-hsts-include-subdomains', ticket: '#243',
+        desc: 'HSTS sends includeSubDomains again, locking plain-HTTP sibling hosts out',
+        file: 'src/services/healthCheck.js',
+        anchor: "      strictTransportSecurity: hsts ? { maxAge: 15552000, includeSubDomains: false } : false",
+        mutant: "      strictTransportSecurity: hsts ? { maxAge: 15552000 } : false",
+        tests: 'healthCheck.test'
+    },
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
