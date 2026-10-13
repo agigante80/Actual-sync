@@ -798,6 +798,16 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #278: trustProxy shape bypassed validation in non-strict mode -------
+    {
+        id: '278-trust-proxy-shape-unchecked', ticket: '#278',
+        desc: 'a non-integer or object trustProxy passes logic validation, so CONFIG_STRICT=false lets 1.5 trust 2 hops',
+        file: 'src/lib/configLoader.js',
+        anchor: "        if (!trustProxyShapeOk) {",
+        mutant: "        if (false && !trustProxyShapeOk) {",
+        tests: 'configLoader'
+    },
+
     // ---- #248: trivy-action ran from a floating branch ----------------------
     {
         id: '248-trivy-floating-branch', ticket: '#248',
