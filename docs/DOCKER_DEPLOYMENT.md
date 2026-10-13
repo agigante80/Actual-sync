@@ -315,6 +315,10 @@ The container starts as root only to apply `PUID`/`PGID` and fix ownership of th
 writable volumes, then drops to a non-root user (see
 [Issue 1: Permission Denied](#issue-1-permission-denied--database-write-errors)).
 
+The dashboard needs no outbound access: its chart library (Chart.js) is a
+production dependency installed into the image, so the dashboard works with
+egress blocked.
+
 ## Production Tips
 
 ### 1. Security

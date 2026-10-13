@@ -329,6 +329,40 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('vendored Chart.js (#244)', () => {
+    beforeEach(async () => {
+      await healthCheck.start();
+    });
+
+    test('serves chart.js from node_modules as javascript, cached', async () => {
+      const result = await httpGet(`http://127.0.0.1:${testPort}/vendor/chart.umd.min.js`);
+      expect(result.statusCode).toBe(200);
+      expect(result.headers['content-type']).toContain('javascript');
+      expect(result.headers['cache-control']).toContain('max-age');
+      expect(result.body.length).toBeGreaterThan(0);
+    });
+
+    test('an unknown path under /vendor is a 404, not a 500', async () => {
+      const result = await httpGet(`http://127.0.0.1:${testPort}/vendor/nope.js`);
+      expect(result.statusCode).toBe(404);
+    });
+
+    test('a traversal attempt cannot read package.json', async () => {
+      // http.get(url) collapses dot segments before sending, so a literal
+      // `../` would arrive as `/package.json` and never reach /vendor. Send
+      // the raw path with http.request, which does not normalise it.
+      const rawGet = (path) => new Promise((resolve, reject) => {
+        http.request({ hostname: '127.0.0.1', port: testPort, path }, (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode));
+        }).on('error', reject).end();
+      });
+      for (const p of ['/vendor/../../package.json', '/vendor/..%2f..%2fpackage.json']) {
+        expect(await rawGet(p)).toBe(404);
+      }
+    });
+  });
+
   describe('/health endpoint', () => {
     beforeEach(async () => {
       await healthCheck.start();

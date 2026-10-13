@@ -80,6 +80,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-sqlite3": "^13.0.3",
+    "chart.js": "^4.5.1",
     "cronstrue": "^3.32.0",
     "date-fns": "4.4.0",
     "dotenv": "^18.0.7",
@@ -99,7 +100,6 @@
   "devDependencies": {
     "@sinonjs/fake-timers": "15.4.0",
     "@types/jest": "^30.0.0",
-    "chart.js": "4.4.0",
     "jest": "^30.5.2",
     "js-yaml": "^5.4.3",
     "knip": "^6.41.0",
