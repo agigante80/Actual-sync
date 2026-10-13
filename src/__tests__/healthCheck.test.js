@@ -1124,7 +1124,8 @@ describe('HealthCheckService', () => {
       await hc.start();
       await hc.stop();
       // Nulling the field alone would leak the interval on every restart.
-      expect(clearSpy).toHaveBeenCalledWith(timer);
+      // Compare by identity: a Timeout object in a failure diff is ~20k lines.
+      expect(clearSpy.mock.calls.some(([t]) => t === timer)).toBe(true);
       clearSpy.mockRestore();
       expect(hc.authFailures.sweeper).toBeNull();
       hc.authFailures.increment('k');
