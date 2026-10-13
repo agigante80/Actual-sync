@@ -166,5 +166,40 @@ describe('dashboard.html is CSP-clean (#243)', () => {
       expect(h.sockets).toHaveLength(2);
       expect(h.live()).toBe(1);
     });
+
+    test('a retry firing after the replacement socket exists opens no second socket', async () => {
+      const h = harness();
+      await h.ctx.connectWebSocket();
+      h.open(h.sockets[0]);
+      h.sockets[0].close(); // CLOSING, so a replacement may start
+      let release;
+      h.ctx.fetch = () => new Promise(r => { release = () => r({ ok: true, json: async () => ({ ticket: 'late' }) }); });
+      const pending = h.ctx.connectWebSocket(); // ticket request held open
+      await h.tick();
+      h.closed(h.sockets[0]); // old socket closes meanwhile and schedules a retry
+      expect(h.pendingTimers()).toBe(1);
+      release();
+      await pending;
+      expect(h.sockets).toHaveLength(2); // the replacement, still CONNECTING
+      await h.advance(60000); // the retry fires
+      expect(h.sockets).toHaveLength(2);
+      h.open(h.sockets[1]);
+      expect(h.live()).toBe(1);
+    });
+
+    test('a new socket does not inherit a stale pong clock and survives its first keep-alive tick', async () => {
+      const h = harness();
+      let tickFn;
+      h.ctx.setInterval = (f) => { tickFn = f; return 1; };
+      await h.ctx.connectWebSocket();
+      await h.advance(200000); // long past the 90s keep-alive timeout since load
+      const sent = [];
+      const s = h.sockets[0];
+      s.send = (m) => sent.push(m);
+      h.open(s);
+      tickFn();
+      expect(sent).toHaveLength(1);
+      expect(s.readyState).toBe(1);
+    });
   });
 });

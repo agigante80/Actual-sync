@@ -1104,6 +1104,22 @@ module.exports = [
         tests: 'dashboard'
     },
     {
+        id: '280-ws-connect-guard-removed', ticket: '#280',
+        desc: 'connectWebSocket no longer returns when a socket is open or connecting, so a late retry orphans a socket',
+        file: 'src/services/dashboard.js',
+        anchor: '    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;\n',
+        mutant: '',
+        tests: 'dashboard'
+    },
+    {
+        id: '280-ws-pong-clock-not-reset', ticket: '#280',
+        desc: 'a new socket keeps the stale lastPingTime, so after one keep-alive timeout every socket closes at its first tick',
+        file: 'src/services/dashboard.js',
+        anchor: '            lastPingTime = Date.now();\n            addLogEntry',
+        mutant: '            addLogEntry',
+        tests: 'dashboard'
+    },
+    {
         id: '246-basic-auth-short-circuits', ticket: '#246',
         desc: 'a wrong username skips the password comparison, a timing signal for valid usernames',
         file: 'src/lib/dashboardCredentials.js',

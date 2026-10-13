@@ -422,6 +422,9 @@ async function connectWebSocket() {
             console.log('WebSocket connected');
             reconnectAttempts = 0;
             reconnectDelay = 1000; // Reset backoff
+            // A fresh socket starts with a fresh pong clock; a stale value from
+            // before a keep-alive timeout would close it at its first tick. (#280)
+            lastPingTime = Date.now();
             addLogEntry('info', 'Connected to log stream');
             
             // Start keep-alive ping
