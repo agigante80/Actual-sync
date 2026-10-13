@@ -1199,10 +1199,8 @@ module.exports = [
         id: '258-interval-violation-boundary-off-by-one', ticket: '#258',
         desc: 'the #271 item 1 window-overlap guard uses > instead of >=, so an exact-equal grace+early no longer trips it',
         file: 'src/lib/scheduleAlerts.js',
-        // #295 review round 2, M3 widened the guard from `binding.earlyDays`
-        // alone to `effectiveEarlyDays` (Math.max with LINKED_EARLY_WINDOW_DAYS);
-        // this anchor was retargeted to match, since the old text no longer
-        // appears in the file at all (a stale anchor tests nothing).
+        // #297 round 1, M2: effectiveEarlyDays includes the linked allowance
+        // again, but only while the interval exceeds it (daily stays valid).
         anchor: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays >= shortestIntervalDays) {',
         mutant: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays > shortestIntervalDays) {',
         tests: 'scheduleAlerts.test'
@@ -1425,7 +1423,7 @@ module.exports = [
         // #295 review round 2, M1/M3 reworked this block (betterMatchedElsewhere,
         // strictLinked/closestLinked); this anchor was retargeted to the current
         // preference chain, since the old text no longer appears in the file.
-        anchor: "        const candidate = strictLinked\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          || closestLinked\n          // Wrong-amount fallback (M11): only take a candidate that is not a\n          // better, correctly-amounted match for some OTHER bound schedule\n          // (#295 review round 2, M1).\n          || inWindow.find((c) => !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))\n          || null;",
+        anchor: "        const candidate = strictLinked\n          || (linkedBeatsAmount ? closestLinked : null)\n          || amountMatch\n          || closestLinked\n          // Wrong-amount fallback (M11): only take a candidate that is not a\n          // better, correctly-amounted match for some OTHER bound schedule\n          // (#295 review round 2, M1).\n          || inWindow.find((c) => !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))\n          || null;",
         mutant: '        const candidate = inWindow[0] || null;',
         tests: 'scheduleAlerts.test'
     },
@@ -1433,8 +1431,56 @@ module.exports = [
         id: '258-m12-linked-early-window-not-widened', ticket: '#258',
         desc: "a linked transaction's early window goes back to the rule's own (possibly narrower) earlyDays instead of Actual's +/-2 day linking tolerance",
         file: 'src/lib/scheduleAlerts.js',
-        anchor: "        const earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');",
-        mutant: '        const earlyStartLinked = earlyStart;',
+        anchor: "        let earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');",
+        mutant: '        let earlyStartLinked = earlyStart;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-m1-linked-allowance-beats-in-window-amount-match', ticket: '#297',
+        desc: "the 2-day linked allowance wins over an in-window exact-amount payment again, so a late linked payment for the previous occurrence steals this one's payment",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        const linkedBeatsAmount = closestLinked && (!amountMatch || fitsSiblingSchedule(amountMatch.tx, schedule, bindings));',
+        mutant: '        const linkedBeatsAmount = closestLinked;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-m2-linked-allowance-ignored-by-overlap-guard', ticket: '#297',
+        desc: 'the overlap guard ignores the linked early allowance again, so weekly graceDays 5 is evaluated and its window swallows the next occurrence\'s early linked payment',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const effectiveEarlyDays = linkedOverlap ? Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS) : binding.earlyDays;',
+        mutant: '      const effectiveEarlyDays = binding.earlyDays;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f4-linked-allowance-rejects-short-intervals', ticket: '#297',
+        desc: 'the linked allowance applies to every interval again, so every daily schedule is a permanent interval violation',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const linkedOverlap = shortestIntervalDays !== null && shortestIntervalDays > LINKED_EARLY_WINDOW_DAYS',
+        mutant: '      const linkedOverlap = shortestIntervalDays !== null && shortestIntervalDays > 0',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-l1-ledger-lookup-failure-rejects-batch', ticket: '#297',
+        desc: "a failing ledger lookup rejects the whole deliver() batch again instead of withholding only that event",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      log.warn('Schedule alert ledger lookup failed; event withheld until the next sync', {",
+        mutant: "      throw error;\n      log.warn('Schedule alert ledger lookup failed; event withheld until the next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '297-l1-resolved-lookup-failure-rejects-batch', ticket: '#297',
+        desc: "a failing ledger lookup while deriving resolved events rejects the whole deliver() batch again",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        logger.warn('Schedule alert ledger lookup failed; resolved check withheld until the next sync', {",
+        mutant: "        throw error;\n        logger.warn('Schedule alert ledger lookup failed; resolved check withheld until the next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '297-f4-linked-early-not-clamped-to-previous-deadline', ticket: '#297',
+        desc: "a linked payment's early window is no longer clamped to start after the previous occurrence's deadline, so a payment inside the previous grace is pulled onto the next occurrence",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "          if (earlyStartLinked.isBefore(afterPrevDeadline, 'day')) earlyStartLinked = afterPrevDeadline;",
+        mutant: '          void afterPrevDeadline;',
         tests: 'scheduleAlerts.test'
     },
     {
@@ -1505,7 +1551,9 @@ module.exports = [
         id: '258-r2-m9-legacy-null-channel-row-not-matched', ticket: '#258',
         desc: 'a channel-scoped ledger lookup goes back to an exact-match-only filter, so a legacy pre-H5 row (recorded before the channel column existed, and therefore NULL) is invisible to a lookup for any specific destination key, defeating dedup for upgraded installs',
         file: 'src/services/syncHistory.js',
-        anchor: "          ${filterChannel ? 'AND (channel IS ? OR channel IS NULL)' : ''}",
+        // #297 F7 limited the NULL wildcard to delivered rows; this anchor was
+        // retargeted to the current text.
+        anchor: "          ${filterChannel ? \"AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))\" : ''}",
         mutant: "          ${filterChannel ? 'AND channel IS ?' : ''}",
         tests: 'syncHistory.test'
     },
@@ -1518,6 +1566,72 @@ module.exports = [
         tests: 'configLoader.test'
     },
 
+    // ---- #297: findings left open when the #258 review loop stopped -------
+    {
+        id: '297-f1-remembered-skip-ignored', ticket: '#297',
+        desc: 'a remembered skip decision is no longer honoured, so January (skipped, then February paid and linked) is reported missing once next_date has moved past it',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        if (rememberedSkips.has(skipKey(binding.scheduleId, occurrenceKey))) {',
+        mutant: '        if (false) {',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f1-skip-decision-not-reported', ticket: '#297',
+        desc: 'a first-time skip inference is no longer reported as a skipDecision, so nothing is ever written to the ledger and the skip is forgotten',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '            skipDecisions.push({ alertId: binding.id, scheduleId: binding.scheduleId, occurrence: occurrenceKey });',
+        mutant: '            void occurrenceKey;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f1-skips-not-loaded-from-ledger', ticket: '#297',
+        desc: 'the sync step stops loading remembered skips from the ledger before evaluating, so a skip recorded by an earlier sync is forgotten',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '            skips = rows.map((r) => skipKey(r.scheduleId, r.occurrenceDate));',
+        mutant: '            skips = [];',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '297-f1-skip-decisions-not-persisted', ticket: '#297',
+        desc: 'the deliver phase stops writing newly inferred skip decisions to the ledger',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '    for (const decision of skipDecisions || []) {',
+        mutant: '    for (const decision of []) {',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '297-f2-unlinked-exact-amount-beats-linked', ticket: '#297',
+        desc: 'pass 1 prefers an unlinked exact-amount lookalike over a payment linked to the schedule again, so a sibling schedule on the same account+payee loses its payment and reports a false missing',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "          || (linkedBeatsAmount ? closestLinked : null)\n",
+        mutant: "",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f2b-pass2-ignores-linked-preference', ticket: '#297',
+        desc: 'pass 2 takes the earliest late candidate again instead of preferring one linked to the schedule, so an earlier unlinked lookalike starves its sibling',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        const candidate = lateCandidates.find((c) => c.linked) || lateCandidates[0];',
+        mutant: '        const candidate = lateCandidates[0];',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f7-null-channel-wildcard-matches-any-delivery', ticket: '#297',
+        desc: 'a NULL-channel ledger row of any delivery kind (muted, inferred skip) matches a lookup for a specific destination again, so it can suppress every destination',
+        file: 'src/services/syncHistory.js',
+        anchor: "          ${filterChannel ? \"AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))\" : ''}",
+        mutant: "          ${filterChannel ? 'AND (channel IS ? OR channel IS NULL)' : ''}",
+        tests: 'syncHistory.test'
+    },
+
+    {
+        id: '297-f3-destination-key-collapses-duplicate-names', ticket: '#297',
+        desc: 'the destination key is the webhook name alone again when one is set, so two webhooks of one channel sharing a name collapse into one ledger key and a failed one is never retried',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  return `${channel}:#${target.name || ''}:${hash}`;",
+        mutant: "  return target.name ? `${channel}:#${target.name}` : `${channel}:#${hash}`;",
+        tests: 'scheduleAlertDelivery'
+    },
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',

@@ -37,7 +37,7 @@
  * endpoint is preserved for the non-digest case in `sendEvent`).
  *
  * #295 review, H5: the ledger is keyed per destination (`schedule_alerts.channel`,
- * e.g. `slack:#a1b2c3d4` - see `destinationKey`, which never stores the raw
+ * e.g. `slack:#ops-alerts:a1b2c3d4` - see `destinationKey`, which never stores the raw
  * webhook URL, #295 review round 2, M8), not just per event. Previously a
  * single `allOk` flag spanned every destination of every requested channel,
  * so one dead destination withheld the ledger row for the whole event and
@@ -59,19 +59,28 @@ const ALL_CHANNELS = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'
 /**
  * A ledger-safe key identifying one destination (#295 review round 2, M8).
  * Previously this was `${channel}:${target.url}`, storing the full webhook
- * URL - a secret - in plain text in sync-history.db. This keys by the
- * operator's own `name` for the webhook when configured (stable and already
- * how they refer to it), or otherwise a short, non-reversible sha256 hash of
- * the URL, e.g. `slack:#a1b2c3d4`. A single-destination channel (telegram,
- * email, ntfy) has no URL at all and keys by the channel name alone, as
- * before.
+ * URL - a secret - in plain text in sync-history.db. A webhook-style target
+ * is now keyed `channel:#name:hash`, e.g. `slack:#ops-alerts:a1b2c3d4`: the
+ * operator's own `name` (readable in the ledger; empty when unset) plus a
+ * short, non-reversible sha256 hash of the URL. A single-destination channel
+ * (telegram, email, ntfy) has no URL at all and keys by the channel name
+ * alone, as before.
  *
- * Trade-off: adding a webhook, renaming one, or rotating its URL (with no
- * name set) changes its key, which the ledger has never seen before, so any
- * currently-open alert is re-sent once to it before settling into the normal
- * per-destination dedup/reminder cycle. This is accepted: it is strictly
- * safer than either storing the secret or silently losing track of in-flight
- * alerts across a rename/rotation.
+ * #297 F3: the hash is ALWAYS part of the key. The key used to be the name
+ * alone when one was set, so two webhooks of one channel sharing a name
+ * (nothing in the config forbids it) collapsed to one key: the first to
+ * succeed wrote the row and the other was treated as already delivered, so a
+ * failed destination was never retried. The URL hash tells them apart.
+ *
+ * Trade-off: adding a webhook, renaming one, or rotating its URL changes its
+ * key, which the ledger has never seen before, so any currently-open alert is
+ * re-sent once to it before settling into the normal per-destination
+ * dedup/reminder cycle. This is accepted: it is strictly safer than either
+ * storing the secret or silently losing track of in-flight alerts across a
+ * rename/rotation. Because a `resolved` message is only sent to a destination
+ * that holds its own `missing` row, an alert that is paid before the renamed
+ * or rotated destination received the re-sent `missing` never sends
+ * `resolved` there (#297 F6, documented in docs/SCHEDULE_ALERTS.md).
  *
  * @param {string} channel
  * @param {{name?:string, url?:string}} target
@@ -79,9 +88,8 @@ const ALL_CHANNELS = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'
  */
 function destinationKey(channel, target) {
   if (!target.url) return channel;
-  if (target.name) return `${channel}:#${target.name}`;
   const hash = crypto.createHash('sha256').update(target.url).digest('hex').slice(0, 8);
-  return `${channel}:#${hash}`;
+  return `${channel}:#${target.name || ''}:${hash}`;
 }
 
 /**
@@ -286,8 +294,9 @@ function resolveChannels(rule, sender) {
  * Every individual destination a rule can send to right now: one entry per
  * `(channel, target)` pair `resolveChannels`/`resolveTargets` expose. `key`
  * uniquely identifies the destination for the ledger (#295 review, H5): the
- * channel name alone for a single-destination channel, `channel:url` for a
- * webhook-style channel that can have several.
+ * channel name alone for a single-destination channel, `channel:#name:hash`
+ * (see `destinationKey`, never the raw URL) for a webhook-style channel that
+ * can have several.
  *
  * @param {Object} rule
  * @param {{config?:Object}} sender
@@ -304,14 +313,19 @@ function destinationsForRule(rule, sender) {
 }
 
 /**
- * The subset of a rule's destinations still due for one event: never sent to
- * that destination before (#295 review, H5), or, for `missing`/
- * `ruleUnmatched`, due for a reminder (`rule.remindEveryDays`, calendar-day
- * comparison per M7). Shared by `mayRecord` (the entry gate) and
- * `sendEvent`/`sendDigestBatch` (what actually gets attempted and recorded),
- * so the two can never disagree about what is due.
+ * Whether ONE destination (identified by its ledger key) still needs `event`.
+ * Shared by `dueDestinations` (and so by `mayRecord` and `sendEvent`) and by
+ * `sendDigestBatch`, so the entry gate and what actually gets attempted and
+ * recorded can never disagree about what is due.
  *
- * @returns {Promise<Array<{channel:string, target:Object, key:string}>>}
+ * - `resolved`: due only if this destination holds its own `missing` row and
+ *   no `resolved` row yet (#295 review round 2, M5).
+ * - any other event: due if the destination has no row for it yet (#295
+ *   review, H5); `missing` and `ruleUnmatched` are additionally due again once
+ *   `remindEveryDays` calendar days (M7) have passed since the latest row
+ *   (`ruleUnmatched` always uses a 1-day interval).
+ *
+ * @returns {Promise<boolean>}
  */
 async function isDestinationDue(event, rule, destinationKey, history, server, now, timezone) {
   // #295 review round 2, M5: a `resolved` event is only meaningful for a
@@ -344,6 +358,12 @@ async function isDestinationDue(event, rule, destinationKey, history, server, no
   return calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays;
 }
 
+/**
+ * The subset of a rule's destinations still due for one event
+ * (`isDestinationDue` applied to each of `destinationsForRule`).
+ *
+ * @returns {Promise<Array<{channel:string, target:Object, key:string}>>}
+ */
 async function dueDestinations(event, rule, sender, history, server, now, timezone) {
   const destinations = destinationsForRule(rule, sender);
   const due = [];
@@ -698,14 +718,24 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
  * @param {string} server
  * @returns {Promise<Object[]>} synthesized `resolved` events, shaped like `evaluate()`'s AlertEvent
  */
-async function deriveResolvedEvents(evaluations, history, server) {
+async function deriveResolvedEvents(evaluations, history, server, logger) {
   const resolved = [];
   for (const evaluation of evaluations) {
     for (const occ of evaluation.occurrences || []) {
       if (occ.state !== 'received' && occ.state !== 'late') continue;
-      const missingRow = await history.findLatestScheduleAlert({
-        server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId, occurrenceDate: occ.date, event: 'missing'
-      });
+      // #297 round 1, L1: a lookup that fails withholds only this occurrence
+      // (retried next sync), never the whole batch.
+      let missingRow;
+      try {
+        missingRow = await history.findLatestScheduleAlert({
+          server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId, occurrenceDate: occ.date, event: 'missing'
+        });
+      } catch (error) {
+        logger.warn('Schedule alert ledger lookup failed; resolved check withheld until the next sync', {
+          server, alertId: evaluation.alertId, event: 'resolved', occurrence: occ.date, error: error.message
+        });
+        continue;
+      }
       if (!missingRow) continue;
 
       const daysOverdue = occ.receivedDate ? moment(occ.receivedDate).diff(moment(occ.deadline), 'days') : 0;
@@ -727,13 +757,10 @@ async function deriveResolvedEvents(evaluations, history, server) {
 
 /**
  * Whether this event has at least one destination still worth attempting
- * (#295 review, H5: this is now per-destination, via `dueDestinations`, not
- * a single ledger row per event - see the module doc comment). Every event
- * type gets at most one row per destination ever, except `missing`, which
- * additionally allows a reminder once `rule.remindEveryDays` calendar days
- * (M7) have passed since that destination's latest row (`ruleUnmatched`,
- * whose `occurrence` is always `null`, is deduplicated the same way: one row
- * per rule per calendar day, via `remindEveryDays: 1` applied by the caller).
+ * (#295 review, H5: per destination, via `dueDestinations`, not a single
+ * ledger row per event - see the module doc comment). What counts as due,
+ * including the `resolved` rules and `missing`/`ruleUnmatched` reminders, is
+ * defined once in `isDestinationDue`.
  *
  * @returns {Promise<boolean>}
  */
@@ -772,7 +799,7 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
   let sent = 0;
   let skipped = 0;
 
-  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server);
+  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log);
   const allEvents = [...(events || []), ...resolvedEvents];
 
   const eligible = [];
@@ -796,7 +823,20 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
       continue;
     }
 
-    if (!(await mayRecord(event, rule, sender, history, server, now, timezone))) { skipped += 1; continue; }
+    // #297 round 1, L1: a failing ledger lookup withholds this one event
+    // (WARN, no row, no send; retried next sync) instead of rejecting the
+    // whole batch or, worse, being read as "never recorded" and resent.
+    let due;
+    try {
+      due = await mayRecord(event, rule, sender, history, server, now, timezone);
+    } catch (error) {
+      log.warn('Schedule alert ledger lookup failed; event withheld until the next sync', {
+        server, alertId: event.alertId, event: event.event, occurrence: event.occurrence, error: error.message
+      });
+      skipped += 1;
+      continue;
+    }
+    if (!due) { skipped += 1; continue; }
 
     const evaluation = (evaluations || []).find(
       (e) => e.alertId === event.alertId && e.scheduleId === event.scheduleId

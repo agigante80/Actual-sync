@@ -78,7 +78,11 @@ describe('NotificationService', () => {
         host: 'smtp.test.com',
         port: 587,
         secure: false,
-        auth: { user: 'test', pass: 'pass' }
+        auth: { user: 'test', pass: 'pass' },
+        // #297 F5: bounded socket timeouts so a dead SMTP host cannot hold the sync queue
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 30000
       });
       expect(service.emailTransporter).toBeDefined();
     });
