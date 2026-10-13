@@ -26,7 +26,7 @@
 set -uo pipefail
 
 if [ "$#" -eq 0 ]; then
-  cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+  CDPATH= cd -- "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 fi
 
 resolve_dir() {
