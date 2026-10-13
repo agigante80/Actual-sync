@@ -79,6 +79,26 @@ The WebSocket log stream carries log metadata (server names, account names, sync
 
 Credentials are compared in constant time (SHA-256 digests with `crypto.timingSafeEqual`), and the basic-auth username and password are both always compared.
 
+### HTTP security headers (#243)
+
+[`helmet`](https://helmetjs.github.io/) is mounted first in the Express stack, before the rate limiter and the body parser, so every response carries these headers, including `401`s and parse errors:
+
+| Header | Value |
+|--------|-------|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'` |
+| `X-Frame-Options` | `DENY` (clickjacking protection for the state-changing dashboard POSTs) |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `no-referrer` |
+| `X-Powered-By` | removed |
+
+Notes:
+
+- `script-src` is `'self'` with no `'unsafe-inline'` and no `'unsafe-eval'`: injected markup cannot run script. This is why the dashboard script lives in `src/services/dashboard.js` and not inline.
+- `style-src` allows `'unsafe-inline'` because the dashboard uses many `style="..."` attributes. That permits inline styling only, not script.
+- `connect-src 'self'` covers `fetch()` and the same-origin `/ws/logs` WebSocket.
+- `upgrade-insecure-requests` is deliberately not sent: the service is usually plain HTTP on a LAN and that directive would make the browser rewrite its own sub-requests to HTTPS and break the page.
+- **TLS and HSTS remain the reverse proxy's responsibility.** `Strict-Transport-Security` is off by default and opt-in with `healthCheck.hsts` ([CONFIG.md](CONFIG.md#healthcheck-optional)). These headers are not a transport story: they do not encrypt anything.
+
 ### Dashboard assets
 
 The dashboard loads no external scripts. Chart.js is declared in `package.json`, so Dependabot, `npm audit` and Trivy cover it like every other dependency, and it is served from the application at the single fixed route `/vendor/chart.umd.min.js` (no directory is exposed). Opening the dashboard contacts no third party, so nothing about the operator's address or use of the tool leaves the host. (#244)

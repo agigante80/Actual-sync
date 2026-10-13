@@ -6,6 +6,7 @@
  */
 
 const express = require('express');
+const helmet = require('helmet');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
@@ -64,6 +65,7 @@ class HealthCheckService {
    * @param {Function} options.getSchedules - Function to get schedule info (optional)
    * @param {Function} options.getCronSchedules - Function to get cron schedule details (optional)
    * @param {Object} options.loggerConfig - Logger configuration
+   * @param {boolean} options.hsts - send Strict-Transport-Security (#243); off unless true
    * @param {boolean|number|string|string[]} options.trustProxy - Express 'trust proxy' value (#245); off when unset
    */
   constructor(options = {}) {
@@ -124,10 +126,60 @@ class HealthCheckService {
     // "Tested up to" = the installed @actual-app/api client version (#154).
     this.testedUpTo = null;
     
+    // Security headers first, so every response carries them: static assets,
+    // the 401 from the auth middleware, and body-parser's own errors. (#243)
+    this.app.disable('x-powered-by');
+    this.app.use(helmet(this.helmetOptions(options.hsts === true)));
+
     // Parse JSON bodies
     this.app.use(express.json());
     
     this.setupRoutes();
+  }
+
+  /**
+   * helmet configuration (#243).
+   *
+   * The dashboard page and script are same-origin only, so script-src is
+   * 'self' with no 'unsafe-inline'; dashboard.html carries no inline script or
+   * inline handler attribute (dashboard.js wires events with addEventListener).
+   * style-src keeps 'unsafe-inline' because the page uses many style="..."
+   * attributes and sets styles on rendered fragments; it only widens style
+   * injection, not script execution. connect-src 'self' covers fetch() and the
+   * same-origin /ws/logs WebSocket (CSP3: 'self' matches ws:/wss: of the same
+   * host).
+   *
+   * Deliberately NOT sent: upgrade-insecure-requests (helmet's default). The
+   * service is usually plain HTTP on a LAN, and that directive makes the browser
+   * rewrite every subresource to https, which breaks the page. HSTS is opt-in
+   * for the same reason; TLS belongs to the reverse proxy.
+   *
+   * @param {boolean} hsts - enable Strict-Transport-Security
+   */
+  helmetOptions(hsts) {
+    return {
+      contentSecurityPolicy: {
+        useDefaults: false,
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          scriptSrcAttr: ["'none'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", 'data:'],
+          connectSrc: ["'self'"],
+          fontSrc: ["'self'"],
+          objectSrc: ["'none'"],
+          baseUri: ["'self'"],
+          formAction: ["'self'"],
+          frameAncestors: ["'none'"]
+        }
+      },
+      frameguard: { action: 'deny' },
+      // includeSubDomains off: helmet adds it by default, and an operator
+      // serving https://example.com would otherwise lock every plain-HTTP
+      // subdomain (nas.example.com) out for 180 days (#243 round 1 L1).
+      strictTransportSecurity: hsts ? { maxAge: 15552000, includeSubDomains: false } : false
+    };
   }
 
   /**
@@ -234,7 +286,7 @@ class HealthCheckService {
       // The dashboard fetches /icon.png as its favicon + header logo on every
       // load; exempt this cacheable static asset so it never competes with the
       // dashboard API calls for the per-IP abuse budget. (#113)
-      skip: (req) => req.path === '/icon.png' || req.path === '/vendor/chart.umd.min.js'
+      skip: (req) => req.path === '/icon.png' || req.path === '/vendor/chart.umd.min.js' || req.path === '/dashboard.js'
     });
 
     // Apply rate limiting to all routes
@@ -353,6 +405,17 @@ class HealthCheckService {
     this.app.get('/icon.png', (req, res) => {
       res.sendFile(path.join(__dirname, 'icon.png'), {
         headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' }
+      }, (err) => {
+        if (err && !res.headersSent) res.status(err.statusCode || 500).end();
+      });
+    });
+
+    // The dashboard's own script, split out of dashboard.html so the CSP can
+    // forbid inline script. A single fixed route, like /icon.png. It is the page's
+    // static code, not data, so it needs no auth (the API it calls does). (#243)
+    this.app.get('/dashboard.js', (req, res) => {
+      res.sendFile(path.join(__dirname, 'dashboard.js'), {
+        headers: { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache' }
       }, (err) => {
         if (err && !res.headersSent) res.status(err.statusCode || 500).end();
       });

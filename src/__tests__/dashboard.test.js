@@ -37,3 +37,26 @@ describe('dashboard.html external references (#244)', () => {
     }
   });
 });
+
+describe('dashboard.html is CSP-clean (#243)', () => {
+  test('has no inline <script> body', () => {
+    const inline = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
+      .filter((m) => !/\bsrc\s*=/.test(m[1]) && m[2].trim() !== '');
+    expect(inline).toEqual([]);
+  });
+
+  test('has no inline event handler attributes', () => {
+    expect(html.match(/\son[a-z]+\s*=\s*["']/gi)).toBeNull();
+  });
+
+  test('loads its script from the same-origin /dashboard.js', () => {
+    expect(html).toContain('src="/dashboard.js"');
+  });
+
+  test('the script file builds no inline handler attributes either', () => {
+    const js = fs.readFileSync(path.join(__dirname, '..', 'services', 'dashboard.js'), 'utf8');
+    expect(js.match(/\son(click|change|error|load|input|submit)\s*=\s*["'`]/gi)).toBeNull();
+    expect(js).not.toMatch(/javascript:/i);
+    expect(js).not.toMatch(/\beval\(|new Function\(/);
+  });
+});
