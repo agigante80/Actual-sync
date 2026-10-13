@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# forge-lib-version: 27
+# forge-lib-version: 46
 # forge-lib.sh: host-aware forge operations (GitHub | Forgejo). Source it; governance components
 # call the forge_* functions instead of `gh` directly, so the same logic works whether a repo lives
 # on GitHub or a self-hosted Forgejo. ADDITIVE: a repo with no Forgejo config defaults to GitHub and
@@ -96,7 +96,7 @@
 #       THE ANOMALY LINES ARE NOT GATED and must not be: the identical-page stop says the server
 #       is ignoring `page`, and the two rc-2 lines say the walk could not continue. A caller
 #       needs all three whether or not it asked for debugging.
-#       The test is `= 1`, matching FORGE_DRY_RUN at six sites in this file; `!= 0` would have
+#       The test is `= 1`, matching every FORGE_DRY_RUN guard in this file; `!= 0` would have
 #       made `FORGE_DEBUG=no` turn debugging on.
 #   v24 forge_body_region_get / _set / _clear and forge_body_compose_preserving are NEW (#248):
 #       the write-authority contract for the three components that edit a ticket body. Additive;
@@ -126,13 +126,108 @@
 #       at the top of the body (after a leading template-version marker line), and an existing one
 #       is MOVED there. Additive: without it the output is byte-identical to v26. Any other fifth
 #       argument exits 2, since a typo that silently appended would hide the region it was moving.
+#   v28 forge_milestone_close decides FORGE_DRY_RUN BEFORE it resolves the title (#254). v27
+#       resolved first, and under the flag the paginator returns a literal `[]`, so every title
+#       was unresolvable: a dry run returned 2 and said `no milestone titled` for a milestone
+#       that exists. It now prints `[dry-run] close milestone <title> on <repo>` to stderr and
+#       returns 0, sending nothing. A caller that saw rc 2 under the flag now sees rc 0, and a
+#       title that does NOT exist also returns 0 under the flag (the caller resolved it from a
+#       real read; forge_issue_milestone makes the same trade). A real run is unchanged.
+#   v29 An INVALID host is refused instead of read as success (#256). forge_host refuses an
+#       invalid FORGE_HOST (printing nothing on stdout), and every consumer that matched its
+#       output with a `case` fell through: the writers returned 0 having sent nothing. Each now
+#       captures the host and returns 2, with exactly one stderr line (forge_host's own), and the
+#       capture sits ABOVE every dry-run guard, so FORGE_DRY_RUN=1 refuses too: no `[dry-run]`
+#       line, rc 2. Covers forge_api, forge_api_paginate, forge_issue_list, forge_issue_label,
+#       forge_milestone_list, forge_milestone_close, forge_issue_edit, _forge_region_write (so
+#       forge_body_region_set and _clear) and forge_body_compose_preserving; the writers that go
+#       through forge_api inherit it for real sends. Two exceptions to the literal `return 2`:
+#       forge_ci_status prints `not_configured` and returns 0, since that word is its documented
+#       "could not ask" answer and a caller acts on it (rc 2 with empty stdout would break that
+#       contract); the executed-directly `detect` CLI is top-level code, so it `exit 2`s with
+#       nothing on stdout.
+#       forge_tag_exists returns 2 under an invalid host (it hides stderr), which means "could
+#       not ask", NOT "tag absent". A caller that saw rc 0 from a write now sees rc 2; valid
+#       hosts are unchanged. forge_api_base already refused and is left alone.
+#   v32 No caller changes (#264). forge_issue_edit's dry-run line says `characters` where it said
+#       `bytes`: the number was always `${#2}`, a character count in a multibyte locale, and
+#       nothing parses the line. The splice's whitespace and line-ending behaviour is now stated
+#       (see the body-region block) and pinned by tests; the code behind it is unchanged.
+#   v35 forge_issue_milestone_list returned [] on Forgejo (#446). It excluded PRs with
+#       `has("pull_request") | not`, and Forgejo sends `"pull_request": null` on EVERY plain issue,
+#       so every issue was dropped and check-phases rules 1 and 4 and reassess's emptied check ran
+#       over nothing. It now uses `.pull_request | not`, false for an absent key and for null alike,
+#       the filter forge_issue_list already used. GitHub output is unchanged.
+#   v36 The Forgejo token is bound to where it may go (#442). A FORGE_API_URL from .forge.conf
+#       needs its host[:port] in ${XDG_CONFIG_HOME:-$HOME/.config}/forge/hosts or forge_api
+#       refuses with rc 2 and sends nothing; an exported FORGE_API_URL needs no entry. Every
+#       FORGE_API_URL must be https (http only with FORGE_ALLOW_HTTP=1 exported). The file may
+#       set FORGE_TOKEN_ENV only to FORGEJO_TOKEN or FORGE_TOKEN; another name must be exported.
+#       Redirects are no longer followed (a 3xx is rc 22). The token reaches curl through -K,
+#       never argv. New: forge_token_present, for a caller that only asks whether a token is set.
+#   v38 Review lows of #442 (#449). New public forge_url_check: silent rc 0 when FORGE_API_URL would
+#       be accepted (https, and on the allowlist if it came from .forge.conf), else the refusal and
+#       rc 2; a no-op on GitHub, reads no token. Every dry-run branch now calls it first on
+#       Forgejo, so a dry run refuses what the real run refuses (forge_api_paginate returns
+#       forge_api's rc instead of printing `[]` after a refusal). A 3xx is rc 22: the remedy is a
+#       FORGE_API_URL that names the final location. Comment fixes only otherwise.
+#   v37 forge_ci_status and forge_ci_no_status_kind stop discarding forge_api's stderr (#450). A
+#       refusal (host not in the allowlist, non-https, empty or unsafe token, bad FORGE_TOKEN_ENV,
+#       invalid host) now reaches the caller's stderr, once, instead of leaving a bare
+#       `not_configured` with no reason. stdout is unchanged (one vocabulary word) and so is rc 0.
+#       Side effects, intended: a real HTTP failure prints forge_api's own `HTTP <n>` line, and
+#       FORGE_DRY_RUN=1 prints its single `[dry-run]` request line. 404 and an empty body stay
+#       silent. The GitHub arm is unchanged.
+#       Both curl calls in forge_api now start with -q, so the user's .curlrc is never read: a
+#       `verbose` line there would print the Authorization header to the stderr this change exposes.
+#       Migration: -q drops EVERY .curlrc setting, so a private CA (`cacert`) or proxy set only there
+#       now fails (curl rc 60 or 7). Set it through CURL_CA_BUNDLE, SSL_CERT_FILE or https_proxy.
+#   v40 The #442 host allowlist is gone (#468, maintainer decision 2026-10-11). A FORGE_API_URL read
+#       from .forge.conf is trusted exactly like an exported one, so ${XDG_CONFIG_HOME:-$HOME/.config}
+#       /forge/hosts is never read and the v0.9.0 migration step (writing it) is not needed; a stale
+#       file is harmless. Kept from v36: https only (http with FORGE_ALLOW_HTTP=1 exported), no -L,
+#       --proto, the token through -K, xtrace suspended, FORGE_TOKEN_ENV limited in the file. The
+#       accepted residual risk: a cloned repository's .forge.conf can name the server that receives
+#       the token, so run forge commands only in repositories you trust.
+#   v41 New: forge_token_available (#454), for a status check that asks whether forge_api would find
+#       a token: the environment variable's name, or `git's credential helper` when only the helper
+#       holds one (FORGE_NO_GIT_CREDENTIALS=1 still turns that off). forge_token_present is
+#       unchanged and still never asks the helper. health-check step 9 now calls the new probe.
 # Add a line here whenever a change alters what a caller must do, not merely what the library
 # does internally.
 
 set -uo pipefail
 
-# Never inherit these: an inherited _FORGE_TMPDIR would be trusted, written to with a predictable
-# name and never cleaned; an inherited memo guard would suppress the first config load.
+# Clear every key a .forge.conf set that still holds exactly what the file wrote; anything else is
+# the caller's, and env wins. Only the six known keys, so a listed name is never eval'd blind.
+# The loop walks the six LITERAL names and looks each up in the list: splitting the list itself
+# would use the caller's IFS, and a strict-mode IFS=$'\n\t' then cleared nothing (#442 round 2).
+_forge_clear_file_vals() {
+  local k
+  for k in FORGE_HOST FORGE_API_URL FORGE_REPO FORGE_TOKEN_ENV FORGE_REMOTE FORGE_NO_GIT_CREDENTIALS; do
+    case " ${_FORGE_FROM_FILE-} " in *" $k "*) ;; *) continue ;; esac
+    eval "_forge_was=\${_FORGE_FILEVAL_$k-}"
+    [ "${!k-}" = "$_forge_was" ] && unset "$k"
+    unset "_FORGE_FILEVAL_$k"
+  done
+  unset _forge_was
+  _FORGE_FROM_FILE=""
+}
+
+# These must not survive from the caller, so they are unset here, and the loader tries not to export
+# them (export -n on _FORGE_FROM_FILE; under `set -a` some can still leak, which is harmless because
+# a child re-sources and unsets them here): an inherited _FORGE_TMPDIR would be trusted, written to
+# with a predictable name and never cleaned; an inherited memo guard would suppress the first config
+# load; an inherited _FORGE_FROM_FILE would make a child treat the caller's own values as
+# file-sourced.
+# A RE-SOURCE in the same shell first clears what the file set (#442 review): otherwise the next
+# load finds FORGE_API_URL already set and takes it for the caller's own (which would also let the
+# file's FORGE_TOKEN_ENV restriction be skipped).
+# _forge_clear_file_vals runs BEFORE the unset, so an INHERITED _FORGE_FROM_FILE and
+# _FORGE_FILEVAL_* list is acted on at source time: a key it names whose value matches is unset
+# (#449 item 10). That is not a security boundary: whoever controls the environment can set or
+# unset the config keys directly, so the list grants nothing they did not already have.
+_forge_clear_file_vals
 unset _FORGE_TMPDIR _FORGE_CONF_PWD _FORGE_FROM_FILE
 
 _forge_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
@@ -179,13 +274,7 @@ _forge_load_conf() {
   # so a process moving between repos would otherwise keep the first repo's identity.
   # Only clear a key that still holds exactly what the file put there. Anything else is the
   # caller's, and env wins.
-  for k in ${_FORGE_FROM_FILE-}; do
-    eval "_forge_was=\${_FORGE_FILEVAL_$k-}"
-    [ "${!k-}" = "$_forge_was" ] && unset "$k"
-    unset "_FORGE_FILEVAL_$k"
-  done
-  unset _forge_was
-  _FORGE_FROM_FILE=""
+  _forge_clear_file_vals
   _FORGE_CONF_PWD="${PWD-}"
   f="$root/.forge.conf"
   [ -f "$f" ] || return 0
@@ -200,7 +289,11 @@ _forge_load_conf() {
       FORGE_HOST|FORGE_API_URL|FORGE_REPO|FORGE_TOKEN_ENV|FORGE_REMOTE|FORGE_NO_GIT_CREDENTIALS)
         [ -n "${!k:-}" ] || { printf -v "$k" '%s' "$v"     # NOT exported: see the header note
                               printf -v "_FORGE_FILEVAL_$k" '%s' "$v"   # what the file wrote (#131.1)
-                              _FORGE_FROM_FILE="${_FORGE_FROM_FILE-} $k"; } ;;  # env wins; else file
+                              # set -a, or an exported empty value, would export it anyway, and a
+                              # child would take it for the caller's own (#442 review)
+                              export -n "$k" "_FORGE_FILEVAL_$k"
+                              _FORGE_FROM_FILE="${_FORGE_FROM_FILE-} $k"
+                              export -n _FORGE_FROM_FILE; } ;;  # env wins; else file
     esac
   done < "$f"
 }
@@ -318,10 +411,93 @@ forge_api_base() {
   esac
 }
 
-_forge_token() {
+# The characters a token variable name and a validated host may contain, spelled out rather than
+# written as ranges so no locale can widen them (#442: a UTF-8 [A-Za-z] admits a dotless i).
+_FORGE_ALNUM='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+
+# xtrace guard: every function that holds the token runs with xtrace off (#442), because `set -x`
+# in a caller printed it on four lines. Each uses the inline pair `case $- in *x*) _fx=1; set +x ;;
+# esac` ... `[ "$_fx" = 0 ] || set -x`; the previous state is kept in the function's own
+# `local _fx`, so nesting restores correctly.
+#
+# _forge_token_var: print the validated name of the variable that holds the Forgejo token (#442).
+# The name is checked BEFORE `${!var}`: a subscript such as `x[$(cmd)]` is evaluated by indirect
+# expansion, so an unchecked name from a committed .forge.conf ran code. A name from the file may
+# only be one of the two the docs use; any other identifier must come from the environment, which
+# is the user's own.
+_forge_token_var() {
   _forge_load_conf
   local var="${FORGE_TOKEN_ENV:-FORGEJO_TOKEN}"
-  if [ -n "${!var:-}" ]; then printf '%s' "${!var}"; return 0; fi
+  case "$var" in
+    [0123456789]*|*[!${_FORGE_ALNUM}_]*)
+      echo "forge-lib: FORGE_TOKEN_ENV is not a valid variable name" >&2; return 2 ;;
+  esac
+  case " ${_FORGE_FROM_FILE-} " in *" FORGE_TOKEN_ENV "*)
+    case "$var" in FORGEJO_TOKEN|FORGE_TOKEN) ;; *)
+      echo "forge-lib: FORGE_TOKEN_ENV in .forge.conf may only name FORGEJO_TOKEN or FORGE_TOKEN; export it in your environment to use another variable" >&2
+      return 2 ;; esac ;;
+  esac
+  printf '%s\n' "$var"
+}
+
+# forge_token_present: print the token variable's name; rc 0 when it holds a value, 1 when it is
+# empty, 2 when the name is refused. It never prints the token and never asks git's credential
+# helper, so a status check (health-check step 9) can call it without indirect expansion of its own.
+forge_token_present() {
+  local _fx=0 var rc=0; case $- in *x*) _fx=1; set +x ;; esac
+  if var="$(_forge_token_var)"; then
+    printf '%s\n' "$var"; [ -n "${!var:-}" ] || rc=1
+  else rc=2; fi
+  [ "$_fx" = 0 ] || set -x
+  return "$rc"
+}
+
+# forge_token_available: would forge_api find a token? Prints the variable's name, or the text
+# `git's credential helper` when only the helper holds one; rc as forge_token_present (#454). The
+# helper is asked through _forge_token_impl itself, so this probe and the request path cannot
+# disagree, and only after the name is validated and forge_url_check accepts the URL, as in
+# forge_api. The helper read is bounded at _FORGE_CRED_SECS (default 10) where `timeout` exists, so
+# a helper that waits on an unlock dialog or a browser sign-in cannot stall a health check; stock
+# macOS has no `timeout` and stays unbounded (#454 review). On a refused URL it still reports the environment token, so a caller can print both
+# problems. Its own guard is the ONLY xtrace guard on the helper read: the token sits in a local
+# and is never printed. forge_token_present stays env only.
+forge_token_available() {
+  local _fx=0 var rc=0 tok=""; case $- in *x*) _fx=1; set +x ;; esac
+  local _FORGE_CRED_SECS="${_FORGE_CRED_SECS:-10}"
+  if ! var="$(_forge_token_var)"; then rc=2
+  elif [ -n "${!var:-}" ]; then printf '%s\n' "$var"
+  elif forge_url_check >/dev/null 2>&1 && tok="$(_forge_token_impl 2>/dev/null)"; then
+    printf '%s\n' "git's credential helper"
+  else printf '%s\n' "$var"; rc=1; fi
+  tok=""
+  [ "$_fx" = 0 ] || set -x
+  return "$rc"
+}
+
+# forge_url_check: would FORGE_API_URL be accepted? Silent rc 0 if so, else forge_api's own
+# refusal on stderr and rc 2. Forgejo only (a no-op on GitHub); reads no token. forge_api_base
+# is called inside $(...) because its ${FORGE_API_URL:?} would exit a non-interactive caller.
+forge_url_check() {
+  local host base=""
+  host="$(forge_host)" || return 2
+  [ "$host" = forgejo ] || return 0
+  base="$(forge_api_base)" || return 2
+  : "$base"
+  _forge_check_url
+}
+
+_forge_token() {
+  local _fx=0 rc; case $- in *x*) _fx=1; set +x ;; esac
+  _forge_token_impl; rc=$?
+  [ "$_fx" = 0 ] || set -x
+  return "$rc"
+}
+
+_forge_token_impl() {
+  _forge_load_conf
+  local var tok=""
+  var="$(_forge_token_var)" || return 2
+  if [ -n "${!var:-}" ]; then tok="${!var}"; fi
   # Fallback: ask git's credential helper for this instance (the mise pattern,
   # see references/local-auth.md). Reads the same encrypted store already used
   # for git-over-HTTPS; never prompts (GIT_TERMINAL_PROMPT=0, askpass stubbed:
@@ -331,22 +507,56 @@ _forge_token() {
   # The stub is an ABSOLUTE path on purpose: a PATH-resolved name could be
   # hijacked by a planted binary inside this credential-handling flow. If
   # /bin/true is absent (NixOS-likes), the miss degrades to a clean rc!=0
-  # with no prompt and no hang (verified), never to a prompt.
-  local url proto host cred
+  # with no prompt and no hang (verified), never to a prompt. GCM_INTERACTIVE=never stops
+  # git-credential-manager opening its own sign-in. A caller that sets _FORGE_CRED_SECS to digits
+  # gets the read under `timeout` when it exists; forge_api sets none and is unbounded as before.
+  # A branch, not an unquoted `$cmd` word: a strict-mode IFS without a space would not split it.
+  local url proto host cred _secs=""
+  case "${_FORGE_CRED_SECS:-}" in ''|*[!0123456789]*) ;; *) command -v timeout >/dev/null 2>&1 && _secs="$_FORGE_CRED_SECS" ;; esac
   url="${FORGE_API_URL:-}"
-  if [ -n "$url" ] && [ "${FORGE_NO_GIT_CREDENTIALS:-0}" != 1 ]; then
+  if [ -z "$tok" ] && [ -n "$url" ] && [ "${FORGE_NO_GIT_CREDENTIALS:-0}" != 1 ]; then
     proto="${url%%://*}"; [ "$proto" = "$url" ] && proto=https
     # The same authority rule as forge_host, port kept (#212): the old cut at `/` alone let
     # `https://evil.internal#@github.com` hand github.com's credential to evil.internal.
     case "$url" in *://*) host="$(_forge_url_host "$url" keep-port)" ;; *) host="$(_forge_url_host "https://$url" keep-port)" ;; esac
     cred=$(printf 'protocol=%s\nhost=%s\n\n' "$proto" "$host" \
-             | GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/true git credential fill 2>/dev/null \
+             | { if [ -n "$_secs" ]; then GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=/bin/true timeout "$_secs" git credential fill
+                 else GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS=/bin/true git credential fill; fi; } 2>/dev/null \
              | sed -n 's/^password=//p' | head -n1)
-    if [ -n "$cred" ]; then printf '%s' "$cred"; return 0; fi
+    [ -z "$cred" ] || { tok="$cred"; var="git's credential helper"; }
   fi
-  echo "forgejo: token env '$var' is empty and git's credential helper has no entry for '${host:-unset}'." >&2
-  echo "         Mint a scoped token and supply it; see forge-host references/local-auth.md." >&2
-  return 2
+  if [ -z "$tok" ]; then
+    echo "forgejo: token env '$var' is empty and git's credential helper has no entry for '${host:-unset}'." >&2
+    echo "         Mint a scoped token and supply it; see forge-host references/local-auth.md." >&2
+    return 2
+  fi
+  # The token is written into a curl config line (#442), whose quoted-string syntax gives a quote,
+  # a backslash or a line break meaning; refuse rather than escape, since no real token has them.
+  case "$tok" in *[\"\\]*|*[[:cntrl:]]*)
+    echo "forge-lib: token in $var cannot be passed to curl safely (it contains a quote, a backslash or a control character)" >&2
+    return 2 ;;
+  esac
+  printf '%s' "$tok"
+}
+
+# _forge_check_url: may the token be sent to FORGE_API_URL? rc 0 or rc 2 with a message (#442).
+# Every URL must be https, or http with FORGE_ALLOW_HTTP=1 exported (the file cannot set it, since
+# it is not a key _forge_load_conf reads). A URL from .forge.conf is trusted like an exported one
+# (#468): the host allowlist #442 added here was dropped by the maintainer, who accepted that a
+# cloned repository's .forge.conf can name the server that gets the token. Do not reintroduce a
+# per-machine trust file. The URL reaches curl only behind --url and only the token goes in the -K
+# config, so no URL content can inject curl options. The scheme check lives here and NOT in
+# forge_host or forge_api_base, which adapt/SKILL.md calls with a scheme-less sentinel URL.
+_forge_check_url() {
+  _forge_load_conf   # in THIS shell: forge_api_base loaded it in a $(...) that is gone
+  local url="${FORGE_API_URL-}"
+  case "$url" in
+    https://*) ;;
+    http://*) [ "${FORGE_ALLOW_HTTP:-0}" = 1 ] || {
+      echo "forge-lib: refusing to send the token over http; use an https FORGE_API_URL, or export FORGE_ALLOW_HTTP=1 for a trusted LAN instance" >&2
+      return 2; } ;;
+    *) echo "forge-lib: FORGE_API_URL must be an https URL, not an option or another scheme" >&2; return 2 ;;
+  esac
 }
 
 # forge_api <METHOD> <path> [json-body]   path is like  /repos/{owner}/{repo}/issues
@@ -357,42 +567,64 @@ _forge_token() {
 # would be discarded.
 forge_api() {
   local method="$1" path="$2" body="${3-}"
+  local host
+  host="$(forge_host)" || return 2   # forge_api-host-capture: ABOVE the dry-run guard, so a dry run refuses an invalid host too (#256)
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
+    forge_url_check || return 2   # #449: a dry run refuses what the real run refuses
     # to stderr, so it survives callers that redirect the JSON response to /dev/null
     printf '[dry-run] %s %s%s%s\n' "$method" "$(forge_api_base)" "$path" "${body:+  body=$body}" >&2
     return 0
   fi
-  case "$(forge_host)" in
+  case "$host" in
     github)
       if [ -n "$body" ]; then printf '%s' "$body" | gh api -X "$method" "${path#/}" --input -
       else gh api -X "$method" "${path#/}"; fi ;;
     forgejo)
-      # || return 2: in conditional callers (if out=$(forge_api ...); forge_ci_status)
-      # set -e does not fire on the assignment, and without the guard an EMPTY
-      # Authorization header would go over the wire and mask the real cause.
-      local base tok
-      base="$(forge_api_base)" || return 2
-      tok="$(_forge_token)"    || return 2
-      # NOT `curl -f` (issue #78.2): -f collapses every HTTP >= 400 into exit 22 with no body and
-      # no status, so a caller cannot tell 404 (an org with no labels: fine) from 401 or 500 (a
-      # real failure). The status is appended on its own line and split off here.
-      local out rc
-      if [ -n "$body" ]; then
-        out="$(curl -sSL -w '\n%{http_code}' -X "$method" -H "Authorization: token $tok" -H 'Content-Type: application/json' -d "$body" "$base$path")"; rc=$?
-      else
-        out="$(curl -sSL -w '\n%{http_code}' -X "$method" -H "Authorization: token $tok" "$base$path")"; rc=$?
-      fi
-      [ "$rc" -eq 0 ] || return "$rc"          # transport failure: curl's own code, no status
-      local status="${out##*$'\n'}"
-      printf '%s' "${out%$'\n'*}"
-      # The status is reported through the EXIT CODE, not a variable. Every caller reads the body
-      # with $(...), which runs this function in a SUBSHELL, so any variable set here is discarded
-      # before the caller can read it. An exit code is the one channel that survives.
-      case "$status" in
-        2*)  return 0 ;;
-        404) return 44 ;;
-        *)   echo "forge-lib: HTTP $status from $method $path" >&2; return 22 ;;
-      esac ;;
+      # The whole arm runs with xtrace off (#442): the token passes through it.
+      local _fx=0 rc; case $- in *x*) _fx=1; set +x ;; esac
+      _forge_api_forgejo "$method" "$path" "$body"; rc=$?
+      [ "$_fx" = 0 ] || set -x
+      return "$rc" ;;
+  esac
+}
+
+_forge_api_forgejo() {
+  local method="$1" path="$2" body="$3"
+  # || return 2: in conditional callers (if out=$(forge_api ...); forge_ci_status)
+  # set -e does not fire on the assignment, and without the guard an EMPTY
+  # Authorization header would go over the wire and mask the real cause.
+  # The URL is checked BEFORE the token is read, so a refused host never reaches git's
+  # credential helper either (#442).
+  local base tok proto=https
+  base="$(forge_api_base)" || return 2
+  _forge_check_url         || return 2
+  tok="$(_forge_token)"    || return 2
+  [ "${FORGE_ALLOW_HTTP:-0}" = 1 ] && proto=https,http
+  # NOT `curl -f` (issue #78.2): -f collapses every HTTP >= 400 into exit 22 with no body and
+  # no status, so a caller cannot tell 404 (an org with no labels: fine) from 401 or 500 (a
+  # real failure). The status is appended on its own line and split off here.
+  # #442: no -L, so a 3xx is reported rather than followed to wherever it points with the
+  # header; --proto refuses any other scheme; -g stops [] and {} in a path being globbed; --url
+  # means a URL beginning with - can never be read as an option; and the header travels in a -K
+  # config on a pipe, so the token is in no process's argv.
+  local out rc
+  if [ -n "$body" ]; then
+    # The body goes on STDIN (#409): `-d "$body"` put the whole payload in one execve argument,
+    # which Linux caps at MAX_ARG_STRLEN (131072), so a large body failed with rc 126.
+    out="$(printf '%s' "$body" | curl -q -sS -g --proto "=$proto" -K <(printf 'header = "Authorization: token %s"\n' "$tok") -w '\n%{http_code}' -X "$method" -H 'Content-Type: application/json' --data-binary @- --url "$base$path")"; rc=$?
+  else
+    out="$(curl -q -sS -g --proto "=$proto" -K <(printf 'header = "Authorization: token %s"\n' "$tok") -w '\n%{http_code}' -X "$method" --url "$base$path")"; rc=$?
+  fi
+  [ "$rc" -eq 0 ] || return "$rc"          # transport failure: curl's own code, no status
+  local status="${out##*$'\n'}"
+  printf '%s' "${out%$'\n'*}"
+  # The status is reported through the EXIT CODE, not a variable. Every caller reads the body
+  # with $(...), which runs this function in a SUBSHELL, so any variable set here is discarded
+  # before the caller can read it. An exit code is the one channel that survives.
+  case "$status" in
+    2*)  return 0 ;;
+    404) return 44 ;;
+    *)   echo "forge-lib: HTTP $status from $method $path" >&2; return 22 ;;
   esac
 }
 
@@ -413,17 +645,21 @@ forge_api() {
 # capped at MAX_ARG_STRLEN (~128KiB on Linux), and one real page of template-v4-sized issues
 # measures at that ceiling, so argv accumulation hard-fails on exactly the repos pagination
 # exists for. File/stdin input has no such limit (and avoids re-parsing prior pages each loop).
+# The WRITE path follows the same rule since #409: every body travels on stdin (`_forge_payload`,
+# and `--data-binary @-` on Forgejo), never as one argument.
 forge_api_paginate() {
   _forge_load_conf || true   # ONCE, in this shell: the per-page $(forge_api ...) subshells and
                              # their own $(forge_host) / $(_forge_token) subshells inherit the
                              # memo from here. Loading it deeper would be discarded each time.
-  local path="$1" sep page=1 chunk n tmp rc
+  local path="$1" sep page=1 chunk n tmp rc host
   case "$path" in *\?*) sep='&' ;; *) sep='?' ;; esac
+  host="$(forge_host)" || return 2   # above the dry-run guard (#256)
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    forge_api GET "${path}${sep}limit=50&page=1" >/dev/null   # prints the dry-run line
+    rc=0; forge_api GET "${path}${sep}limit=50&page=1" >/dev/null || rc=$?   # prints the dry-run line
+    [ "$rc" = 0 ] || return "$rc"
     printf '[]\n'; return 0
   fi
-  if [ "$(forge_host)" = github ]; then
+  if [ "$host" = github ]; then
     # gh --paginate emits each page as a SEPARATE JSON doc on modern gh (--slurp exists for
     # exactly this); older gh merged arrays into one. jq -s tolerates both shapes: slurp all
     # docs, box any non-array, flatten once.
@@ -433,9 +669,10 @@ forge_api_paginate() {
   local cap="${FORGE_PAGINATE_MAX_PAGES:-500}"
   case "$cap" in ''|*[!0-9]*) cap=500 ;; esac   # a non-numeric override must not void the spin guard
   _forge_tmp_init || return 2
+  # A failed file mktemp must still release the directory _forge_tmp_init just made (#303).
   # mktemp, NOT "paginate.$$": $$ is the PARENT pid inside every subshell, so two concurrent
   # paginations in one process shared a path and each returned the union of both streams, exit 0.
-  tmp="$(mktemp "$_FORGE_TMPDIR/paginate.XXXXXX")" || return 2
+  tmp="$(mktemp "$_FORGE_TMPDIR/paginate.XXXXXX")" || { _forge_tmp_done ""; return 2; }
   local prev="" sig
   while :; do
     chunk="$(forge_api GET "${path}${sep}limit=50&page=${page}")" || { rc=$?; _forge_tmp_done "$tmp"; return "$rc"; }
@@ -555,11 +792,26 @@ forge_issue_view() { forge_api GET "/repos/$(forge_repo)/issues/$1"; }
 # A MARKER IS A WHOLE LINE, after a trailing CR and trailing blanks are stripped, exactly
 # `<!-- <name>:start -->` or `<!-- <name>:end -->`. A line that BEGINS with one and carries other
 # text is REFUSED rather than read as a marker or as prose, because it is a body a human edited and
-# guessing which they meant is how the edit gets eaten.
+# guessing which they meant is how the edit gets eaten. A marker-shaped line INSIDE A FENCED CODE
+# BLOCK is neither (#486): it is plain text, and the grammar and its precedence sit above
+# _FORGE_AWK_MARKER. A body ending inside an unclosed fence with no marker line in it gets one
+# matching closer before a bottom-appended region, the only author-text change a writer here ever
+# makes; one ending inside an unclosed fence that holds a marker line is refused instead.
 #
 # WHAT IT ENFORCES IS DISJOINTNESS, NOT OWNERSHIP. Nothing stops a caller declaring a prefix it does
 # not own. That is acceptable because the failure prevented is a full-body overwrite by a buggy
 # component, not impersonation by a hostile one.
+#
+# WHAT THE SPLICE DOES TO WHITESPACE AND LINE ENDINGS IT DID NOT AUTHOR (#264). It writes LF, and
+# it does not normalise what is around a region. A body filed through the GitHub web form is CRLF,
+# so after a set the author's lines keep their CRLF while the marker lines and the content are LF:
+# the body ends up with mixed line endings, and every marker still matches (a trailing CR is
+# stripped before comparison). An EMPTY body gains exactly one leading blank line before the start
+# marker. The body's trailing newlines collapse to exactly one (the read is a command substitution),
+# so an author's trailing blank lines are dropped. Compose (forge_body_compose_preserving), not this
+# splice, decides the spacing before a re-threaded region. Line endings are documented rather than
+# normalised on purpose: normalising would rewrite author lines the splice has no business touching.
+# Tests pin the CRLF, empty-body and trailing-newline behaviours, so changing one is deliberate.
 #
 # LAST-WRITER-WINS IS STRUCTURAL. GitHub offers no If-Match on an issue-body PATCH, so the re-read
 # before the write NARROWS the window and cannot close it. Do not propose a lock as the fix.
@@ -587,6 +839,44 @@ _forge_body_of() {   # <n>: the issue body, or non-zero if the response is not a
 }
 
 # The shared normaliser and marker grammar, textually identical in every awk below.
+#
+# FENCED CODE BLOCKS (#486). A region marker inside a fenced code block is plain text, as the forge
+# renders it: it is never counted, replaced, removed or returned. Before this, a ticket quoting a
+# marker inside a fence made the splice refuse with 103, made compose refuse or silently DROP a
+# real region (its new-body scan read the quote as present), made get return the closing fence and
+# everything after it, and a quoted COMPLETE pair was overwritten by set and deleted by clear.
+# The grammar is #485's (check-ticket-mechanics.sh FENCE_AWK), CommonMark 0.31.2 section 4.5, on a
+# line already through norm(): an opener is at most 3 spaces of indent, then 3 or more backticks
+# or 3 or more tildes; a backtick opener whose info string holds a backtick is not a fence; a
+# closer is at most 3 spaces of indent, the opener's character, at least as long, nothing after
+# it; a tab-indented or 4-space-indented line neither opens nor closes; an unclosed fence runs to
+# the end of the body. This is a SEPARATE COPY of that rule, because forge-kit-devops may not
+# source a governance asset; gate-status.sh fingerprint() is a third, and scripts/test-forge-lib.sh
+# pins all three against one fixture list (the parity row). INDENT IS MEASURED WITH match() AND
+# RLENGTH, never `sub(/^ ? ? ?/, ...)`, which mawk 1.3.4 reads as stripping ONE space (#485).
+#
+# PRECEDENCE. Fence state is evaluated first: a marker inside an open fence opens or closes no
+# region. Inside a real region fence state is FROZEN: a fence line there neither opens nor closes.
+# The freeze covers ANY real region (a whole-line start outside a fence until the end marker of
+# the SAME name), not only the one being written, to match #485's any-region skip. The freeze only
+# ever makes MORE lines count as markers (HEAD's counting), so a stray fence line inside a region
+# can never hide the marker that ends it. It FAILS CLOSED ONLY BECAUSE OF THE END-OF-BODY CHECK in
+# _forge_splice (and the existing one in compose): an unterminated start of any region freezes
+# fence state to the end of the body, so on its own the freeze would let a fenced complete pair
+# after it count as real and be spliced. Neither the freeze nor that check may be removed without
+# the other. fenced() is the one entry point: it returns 1 for a fence line or a line inside an
+# open fence (plain text), and otherwise tracks the open real region. Globals: fopen, fch, flen,
+# fin (the opener's indent, copied into any closer this library writes), rgn (the open region),
+# fmark (the open fence holds a whole marker line).
+#
+# AN UNCLOSED FENCE HOLDING A MARKER LINE IS AMBIGUOUS (#486 round 1). A body that ends inside an
+# unclosed fence may be quoting markers or may have lost its closer above a real region, and
+# nothing in the body says which. Reading them as text dropped or duplicated a real region, so the
+# splice and compose REFUSE that body (exit 103, its own message), and compose refuses a NEW body
+# ending that way too (#486 round 2): writing it would lock the issue. An unclosed fence with no
+# marker line inside is unambiguous and keeps the closer-then-append path. get does NOT refuse:
+# no get refuses a malformed body (an unterminated start returns to the end of the body), and it
+# returns empty here, the markers read as fenced text, so the writes are where this fails closed.
 _FORGE_AWK_MARKER='
   function norm(l) { sub(/\r$/, "", l); sub(/[ \t]+$/, "", l); return l }
   function mname(l,   n) {
@@ -594,6 +884,31 @@ _FORGE_AWK_MARKER='
     n = l; sub(/^<!-- /, "", n); sub(/:(start|end) -->$/, "", n); return n
   }
   function mkind(l) { return (l ~ /:start -->$/) ? "start" : "end" }
+  function fence_open(s,   o, n, ind, info) {
+    match(s, /^ */); if (RLENGTH > 3) return 0; ind = substr(s, 1, RLENGTH); o = substr(s, RLENGTH + 1)
+    if (substr(o, 1, 3) == "```") match(o, /^`+/)
+    else if (substr(o, 1, 3) == "~~~") match(o, /^~+/)
+    else return 0
+    n = RLENGTH; info = substr(o, n + 1)
+    if (substr(o, 1, 1) == "`" && index(info, "`")) return 0
+    fch = substr(o, 1, 1); flen = n; fin = ind; return 1
+  }
+  function fence_close(s,   c, pat) {
+    match(s, /^ */); if (RLENGTH > 3) return 0; c = substr(s, RLENGTH + 1)
+    if (fch == "`") pat = "^`+$"; else pat = "^~+$"
+    return c ~ pat && length(c) >= flen
+  }
+  function fence_closer(   c, i) { c = fin; for (i = 0; i < flen; i++) c = c fch; return c }
+  function fenced(l,   nm) {
+    if (rgn == "") {
+      if (fopen) { if (fence_close(l)) { fopen = 0; fmark = 0 } else if (mname(l) != "") fmark = 1; return 1 }
+      if (fence_open(l)) { fopen = 1; fmark = 0; return 1 }
+    }
+    nm = mname(l)
+    if (rgn == "") { if (nm != "" && mkind(l) == "start") rgn = nm }
+    else if (nm == rgn && mkind(l) == "end") rgn = ""
+    return 0
+  }
 '
 
 # _forge_splice: body on stdin, new body on stdout. FL_REGION, FL_MODE (set|clear), FL_POS (empty or
@@ -612,12 +927,20 @@ _forge_splice() {
     {
       line[NR] = $0
       n = norm($0)
+      if (fenced(n)) next
       if (n == s) { nstart++; si = NR }
       else if (index(n, s) == 1) bad = 1
       if (n == e) { nend++; ei = NR }
       else if (index(n, e) == 1) bad = 1
     }
     END {
+      # The end-of-body check (#486): a region of ANY name still open here refuses, because the
+      # freeze inside it would otherwise let a fenced pair after it count as real. See fenced().
+      # Another region left open exits 104 with its name on stdout, so the message names it; the
+      # caller still returns 103. 105 is the ambiguous unclosed fence (see _FORGE_AWK_MARKER).
+      if (rgn != "" && rgn != r) { print rgn; exit 104 }
+      if (rgn != "") exit 103
+      if (fopen && fmark) exit 105
       if (bad || nstart != nend || nstart > 1) exit 103
       if (nstart == 1 && si > ei) exit 103
       if (mode == "set" && ENVIRON["FL_POS"] == "top") {
@@ -640,7 +963,13 @@ _forge_splice() {
       if (nstart == 0) {
         for (i = 1; i <= NR; i++) print line[i]
         if (mode == "set") {
-          if (NR > 0 && norm(line[NR]) != "") print ""
+          # A body ending inside an unclosed fence (one with no marker line in it; END refused the
+          # other kind above) gets the matching closer first (#486): the indent, character and
+          # length of the opener. Render-identical (the fence already ended at
+          # the end of the body), and the next set finds the region outside any fence instead of
+          # appending another. The only author-text change this library makes, at most once.
+          if (fopen) { print fence_closer(); print "" }
+          else if (NR > 0 && norm(line[NR]) != "") print ""
           print s
           while ((getline c < ENVIRON["FL_CONTENT_FILE"]) > 0) print c
           print e
@@ -682,7 +1011,7 @@ forge_body_region_get() {
   [ "$rc" = 0 ] || return "$rc"
   printf '%s\n' "$body" | FL_REGION="$region" awk "$_FORGE_AWK_MARKER"'
     BEGIN { r = ENVIRON["FL_REGION"]; s = "<!-- " r ":start -->"; e = "<!-- " r ":end -->" }
-    { n = norm($0) }
+    { n = norm($0); if (fenced(n)) next }
     n == s { inside = 1; next }
     n == e { inside = 0; next }
     inside { print }
@@ -704,15 +1033,20 @@ _forge_region_write() {
   # second end marker into its own region, and every later set, clear and get on that region
   # refuses or truncates: the region is unrecoverable except by the whole-body write rule 1
   # forbids. This repository gates its own tickets, so the quoting case is ordinary.
+  # FENCED OR NOT (#486): this guard deliberately does not call fenced(). Content lands INSIDE a
+  # region, where fence state is frozen, so a marker line in it is a real marker even when the
+  # content wraps it in a fence; ignoring the fence here is what keeps the region recoverable.
   if [ "$mode" = set ] && printf '%s\n' "$content" | awk "$_FORGE_AWK_MARKER"'
        { if (mname(norm($0)) != "") { found = 1 } } END { exit !found }'; then
     echo "forge-lib: refusing content that carries a region marker line; it would lock '$region'" >&2
     return 103
   fi
+  forge_host >/dev/null || return 2   # an invalid host refuses even under dry run (#256); stderr is the one line
   # THE DRY-RUN GUARD SITS HERE, BEFORE THE FETCH. forge_api short-circuits EVERY method including
   # GET under dry-run, returning 0 with an empty body, so a guard placed after the fetch would
   # splice against an empty string and report success.
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
+    forge_url_check || return 2
     printf '[dry-run] %s region %s of issue %s on %s (%s characters)\n' "$mode" "$region" "$n" "$(forge_repo)" "${#content}" >&2
     return 0
   fi
@@ -727,6 +1061,11 @@ _forge_region_write() {
     0) ;;
     103) _forge_tmp_done "$out"
          echo "forge-lib: issue #$n has a malformed, unterminated or duplicated '$region' marker pair; refusing" >&2
+         return 103 ;;
+    104) echo "forge-lib: issue #$n leaves a '$(head -n 1 "$out")' region open at the end of the body; refusing" >&2
+         _forge_tmp_done "$out"; return 103 ;;
+    105) _forge_tmp_done "$out"
+         echo "forge-lib: issue #$n ends inside an unclosed code fence holding a region marker line; refusing" >&2
          return 103 ;;
     *)   _forge_tmp_done "$out"
          echo "forge-lib: could not rewrite issue #$n (awk exited $rc); nothing was sent" >&2
@@ -752,7 +1091,9 @@ forge_body_compose_preserving() {
   local n="${1-}" new="${2-}" body tmp out rc=0
   [ -n "$n" ] && [ -n "$new" ] || {
     echo "forge-lib: usage: forge_body_compose_preserving <issue> <new-body>" >&2; return 2; }
+  forge_host >/dev/null || return 2   # above the dry-run guard (#256)
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
+    forge_url_check || return 2
     printf '[dry-run] compose body of issue %s on %s (%s characters)\n' "$n" "$(forge_repo)" "${#new}" >&2
     return 0
   fi
@@ -765,10 +1106,17 @@ forge_body_compose_preserving() {
     BEGIN {
       while ((getline l < ENVIRON["FL_NEW_FILE"]) > 0) {
         nl[++nn] = l
+        if (fenced(norm(l))) continue   # a quoted marker is not a region the new body restates (#486)
         nm = mname(norm(l)); if (nm != "") present[nm] = 1
       }
+      # Remember whether the new body ends inside an unclosed fence, then RESET the fence and
+      # region state so the current-body pass below starts from a clean slate (#486).
+      newopen = fopen; if (newopen) newcloser = fence_closer()
+      newamb = fopen && fmark   # the NEW body is the ambiguous kind: refused in END, never written
+      fopen = 0; fmark = 0; rgn = ""
     }
     { line[NR] = $0
+      if (fenced(norm($0))) next
       nm = mname(norm($0))
       if (nm != "") {
         if (mkind(norm($0)) == "start") { if (st[nm]) bad = 1; st[nm] = NR; order[++no] = nm }
@@ -776,12 +1124,15 @@ forge_body_compose_preserving() {
       } else if ($0 ~ /^<!-- [^ \t]+:(start|end) -->/) bad = 1
     }
     END {
+      if (newamb) exit 106           # a flag, not an exit in BEGIN, so the read pass still runs
+      if (fopen && fmark) exit 105   # the ambiguous unclosed fence (see _FORGE_AWK_MARKER)
       for (k in st) if (!en[k]) bad = 1
       if (bad) exit 103
       for (i = 1; i <= nn; i++) print nl[i]
       for (i = 1; i <= no; i++) {
         k = order[i]
         if (present[k]) continue
+        if (newopen) { print newcloser; newopen = 0 }   # close the new body fence first, once
         print ""
         for (j = st[k]; j <= en[k]; j++) print line[j]
       }
@@ -792,6 +1143,12 @@ forge_body_compose_preserving() {
     0) ;;
     103) _forge_tmp_done "$out"
          echo "forge-lib: issue #$n has a malformed, unterminated or duplicated marker pair; refusing" >&2
+         return 103 ;;
+    105) _forge_tmp_done "$out"
+         echo "forge-lib: issue #$n ends inside an unclosed code fence holding a region marker line; refusing" >&2
+         return 103 ;;
+    106) _forge_tmp_done "$out"
+         echo "forge-lib: issue #$n: the new body ends inside an unclosed code fence holding a region marker line; refusing" >&2
          return 103 ;;
     *)   _forge_tmp_done "$out"
          echo "forge-lib: could not compose issue #$n (awk exited $rc); nothing was sent" >&2
@@ -815,8 +1172,22 @@ _forge_write_rc() {
   return "$3"
 }
 
+# _forge_payload <fn> <jq-filter> [jq --arg name value ...]: the request JSON, built with the BODY
+# read from STDIN and bound as $b (#409). A body passed as `jq --arg` is one execve argument, capped
+# at MAX_ARG_STRLEN (131072 bytes) on Linux: above it jq failed, the payload came back empty, and the
+# caller sent nothing in a dry run (rc 0, a false pass) or a request with no body live. Only short
+# fields (a title, a tag) go as --arg. A failed build returns 2 with one stderr line naming <fn>.
+# Callers feed it with `printf '%s' "$body" |`, a builtin, so the body never reaches an argv.
+_forge_payload() {
+  local fn=$1 filter=$2 out; shift 2
+  out="$(jq -c -Rs "$@" ". as \$b | $filter")" && [ -n "$out" ] \
+    || { echo "forge-lib: $fn: could not build the request body" >&2; return 2; }
+  printf '%s' "$out"
+}
+
 forge_issue_comment() {
-  local payload rc=0; payload="$(jq -nc --arg b "$2" '{body:$b}')"
+  local payload rc=0
+  payload="$(printf '%s' "$2" | _forge_payload forge_issue_comment '{body:$b}')" || return 2   # forge-lib: payload (comment)
   # `rc=0; ... || rc=$?`, never `...; rc=$?` (#237): under a `set -e` caller errexit fires on the
   # forge_api line before rc=$? runs, and the 404 line is never printed. The || form is the one
   # shape that survives -e for 0, 22 and 44; a subshell or `|| true` swallows the code.
@@ -842,12 +1213,15 @@ forge_issue_close() {
 # forge_issue_edit <n> <body>   REPLACES the issue body on either host (#129).
 # Both hosts PATCH the issue itself, so there is no host branch here. It is the one write in this
 # library that DESTROYS what was there, and the host's edit history is the only copy, so it refuses
-# an empty body rather than erasing a ticket on a caller's unset variable.
+# an empty body rather than erasing a ticket on a caller's unset variable. The dry-run line counts
+# CHARACTERS in the caller's locale (`${#2}`), not bytes: `aé b` is 4 under a UTF-8 locale, 5 under C.
 forge_issue_edit() {
   [ -n "${2:-}" ] || { echo "forge_issue_edit: refusing to replace issue #${1:-?} with an empty body" >&2; return 2; }
-  local payload; payload="$(jq -nc --arg b "$2" '{body:$b}')"
+  forge_host >/dev/null || return 2   # above the dry-run guard (#256): both hosts PATCH, but an invalid one must not dry-run clean
+  local payload; payload="$(printf '%s' "$2" | _forge_payload forge_issue_edit '{body:$b}')" || return 2   # forge-lib: payload (edit)
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    printf '[dry-run] replace body of issue %s on %s (%s bytes)\n' "$1" "$(forge_repo)" "${#2}" >&2
+    forge_url_check || return 2
+    printf '[dry-run] replace body of issue %s on %s (%s characters)\n' "$1" "$(forge_repo)" "${#2}" >&2
     return 0
   fi
   local rc=0; forge_api PATCH "/repos/$(forge_repo)/issues/$1" "$payload" >/dev/null || rc=$?   # #237, see forge_issue_comment
@@ -858,11 +1232,13 @@ forge_issue_edit() {
 # GitHub's /issues includes PRs and is paginated, so the github path filters PRs and paginates;
 # Forgejo excludes PRs server-side with type=issues. Both return the same shape (a PR-free array).
 forge_issue_list() {
-  local repo state; repo="$(forge_repo)" || return 2; state="${1:-open}"
+  local repo state host; repo="$(forge_repo)" || return 2; state="${1:-open}"
+  host="$(forge_host)" || return 2   # above the dry-run guard (#256)
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
+    forge_url_check || return 2
     printf '[dry-run] GET %s/repos/%s/issues?state=%s (issues only, all pages)\n' "$(forge_api_base)" "$repo" "$state" >&2; return 0
   fi
-  case "$(forge_host)" in
+  case "$host" in
     # Shared pager on both hosts; its github arm normalises gh's page-doc output to ONE array,
     # so the PR filter runs over a guaranteed single array.
     github)  forge_api_paginate "/repos/$repo/issues?state=$state" | jq 'map(select(.pull_request | not))' ;;
@@ -875,7 +1251,7 @@ forge_issue_list() {
 # add them in a follow-up host-specific step rather than risk a cross-host mismatch here.
 forge_issue_create() {
   local repo payload; repo="$(forge_repo)" || return 2
-  payload="$(jq -nc --arg t "$1" --arg b "$2" '{title:$t, body:$b}')"
+  payload="$(printf '%s' "$2" | _forge_payload forge_issue_create '{title:$t, body:$b}' --arg t "$1")" || return 2   # forge-lib: payload (create)
   forge_api POST "/repos/$repo/issues" "$payload"
 }
 
@@ -889,9 +1265,13 @@ forge_issue_create() {
 # typo). This is the host-aware way to set the labels forge_issue_create intentionally omits.
 forge_issue_label() {
   local n="$1"; shift; [ "$#" -gt 0 ] || return 0
-  local repo; repo="$(forge_repo)" || return 2
-  if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then printf '[dry-run] label issue %s on %s with: %s\n' "$n" "$repo" "$*" >&2; return 0; fi
-  case "$(forge_host)" in
+  local repo host; repo="$(forge_repo)" || return 2
+  host="$(forge_host)" || return 2   # above the dry-run guard (#256)
+  if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
+    forge_url_check || return 2
+    printf '[dry-run] label issue %s on %s with: %s\n' "$n" "$repo" "$*" >&2; return 0
+  fi
+  case "$host" in
     github)
       forge_api POST "/repos/$repo/issues/$n/labels" "$(printf '%s\n' "$@" | jq -R . | jq -sc '{labels: .}')" >/dev/null ;;
     forgejo)
@@ -906,7 +1286,7 @@ forge_issue_label() {
       local all org org_failed=0 resolved nmissing missing ids nlabels tmp
       all="$(forge_api_paginate "/repos/$repo/labels")" || return 2
       _forge_tmp_init || return 2
-      tmp="$(mktemp "$_FORGE_TMPDIR/labels.XXXXXX")" || return 2
+      tmp="$(mktemp "$_FORGE_TMPDIR/labels.XXXXXX")" || { _forge_tmp_done ""; return 2; }
       printf '%s\n' "$all" > "$tmp"
       resolved="$(_forge_resolve_names "$tmp" "$@")"
       if [ "$(printf '%s' "$resolved" | jq '[.[] | select(.id == null)] | length')" -gt 0 ]; then
@@ -961,8 +1341,9 @@ forge_milestone_list() {
   # global identifier that 404s on PATCH. Gitea and Forgejo have no `number` and address by `id`.
   # Normalised here so every caller sees one field, which is the whole reason this adapter exists.
   # Found by a live close failing, not by review.
-  local gh=false
-  [ "$(forge_host)" = github ] && gh=true
+  local gh=false host
+  host="$(forge_host)" || return 2   # captured, never a bare `= github` test (#256); no guard of its own, the paginator's follows
+  [ "$host" = github ] && gh=true
   forge_api_paginate "/repos/$repo/milestones?state=all" \
     | jq -c --argjson gh "$gh" '[.[] | {id: (if $gh then .number else .id end), title, state}]' || return 2
 }
@@ -984,6 +1365,17 @@ _forge_milestone_id() {
 forge_milestone_close() {
   local title="$1" repo id
   repo="$(forge_repo)" || return 2
+  # The dry-run guard runs BEFORE the resolution, as forge_issue_label's and forge_issue_milestone's
+  # do (#254). Resolving first made every title unresolvable under the flag, because the paginator
+  # returns a literal `[]` there. Clearing the flag around the resolution read is rejected: it
+  # would perform a real GET inside a dry run. The accepted trade: a title that does not exist
+  # also prints the line and returns 0, because the caller already resolved it from a real read.
+  forge_host >/dev/null || return 2   # above the dry-run guard: an invalid host must not dry-run clean (#256)
+  if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
+    forge_url_check || return 2
+    printf '[dry-run] close milestone %s on %s\n' "$title" "$repo" >&2
+    return 0
+  fi
   # FAILS on an unknown title rather than no-opping. A close that quietly did nothing would let a
   # roadmap say `done` while the milestone stayed open, which is the exact drift a caller asks this
   # to prevent.
@@ -1009,15 +1401,20 @@ forge_milestone_close() {
 #
 # The dry-run guard runs BEFORE the resolution, as forge_issue_label's does: under FORGE_DRY_RUN
 # the paginator returns a literal `[]`, so every title is unresolvable and a dry run would report
-# a real phase as missing (that is what forge_milestone_close does today, #254).
+# a real phase as missing (forge_milestone_close had that defect until v28, #254).
 forge_issue_milestone() {
   local n="$1" title="$2" repo host id payload rc=0
   repo="$(forge_repo)" || return 2
   # The host is CAPTURED, never matched with a catch-all (review): forge_host refuses an invalid
   # FORGE_HOST by printing nothing, and a `*)` arm would read that refusal as "not forgejo" and
-  # send the other host's wire form. `_forge_api_base` refuses the same way for the same reason.
+  # send the other host's wire form. `forge_api_base` refuses the same way for the same reason.
+  # It sits ABOVE the dry-run block on purpose: a dry run against a host the library cannot
+  # address must refuse (rc 2, forge_host's one line) rather than pretend it would have worked
+  # (#256 AC4, #257). The ordering is pinned by inv256's dry-mode
+  # milestone cases (set and clear); the real-mode ones pin the refusal itself.
   host="$(forge_host)" || return 2
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
+    forge_url_check || return 2
     if [ -n "$title" ]; then printf '[dry-run] set milestone of issue %s to %s on %s\n' "$n" "$title" "$repo" >&2
     else printf '[dry-run] clear the milestone of issue %s on %s\n' "$n" "$repo" >&2; fi
     return 0
@@ -1030,12 +1427,15 @@ forge_issue_milestone() {
     # An id must be DIGITS, and the check is not defensive clutter (review): `jq -r` renders a
     # JSON null as the four characters `null`, so a milestone object missing its id field would
     # otherwise build `{"milestone":null}` and a SET would silently CLEAR the field, which is the
-    # one thing this function's refusal contract promises not to do. A non-numeric token instead
-    # makes `--argjson` fail, leaving the payload empty and sending a body-less PATCH.
+    # one thing this function's refusal contract promises not to do. This gate is the SOLE guard:
+    # a digits-only token always parses as a JSON number (verified on jq 1.7), so the `jq` call
+    # below cannot fail on it, and a missing jq never gets this far because `_forge_milestone_id`
+    # pipes through jq and fails first. It also admits `0`, Forgejo's CLEAR form; neither host
+    # issues milestone id 0, so that is noted rather than guarded.
     case "$id" in
       ''|*[!0-9]*) echo "forge-lib: milestone id for '$title' on $repo is not a number: $id" >&2; return 2 ;;
     esac
-    payload="$(jq -nc --argjson m "$id" '{milestone:$m}')" || return 2
+    payload="$(jq -nc --argjson m "$id" '{milestone:$m}')"
   else
     case "$host" in
       forgejo) payload='{"milestone":0}' ;;
@@ -1052,7 +1452,7 @@ forge_issue_milestone() {
 forge_issue_milestone_list() {
   local repo; repo="$(forge_repo)" || return 2
   forge_api_paginate "/repos/$repo/issues?state=open" \
-    | jq -c '[.[] | select(has("pull_request") | not)
+    | jq -c '[.[] | select(.pull_request | not)
                   | {number, milestone: (.milestone.title // null)}]' || return 2
 }
 
@@ -1060,7 +1460,7 @@ forge_tag_exists() { forge_api GET "/repos/$(forge_repo)/tags/$1" >/dev/null 2>&
 
 # forge_release_create <tag> [title] [notes]   (both hosts accept tag_name/name/body)
 forge_release_create() {
-  local payload; payload="$(jq -nc --arg t "$1" --arg n "${2:-$1}" --arg b "${3-}" '{tag_name:$t,name:$n,body:$b}')"
+  local payload; payload="$(printf '%s' "${3-}" | _forge_payload forge_release_create '{tag_name:$t,name:$n,body:$b}' --arg t "$1" --arg n "${2:-$1}")" || return 2   # forge-lib: payload (release)
   forge_api POST "/repos/$(forge_repo)/releases" "$payload" >/dev/null
 }
 
@@ -1098,8 +1498,16 @@ forge_release_create() {
 # the sha is `pending`, none is `none`, and an endpoint that cannot be asked stays `not_configured`,
 # which keeps the runner-less fallback exactly where v13 had it. The sha match is a PREFIX match,
 # because the ref falls back to its literal, possibly short, form for a sha in another repository.
+# forge_api's stderr is NOT discarded at either call site (#450): a refusal (non-https,
+# empty or unsafe token, bad FORGE_TOKEN_ENV, invalid host) is the only explanation a caller gets
+# for `not_configured`. Passthrough means untouched: nothing here adds, filters or rewrites it, and
+# a new stdout word was rejected because every caller `case`s on the vocabulary above.
 forge_ci_status() {
-  case "$(forge_host)" in
+  local host
+  # An invalid host is "could not ask": the one host line is already on stderr, and the answer is
+  # the documented word, rc 0, never empty stdout (#256). Not `return 2` like the other sites.
+  host="$(forge_host)" || { echo not_configured; return 0; }
+  case "$host" in
     github)  gh run list --branch "$1" --limit 1 --json status,conclusion \
                -q '.[0] | if . == null then "none" elif .status != "completed" then "pending" else (.conclusion // "none") end' 2>/dev/null || echo none ;;
     forgejo)
@@ -1109,7 +1517,7 @@ forge_ci_status() {
       # too, which would double it via `|| printf`). Falls back to the literal ref if unresolved.
       sha=$(git rev-parse --verify "$1" 2>/dev/null || printf '%s' "$1")
       [ -n "$sha" ] || { echo not_configured; return 0; }                # empty ref arg
-      cs=$(forge_api GET "/repos/$repo/commits/$sha/status" 2>/dev/null) || { echo not_configured; return 0; }
+      cs=$(forge_api GET "/repos/$repo/commits/$sha/status") || { echo not_configured; return 0; }
       [ -n "$cs" ] || { echo not_configured; return 0; }                 # empty body / dry-run
       total=$(printf '%s' "$cs" | jq -r '.total_count // 0' 2>/dev/null)
       case "$total" in ''|*[!0-9]*) total=0 ;; esac
@@ -1140,7 +1548,7 @@ _forge_ci_failure_kind_from_status() {
 # catches null and false, not a type error.
 forge_ci_no_status_kind() {
   local repo="$1" sha="$2" tasks hit
-  tasks=$(forge_api GET "/repos/$repo/actions/tasks?limit=50&page=1" 2>/dev/null) || { echo not_configured; return 0; }
+  tasks=$(forge_api GET "/repos/$repo/actions/tasks?limit=50&page=1") || { echo not_configured; return 0; }
   [ -n "$tasks" ] || { echo not_configured; return 0; }
   hit=$(printf '%s' "$tasks" | jq -r --arg sha "$sha" \
     '[(if type == "object" then (.workflow_runs // []) else . end)[]?
@@ -1154,7 +1562,8 @@ forge_ci_no_status_kind() {
 #   forge-lib.sh forge_issue_close 5
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   case "${1:-detect}" in
-    detect) h="$(forge_host)"; printf 'host=%s  repo=%s' "$h" "$(forge_repo)"
+    detect) h="$(forge_host)" || exit 2   # top-level code: exit, not return; nothing on stdout (#256)
+            printf 'host=%s  repo=%s' "$h" "$(forge_repo)"
             [ "$h" = forgejo ] && printf '  api=%s' "$(forge_api_base)"; printf '  ci=%s\n' "$(forge_ci_status "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)")" ;;
     *)      "$@" ;;
   esac

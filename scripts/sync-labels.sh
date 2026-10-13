@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# sync-labels-version: 9
+# sync-labels-version: 14
 # sync-labels.sh: make the host's labels match `.github/labels.yml`, or report that they do not.
+#
+# NO `awk -v` IN THIS FILE (#259). Its one site carried the compiled-in separator `$'\x1f'`, a
+# literal with no backslash, so the move to ENVIRON is hardening only (not reproducible): `-v` runs
+# a backslash-escape pass and Apple's awk refuses a newline in its value. scripts/test-sync-labels.sh
+# counts zero `awk ... -v` lines (scripts/awkv-count.sh, continuations joined). No awk takes a file
+# operand either (#405): a `name=value` operand is an assignment, so files come in through `<`.
 #
 # WHY THIS EXISTS (issue #104). forge-kit shipped a label taxonomy, documented that labels drive
 # ticket-gate's lens routing, and never imported it into its own repository: 18 labels declared,
@@ -16,12 +22,16 @@
 #   sync-labels.sh [--check] [--labels FILE] [--repo OWNER/NAME]
 #     default   create missing labels and update drifted ones
 #     --check   change nothing; list what is missing or drifted
-#   FORGE_DRY_RUN=1  print what would be written and send nothing
+#   FORGE_DRY_RUN=1  print what would be written and send nothing; the summary then reads
+#                    `dry run, nothing sent to <repo>; would create N, would update M (from <file>).`
+#                    Only the exact value 1 is a dry run (`true` is a real run), as in forge-lib.
 #
 # Exit codes are distinguishable, because this runs from automation:
 #   0  in sync (or synced successfully)
 #   1  --check found drift (the repo needs syncing; nothing is wrong with the tooling)
-#   2  usage or environment error (bad flag, no labels file, no jq, bash < 4, unresolvable repo)
+#   2  usage or environment error (bad flag, no labels file, no jq, bash < 4, unresolvable repo,
+#      unrecognised forge host; that refusal comes before the declaration is parsed, so a
+#      malformed declaration on an unrecognised host exits 2, not 3)
 #   3  the declaration is malformed; NOTHING was written
 #   4  a write failed part-way; the host may be partially synced
 #
@@ -30,7 +40,7 @@
 # a sync script that deletes what it does not recognise is a footgun aimed at other people's data.
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=forge-lib.sh
 if [ -f "$HERE/forge-lib.sh" ]; then . "$HERE/forge-lib.sh"
 else echo "sync-labels: forge-lib.sh not found next to this script" >&2; exit 2; fi
@@ -73,6 +83,14 @@ command -v jq >/dev/null 2>&1 || { echo "sync-labels: jq is required" >&2; exit 
 
 REPO="${REPO_OVERRIDE:-$(forge_repo)}"
 [ -n "$REPO" ] || { echo "sync-labels: could not resolve the repo" >&2; exit 2; }
+# The host is asked ONCE, and anything but the two known answers is refused before any request
+# (#331): an empty answer is what forge_host prints when it refuses an invalid FORGE_HOST, and the
+# update dispatch below used to send it a GitHub PATCH through a `*)` fallthrough.
+HOST="$(forge_host)"
+case "$HOST" in
+  github|forgejo) ;;
+  *) echo "sync-labels: unrecognised forge host '$HOST' (expected github or forgejo)" >&2; exit 2 ;;
+esac
 
 # --- 1. parse the declaration ------------------------------------------------------------------
 # Deliberately strict. The accepted shape is what forge-kit ships:
@@ -87,11 +105,11 @@ REPO="${REPO_OVERRIDE:-$(forge_repo)}"
 # from UNQUOTED values only. Without this, a trailing space or a CRLF file silently creates a
 # phantom label and the script never converges.
 US=$'\x1f'
-declared=$(awk -v US="$US" '
+declared=$(SL_US="$US" awk '
   # SQ/DQ are built from character codes so this program contains no literal quote of either kind:
   # it is embedded in a single-quoted shell string, and nested quoting is where the first attempt
   # at this function went wrong.
-  BEGIN { SQ = sprintf("%c", 39); DQ = sprintf("%c", 34); BS = sprintf("%c", 92) }
+  BEGIN { SQ = sprintf("%c", 39); DQ = sprintf("%c", 34); BS = sprintf("%c", 92); US = ENVIRON["SL_US"] }
   # The unterminated-quote verdict travels in its OWN FIELD, not inside the value (#127 H7). It
   # used to be a sentinel string returned by clean(), so a description that merely CONTAINED that
   # byte sequence was refused. A verdict smuggled inside a value is the same in-band signalling
@@ -150,7 +168,7 @@ declared=$(awk -v US="$US" '
   /^[[:space:]]+description:/ { v = $0; sub(/^[[:space:]]+description:/, "", v); d = clean(v); if (unterm) u = 1; next }
   { print "sync-labels: unparsable line " NR ": " $0 > "/dev/stderr"; bad = 1 }
   END { if (seen) print n US c US d US u; if (bad) exit 3 }
-' "$LABELS_FILE") || {
+' < "$LABELS_FILE") || {
   echo "sync-labels: $LABELS_FILE is not in the expected shape; refusing to sync a partial set" >&2
   exit 3; }
 
@@ -276,14 +294,14 @@ while IFS="$US" read -r name color desc unterm; do
       else
         body=$(jq -nc --arg n "$name" --arg c "$color" --arg d "$desc" \
                  '{name:$n, color:$c, description:$d}')
-        case "$(forge_host)" in
+        case "$HOST" in
           forgejo) id=$(host_field "$name" id)
                    [ -n "$id" ] || { echo "sync-labels: no id for '$name' on forgejo" >&2; exit 4; }
                    forge_api PATCH "/repos/$REPO/labels/$id" "$body" >/dev/null ;;
           # GitHub addresses the label by NAME in the PATH, so it MUST be percent-encoded: a stock
           # name like `help wanted` puts a raw space in the URL, and a `#` would open a fragment
           # and silently target a different label (round-1 finding M2).
-          *)       enc=$(jq -rn --arg n "$name" '$n|@uri')
+          github)  enc=$(jq -rn --arg n "$name" '$n|@uri')
                    forge_api PATCH "/repos/$REPO/labels/$enc" "$body" >/dev/null ;;
         esac || { echo "sync-labels: failed to update '$name'; the host may be partially synced" >&2; exit 4; }
       fi
@@ -311,5 +329,11 @@ if [ "$MODE" = check ]; then
   exit 0
 fi
 
-echo "sync-labels: $REPO synced from $LABELS_FILE ($created created, $updated updated)."
+# Under a dry run the counters count what WOULD be written (#323): they are incremented on the
+# preview branches too, so the summary must not claim anything was created or updated.
+if [ "$_dry" = 1 ]; then
+  echo "sync-labels: dry run, nothing sent to $REPO; would create $created, would update $updated (from $LABELS_FILE)."
+else
+  echo "sync-labels: $REPO synced from $LABELS_FILE ($created created, $updated updated)."
+fi
 exit 0

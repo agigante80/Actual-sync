@@ -1,5 +1,5 @@
 <!-- template-version: 6 -->
-<!-- doc-rules-version: 17 -->
+<!-- doc-rules-version: 20 -->
 
 # Ticket standards (canonical)
 
@@ -56,6 +56,29 @@ N/A claim like any other.
 - names a real route, model, or screen where the ticket makes one evident
 - the negative scenario asserts a SPECIFIC error code or message, never "it fails"
 - not a restatement of the summary
+
+**Host-divergent conditions.** This applies only to a condition whose code path branches on
+the forge host. Such a branch is its own independent condition: it owns its own positive and
+its own failure negative, so the bar above is unchanged and no scenario fills the negative
+slot with the other host's success. A pure wire-form divergence adds no error of its own: when
+a host rejects the write its branch sends, that is the same event on both hosts, so the
+negative is that rejected write, asserted with the code each host's branch returns (on the
+Forgejo path `forge_api` returns rc 44 for an HTTP 404), and the differential value that is
+never sent belongs in the Positive's Then. Worked example, `forge_issue_milestone` in `forge-lib`:
+
+- set, GitHub: the PATCH carries the milestone `number`; Forgejo: it carries the `id`. Each
+  Positive names which of the two is sent, and never the other. Each branch's negative is that
+  rejected write as its host returns it: rc 44 on Forgejo, and rc 1 (`gh`'s documented failure
+  code) on GitHub.
+- clear, GitHub: the PATCH carries `null`; Forgejo: it carries `0`. The Forgejo Positive's Then
+  says "never `null`". The negatives are the same two write failures as for set.
+- set with an unknown title, either host: rc 2 and `no milestone titled '<title>'`,
+  refused by `forge-lib` itself before the write is sent, so code and message are identical on
+  both hosts. This is an extra negative, not a substitute for a branch's own.
+
+The structural half is mechanical and the host-independence judgement is the critic's. The
+scenario check (check 4) counts per section, not per condition, so a missing per-condition
+negative is caught only by the critic.
 
 ### 2. Unit test specs
 
@@ -185,7 +208,7 @@ can still fork silently, so do not create more of them.
    `ticket-gate-reference` skill since #109, not in the agent file.
    <!-- anchor: "OWASP Top 10: injection, XSS, CSRF" -->
 3. Rule 1's GWT quality bar, which appears four times: in the Step 0c-iii synthesis table, and
-   three times in `check-ticket-mechanics.sh`, which took Step 3A's checks over from prose in
+   three times in `check-ticket-mechanics`, which took Step 3A's checks over from prose in
    #149, the third being the N/A clause check 4 refers since #241.
    <!-- anchor: "Apply the rule-1 quality bar" -->
    <!-- anchor: "check 4: GWT structure (rule 1, the checkable half)" -->
@@ -205,12 +228,12 @@ can still fork silently, so do not create more of them.
    because the synthesis sub-agent has to be told what to write. Item 3 covers rule 1's appearance
    in that same table; these are the other four.
    <!-- anchor: "| Section | Derived from |" :: rules 2, 3, 4 and 7 -->
-7. The unit-test check in `check-ticket-mechanics.sh`, which restates rule 2's concrete-spec bar
+7. The unit-test check in `check-ticket-mechanics`, which restates rule 2's concrete-spec bar
    as a mechanical check, down to rejecting a bare "add unit tests", and restates the N/A rule's
    own rationale. It was Step 3A prose until #149.
    <!-- anchor: "legitimate only where rule 2 is out of scope" -->
    <!-- anchor: "the critic must judge rule 2 unaided" -->
-8. Rule 7 in four further places: twice in `check-ticket-mechanics.sh` (check 6's bar and the
+8. Rule 7 in four further places: twice in `check-ticket-mechanics` (check 6's bar and the
    reason it refers rather than passes), the critic's brief, and the Rules section (its
    every-work-ticket scope).
    <!-- anchor: "HOLDS is rule 7, judged by the critic" -->
@@ -220,7 +243,7 @@ can still fork silently, so do not create more of them.
 9. Rule 1's SCOPE clause at Step 3B. Item 3 covers rule 1's quality bar, which is a different
    clause.
    <!-- anchor: "an N/A claim is legitimate only where no behaviour delta exists" -->
-10. Rule 3's UI E2E hard-fail bar AGAIN, twice in `check-ticket-mechanics.sh`. Item 1 covers the
+10. Rule 3's UI E2E hard-fail bar AGAIN, twice in `check-ticket-mechanics`. Item 1 covers the
    same bar in the critic's brief; this is the mechanical half, and no review round ever named it.
    The guard found it on its first run, and #149 moved it from prose into the script.
    <!-- anchor: "UI at all (rule 3), is Step 3B's call" -->
