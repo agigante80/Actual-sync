@@ -127,6 +127,10 @@ Global synchronization behavior configuration. These settings apply to all serve
   - Can be overridden per server
   - Example: `5`
 
+- **autoRetry** (optional, object; also per server)
+  - After a failed *scheduled* sync (every account failed, or the sync itself errored), the service schedules another run: `enabled` (default `true`), `maxAttempts` (default `1`), `delayMinutes` (default `31`).
+  - A failed manual sync (dashboard, Telegram, `--force-run`) never schedules a retry, and a manual sync cancels a pending one. A partial sync (some accounts failed) is not retried. Pending retries are cancelled on shutdown.
+
 - **baseRetryDelayMs** (optional, integer, default: 3000)
   - Base delay in milliseconds for exponential backoff
   - Range: 1000-10000ms (1-10 seconds)
@@ -257,6 +261,7 @@ These are global runtime flags, not per-server config:
 | `CONFIG_STRICT` | Migration escape hatch. Default (unset) = strict: a schema-invalid config stops startup (#121). Set to `false` (or `0`/`no`/`off`) to **temporarily** downgrade schema validation errors to warnings so the service starts while you fix the config. It only affects schema validation, not the business-logic checks, and should be removed once the config is valid. |
 | `PUID` / `PGID` | User/group IDs to run as (Docker/Unraid; default `1001:1001`, Unraid `99:100`). |
 | `TZ` | Container timezone for scheduling and log timestamps. |
+| `SHUTDOWN_WAIT_MS` | How long a SIGTERM waits for a running sync before closing the session (default `8000`). Keep it about 2 s below the container's stop timeout. See [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#stopping-the-container). |
 
 ---
 

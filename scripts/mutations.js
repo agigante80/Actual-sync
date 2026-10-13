@@ -798,6 +798,40 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #273: auto-retry never fired because syncBank never rejected --------
+    {
+        id: '273-sync-result-not-returned', ticket: '#273',
+        desc: 'runSyncBank swallows its outcome again (returns undefined), so the retry policy never sees a failure',
+        file: 'src/syncService.js',
+        anchor: "    return { status: syncOutcome };",
+        mutant: "    return undefined;",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-failure-status-ignored', ticket: '#273',
+        desc: 'the retry policy no longer treats a returned failure status as a failure',
+        file: 'src/lib/autoRetry.js',
+        anchor: "failed = result?.status === 'failure';",
+        mutant: "failed = false;",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-sigterm-not-registered', ticket: '#273',
+        desc: 'the SIGTERM handler is no longer registered, so docker stop kills a running sync',
+        file: 'src/syncService.js',
+        anchor: "process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));",
+        mutant: "// SIGTERM handler removed",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-shutdown-gate-open', ticket: '#273',
+        desc: 'shutdown no longer closes the gate, so syncs queued after the signal still start',
+        file: 'src/lib/shutdownGate.js',
+        anchor: "        closed = true;",
+        mutant: "        closed = false;",
+        tests: 'shutdownGate'
+    },
+
     // ---- #278: trustProxy shape bypassed validation in non-strict mode -------
     {
         id: '278-trust-proxy-shape-unchecked', ticket: '#278',
@@ -823,7 +857,7 @@ module.exports = [
         id: '265-sync-bypasses-queue', ticket: '#265',
         desc: 'syncBank calls runSyncBank directly, so two syncs can run at once again',
         file: 'src/syncService.js',
-        anchor: '    return syncQueue.run(server.name, () => runSyncBank(server, options));',
+        anchor: '    return shutdownGate.run(server.name, () => runSyncBank(server, options));',
         mutant: '    return runSyncBank(server, options);',
         tests: 'syncQueue'
     },
