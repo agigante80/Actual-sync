@@ -93,8 +93,16 @@ async function runSync(accountIds, bankCalls, script) {
             await jest.advanceTimersByTimeAsync(ms);
             for (let i = 0; i < 20; i++) await flush();
         };
-        await script(advance);
-        for (let i = 0; i < 40 && recordSync.mock.calls.length === 0; i++) await advance(1000);
+        // Real fs work precedes the account loop; wait for it on the real event
+        // loop instead of guessing how many ticks it takes under load.
+        const until = async (cond) => {
+            for (let i = 0; i < 5000 && !cond(); i++) await flush();
+        };
+        await script(advance, () => until(() => actual.runBankSync.mock.calls.length > 0));
+        for (let i = 0; i < 40 && recordSync.mock.calls.length === 0; i++) {
+            await advance(1000);
+            await until(() => recordSync.mock.calls.length > 0 || i > 3);
+        }
         expect(exit).not.toHaveBeenCalled();
         return { recorded: recordSync.mock.calls[0]?.[0], actual };
     } finally {
@@ -113,7 +121,8 @@ describe('a timed-out runBankSync that settles late (#284)', () => {
         const { recorded, actual } = await runSync(['a1', 'a2'], {
             a1: () => slow.promise,
             a2: () => Promise.resolve()
-        }, async (advance) => {
+        }, async (advance, started) => {
+            await started();
             await advance(60000); // a1 hits the 60 s call timeout, the drain starts
             slow.resolve();       // and it finishes inside the drain
             await advance(2000);
@@ -129,7 +138,8 @@ describe('a timed-out runBankSync that settles late (#284)', () => {
         const { recorded, actual } = await runSync(['a1', 'a2'], {
             a1: () => never.promise,
             a2: () => Promise.resolve()
-        }, async (advance) => {
+        }, async (advance, started) => {
+            await started();
             await advance(60000);
             await advance(3000); // past the 1 s drain: stuck
         });
@@ -142,7 +152,8 @@ describe('a timed-out runBankSync that settles late (#284)', () => {
         const slow = deferred();
         const { recorded } = await runSync(['a1'], {
             a1: () => slow.promise
-        }, async (advance) => {
+        }, async (advance, started) => {
+            await started();
             await advance(60000);
             slow.reject(new Error('No new transactions'));
             await advance(2000);
@@ -155,7 +166,8 @@ describe('a timed-out runBankSync that settles late (#284)', () => {
         const slow = deferred();
         const { recorded } = await runSync(['a1'], {
             a1: () => slow.promise
-        }, async (advance) => {
+        }, async (advance, started) => {
+            await started();
             await advance(60000);
             slow.reject(new Error('bank said no'));
             await advance(2000);
