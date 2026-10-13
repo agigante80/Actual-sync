@@ -1,5 +1,5 @@
 const { SyncQueue } = require('../lib/syncQueue');
-const { createShutdownGate } = require('../lib/shutdownGate');
+const { createShutdownGate, resolveShutdownWaitMs, DEFAULT_SHUTDOWN_WAIT_MS } = require('../lib/shutdownGate');
 
 function deferred() {
     let resolve;
@@ -58,5 +58,23 @@ describe('shutdown gate (#273)', () => {
     test('before close, tasks run normally', async () => {
         const gate = createShutdownGate({ queue: new SyncQueue(), pollMs: 1 });
         expect(await gate.run('A', async () => ({ status: 'success' }))).toEqual({ status: 'success' });
+    });
+});
+
+describe('resolveShutdownWaitMs (#273)', () => {
+    test('defaults to 8000 ms, under docker stop\'s 10 s', () => {
+        expect(DEFAULT_SHUTDOWN_WAIT_MS).toBe(8000);
+        expect(resolveShutdownWaitMs({})).toBe(8000);
+        expect(resolveShutdownWaitMs({ SHUTDOWN_WAIT_MS: '' })).toBe(8000);
+    });
+
+    test('takes a positive integer from SHUTDOWN_WAIT_MS', () => {
+        expect(resolveShutdownWaitMs({ SHUTDOWN_WAIT_MS: '55000' })).toBe(55000);
+    });
+
+    test('ignores an invalid value', () => {
+        for (const v of ['abc', '-1', '0', '1.5']) {
+            expect(resolveShutdownWaitMs({ SHUTDOWN_WAIT_MS: v })).toBe(8000);
+        }
     });
 });

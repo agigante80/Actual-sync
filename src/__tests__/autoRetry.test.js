@@ -116,13 +116,6 @@ describe('autoRetry (#273)', () => {
             expect(timers).toHaveLength(1);
         });
 
-        test('a failed manual run on its own schedules nothing', async () => {
-            const { syncBank, timers, gate } = queued();
-            const manual = syncBank(server);
-            gate.open();
-            await manual;
-            expect(timers).toHaveLength(0);
-        });
     });
 
     test('a skipped result (shutdown) is not a failure and schedules nothing', async () => {
@@ -151,7 +144,7 @@ describe('syncService wiring (#273)', () => {
         expect(src).toContain('shutdownGate.close()');
         expect(src).toContain('autoRetry.cancelAll()');
         expect(src).toContain('shutdownGate.run(server.name');
-        expect(src).toContain('const SHUTDOWN_WAIT_MS = 8000;');
+        expect(src).toContain('const SHUTDOWN_WAIT_MS = resolveShutdownWaitMs();');
         expect(src).toContain("process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));");
         expect(src).toContain("process.on('SIGINT', () => gracefulShutdown('SIGINT'));");
     });

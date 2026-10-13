@@ -33,4 +33,17 @@ function createShutdownGate({ queue, pollMs = 100 }) {
     return { run, close, drain };
 }
 
-module.exports = { createShutdownGate };
+// 8000 ms by default: `docker stop` SIGKILLs after 10 s, and a longer wait
+// would be killed before the actual.shutdown() fallback ran. An operator who
+// raises stop_grace_period can raise this too (keep it about 2 s below).
+const DEFAULT_SHUTDOWN_WAIT_MS = 8000;
+
+/** SHUTDOWN_WAIT_MS from the environment, or the default for a missing or invalid value. */
+function resolveShutdownWaitMs(env = process.env) {
+    const raw = env.SHUTDOWN_WAIT_MS;
+    if (raw == null || String(raw).trim() === '') return DEFAULT_SHUTDOWN_WAIT_MS;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : DEFAULT_SHUTDOWN_WAIT_MS;
+}
+
+module.exports = { createShutdownGate, resolveShutdownWaitMs, DEFAULT_SHUTDOWN_WAIT_MS };

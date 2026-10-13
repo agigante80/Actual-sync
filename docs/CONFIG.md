@@ -261,6 +261,7 @@ These are global runtime flags, not per-server config:
 | `CONFIG_STRICT` | Migration escape hatch. Default (unset) = strict: a schema-invalid config stops startup (#121). Set to `false` (or `0`/`no`/`off`) to **temporarily** downgrade schema validation errors to warnings so the service starts while you fix the config. It only affects schema validation, not the business-logic checks, and should be removed once the config is valid. |
 | `PUID` / `PGID` | User/group IDs to run as (Docker/Unraid; default `1001:1001`, Unraid `99:100`). |
 | `TZ` | Container timezone for scheduling and log timestamps. |
+| `SHUTDOWN_WAIT_MS` | How long a SIGTERM waits for a running sync before closing the session (default `8000`). Keep it about 2 s below the container's stop timeout. See [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#stopping-the-container). |
 
 ---
 

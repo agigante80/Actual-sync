@@ -15,7 +15,7 @@ const { enhanceActualApiError, explainBudgetNotOpen } = require('./lib/actualApi
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
 const { SyncQueue } = require('./lib/syncQueue');
-const { createShutdownGate } = require('./lib/shutdownGate');
+const { createShutdownGate, resolveShutdownWaitMs } = require('./lib/shutdownGate');
 const { createAutoRetry } = require('./lib/autoRetry');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts } = require('./lib/scheduleAlertsStep');
@@ -1125,11 +1125,11 @@ async function run() {
 // refuses new syncs, then we wait for the running one, but only for
 // SHUTDOWN_WAIT_MS: a hung sync must not make the container ignore SIGTERM.
 //
-// 8000 ms, not more: `docker stop` sends SIGTERM and SIGKILLs after 10 s by
-// default. A longer wait would be killed before the actual.shutdown() fallback
-// below ever ran. A stop_grace_period above 10 s does not help either: this
-// wait is a fixed cap, so a longer grace period is simply unused.
-const SHUTDOWN_WAIT_MS = 8000;
+// Default 8000 ms, overridable with the SHUTDOWN_WAIT_MS env var (see
+// resolveShutdownWaitMs). A sync cut at the deadline is not "finished
+// cleanly": the fallback closes the session under it, so an operator with a
+// longer stop_grace_period should raise the wait to match.
+const SHUTDOWN_WAIT_MS = resolveShutdownWaitMs();
 let shuttingDown = false;
 
 async function gracefulShutdown(signal) {
