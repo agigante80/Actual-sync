@@ -1407,7 +1407,7 @@ module.exports = [
         // #295 review round 2, M1/M3 reworked this block (betterMatchedElsewhere,
         // strictLinked/closestLinked); this anchor was retargeted to the current
         // preference chain, since the old text no longer appears in the file.
-        anchor: "        const candidate = strictLinked\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          || closestLinked\n          // Wrong-amount fallback (M11): only take a candidate that is not a\n          // better, correctly-amounted match for some OTHER bound schedule\n          // (#295 review round 2, M1).\n          || inWindow.find((c) => !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))\n          || null;",
+        anchor: "        const candidate = strictLinked\n          || closestLinked\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          // Wrong-amount fallback (M11): only take a candidate that is not a\n          // better, correctly-amounted match for some OTHER bound schedule\n          // (#295 review round 2, M1).\n          || inWindow.find((c) => !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))\n          || null;",
         mutant: '        const candidate = inWindow[0] || null;',
         tests: 'scheduleAlerts.test'
     },
@@ -1487,7 +1487,9 @@ module.exports = [
         id: '258-r2-m9-legacy-null-channel-row-not-matched', ticket: '#258',
         desc: 'a channel-scoped ledger lookup goes back to an exact-match-only filter, so a legacy pre-H5 row (recorded before the channel column existed, and therefore NULL) is invisible to a lookup for any specific destination key, defeating dedup for upgraded installs',
         file: 'src/services/syncHistory.js',
-        anchor: "          ${filterChannel ? 'AND (channel IS ? OR channel IS NULL)' : ''}",
+        // #297 F7 limited the NULL wildcard to delivered rows; this anchor was
+        // retargeted to the current text.
+        anchor: "          ${filterChannel ? \"AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))\" : ''}",
         mutant: "          ${filterChannel ? 'AND channel IS ?' : ''}",
         tests: 'syncHistory.test'
     },
@@ -1498,6 +1500,64 @@ module.exports = [
         anchor: '                const ruleChannels = resolveChannels(rule, sender);',
         mutant: "                const ruleChannels = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'];",
         tests: 'configLoader.test'
+    },
+
+    // ---- #297: findings left open when the #258 review loop stopped -------
+    {
+        id: '297-f1-remembered-skip-ignored', ticket: '#297',
+        desc: 'a remembered skip decision is no longer honoured, so January (skipped, then February paid and linked) is reported missing once next_date has moved past it',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        if (rememberedSkips.has(skipKey(binding.scheduleId, occurrenceKey))) {',
+        mutant: '        if (false) {',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f1-skip-decision-not-reported', ticket: '#297',
+        desc: 'a first-time skip inference is no longer reported as a skipDecision, so nothing is ever written to the ledger and the skip is forgotten',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '            skipDecisions.push({ alertId: binding.id, scheduleId: binding.scheduleId, occurrence: occurrenceKey });',
+        mutant: '            void occurrenceKey;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f1-skips-not-loaded-from-ledger', ticket: '#297',
+        desc: 'the sync step stops loading remembered skips from the ledger before evaluating, so a skip recorded by an earlier sync is forgotten',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '            skips = rows.map((r) => skipKey(r.scheduleId, r.occurrenceDate));',
+        mutant: '            skips = [];',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '297-f1-skip-decisions-not-persisted', ticket: '#297',
+        desc: 'the deliver phase stops writing newly inferred skip decisions to the ledger',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '    for (const decision of skipDecisions || []) {',
+        mutant: '    for (const decision of []) {',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '297-f2-unlinked-exact-amount-beats-linked', ticket: '#297',
+        desc: 'pass 1 prefers an unlinked exact-amount lookalike over a payment linked to the schedule again, so a sibling schedule on the same account+payee loses its payment and reports a false missing',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "        const candidate = strictLinked\n          || closestLinked\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n",
+        mutant: "        const candidate = strictLinked\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          || closestLinked\n",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f2b-pass2-ignores-linked-preference', ticket: '#297',
+        desc: 'pass 2 takes the earliest late candidate again instead of preferring one linked to the schedule, so an earlier unlinked lookalike starves its sibling',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        const candidate = lateCandidates.find((c) => c.linked) || lateCandidates[0];',
+        mutant: '        const candidate = lateCandidates[0];',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f7-null-channel-wildcard-matches-any-delivery', ticket: '#297',
+        desc: 'a NULL-channel ledger row of any delivery kind (muted, inferred skip) matches a lookup for a specific destination again, so it can suppress every destination',
+        file: 'src/services/syncHistory.js',
+        anchor: "          ${filterChannel ? \"AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))\" : ''}",
+        mutant: "          ${filterChannel ? 'AND (channel IS ? OR channel IS NULL)' : ''}",
+        tests: 'syncHistory.test'
     },
 
     // ---- #169: the README claim that started #168 ---------------------------

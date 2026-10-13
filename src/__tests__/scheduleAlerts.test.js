@@ -488,6 +488,131 @@ describe('evaluate: R2-H2 (next_date can advance from a later linked payment, no
   });
 });
 
+describe('evaluate: #297 F1 (remember the skip decision)', () => {
+  const monthly = (nextDate) => rentSchedule({ date: { start: '2026-01-01', frequency: 'monthly' }, next_date: nextDate });
+
+  test('a skip inferred for the first time is reported as a skipDecision so the caller can persist it', () => {
+    const { evaluations, skipDecisions, events } = evaluate({
+      rules: rentRule(),
+      schedules: [monthly('2026-02-01')],
+      transactions: [],
+      accounts: [account({ last_sync: epochMs('2026-01-20') })],
+      now: '2026-01-25',
+      timezone: TZ
+    });
+    expect(evaluations[0].occurrences.find((o) => o.date === '2026-01-01').state).toBe('skipped');
+    expect(events).toEqual([]);
+    expect(skipDecisions).toEqual([{ alertId: 'rent', scheduleId: 's1', occurrence: '2026-01-01' }]);
+  });
+
+  test('January skipped, February paid and linked: with the remembered skip, January stays skipped (no false missing)', () => {
+    // next_date is now 2026-03-01 and the February payment sits between January's deadline
+    // and next_date - indistinguishable from a real miss without the remembered decision.
+    const { evaluations, events, skipDecisions } = evaluate({
+      rules: rentRule(),
+      schedules: [monthly('2026-03-01')],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-02-09') })],
+      skips: ['s1|2026-01-01'],
+      now: '2026-02-10',
+      timezone: TZ
+    });
+    expect(evaluations[0].occurrences.find((o) => o.date === '2026-01-01').state).toBe('skipped');
+    expect(events).toEqual([]);
+    expect(skipDecisions).toEqual([]); // already remembered, nothing new to persist
+  });
+
+  test('a remembered skip is scoped to its schedule and occurrence', () => {
+    const { evaluations } = evaluate({
+      rules: rentRule(),
+      schedules: [monthly('2026-03-01')],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-02-09') })],
+      skips: ['other|2026-01-01', 's1|2025-12-01'],
+      now: '2026-02-10',
+      timezone: TZ
+    });
+    expect(evaluations[0].occurrences.find((o) => o.date === '2026-01-01').state).toBe('missing');
+  });
+
+  test('an intervening linked payment with no remembered skip is not recorded as a skip decision', () => {
+    const { skipDecisions } = evaluate({
+      rules: rentRule(),
+      schedules: [monthly('2026-03-01')],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-02-09') })],
+      now: '2026-02-10',
+      timezone: TZ
+    });
+    expect(skipDecisions).toEqual([]);
+  });
+
+  test('a remembered skip never hides an occurrence that a payment actually settled', () => {
+    const { evaluations } = evaluate({
+      rules: rentRule(),
+      schedules: [monthly('2026-02-01')],
+      transactions: [{ id: 'jan', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-01', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-01-20') })],
+      skips: ['s1|2026-01-01'],
+      now: '2026-01-25',
+      timezone: TZ
+    });
+    expect(evaluations[0].occurrences.find((o) => o.date === '2026-01-01').state).toBe('received');
+  });
+});
+
+describe('evaluate: #297 F2 / F2b (linked payments take precedence over unlinked lookalikes)', () => {
+  function sibling(id, name) {
+    return rentSchedule({ id, name });
+  }
+  function twoRules() {
+    return getRules({
+      staleAfterDays: 3,
+      alerts: [
+        { id: 'a', schedule: 'Alpha', graceDays: 3, earlyDays: 0 },
+        { id: 'b', schedule: 'Beta', graceDays: 3, earlyDays: 0 }
+      ]
+    });
+  }
+
+  test('F2: an unlinked exact-amount payment does not beat a payment linked to the schedule', () => {
+    // A and B share account+payee and amount. tA (-51000) is linked to A on 01-03 (inside Actual's
+    // 2-day link tolerance, outside earlyDays 0); tB (-50000) is unlinked on 01-05.
+    const { events, evaluations } = evaluate({
+      rules: twoRules(),
+      schedules: [sibling('sA', 'Alpha'), sibling('sB', 'Beta')],
+      transactions: [
+        { id: 'tA', account: 'acc1', payee: 'pay1', amount: -51000, date: '2026-01-03', schedule: 'sA' },
+        { id: 'tB', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null }
+      ],
+      accounts: [account()],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(events.filter((e) => e.event === 'missing')).toEqual([]);
+    expect(evaluations.find((e) => e.alertId === 'a').occurrences[0].receivedDate).toBe('2026-01-03');
+    expect(evaluations.find((e) => e.alertId === 'b').occurrences[0].receivedDate).toBe('2026-01-05');
+  });
+
+  test('F2b: pass 2 prefers a payment linked to the schedule over an earlier unlinked lookalike', () => {
+    // A due 01-05, B due 01-10. tB (unlinked) lands 01-10; tA (linked to A) lands 01-11, late for A.
+    const { events, evaluations } = evaluate({
+      rules: twoRules(),
+      schedules: [sibling('sA', 'Alpha'), rentSchedule({ id: 'sB', name: 'Beta', date: '2026-01-10' })],
+      transactions: [
+        { id: 'tB', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: null },
+        { id: 'tA', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-11', schedule: 'sA' }
+      ],
+      accounts: [account({ last_sync: epochMs('2026-01-12') })],
+      now: '2026-01-12',
+      timezone: TZ
+    });
+    expect(events.filter((e) => e.event === 'missing')).toEqual([]);
+    expect(evaluations.find((e) => e.alertId === 'a').occurrences[0]).toMatchObject({ state: 'late', receivedDate: '2026-01-11' });
+    expect(evaluations.find((e) => e.alertId === 'b').occurrences[0]).toMatchObject({ state: 'received', receivedDate: '2026-01-10' });
+  });
+});
+
 describe('evaluate: R2-M4 (next_date boundary)', () => {
   test('next_date equal to the unpaid occurrence date is not "before" it -> missing, not skipped', () => {
     const schedule = rentSchedule({ next_date: '2026-01-05' }); // equal to the occurrence date itself

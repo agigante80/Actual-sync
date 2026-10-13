@@ -190,6 +190,91 @@ describe('scheduleAlertsSync: end-to-end delivery (#258)', () => {
   });
 });
 
+describe('scheduleAlertsSync: #297 F1 remembered skip across syncs', () => {
+  let syncHistory;
+  let dbDir;
+  const sender = { config: { webhooks: { generic: [{ url: 'http://127.0.0.1:1/hook', enabled: true }] } }, sendTemplated: jest.fn(async () => ({ webhook: { success: true } })) };
+
+  beforeEach(() => {
+    dbDir = createTempDir();
+    syncHistory = new SyncHistoryService({ dbPath: path.join(dbDir, 'sync-history.db'), loggerConfig: { level: 'ERROR' } });
+    sender.sendTemplated.mockClear();
+  });
+  afterEach(() => {
+    syncHistory.close();
+    cleanupTempDir(dbDir);
+  });
+
+  const monthly = (nextDate) => rentSchedule({ date: { start: '2026-01-01', frequency: 'monthly' }, next_date: nextDate });
+  const server_ = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'] }] } };
+  const run = (api, now) => runScheduleAlertsStep({
+    api, server: server_, serverName: 'Main', timezone: 'UTC', syncHistory, notificationService: sender, logger: quietLogger, now: new Date(now)
+  });
+
+  test('January skipped in Actual, February paid and linked: January is never reported missing', async () => {
+    // Sync 1 (Jan 10): user skipped January, so next_date is already 2026-02-01.
+    const first = await run(makeFakeApi({
+      schedules: [monthly('2026-02-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-09') }]
+    }), '2026-01-10T00:00:00.000Z');
+    expect(first).toEqual({ events: 0, sent: 0, skipped: 0 });
+    expect(await syncHistory.listScheduleAlertSkips({ server: 'Main' }))
+      .toEqual([{ scheduleId: 's1', occurrenceDate: '2026-01-01' }]);
+
+    // Sync 2 (Feb 10): February paid and linked on 02-01, next_date advanced to 03-01.
+    const second = await run(makeFakeApi({
+      schedules: [monthly('2026-03-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-02-09') }],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }]
+    }), '2026-02-10T00:00:00.000Z');
+    expect(second.events).toBe(0);
+    expect(sender.sendTemplated).not.toHaveBeenCalled();
+  });
+
+  test('without the first observation (no ledger row) the same February state still reports January missing', async () => {
+    const result = await run(makeFakeApi({
+      schedules: [monthly('2026-03-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-02-09') }],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }]
+    }), '2026-02-10T00:00:00.000Z');
+    expect(result.events).toBe(1);
+  });
+
+  test('a skip decision is recorded once, not again on every sync', async () => {
+    const api = makeFakeApi({
+      schedules: [monthly('2026-02-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-20') }]
+    });
+    await run(api, '2026-01-25T00:00:00.000Z');
+    await run(api, '2026-01-26T00:00:00.000Z');
+    const rows = syncHistory.db.prepare("SELECT * FROM schedule_alerts WHERE event = 'skipped'").all();
+    expect(rows).toHaveLength(1);
+  });
+
+  test('a failure while recording the skip does not stop the alerts from being delivered', async () => {
+    jest.spyOn(syncHistory, 'recordScheduleAlert');
+    syncHistory.recordScheduleAlert.mockImplementationOnce(async () => { throw new Error('disk full'); });
+    const result = await runScheduleAlertsStep({
+      api: makeFakeApi({
+        schedules: [monthly('2026-02-01'), rentSchedule({ id: 's2', name: 'Gym', payee: 'pay2', date: '2026-01-05' })],
+        payees: [{ id: 'pay1', name: 'Landlord' }, { id: 'pay2', name: 'Gym Ltd' }],
+        accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-20') }]
+      }),
+      server: { scheduleAlerts: { alerts: [
+        { id: 'rent', schedule: 'Rent', channels: ['webhook'] },
+        { id: 'gym', schedule: 'Gym', channels: ['webhook'] }
+      ] } },
+      serverName: 'Main', timezone: 'UTC', syncHistory, notificationService: sender, logger: quietLogger,
+      now: new Date('2026-01-25T00:00:00.000Z')
+    });
+    expect(result.sent).toBe(1); // Gym's missing alert still went out
+  });
+});
+
 describe('scheduleAlertsSync: gate + catch, real functions (#258, #271 item 10, #295 review M5)', () => {
   let syncHistory;
   let dbDir;

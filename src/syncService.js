@@ -730,7 +730,8 @@ async function runSyncBank(server, options = {}) {
             api,
             serverName: name,
             timezone: resolveTimezone(config),
-            logger: serverLogger
+            logger: serverLogger,
+            syncHistory
         });
 
         // Calculate sync duration and log performance

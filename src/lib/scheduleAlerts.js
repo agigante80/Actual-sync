@@ -174,6 +174,18 @@ function computeIntervalStats(dateConfig, today, timezone) {
 }
 
 /**
+ * Key of one remembered skip decision (#297 F1): a skip belongs to a schedule
+ * occurrence, not to an alert rule, so two rules bound to one schedule agree.
+ *
+ * @param {string} scheduleId
+ * @param {string} occurrence - `YYYY-MM-DD`
+ * @returns {string}
+ */
+function skipKey(scheduleId, occurrence) {
+  return `${scheduleId}|${occurrence}`;
+}
+
+/**
  * Resolve the effective amount-tolerance percentage for a rule: the rule's
  * own `amountTolerancePct` if set, otherwise Actual's own schedule amount
  * mode ("approximately" -> 7.5%, an exact amount -> 0%).
@@ -339,10 +351,18 @@ function parseLastSync(lastSync, timezone) {
  * @param {Array<{id:string,last_sync:?string}>} args.accounts
  * @param {Date|string} args.now
  * @param {string} args.timezone - IANA zone, e.g. `Europe/Madrid`
- * @returns {{ events: Object[], evaluations: Object[], warnings: Object[] }}
+ * @param {Iterable<string>} [args.skips] - #297 F1: remembered skip decisions,
+ *   each `${scheduleId}|${occurrence}` (see `skipKey`). An unpaid occurrence in
+ *   this set is `skipped` regardless of what `next_date` says now.
+ * @returns {{ events: Object[], evaluations: Object[], warnings: Object[], skipDecisions: Object[] }}
+ *   `skipDecisions` lists the skips inferred for the FIRST time in this call
+ *   (`{alertId, scheduleId, occurrence}`); the caller persists them so the
+ *   next call can pass them back in as `skips`.
  */
-function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
+function evaluate({ rules, schedules, transactions, accounts, now, timezone, skips }) {
   const events = [];
+  const skipDecisions = [];
+  const rememberedSkips = new Set(skips || []);
   const evaluations = [];
   const warnings = [];
 
@@ -513,9 +533,14 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
         const closestLinked = linkedInWindow.length
           ? [...linkedInWindow].sort((a, b) => Math.abs(a.date.diff(occ.day, 'days')) - Math.abs(b.date.diff(occ.day, 'days')))[0]
           : null;
+        // #297 F2: every linked candidate outranks any unlinked one. Actual's
+        // own link is authoritative, so an unlinked exact-amount lookalike
+        // must not be taken while a payment linked to THIS schedule exists
+        // (the sibling schedule sharing account+payee would lose it and
+        // report a false `missing`).
         const candidate = strictLinked
-          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))
           || closestLinked
+          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))
           // Wrong-amount fallback (M11): only take a candidate that is not a
           // better, correctly-amounted match for some OTHER bound schedule
           // (#295 review round 2, M1).
@@ -538,12 +563,16 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
       // since `matches()` already ties it exclusively to this schedule.
       for (const occ of occurrenceResults) {
         if (occ.state || !occ.lateEnd) continue;
-        const candidate = candidateTx.find(
+        const lateCandidates = candidateTx.filter(
           (c) => !c.used
             && !c.date.isBefore(occ.lateStart, 'day')
             && !c.date.isAfter(occ.lateEnd, 'day')
             && (c.linked || !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))
         );
+        // #297 F2b: a payment linked to this schedule is preferred over an
+        // earlier unlinked lookalike (candidateTx is date-ordered, so a plain
+        // find() took the lookalike and starved the sibling that owns it).
+        const candidate = lateCandidates.find((c) => c.linked) || lateCandidates[0];
         if (candidate) {
           candidate.used = true;
           globallyUsedTx.set(candidate.tx, schedule.id);
@@ -564,6 +593,15 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
           occ.state = 'upcoming';
           continue;
         }
+        const occurrenceKey = occ.day.format('YYYY-MM-DD');
+        // #297 F1: a skip decision remembered from an earlier sync wins over
+        // re-inference. Once a later payment advances next_date, Actual's data
+        // can no longer tell a skip from a miss, so the first observation is
+        // the only reliable one and it is persisted by the caller.
+        if (rememberedSkips.has(skipKey(binding.scheduleId, occurrenceKey))) {
+          occ.state = 'skipped';
+          continue;
+        }
         if (nextDateMoment && occ.day.isBefore(nextDateMoment, 'day')) {
           // #295 review round 2, H2: only infer "skipped" when no
           // transaction LINKED TO THIS SCHEDULE falls strictly between this
@@ -574,18 +612,23 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
           // through to the normal missing/cannotCheck check below instead of
           // being hidden as "skipped".
           //
-          // Trade-off (documented in docs/SCHEDULE_ALERTS.md): a genuine
-          // explicit skip whose next payment happens to post early - dated
-          // between this occurrence's deadline and next_date - looks
-          // identical to the case above and will also fall through to
-          // missing/cannotCheck rather than skipped. This is accepted:
-          // hiding a real miss is worse than an occasional false missing on
-          // an explicitly-skipped occurrence, which the operator can dismiss.
+          // Remaining trade-off (documented in docs/SCHEDULE_ALERTS.md): a
+          // skip that is FIRST observed only after a later payment already
+          // advanced next_date (no sync ran between the skip and that
+          // payment, or the feature was enabled afterwards) cannot be told
+          // from a miss and falls through to missing/cannotCheck. Skips
+          // observed in time are remembered (#297 F1, see rememberedSkips).
           const hasInterveningLinkedPayment = linkedTxDates.some(
             (d) => d.isAfter(occ.deadline, 'day') && d.isBefore(nextDateMoment, 'day')
           );
           if (!hasInterveningLinkedPayment) {
             occ.state = 'skipped';
+            // First time this skip is inferred (not remembered, else caught
+            // above): report it so it is written to the ledger (#297 F1).
+            // Added to the set too, so a second rule bound to the same schedule
+            // does not report (and the caller does not record) it twice.
+            rememberedSkips.add(skipKey(binding.scheduleId, occurrenceKey));
+            skipDecisions.push({ alertId: binding.id, scheduleId: binding.scheduleId, occurrence: occurrenceKey });
             continue;
           }
         }
@@ -683,7 +726,7 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
     }
   }
 
-  return { events, evaluations, warnings };
+  return { events, evaluations, warnings, skipDecisions };
 }
 
-module.exports = { evaluate, MAX_LOOKBACK_DAYS, MAX_OCCURRENCES, LINKED_EARLY_WINDOW_DAYS };
+module.exports = { evaluate, skipKey, MAX_LOOKBACK_DAYS, MAX_OCCURRENCES, LINKED_EARLY_WINDOW_DAYS };

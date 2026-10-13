@@ -802,6 +802,26 @@ describe('SyncHistoryService', () => {
       expect(await syncHistory.findLatestScheduleAlert(key({ server: 'Other' }))).toBeNull();
     });
 
+    // #297 F1: remembered skip decisions
+    describe('listScheduleAlertSkips (#297 F1)', () => {
+      test('returns the skipped rows of one server as scheduleId and occurrenceDate pairs', async () => {
+        await syncHistory.recordScheduleAlert({ ...key({ event: 'skipped' }), delivery: 'inferred' });
+        await syncHistory.recordScheduleAlert({ ...key({ event: 'skipped', scheduleId: 's2', occurrenceDate: '2026-02-01' }), delivery: 'inferred' });
+        await syncHistory.recordScheduleAlert({ ...key({ event: 'skipped', server: 'Other' }), delivery: 'inferred' });
+        await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent' }); // a missing row is not a skip
+        const skips = await syncHistory.listScheduleAlertSkips({ server: 'Main' });
+        expect(skips).toEqual(expect.arrayContaining([
+          { scheduleId: 's1', occurrenceDate: '2026-01-05' },
+          { scheduleId: 's2', occurrenceDate: '2026-02-01' }
+        ]));
+        expect(skips).toHaveLength(2);
+      });
+
+      test('returns an empty list when nothing was skipped', async () => {
+        expect(await syncHistory.listScheduleAlertSkips({ server: 'Main' })).toEqual([]);
+      });
+    });
+
     // #295 review round 2, M9: the per-destination `channel` column (H5) had
     // no real-DB test at all, so a broken filter or a missing migration would
     // still show green. These exercise both.
@@ -829,6 +849,15 @@ describe('SyncHistoryService', () => {
         `).run('Main', 'rent', 's1', '2026-01-05', 'missing', 'sent', new Date().toISOString());
         expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'slack:https://hooks.example/a' })).not.toBeNull();
         expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'telegram' })).not.toBeNull();
+      });
+
+      // #297 F7: the NULL wildcard exists only for legacy delivered rows. A
+      // NULL-channel row that is not a delivery (muted/disabled/inferred
+      // skip) must never suppress a real destination.
+      test('a NULL-channel row that is not a sent delivery does not match a lookup for a specific channel', async () => {
+        await syncHistory.recordScheduleAlert({ ...key(), delivery: 'muted' });
+        expect(await syncHistory.findLatestScheduleAlert({ ...key(), channel: 'telegram' })).toBeNull();
+        expect(await syncHistory.findLatestScheduleAlert(key())).not.toBeNull(); // channel-less lookup still sees it
       });
 
       test('migrates a pre-existing DB whose schedule_alerts table lacks the channel column, preserving rows (idempotent)', () => {

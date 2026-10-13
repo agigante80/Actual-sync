@@ -243,18 +243,18 @@ shares the sync process's own local zone.
   channel list, so a Telegram-only restriction (for example, no literal `&`/`<` in the rendered
   text) is only enforced for a rule that can actually reach Telegram, never for one restricted to
   slack/email or on a server with no Telegram destination configured.
-- **A missed occurrence can be masked by a later linked payment, not only by an explicit "Skip next
-  date" (#295 review round 2, H2).** Actual advances a schedule's `next_date` both when an operator
-  explicitly skips an occurrence and whenever a later occurrence gets linked to a posted payment,
-  with no other trace distinguishing the two cases. Schedule alerts treats an occurrence before
-  `next_date` as `skipped` only when no transaction linked to that schedule falls between the
-  occurrence's deadline and `next_date`; if one does, that later payment - not a deliberate skip -
-  is what moved `next_date`, and the occurrence falls through to the normal `missing`/`cannotCheck`
-  check instead of being hidden. The accepted trade-off: a genuine explicit skip whose next payment
-  happens to post early (dated between the skipped occurrence's deadline and `next_date`) looks
-  identical to the masked-miss case above, and will also fall through rather than being reported as
-  `skipped` - an occasional false `missing` on an explicitly-skipped occurrence (which the operator
-  can dismiss) is accepted in exchange for never silently hiding a genuine miss.
+- **Telling an explicit skip from a miss (#295 review round 2, H2; #297 F1).** Actual advances a
+  schedule's `next_date` both when an operator explicitly skips an occurrence and whenever a later
+  occurrence gets linked to a posted payment, with no other trace distinguishing the two. Schedule
+  alerts therefore remembers the first observation. The first time an unpaid occurrence is past its
+  deadline with `next_date` already beyond it and no linked payment dated between the deadline and
+  `next_date`, it is a skip: the occurrence is reported `skipped` and a `skipped` row is written to the
+  ledger. That decision is honoured on every later sync, even after a February payment moves
+  `next_date` on to March, so January is never reported `missing`. The accepted limitation: a skip
+  first seen only after a later linked payment already advanced `next_date` (no sync ran in between,
+  or schedule alerts was enabled afterwards) looks identical to a real miss and is reported `missing`
+  (or `cannotCheck`), which the operator can dismiss. Hiding a genuine miss would be worse than that
+  occasional false `missing`. Skip rows live in the same ledger and are purged with it.
 - **Rule enable/mute state and dashboard-managed rules are out of scope for this release.** Every
   rule from `config.json` is always enabled and never muted; a future release can add real
   enable/mute state and dashboard-created rules without changing the evaluation or delivery engine.
