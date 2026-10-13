@@ -380,6 +380,70 @@ describe('validateTemplate', () => {
       }).not.toThrow();
     });
 
+    // L3 (#294): the Telegram-valid entities are the only way to write a
+    // literal & in a Telegram template.
+    test.each(['&amp;', '&lt;', '&gt;', '&quot;'])('the Telegram entity %s is allowed in literal text', (entity) => {
+      expect(() => {
+        validateTemplate(`Rent ${entity} fees`, { key: 'reminder', variables: [], channel: 'telegram' });
+      }).not.toThrow();
+    });
+
+    test.each(['&nbsp;', '&#38;', '&amp', '&bogus;'])('%s is still rejected', (bad) => {
+      expect.assertions(1);
+      try {
+        validateTemplate(`Rent ${bad} fees`, { key: 'reminder', variables: [], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+      }
+    });
+
+    // L5 (#294): unbalanced tags were only caught by the runtime 400 retry.
+    test('an unclosed allowed tag throws telegram_markup', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('<b>{{name}}', { key: 'reminder', variables: ['name'], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+        expect(err.token).toBe('<b>');
+      }
+    });
+
+    test('a closing tag with no opener throws telegram_markup', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('x</b>', { key: 'reminder', variables: [], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+        expect(err.token).toBe('</b>');
+      }
+    });
+
+    test('crossed tags throw telegram_markup', () => {
+      expect.assertions(1);
+      try {
+        validateTemplate('<b><i>{{name}}</b></i>', { key: 'reminder', variables: ['name'], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+      }
+    });
+
+    test('a tag pair that spans a mustache and a block is balanced', () => {
+      expect(() => {
+        validateTemplate('<b>{{name}}</b> <i>{{#if name}}<u>{{name}}</u>{{/if}}</i>', {
+          key: 'reminder', variables: ['name'], channel: 'telegram'
+        });
+      }).not.toThrow();
+    });
+
+    test('a tag opened outside a block and closed inside it throws telegram_markup', () => {
+      expect.assertions(1);
+      try {
+        validateTemplate('<b>{{#if name}}x</b>{{/if}}', { key: 'reminder', variables: ['name'], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+      }
+    });
+
     test('without channel: telegram, the same literal & is not checked', () => {
       expect(() => {
         validateTemplate('Rent & fees', { key: 'reminder', variables: [] });

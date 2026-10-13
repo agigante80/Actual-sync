@@ -70,6 +70,9 @@ function literalToken(node) {
  */
 const ALLOWED_TELEGRAM_TAGS = new Set(['b', 'i', 'u', 's', 'code', 'pre', 'a']);
 
+/** The only HTML entities Telegram's HTML parse_mode accepts in literal text. */
+const TELEGRAM_ENTITY_RE = /^&(?:amp|lt|gt|quot);/;
+
 /** Thrown by `validateTemplate` for every kind of invalid template. */
 class TemplateValidationError extends Error {
   /**
@@ -101,8 +104,11 @@ function fail(key, token, line, reason) {
  *
  * @param {string} key
  * @param {import('handlebars').AST.ContentStatement} node
+ * @param {{tag: string, line: number}[]} tagStack - open tags in the current
+ *   program, shared across its content nodes so `<b>{{name}}</b>` balances
+ *   across the mustache. Each block body gets its own stack (#294 L5).
  */
-function checkTelegramMarkup(key, node) {
+function checkTelegramMarkup(key, node, tagStack) {
   const text = node.value;
   let line = node.loc.start.line;
   let i = 0;
@@ -118,6 +124,13 @@ function checkTelegramMarkup(key, node) {
     if (ch === '<') {
       const match = tagRe.exec(text.slice(i));
       if (match && ALLOWED_TELEGRAM_TAGS.has(match[1].toLowerCase())) {
+        const tag = match[1].toLowerCase();
+        if (match[0][1] === '/') {
+          const open = tagStack.pop();
+          if (!open || open.tag !== tag) fail(key, `</${tag}>`, line, 'telegram_markup');
+        } else {
+          tagStack.push({ tag, line });
+        }
         line += (match[0].match(/\n/g) || []).length;
         i += match[0].length;
         continue;
@@ -125,6 +138,13 @@ function checkTelegramMarkup(key, node) {
       fail(key, '<', line, 'telegram_markup');
     }
     if (ch === '&') {
+      // The four entities Telegram's HTML mode defines are the only way to
+      // write a literal & in a Telegram template. (#294 L3)
+      const entity = TELEGRAM_ENTITY_RE.exec(text.slice(i));
+      if (entity) {
+        i += entity[0].length;
+        continue;
+      }
       fail(key, '&', line, 'telegram_markup');
     }
     i += 1;
@@ -232,13 +252,20 @@ function validateTemplate(source, { key, variables, channel } = {}) {
     if (!program) return;
     const childScope = new Set(scopeVars);
     for (const blockParam of program.blockParams || []) childScope.add(blockParam);
-    for (const statement of program.body) walkStatement(statement, childScope);
+    const tagStack = [];
+    for (const statement of program.body) walkStatement(statement, childScope, tagStack);
+    if (tagStack.length > 0) {
+      // An allowed tag opened but never closed in this program: Telegram
+      // would 400 at send time. (#294 L5)
+      const open = tagStack[tagStack.length - 1];
+      fail(key, `<${open.tag}>`, open.line, 'telegram_markup');
+    }
   };
 
-  const walkStatement = (statement, scopeVars) => {
+  const walkStatement = (statement, scopeVars, tagStack) => {
     switch (statement.type) {
       case 'ContentStatement':
-        if (channel === 'telegram') checkTelegramMarkup(key, statement);
+        if (channel === 'telegram') checkTelegramMarkup(key, statement, tagStack);
         break;
       case 'CommentStatement':
         break;
