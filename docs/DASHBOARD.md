@@ -22,6 +22,7 @@ Every response carries a strict Content-Security-Policy (details and the full he
 - Scripts may only come from this origin. Do not add a `<script src="https://...">`.
 - Inline `style="..."` attributes are allowed (`style-src 'unsafe-inline'`), because the page uses many of them.
 - Network calls may only go to this origin (`connect-src 'self'`), which includes the `/ws/logs` WebSocket.
+- The page cannot be shown inside an iframe (`frame-ancestors 'none'` and `X-Frame-Options: DENY`), which blocks clickjacking. A Home Assistant `panel_iframe` or a Homarr or Organizr iframe tile shows an empty frame; link to the dashboard so it opens in its own tab instead.
 - If the page is blank or a button does nothing after an edit, open the browser console: a blocked resource is reported as `Refused to ...`. The e2e suite (`tests/e2e/csp.e2e.js`) fails on any violation.
 
 ## No external network dependencies

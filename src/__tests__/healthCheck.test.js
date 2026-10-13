@@ -404,7 +404,7 @@ describe('HealthCheckService', () => {
     test('HSTS is sent with a max-age when enabled in config', async () => {
       const svc = makeService({ port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' }, hsts: true });
       await svc.start();
-      expect((await rawGet('/health')).headers['strict-transport-security']).toMatch(/max-age=\d+/);
+      expect((await rawGet('/health')).headers['strict-transport-security']).toBe('max-age=15552000');
     });
 
     test('serves the dashboard script as javascript from one fixed route', async () => {

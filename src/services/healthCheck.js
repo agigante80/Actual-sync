@@ -175,7 +175,10 @@ class HealthCheckService {
         }
       },
       frameguard: { action: 'deny' },
-      strictTransportSecurity: hsts ? { maxAge: 15552000 } : false
+      // includeSubDomains off: helmet adds it by default, and an operator
+      // serving https://example.com would otherwise lock every plain-HTTP
+      // subdomain (nas.example.com) out for 180 days (#243 round 1 L1).
+      strictTransportSecurity: hsts ? { maxAge: 15552000, includeSubDomains: false } : false
     };
   }
 
