@@ -525,7 +525,7 @@ Real-time log streaming via WebSocket connection. **Not public**: the handshake 
 | more than 10 open log streams from one address | always | 429 |
 | no valid ticket (an `Authorization` header is not accepted here) | `dashboard.auth.type` basic or token | 401 |
 
-The per-address cap uses the TCP peer address, so behind a reverse proxy it counts every stream through that proxy together.
+The per-address cap and the `handshake refused` log lines use the client address Express resolves: the TCP peer address by default, or the `X-Forwarded-For` client when `healthCheck.trustProxy` is set. Without `trustProxy`, behind a reverse proxy the cap counts every stream through that proxy together. The ticket is spent before any other check, so a handshake refused for its Origin, the cap or a disabled dashboard cannot be retried with the same ticket. With `auth.type: none` the Origin check does not stop DNS rebinding; see [DASHBOARD.md](DASHBOARD.md).
 
 **Authenticating from a browser.** A browser cannot put an `Authorization` header on a WebSocket, so the dashboard first calls `GET /api/dashboard/ws-ticket` (behind the normal dashboard auth) and gets a ticket that is single use and valid for 30 seconds:
 
