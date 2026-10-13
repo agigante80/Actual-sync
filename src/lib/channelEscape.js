@@ -26,6 +26,19 @@ function escapeSlack(text) {
 }
 
 /**
+ * Escape the three characters Telegram's HTML parse mode treats specially.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function escapeTelegramHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
  * Backslash-escape the characters Discord's Markdown parser treats specially,
  * so a rendered value cannot turn into bold/italic/strikethrough/code/quote/
  * masked-link markup, or a mention-like `>` the operator did not write.
@@ -191,6 +204,7 @@ function truncateTelegramHtml(text, max = 4096) {
 
 module.exports = {
   escapeSlack,
+  escapeTelegramHtml,
   escapeDiscordMarkdown,
   truncateTelegramHtml,
   truncateCodePoints,

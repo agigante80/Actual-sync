@@ -1249,8 +1249,8 @@ module.exports = [
         id: '258-reminder-interval-not-enforced', ticket: '#258',
         desc: 'a missing-payment reminder resends on every sync instead of waiting remindEveryDays, spamming every channel',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: '  return calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays;',
-        mutant: '  return true;',
+        anchor: 'due: calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays,',
+        mutant: 'due: true,',
         tests: 'scheduleAlertDelivery'
     },
     {
@@ -1527,8 +1527,8 @@ module.exports = [
         id: '258-r2-m5-resolved-resent-after-already-resolved-here', ticket: '#258',
         desc: 'a resolved event goes back to being resendable to a destination that already has its own resolved row recorded, resending indefinitely instead of once per destination',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: '    return !resolvedRow;',
-        mutant: '    return true;',
+        anchor: 'due: !resolvedRow,',
+        mutant: 'due: true,',
         tests: 'scheduleAlertDelivery'
     },
     {
@@ -1693,6 +1693,22 @@ module.exports = [
         file: "src/lib/scheduleAlertDelivery.js",
         anchor: "const included = rendered.slice(0, count).map((r) => r.item);",
         mutant: "const included = rendered.map((r) => r.item);",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-digest-no-fair-order", ticket: '#294',
+        desc: "the digest no longer sends never-sent and longest-waiting items first, so daily reminders starve the deferred tail",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "return x === y ? 0 : (x < y ? -1 : 1);",
+        mutant: "return 0;",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-telegram-digest-header-unescaped", ticket: '#294',
+        desc: "the Telegram digest header interpolates the server name into HTML unescaped again",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "for ${escapeTelegramHtml(server)}`",
+        mutant: "for ${server}`",
         tests: "scheduleAlertDelivery"
     },
     {

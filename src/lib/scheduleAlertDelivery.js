@@ -52,7 +52,7 @@
 const moment = require('moment-timezone');
 const crypto = require('crypto');
 const { compileTemplateSet } = require('./templateRenderer');
-const { DISCORD_CONTENT_MAX, SLACK_TEXT_MAX, TELEGRAM_TEXT_MAX } = require('./channelEscape');
+const { DISCORD_CONTENT_MAX, SLACK_TEXT_MAX, TELEGRAM_TEXT_MAX, escapeTelegramHtml } = require('./channelEscape');
 
 /**
  * Per-channel message length caps a digest must fit under (#294 review
@@ -341,6 +341,18 @@ function destinationsForRule(rule, sender) {
  * @returns {Promise<boolean>}
  */
 async function isDestinationDue(event, rule, destinationKey, history, server, now, timezone) {
+  return (await destinationDueState(event, rule, destinationKey, history, server, now, timezone)).due;
+}
+
+/**
+ * `isDestinationDue` plus when this destination last got the event
+ * (`lastSentAt`, an ISO string, or null when it never has). The digest uses
+ * it to send never-sent and longest-waiting items first (#294 review round 2,
+ * H1).
+ *
+ * @returns {Promise<{due: boolean, lastSentAt: ?string}>}
+ */
+async function destinationDueState(event, rule, destinationKey, history, server, now, timezone) {
   // #295 review round 2, M5: a `resolved` event is only meaningful for a
   // destination that actually received the original `missing` alert, and
   // must retry to any destination that has not YET recorded `resolved`,
@@ -352,23 +364,23 @@ async function isDestinationDue(event, rule, destinationKey, history, server, no
       server, alertId: event.alertId, scheduleId: event.scheduleId,
       occurrenceDate: event.occurrence, event: 'missing', channel: destinationKey
     });
-    if (!missingRow) return false; // this destination was never told it was missing
+    if (!missingRow) return { due: false, lastSentAt: null }; // this destination was never told it was missing
     const resolvedRow = await history.findLatestScheduleAlert({
       server, alertId: event.alertId, scheduleId: event.scheduleId,
       occurrenceDate: event.occurrence, event: 'resolved', channel: destinationKey
     });
-    return !resolvedRow;
+    return { due: !resolvedRow, lastSentAt: null };
   }
 
   const latest = await history.findLatestScheduleAlert({
     server, alertId: event.alertId, scheduleId: event.scheduleId,
     occurrenceDate: event.occurrence, event: event.event, channel: destinationKey
   });
-  if (!latest) return true;
-  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return false; // one row per destination, ever
+  if (!latest) return { due: true, lastSentAt: null };
+  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return { due: false, lastSentAt: null }; // one row per destination, ever
   const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;
-  if (!remindEveryDays) return false;
-  return calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays;
+  if (!remindEveryDays) return { due: false, lastSentAt: null };
+  return { due: calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays, lastSentAt: latest.recordedAt };
 }
 
 /**
@@ -571,12 +583,12 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
  * Build one channel's merged digest payload: every eligible event's own
  * render, in that channel's mode, joined under one header.
  */
-function buildDigestOutput(channel, header, linesByMode, target, server) {
+function buildDigestOutput(channel, header, linesByMode, target, server, htmlHeader = header) {
   switch (channel) {
     case 'telegram': {
       return {
         telegram: {
-          html: `${header}\n\n${linesByMode.telegram.join('\n')}`,
+          html: `${htmlHeader}\n\n${linesByMode.telegram.join('\n')}`,
           plain: `${header}\n\n${linesByMode.email_text.join('\n')}`
         }
       };
@@ -669,13 +681,26 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
 
     const dueItems = [];
     for (const item of channelItems) {
-      if (await isDestinationDue(item.event, item.rule, key, history, server, now, timezone)) dueItems.push(item);
+      const state = await destinationDueState(item.event, item.rule, key, history, server, now, timezone);
+      if (state.due) dueItems.push({ item, lastSentAt: state.lastSentAt });
     }
     if (dueItems.length === 0) continue;
 
     const modes = CHANNEL_TO_MODES[channel] || [];
+    // #294 review round 2, H1: fit never-sent items first, then the ones
+    // that have waited longest on this destination. Without this a daily
+    // reminder (`remindEveryDays: 1`, or `ruleUnmatched`) re-sorts the items
+    // already sent ahead of the deferred tail and fills the cap again, so the
+    // tail never goes out. Array.prototype.sort is stable, so ties keep their
+    // original order.
+    const sentAtMs = (d) => (d.lastSentAt == null ? -Infinity : Date.parse(d.lastSentAt));
+    dueItems.sort((a, b) => {
+      const x = sentAtMs(a);
+      const y = sentAtMs(b);
+      return x === y ? 0 : (x < y ? -1 : 1);
+    });
     const rendered = [];
-    for (const item of dueItems) {
+    for (const { item } of dueItems) {
       try {
         const templates = { ...DEFAULT_TEMPLATES, ...(item.rule.templates || {}) };
         const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
@@ -700,7 +725,10 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
       const linesByMode = {};
       for (const mode of modes) linesByMode[mode] = rendered.slice(0, count).map((r) => r.lines[mode]);
       const header = `Actual-sync: ${count} payment alert(s) for ${server}`;
-      return buildDigestOutput(channel, header, linesByMode, target, server);
+      // Telegram's html is parsed as HTML: an unescaped `&` or `<` in the
+      // server name would make every digest fall back to plain text.
+      const htmlHeader = channel === 'telegram' ? `Actual-sync: ${count} payment alert(s) for ${escapeTelegramHtml(server)}` : header;
+      return buildDigestOutput(channel, header, linesByMode, target, server, htmlHeader);
     };
     const cap = DIGEST_CAPS[channel];
     let count = rendered.length;

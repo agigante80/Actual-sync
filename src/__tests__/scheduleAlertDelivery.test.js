@@ -402,6 +402,27 @@ describe('deliver: digest fits each capped channel (#294 review round 1, M1)', (
     expect(new Set(history.rows.map((r) => r.alertId)).size).toBe(MANY);
   });
 
+  test('daily reminders do not starve the deferred tail: all 40 alerts reach the ledger within a bounded number of days (#294 review round 2, H1)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] } });
+    const { events, evaluations } = manyItems();
+    const rulesDaily = getRules({
+      digest: true,
+      alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['discord'], remindEveryDays: 1 }))
+    });
+
+    const MAX_DAYS = 6;
+    for (let day = 0; day < MAX_DAYS; day++) {
+      const instant = new Date(Date.UTC(2026, 0, 10 + day)).toISOString();
+      history.clock = instant;
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: instant, server: 'Main', rules: rulesDaily, timezone: 'UTC', logger: quietLogger
+      });
+      if (new Set(history.rows.map((r) => r.alertId)).size === MANY) break;
+    }
+    expect(new Set(history.rows.map((r) => r.alertId)).size).toBe(MANY);
+  });
+
   test('a 40-item Telegram digest also stays under 4096 in both html and plain, recording only what was sent', async () => {
     const history = makeFakeHistory();
     const sender = makeFakeSender({ telegram: { enabled: true } });
@@ -617,6 +638,21 @@ describe('deliver: resolved retries per destination against the real ledger (#29
     const finalResult = await deliver([], { ...baseArgs, evaluations: [lateEvaluation], now: '2026-01-13' });
     expect(finalResult).toEqual({ sent: 0, skipped: 1 });
     expect(sender.calls).toHaveLength(5);
+  });
+});
+
+describe('deliver: Telegram digest header escapes the server name (#294 review round 2, L)', () => {
+  test('a server name with & and < is escaped in the html header and left raw in the plain fallback', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'] }] });
+    await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'A&B <home>', rules, timezone: 'UTC', logger: quietLogger
+    });
+    const header = sender.calls[0].telegram.html.split('\n')[0];
+    expect(header).toContain('A&amp;B &lt;home&gt;');
+    expect(header).not.toContain('<home>');
+    expect(sender.calls[0].telegram.plain.split('\n')[0]).toContain('A&B <home>');
   });
 });
 
