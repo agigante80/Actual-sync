@@ -332,7 +332,7 @@ function betterMatchedElsewhere(tx, currentSchedule, currentTolerancePct, bindin
 function parseLastSync(lastSync, timezone) {
   if (lastSync == null || lastSync === '') return null;
   const isNumeric = typeof lastSync === 'number' || /^-?\d+$/.test(String(lastSync).trim());
-  const parsed = moment.tz(lastSync, timezone);
+  const parsed = isNumeric ? moment.tz(Number(lastSync), timezone) : moment.tz(lastSync, timezone);
   return parsed.isValid() ? parsed.startOf('day') : null;
 }
 
