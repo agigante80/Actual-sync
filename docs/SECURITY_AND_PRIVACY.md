@@ -1045,16 +1045,7 @@ For complete CI/CD documentation including security scanning setup, see:
 
 ### Reporting Vulnerabilities
 
-If you discover a security vulnerability:
-
-1. **Do NOT** create a public GitHub issue
-2. Email project maintainer directly (configure in your project)
-3. Provide detailed description and reproduction steps
-4. Allow reasonable time for fix before public disclosure
-
-### Security Response Team
-
-[Configure your security contact information here]
+The reporting policy lives in one place: **[SECURITY.md](../SECURITY.md)** at the repository root (supported versions, the private channel, what to include and what to leave out, response targets, and coordinated disclosure). Report privately through GitHub's [Report a vulnerability](https://github.com/agigante80/Actual-sync/security/advisories/new) form, never as a public issue or pull request.
 
 ---
 
