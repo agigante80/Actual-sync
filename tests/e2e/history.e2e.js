@@ -53,4 +53,21 @@ describe('dashboard history tab (#263)', () => {
       expect(servers.every((s) => s.includes(name))).toBe(true);
     });
   });
+
+  test('a quoted server name filters correctly and error markup renders as text (#288)', async () => {
+    await withDashboard('history-markup', async ({ page, fixture }) => {
+      await clickTab(page, 'History');
+      await page.waitForSelector('#history-body tr td:nth-child(2)');
+
+      expect(await page.$('#injected')).toBeNull();
+      const errorText = await page.$eval('#history-body tr td:last-child span', (el) => el.textContent);
+      expect(errorText).toBe(fixture.state.markupError);
+
+      const name = fixture.state.quoted;
+      await page.select('#history-server-filter', name);
+      await page.waitForFunction(() => document.querySelectorAll('#history-body tr').length === 1);
+      const server = await page.$eval('#history-body tr td:nth-child(2)', (el) => el.textContent);
+      expect(server).toBe(name);
+    });
+  });
 });
