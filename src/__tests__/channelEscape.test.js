@@ -2,7 +2,7 @@
  * Tests for src/lib/channelEscape.js (#257)
  */
 
-const { escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml, truncateCodePoints } = require('../lib/channelEscape');
+const { escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml, truncateCodePoints, truncateWithEllipsis } = require('../lib/channelEscape');
 
 describe('escapeSlack', () => {
   test('escapes &, < and >', () => {
@@ -139,5 +139,25 @@ describe('truncateCodePoints', () => {
 
   test('coerces non-string input', () => {
     expect(truncateCodePoints(123, 10)).toBe('123');
+  });
+});
+
+// L8 (#294): Discord rejects content over 2000 characters with a 400.
+describe('truncateWithEllipsis', () => {
+  test('input within the cap is returned unchanged', () => {
+    expect(truncateWithEllipsis('hello', 5)).toBe('hello');
+  });
+
+  test('over-cap input is cut so the result, ellipsis included, is exactly max code points', () => {
+    const out = truncateWithEllipsis('a'.repeat(5000), 2000);
+    expect([...out]).toHaveLength(2000);
+    expect(out.endsWith('\u2026')).toBe(true);
+    expect(out.slice(0, -1)).toBe('a'.repeat(1999));
+  });
+
+  test('never splits a surrogate pair at the cut', () => {
+    const out = truncateWithEllipsis('a'.repeat(1998) + '\u{1F600}\u{1F600}', 2000);
+    expect(out.isWellFormed()).toBe(true);
+    expect([...out].length).toBeLessThanOrEqual(2000);
   });
 });

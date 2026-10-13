@@ -114,6 +114,28 @@ function truncateCodePoints(text, max = 4096) {
   return output;
 }
 
+/** Discord rejects `content` over 2000 characters with a 400. (#294 L8) */
+const DISCORD_CONTENT_MAX = 2000;
+
+/** Slack recommends keeping a text block under 4000 characters. (#294 L8) */
+const SLACK_TEXT_MAX = 4000;
+
+/**
+ * Cap text at `max` code points, ending in an ellipsis when it was cut. The
+ * ellipsis counts toward `max`, so the result never exceeds it, and the cut
+ * never splits a surrogate pair.
+ *
+ * @param {string} text
+ * @param {number} max
+ * @returns {string}
+ */
+function truncateWithEllipsis(text, max) {
+  const value = String(text);
+  if (value.length <= max) return value;
+  if ([...value].length <= max) return value;
+  return `${truncateCodePoints(value, max - 1)}\u2026`;
+}
+
 /**
  * Truncate rendered Telegram HTML to at most `max` characters without ever
  * cutting inside a tag or an HTML entity, and close any `<b>`/`<i>`/... tags
@@ -160,4 +182,12 @@ function truncateTelegramHtml(text, max = 4096) {
   return output + suffix;
 }
 
-module.exports = { escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml, truncateCodePoints };
+module.exports = {
+  escapeSlack,
+  escapeDiscordMarkdown,
+  truncateTelegramHtml,
+  truncateCodePoints,
+  truncateWithEllipsis,
+  DISCORD_CONTENT_MAX,
+  SLACK_TEXT_MAX
+};

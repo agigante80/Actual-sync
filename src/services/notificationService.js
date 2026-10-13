@@ -11,7 +11,12 @@ const http = require('http');
 const { URL } = require('url');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
-const { truncateCodePoints } = require('../lib/channelEscape');
+const {
+  truncateCodePoints,
+  truncateWithEllipsis,
+  DISCORD_CONTENT_MAX,
+  SLACK_TEXT_MAX
+} = require('../lib/channelEscape');
 
 // Public icon + name used to brand notifications. Recipient services (Slack/
 // Discord/ntfy) fetch the icon, so it must be a public URL — not the dashboard's
@@ -1451,7 +1456,7 @@ Please investigate and resolve the issue.
    *   no `parse_mode`, and a WARN is logged. Any other failure is not retried.
    * @param {Object} [channelOutputs.email] - `{ subject, text, html }`
    * @param {Object} [channelOutputs.webhook] - `{ url, text, fields }`. Sent as
-   *   `{ text, ...fields }`: raw variables travel as structured JSON fields
+   *   `{ ...fields, text }` (the rendered text always wins): raw variables travel as structured JSON fields
    *   alongside the rendered text.
    * @param {Object} [channelOutputs.slack] - `{ url, text }`
    * @param {Object} [channelOutputs.discord] - `{ url, text }`. Sent with
@@ -1475,7 +1480,7 @@ Please investigate and resolve the issue.
     if (channelOutputs.webhook) {
       const { url, text, fields } = channelOutputs.webhook;
       try {
-        await this.sendWebhook(url, { text, ...(fields || {}) });
+        await this.sendWebhook(url, { ...(fields || {}), text });
         results.webhook = { success: true };
       } catch (error) {
         this.logger.error('Failed to send templated webhook', { error: error.message });
@@ -1486,7 +1491,7 @@ Please investigate and resolve the issue.
     if (channelOutputs.slack) {
       const { url, text } = channelOutputs.slack;
       try {
-        await this.sendWebhook(url, { text });
+        await this.sendWebhook(url, { text: truncateWithEllipsis(text, SLACK_TEXT_MAX) });
         results.slack = { success: true };
       } catch (error) {
         this.logger.error('Failed to send templated Slack webhook', { error: error.message });
@@ -1502,7 +1507,7 @@ Please investigate and resolve the issue.
         // suppresses all of them at the Discord API level; this only applies
         // to this templated path, not sendDiscordFormattedWebhooks's existing
         // non-templated sends (#257 review).
-        await this.sendWebhook(url, { content: text, allowed_mentions: { parse: [] } });
+        await this.sendWebhook(url, { content: truncateWithEllipsis(text, DISCORD_CONTENT_MAX), allowed_mentions: { parse: [] } });
         results.discord = { success: true };
       } catch (error) {
         this.logger.error('Failed to send templated Discord webhook', { error: error.message });
