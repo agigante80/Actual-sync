@@ -488,6 +488,20 @@ describe('compileTemplateSet / render', () => {
     expect(render('payee', { payee: 'Bob & Co' }, 'ntfy')).toBe('BOB & CO');
   });
 
+  // L6 (#294): String(undefined) rendered the word UNDEFINED.
+  test('upper and lower render an undefined or null value as empty, not the word', () => {
+    const { render } = compileTemplateSet({
+      templates: { up: '[{{upper note}}]', low: '[{{lower note}}]' },
+      variables: ['note'],
+      channels: ['ntfy']
+    });
+
+    expect(render('up', {}, 'ntfy')).toBe('[]');
+    expect(render('up', { note: null }, 'ntfy')).toBe('[]');
+    expect(render('low', { note: undefined }, 'ntfy')).toBe('[]');
+    expect(render('up', { note: 0 }, 'ntfy')).toBe('[0]');
+  });
+
   test('a raw <b>x</b> value is escaped for both Telegram and Slack', () => {
     const { render } = compileTemplateSet({
       templates: { line: '{{value}}' },

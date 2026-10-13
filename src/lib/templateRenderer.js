@@ -318,8 +318,9 @@ function validateTemplate(source, { key, variables, channel } = {}) {
 const HELPER_FNS = {
   eq: (a, b) => a === b,
   default: (value, fallback) => (value === undefined || value === null || value === '' ? fallback : value),
-  upper: (value) => String(value).toUpperCase(),
-  lower: (value) => String(value).toLowerCase()
+  // undefined/null render as empty, not the words UNDEFINED / NULL. (#294 L6)
+  upper: (value) => (value == null ? '' : String(value).toUpperCase()),
+  lower: (value) => (value == null ? '' : String(value).toLowerCase())
 };
 
 /**
