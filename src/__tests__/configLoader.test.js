@@ -612,6 +612,19 @@ describe('ConfigLoader', () => {
                 }
             });
 
+            test('rejects non-integer, out-of-range and object values regardless of schema strictness (#278)', () => {
+                for (const value of [1.5, -1, 11, { hops: 1 }, null, NaN]) {
+                    expect(() => new ConfigLoader().validateLogic(withTrustProxy(value)))
+                        .toThrow(/Invalid healthCheck\.trustProxy value/);
+                }
+            });
+
+            test('accepts the integer bounds 0 and 10 and 2 (#278)', () => {
+                for (const value of [0, 2, 10]) {
+                    expect(() => new ConfigLoader().validateLogic(withTrustProxy(value))).not.toThrow();
+                }
+            });
+
             test('warns that true lets any client fake its IP', () => {
                 new ConfigLoader().validateLogic(withTrustProxy(true));
                 expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('healthCheck.trustProxy is true'));
