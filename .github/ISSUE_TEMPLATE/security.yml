@@ -7,7 +7,7 @@ body:
       value: |
         <!-- template-version: 6 -->
         ## Security Issue
-        For responsible disclosure of active vulnerabilities, consider reporting privately first.
+        For an active vulnerability, do not file it here: report it privately through [Report a vulnerability](https://github.com/agigante80/Actual-sync/security/advisories/new) (see [SECURITY.md](https://github.com/agigante80/Actual-sync/blob/main/SECURITY.md)). Use this form only for hardening proposals and non-sensitive security gaps.
 
   - type: textarea
     id: description

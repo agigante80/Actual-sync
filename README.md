@@ -1103,7 +1103,8 @@ See **[docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md)** for details
 Please report security vulnerabilities privately via GitHub's
 **[Report a vulnerability](https://github.com/agigante80/Actual-sync/security/advisories/new)**
 form (Security tab → Report a vulnerability). Do not open public GitHub issues
-for security vulnerabilities.
+for security vulnerabilities. The full policy (supported versions, what to include
+and what to leave out, response targets) is in **[SECURITY.md](SECURITY.md)**.
 
 ---
 
