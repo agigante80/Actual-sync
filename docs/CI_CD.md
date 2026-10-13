@@ -208,7 +208,7 @@ curl http://localhost:3000/metrics
 1. Checkout code
 2. Setup Node.js
 3. Install dependencies
-4. Run npm audit for vulnerabilities
+4. Run `npm audit --audit-level=high` (blocking: fails on any high or critical advisory)
 5. Execute Jest tests with coverage
 6. Upload coverage to Codecov
 
@@ -415,6 +415,21 @@ dismissal, and the login rate limit, all against fixture states under
 - Critical/High vulnerabilities logged
 - Manual review recommended
 - Automatic fixes suggested when available
+
+### Dependency checks
+
+Two checks look at dependency advisories. Both block a merge when they find a high or critical advisory:
+
+| Check | Where | Blocks? | What it covers |
+|-------|-------|---------|----------------|
+| `npm audit --audit-level=high` | `test` job in `ci-cd.yml` | Yes, on high or critical | The whole installed tree, on every push and PR. Moderate and low advisories are reported but do not fail the build. |
+| `actions/dependency-review-action` (`fail-on-severity: high`) | `dependency-review.yml`, pull requests only | Yes, on high or critical | Only what the PR adds or changes, compared with its base. Catches a vulnerable package introduced by the PR itself. |
+
+Trivy (job 8) is a separate image scan and is still advisory (`exit-code: 0`).
+
+There is no audit allowlist today because the tree is clean at the `high` threshold (the one remaining advisory, `sprintf-js` via jest's istanbul chain, is moderate and dev-only). The step used to end in `|| echo "continuing..."`, which swallowed every failure; do not restore that. If an advisory with no available fix ever blocks the build, add an allowlist with `better-npm-audit` where each entry carries the advisory ID, a reason and a review date, and make an expired date fail the step.
+
+To make `dependency-review` a required check, add "Dependency review" to the branch protection rules (a repository setting, not something the workflow can do).
 
 ### Pinning third-party actions
 
