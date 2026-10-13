@@ -344,6 +344,25 @@ volumes:
 "healthCheck": { "port": 3000, "host": "0.0.0.0", "trustProxy": 1 }
 ```
 
+A minimal nginx server block for the dashboard, including the live log stream (`/ws/logs` needs the HTTP/1.1 upgrade headers). Pass `Host` with `$http_host`: the dashboard refuses a WebSocket whose `Origin` does not equal the `Host` it receives, and `$host` drops a non-default port.
+
+```nginx
+location / {
+    proxy_pass http://actual-sync:3000;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+location /ws/logs {
+    proxy_pass http://actual-sync:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_read_timeout 1h;
+}
+```
+
 nginx must forward the client address (`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`); Traefik does this by default. Do not publish port 3000 as well (no `ports:` entry for it): a client that reaches the port directly can send its own `X-Forwarded-For` and pick any IP it likes. A CIDR such as the Docker bridge range is not a safe workaround, because connections through a published port can arrive from the bridge gateway address, which that range trusts. If you need a narrower rule than a hop count, put the proxy on a dedicated network with a fixed address and trust only that exact IP.
 
 ### 2. Monitoring

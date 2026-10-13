@@ -402,6 +402,9 @@ async function connectWebSocket() {
     // A ticket request is async, so guard against a second connect
     // (e.g. from the visibility handler) starting while one is in flight.
     if (wsConnecting) return;
+    // A live or connecting socket already owns the stream (e.g. a retry timer
+    // firing after the visibility handler reconnected). (#280)
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     wsConnecting = true;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -409,9 +412,13 @@ async function connectWebSocket() {
     try {
         const ticket = await fetchWsTicket();
         const wsUrl = `${protocol}//${window.location.host}/ws/logs?ticket=${encodeURIComponent(ticket)}`;
-        ws = new WebSocket(wsUrl);
+        // Handlers are bound to their own socket: a socket replaced while it was
+        // still CLOSING must not schedule a retry or stop the new one's keep-alive. (#280)
+        const sock = new WebSocket(wsUrl);
+        ws = sock;
 
-        ws.onopen = () => {
+        sock.onopen = () => {
+            if (sock !== ws) return;
             console.log('WebSocket connected');
             reconnectAttempts = 0;
             reconnectDelay = 1000; // Reset backoff
@@ -421,7 +428,8 @@ async function connectWebSocket() {
             startKeepAlive();
         };
 
-        ws.onmessage = (event) => {
+        sock.onmessage = (event) => {
+            if (sock !== ws) return;
             try {
                 const data = JSON.parse(event.data);
                 
@@ -441,12 +449,14 @@ async function connectWebSocket() {
             }
         };
 
-        ws.onerror = (error) => {
+        sock.onerror = (error) => {
+            if (sock !== ws) return;
             console.error('WebSocket error:', error);
             addLogEntry('error', 'WebSocket connection error');
         };
 
-        ws.onclose = () => {
+        sock.onclose = () => {
+            if (sock !== ws) return;
             console.log('WebSocket disconnected');
             addLogEntry('warn', 'Disconnected from log stream. Reconnecting...');
             

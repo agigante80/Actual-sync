@@ -1096,11 +1096,11 @@ module.exports = [
         tests: 'healthCheck'
     },
     {
-        id: '280-visibility-doubles-loop', ticket: '#280',
-        desc: 'the visibility handler reconnects while a socket is still connecting',
+        id: '280-stale-socket-close-reschedules', ticket: '#280',
+        desc: 'a replaced socket closing late still schedules a retry, orphaning the live socket',
         file: 'src/services/dashboard.js',
-        anchor: ' || ws.readyState === WebSocket.CONNECTING',
-        mutant: '',
+        anchor: '        sock.onclose = () => {\n            if (sock !== ws) return;\n',
+        mutant: '        sock.onclose = () => {\n',
         tests: 'dashboard'
     },
     {
