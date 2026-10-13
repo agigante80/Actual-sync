@@ -1398,7 +1398,8 @@ const CLICK_ACTIONS = {
 };
 const CHANGE_ACTIONS = {
     renderAccounts: () => renderAccounts(),
-    onDateFormatChange: () => onDateFormatChange()
+    onDateFormatChange: () => onDateFormatChange(),
+    loadHistoryTab: () => loadHistoryTab()
 };
 
 document.addEventListener('click', (e) => {

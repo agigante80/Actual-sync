@@ -1102,7 +1102,12 @@ This test verifies that notifications are configured correctly and can reach the
 
       try {
         const limit = parseInt(req.query.limit) || 10;
-        const history = this.syncHistory.getHistory({ limit });
+        const filters = { limit };
+        // The History tab's server filter (#288). A repeated ?serverName=a&serverName=b
+        // arrives as an array; only a single non-empty string is a filter.
+        const { serverName } = req.query;
+        if (typeof serverName === 'string' && serverName !== '') filters.serverName = serverName;
+        const history = this.syncHistory.getHistory(filters);
         res.json(history);
       } catch (error) {
         this.logger.error('Failed to get sync history', {
