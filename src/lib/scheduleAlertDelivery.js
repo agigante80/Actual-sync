@@ -978,7 +978,8 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
   eligible.sort((a, b) => {
     const x = priority.get(a);
     const y = priority.get(b);
-    return x === y ? 0 : (x < y ? -1 : 1);
+    if (x === y) return 0;
+    return x < y ? -1 : 1;
   });
 
   for (let i = 0; i < eligible.length; i += 1) {

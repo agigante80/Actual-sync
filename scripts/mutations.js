@@ -1958,8 +1958,8 @@ module.exports = [
         id: '338-immediate-order-fixed', ticket: '#338',
         desc: 'immediate mode sends events in evaluation order again, so early daily reminders use the budget every run and starve the tail',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "    return x === y ? 0 : (x < y ? -1 : 1);\n  });\n\n  for (let i = 0; i < eligible.length",
-        mutant: "    return 0;\n  });\n\n  for (let i = 0; i < eligible.length",
+        anchor: "    if (x === y) return 0;\n    return x < y ? -1 : 1;\n  });",
+        mutant: "    return 0;\n  });",
         tests: 'scheduleAlertDelivery.test'
     },
     {
