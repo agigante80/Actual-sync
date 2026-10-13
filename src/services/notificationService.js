@@ -238,7 +238,12 @@ class NotificationService {
         host: this.config.email.host,
         port: this.config.email.port,
         secure: this.config.email.secure,
-        auth: this.config.email.auth
+        auth: this.config.email.auth,
+        // #297 F5: nodemailer's defaults (2 min connection, 10 min socket) let a dead
+        // SMTP host hold the sync queue long after the delivery deadline passed.
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 30000
       });
 
       this.logger.info('Email transporter initialized', {

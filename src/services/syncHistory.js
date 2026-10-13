@@ -229,7 +229,7 @@ class SyncHistoryService {
       const row = this.db.prepare(`
         SELECT recorded_at AS recordedAt FROM schedule_alerts
         WHERE server = ? AND alert_id = ?
-          AND schedule_id IS ? AND occurrence_date IS ? AND event = ?
+          AND schedule_id = ? AND occurrence_date = ? AND event = ?
           ${filterChannel ? "AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))" : ''}
         ORDER BY recorded_at DESC, id DESC
         LIMIT 1
