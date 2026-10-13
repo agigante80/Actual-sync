@@ -625,6 +625,30 @@ describe('deliver: duplicate webhook names (#297 F3)', () => {
   });
 });
 
+describe('deliver: ledger lookup failures fail closed (#297 F7 follow-up)', () => {
+  // A lookup that cannot answer must never turn into "not recorded, send it":
+  // that would resend on every sync while the ledger is unreadable. The alert
+  // is withheld and retried on the next sync instead (no row, no send).
+  test.each(['immediate', 'digest'])('%s: a throwing findLatestScheduleAlert sends nothing and does not reject', async (mode) => {
+    const history = makeFakeHistory();
+    history.findLatestScheduleAlert = async () => { throw new Error('db locked'); };
+    const sender = makeFakeSender({ webhooks: { slack: [{ name: 'ops', url: 'https://slack/a', enabled: true }] } });
+    const rules = rentRules({ channels: ['slack'] }, mode === 'digest' ? { digest: true } : {});
+    let result;
+    try {
+      result = await deliver([missingEvent()], {
+        evaluations: [rentEvaluation()], ruleState: enabledState, history, sender,
+        server: 'Main', rules, timezone: 'UTC', logger: quietLogger, now: '2026-01-10'
+      });
+    } catch (error) {
+      result = { threw: true };
+    }
+    expect(sender.calls).toHaveLength(0);
+    expect(history.rows).toHaveLength(0);
+    expect(result.sent || 0).toBe(0);
+  });
+});
+
 describe('destinationKey (#295 review round 2, M8)', () => {
   test('a named webhook target is keyed by its name plus a URL hash, never its URL', () => {
     const key = destinationKey('slack', { name: 'ops-alerts', url: 'https://hooks.example/services/T00/B00/secret' });
