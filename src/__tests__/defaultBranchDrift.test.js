@@ -399,7 +399,10 @@ describe('catalogue integrity guards (hermetic — tracked files only)', () => {
             'auto-release.yml': ['workflow_run'],
             'codeql-analysis.yml': ['schedule'],
             'dependency-update.yml': ['schedule'],
-            'retarget-dependabot.yml': ['schedule']
+            'retarget-dependabot.yml': ['schedule'],
+            // OpenSSF Scorecard (#255): weekly cron, and Scorecard analyses the default
+            // branch only, so default-branch-only is the intended behaviour.
+            'scorecard.yml': ['schedule']
         };
 
         const actual = {};
