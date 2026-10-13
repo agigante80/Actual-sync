@@ -365,6 +365,8 @@ Configuration is managed via `config/config.json` with JSON schema validation.
 }
 ```
 
+Optional top-level `"timezone"` (an IANA name such as `"America/New_York"`) sets the zone cron schedules run in and times are shown in; default is the process timezone (`TZ`). See [CONFIG.md](docs/CONFIG.md#timezone-optional).
+
 **Configuration Notes:**
 
 - **`encryptionPassword`** (optional): Required only if your budget file has end-to-end encryption (E2EE) enabled. This is separate from the server password.

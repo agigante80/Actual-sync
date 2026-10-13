@@ -798,6 +798,40 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #266: timezone hardcoded to Europe/Madrid ---------------------------
+    {
+        id: '266-timezone-config-ignored', ticket: '#266',
+        desc: 'the configured timezone is ignored and the process zone is always used',
+        file: 'src/lib/timezone.js',
+        anchor: "    if (cfg && cfg.timezone) return cfg.timezone;",
+        mutant: "    if (cfg && false) return cfg.timezone;",
+        tests: 'timezone'
+    },
+    {
+        id: '266-timezone-process-zone-unvalidated', ticket: '#266',
+        desc: 'a blank or invalid process TZ is returned unvalidated instead of falling back to UTC',
+        file: 'src/lib/timezone.js',
+        anchor: "    return isValidTimezone(processZone) ? processZone : 'UTC';",
+        mutant: "    return processZone;",
+        tests: 'timezone'
+    },
+    {
+        id: '266-timezone-unvalidated', ticket: '#266',
+        desc: 'an unknown timezone name passes config validation',
+        file: 'src/lib/configLoader.js',
+        anchor: "if (config.timezone !== undefined && !isValidTimezone(config.timezone)) {",
+        mutant: "if (false) {",
+        tests: 'timezone'
+    },
+    {
+        id: '266-telegram-timezone-fixed', ticket: '#266',
+        desc: 'Telegram replies ignore the configured timezone',
+        file: 'src/services/telegramBot.js',
+        anchor: "    return resolveTimezone(this.config);",
+        mutant: "    return 'UTC';",
+        tests: 'telegramBot'
+    },
+
     // ---- #273: auto-retry never fired because syncBank never rejected --------
     {
         id: '273-sync-result-not-returned', ticket: '#273',
