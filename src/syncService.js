@@ -192,6 +192,7 @@ try {
         port: config.healthCheck?.port || 3000,
         host: config.healthCheck?.host || '0.0.0.0',
         trustProxy: config.healthCheck?.trustProxy,
+        hsts: config.healthCheck?.hsts === true,
         dashboardConfig: config.healthCheck?.dashboard || { enabled: true, auth: { type: 'none' } },
         prometheusService: prometheusService,
         syncHistory: syncHistory,

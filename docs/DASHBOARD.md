@@ -14,6 +14,16 @@ The dashboard is a responsive single-page application that offers:
 - **🔐 Authentication** - Optional basic auth or token-based authentication
 - **🎨 Dark Theme** - Modern UI optimized for long monitoring sessions
 
+## Content-Security-Policy and customising the page
+
+Every response carries a strict Content-Security-Policy (details and the full header list in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md#http-security-headers-243)). The rules that matter if you edit the dashboard:
+
+- **No inline `<script>` and no inline event attributes** (`onclick="..."`, `onchange="..."`, `onerror="..."`). The browser silently refuses them. The page's code lives in `src/services/dashboard.js`, served at `/dashboard.js`. Wire a button with `data-action="name"` (and optional `data-arg="value"`) plus an entry in `CLICK_ACTIONS`, or `data-change="name"` plus an entry in `CHANGE_ACTIONS`; one delegated listener handles buttons added later by `innerHTML`.
+- Scripts may only come from this origin. Do not add a `<script src="https://...">`.
+- Inline `style="..."` attributes are allowed (`style-src 'unsafe-inline'`), because the page uses many of them.
+- Network calls may only go to this origin (`connect-src 'self'`), which includes the `/ws/logs` WebSocket.
+- If the page is blank or a button does nothing after an edit, open the browser console: a blocked resource is reported as `Refused to ...`. The e2e suite (`tests/e2e/csp.e2e.js`) fails on any violation.
+
 ## No external network dependencies
 
 The dashboard loads nothing from the internet. Chart.js is a regular npm dependency of the service and is served from the app itself at `/vendor/chart.umd.min.js`, the same way the logo is served at `/icon.png`. The page therefore renders fully, charts included, on an air-gapped host or with all outbound traffic blocked, and no third party is contacted when you open it.

@@ -560,9 +560,9 @@ module.exports = [
     {
         id: '188-panel-never-loads', ticket: '#188',
         desc: 'the endpoint exists but the dashboard never calls it — the #182 mistake again',
-        file: 'src/services/dashboard.html',
-        anchor: '            loadNotificationStats();\n            try {',
-        mutant: '            try {',
+        file: 'src/services/dashboard.js',
+        anchor: '    loadNotificationStats();\n    try {',
+        mutant: '    try {',
         tests: 'docDriftGuards'
     },
 
