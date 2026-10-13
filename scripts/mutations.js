@@ -1009,7 +1009,7 @@ module.exports = [
         id: '272-late-call-untracked', ticket: '#272',
         desc: 'a timed-out call is forgotten, so it can land inside the next sync',
         file: 'src/lib/actualTimeouts.js',
-        anchor: '            if (lateCalls) lateCalls.add(call);',
+        anchor: '            if (lateCalls) lateCalls.add(call, { phase });',
         mutant: '',
         tests: 'actualTimeouts'
     },
