@@ -2044,7 +2044,7 @@ module.exports = [
         file: 'src/services/syncHistory.js',
         anchor: '      const replace = this.db.transaction(() => {',
         mutant: '      const replace = ((fn) => fn)(() => {',
-        tests: 'paymentSnapshot|scheduleAlertsSync'
+        tests: 'paymentSnapshot'
     },
     {
         id: '260-persist-no-synchistory-guard', ticket: '#260',

@@ -81,6 +81,7 @@ async function runSync(accountIds, bankCalls, script) {
     }));
     jest.doMock('../lib/scheduleAlertsStep', () => ({
         maybeRunScheduleAlerts: jest.fn().mockResolvedValue(null),
+        persistPaymentSnapshot: jest.fn(),
         maybeDeliverScheduleAlerts: jest.fn().mockResolvedValue(undefined)
     }));
     const argv = process.argv;
