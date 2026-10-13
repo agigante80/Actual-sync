@@ -613,6 +613,29 @@ describe('evaluate: #297 F2 / F2b (linked payments take precedence over unlinked
   });
 });
 
+describe('evaluate: #297 round 1 M1 (the linked allowance does not steal an in-window exact-amount payment)', () => {
+  test('a late linked January payment dated 01-31 does not beat February\'s own unlinked payment on 02-01', () => {
+    // Monthly on the 1st, grace 5, early 0. Jan was paid late on 01-31 (linked by hand, odd amount);
+    // Feb was paid on time on 02-01 for the exact amount (unlinked). No sibling rule shares the payee.
+    const schedule = rentSchedule({ date: { start: '2026-01-01', frequency: 'monthly' } });
+    const { events, evaluations } = evaluate({
+      rules: rentRule({ graceDays: 5, earlyDays: 0 }),
+      schedules: [schedule],
+      transactions: [
+        { id: 'tJan', account: 'acc1', payee: 'pay1', amount: -52500, date: '2026-01-31', schedule: 's1' },
+        { id: 'tFeb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: null }
+      ],
+      accounts: [account({ last_sync: epochMs('2026-02-15') })],
+      now: '2026-02-15',
+      timezone: TZ
+    });
+    expect(events.filter((e) => e.event === 'missing')).toEqual([]);
+    const byDate = Object.fromEntries(evaluations[0].occurrences.map((o) => [o.date, o]));
+    expect(byDate['2026-01-01']).toMatchObject({ state: 'late', receivedDate: '2026-01-31' });
+    expect(byDate['2026-02-01']).toMatchObject({ state: 'received', receivedDate: '2026-02-01' });
+  });
+});
+
 describe('evaluate: R2-M4 (next_date boundary)', () => {
   test('next_date equal to the unpaid occurrence date is not "before" it -> missing, not skipped', () => {
     const schedule = rentSchedule({ next_date: '2026-01-05' }); // equal to the occurrence date itself

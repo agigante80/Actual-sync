@@ -310,6 +310,20 @@ function betterMatchedElsewhere(tx, currentSchedule, currentTolerancePct, bindin
 }
 
 /**
+ * Whether `tx` also fits the amount of some OTHER bound schedule sharing its
+ * account and payee (#297 round 1, M1). Unlike `betterMatchedElsewhere`, this
+ * does not care whether it also fits `currentSchedule`.
+ */
+function fitsSiblingSchedule(tx, currentSchedule, bindings) {
+  return bindings.some((other) => {
+    if (other.unmatched || !other.schedule || other.scheduleId === currentSchedule.id) return false;
+    const otherSchedule = other.schedule;
+    if (tx.account !== otherSchedule.account || !otherSchedule.payee || tx.payee !== otherSchedule.payee) return false;
+    return amountMatchesSchedule(tx.amount, otherSchedule, resolveTolerancePct(other, otherSchedule));
+  });
+}
+
+/**
  * Normalize `account.last_sync` into a calendar-day moment in `timezone`, or
  * `null` when absent/unparseable. In production Actual, `last_sync` is an
  * epoch-millisecond string (e.g. `"1736380800000"`); `moment.tz(value, zone)`
@@ -533,14 +547,21 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
         const closestLinked = linkedInWindow.length
           ? [...linkedInWindow].sort((a, b) => Math.abs(a.date.diff(occ.day, 'days')) - Math.abs(b.date.diff(occ.day, 'days')))[0]
           : null;
-        // #297 F2: every linked candidate outranks any unlinked one. Actual's
-        // own link is authoritative, so an unlinked exact-amount lookalike
-        // must not be taken while a payment linked to THIS schedule exists
-        // (the sibling schedule sharing account+payee would lose it and
-        // report a false `missing`).
+        // #297 F2: Actual's own link is authoritative, so an unlinked
+        // exact-amount lookalike must not be taken while a payment linked to
+        // THIS schedule exists, when a sibling schedule sharing account+payee
+        // also fits that lookalike (the sibling would lose it and report a
+        // false `missing`). #297 round 1, M1: without such a sibling, the
+        // 2-day linked allowance (closestLinked, dated before this
+        // occurrence's own early window) must NOT beat an in-window
+        // exact-amount payment, or a late linked payment for the PREVIOUS
+        // occurrence steals this one's payment and reports a false `missing`.
+        const amountMatch = inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct));
+        const linkedBeatsAmount = closestLinked && (!amountMatch || fitsSiblingSchedule(amountMatch.tx, schedule, bindings));
         const candidate = strictLinked
+          || (linkedBeatsAmount ? closestLinked : null)
+          || amountMatch
           || closestLinked
-          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))
           // Wrong-amount fallback (M11): only take a candidate that is not a
           // better, correctly-amounted match for some OTHER bound schedule
           // (#295 review round 2, M1).

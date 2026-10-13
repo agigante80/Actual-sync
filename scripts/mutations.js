@@ -1405,7 +1405,7 @@ module.exports = [
         // #295 review round 2, M1/M3 reworked this block (betterMatchedElsewhere,
         // strictLinked/closestLinked); this anchor was retargeted to the current
         // preference chain, since the old text no longer appears in the file.
-        anchor: "        const candidate = strictLinked\n          || closestLinked\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          // Wrong-amount fallback (M11): only take a candidate that is not a\n          // better, correctly-amounted match for some OTHER bound schedule\n          // (#295 review round 2, M1).\n          || inWindow.find((c) => !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))\n          || null;",
+        anchor: "        const candidate = strictLinked\n          || (linkedBeatsAmount ? closestLinked : null)\n          || amountMatch\n          || closestLinked\n          // Wrong-amount fallback (M11): only take a candidate that is not a\n          // better, correctly-amounted match for some OTHER bound schedule\n          // (#295 review round 2, M1).\n          || inWindow.find((c) => !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))\n          || null;",
         mutant: '        const candidate = inWindow[0] || null;',
         tests: 'scheduleAlerts.test'
     },
@@ -1415,6 +1415,14 @@ module.exports = [
         file: 'src/lib/scheduleAlerts.js',
         anchor: "        let earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');",
         mutant: '        let earlyStartLinked = earlyStart;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-m1-linked-allowance-beats-in-window-amount-match', ticket: '#297',
+        desc: "the 2-day linked allowance wins over an in-window exact-amount payment again, so a late linked payment for the previous occurrence steals this one's payment",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        const linkedBeatsAmount = closestLinked && (!amountMatch || fitsSiblingSchedule(amountMatch.tx, schedule, bindings));',
+        mutant: '        const linkedBeatsAmount = closestLinked;',
         tests: 'scheduleAlerts.test'
     },
     {
@@ -1545,8 +1553,8 @@ module.exports = [
         id: '297-f2-unlinked-exact-amount-beats-linked', ticket: '#297',
         desc: 'pass 1 prefers an unlinked exact-amount lookalike over a payment linked to the schedule again, so a sibling schedule on the same account+payee loses its payment and reports a false missing',
         file: 'src/lib/scheduleAlerts.js',
-        anchor: "        const candidate = strictLinked\n          || closestLinked\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n",
-        mutant: "        const candidate = strictLinked\n          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))\n          || closestLinked\n",
+        anchor: "          || (linkedBeatsAmount ? closestLinked : null)\n",
+        mutant: "",
         tests: 'scheduleAlerts.test'
     },
     {
