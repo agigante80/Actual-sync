@@ -348,10 +348,17 @@ describe('HealthCheckService', () => {
     });
 
     test('a traversal attempt cannot read package.json', async () => {
-      // http.get normalises nothing; send the raw encoded form too.
+      // http.get(url) collapses dot segments before sending, so a literal
+      // `../` would arrive as `/package.json` and never reach /vendor. Send
+      // the raw path with http.request, which does not normalise it.
+      const rawGet = (path) => new Promise((resolve, reject) => {
+        http.request({ hostname: '127.0.0.1', port: testPort, path }, (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode));
+        }).on('error', reject).end();
+      });
       for (const p of ['/vendor/../../package.json', '/vendor/..%2f..%2fpackage.json']) {
-        const result = await httpGet(`http://127.0.0.1:${testPort}${p}`);
-        expect(result.statusCode).toBe(404);
+        expect(await rawGet(p)).toBe(404);
       }
     });
   });
