@@ -71,6 +71,8 @@ describe('dashboard.html is CSP-clean (#243)', () => {
       const sockets = [];
       let timers = [];
       let now = 0;
+      let intervalId = 0;
+      const activeIntervals = new Set();
       class WS {
         constructor(u) { this.url = u; this.readyState = 0; sockets.push(this); }
         static get CONNECTING() { return 0; }
@@ -96,14 +98,15 @@ describe('dashboard.html is CSP-clean (#243)', () => {
         getFetchOptions: () => ({}), addLogEntry() {},
         setTimeout(f, d) { const t = { f, at: now + d }; timers.push(t); return t; },
         clearTimeout(t) { timers = timers.filter(x => x !== t); },
-        setInterval() { return 1; }, clearInterval() {},
+        setInterval() { const id = ++intervalId; activeIntervals.add(id); return id; },
+        clearInterval(id) { activeIntervals.delete(id); },
         encodeURIComponent
       };
       vm.createContext(ctx);
       vm.runInContext(src + '\n;addLogEntry = function () {};\nthis.connectWebSocket = connectWebSocket;', ctx);
       const tick = () => new Promise(r => setImmediate(r));
       return {
-        ctx, sockets, listeners, tick,
+        ctx, sockets, listeners, tick, activeIntervals,
         pendingTimers: () => timers.length,
         async advance(ms) {
           now += ms;
@@ -123,13 +126,17 @@ describe('dashboard.html is CSP-clean (#243)', () => {
 
     test('a socket still CLOSING when the page becomes visible leaves exactly one open socket', async () => {
       const h = harness();
+      const pageIntervals = h.activeIntervals.size; // the page's own pollers
       await h.ctx.connectWebSocket();
       h.open(h.sockets[0]);
       h.sockets[0].close(); // CLOSING
       await h.visible(true);
       await h.visible(false);
       h.open(h.sockets[1]);
+      expect(h.activeIntervals.size).toBe(pageIntervals + 1); // the live socket's keep-alive
       h.closed(h.sockets[0]); // the old socket finally closes
+      expect(h.activeIntervals.size).toBe(pageIntervals + 1); // still running
+      expect(h.pendingTimers()).toBe(0); // and no retry was scheduled
       await h.advance(60000);
       expect(h.sockets).toHaveLength(2);
       expect(h.live()).toBe(1);
