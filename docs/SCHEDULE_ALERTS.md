@@ -157,10 +157,11 @@ every configured destination is preserved for the non-digest case.
 A digest never silently drops an alert to fit a channel. Telegram (4096 characters, checked on both
 the HTML and the plain-text version), Discord (2000) and Slack (40000) have length limits, so for
 those channels the digest adds whole events while they fit and records only the events it actually
-included. The remaining events stay due and go out in the next sync's digest (events never sent to that
-destination go first, then the ones that have waited longest since their last send, so daily
-reminders cannot crowd out the deferred tail) (a WARN is logged with
-the sent and deferred counts). The header count always matches what the message contains. A single
+included, and logs a WARN with the sent and deferred counts. The remaining events stay due and go
+out in the next sync's digest. Events never sent to that destination go first, then the ones that
+have waited longest since their last send, so daily reminders cannot crowd out the deferred tail.
+This means digest lines are ordered by that rule, not by schedule, and the order can change from
+sync to sync. The header count always matches what the message contains. A single
 event larger than the limit on its own is still sent, truncated with a trailing `…`.
 
 ## Startup validation

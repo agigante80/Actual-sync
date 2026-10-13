@@ -1720,6 +1720,22 @@ module.exports = [
         tests: "scheduleAlertDelivery"
     },
     {
+        id: "294-slack-digest-header-unescaped", ticket: '#294',
+        desc: "the Slack digest header carries the raw server name again, so <!channel> in a name pings the channel",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "return buildDigestOutput(channel, channel === 'slack' ? slackHeader : header,",
+        mutant: "return buildDigestOutput(channel, header,",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-digest-reminders-not-oldest-first", ticket: '#294',
+        desc: "already-sent digest items no longer rotate by oldest last send, so the first items take every reminder slot",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "const sentAtMs = (d) => (d.lastSentAt == null ? -Infinity : Date.parse(d.lastSentAt));",
+        mutant: "const sentAtMs = (d) => (d.lastSentAt == null ? -Infinity : 0);",
+        tests: "scheduleAlertDelivery"
+    },
+    {
         id: "294-digest-ignores-cap", ticket: '#294',
         desc: "the digest no longer stops adding items at the channel cap, so Discord gets a message cut at 2000",
         file: "src/lib/scheduleAlertDelivery.js",

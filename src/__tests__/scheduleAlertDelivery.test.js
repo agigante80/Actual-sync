@@ -423,6 +423,30 @@ describe('deliver: digest fits each capped channel (#294 review round 1, M1)', (
     expect(new Set(history.rows.map((r) => r.alertId)).size).toBe(MANY);
   });
 
+  test('once every alert has been sent, reminders rotate by oldest last send so every alert keeps getting reminded (#294 review round 3, L1)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] } });
+    const { events, evaluations } = manyItems();
+    const rulesDaily = getRules({
+      digest: true,
+      alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['discord'], remindEveryDays: 1 }))
+    });
+
+    // Past the point where everything was sent once, only the oldest-sent
+    // order lets the reminders reach every alert again.
+    for (let day = 0; day < 16; day++) {
+      const instant = new Date(Date.UTC(2026, 0, 10 + day)).toISOString();
+      history.clock = instant;
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: instant, server: 'Main', rules: rulesDaily, timezone: 'UTC', logger: quietLogger
+      });
+    }
+    const perAlert = new Map();
+    for (const r of history.rows) perAlert.set(r.alertId, (perAlert.get(r.alertId) || 0) + 1);
+    expect(perAlert.size).toBe(MANY);
+    expect(Math.min(...perAlert.values())).toBeGreaterThanOrEqual(3);
+  });
+
   test('a 40-item Telegram digest also stays under 4096 in both html and plain, recording only what was sent', async () => {
     const history = makeFakeHistory();
     const sender = makeFakeSender({ telegram: { enabled: true } });
@@ -666,6 +690,18 @@ describe('deliver: Telegram digest header escapes the server name (#294 review r
     expect(html).toContain('<p>Actual-sync: 1 payment alert(s) for A&amp;B &lt;home&gt;</p>');
     expect(html).not.toContain('<home>');
     expect(text.split('\n')[0]).toContain('A&B <home>');
+  });
+
+  test('the Slack digest header escapes the server name so <!channel> cannot ping (#294 review round 3, L2)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { slack: [{ name: 'a', url: 'https://slack/a', enabled: true }] } });
+    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['slack'] }] });
+    await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'Main <!channel>', rules, timezone: 'UTC', logger: quietLogger
+    });
+    const out = JSON.stringify(sender.calls[0].slack);
+    expect(out).toContain('Main &lt;!channel&gt;');
+    expect(out).not.toContain('<!channel>');
   });
 });
 

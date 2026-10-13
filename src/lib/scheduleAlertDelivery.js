@@ -52,7 +52,7 @@
 const moment = require('moment-timezone');
 const crypto = require('crypto');
 const { compileTemplateSet } = require('./templateRenderer');
-const { DISCORD_CONTENT_MAX, SLACK_TEXT_MAX, TELEGRAM_TEXT_MAX, escapeTelegramHtml } = require('./channelEscape');
+const { DISCORD_CONTENT_MAX, SLACK_TEXT_MAX, TELEGRAM_TEXT_MAX, escapeTelegramHtml, escapeSlack } = require('./channelEscape');
 
 /**
  * Per-channel message length caps a digest must fit under (#294 review
@@ -729,7 +729,10 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
       // `&` or `<` in the server name would make every Telegram digest fall back
       // to plain text and would inject markup into the email.
       const htmlHeader = (channel === 'telegram' || channel === 'email') ? `Actual-sync: ${count} payment alert(s) for ${escapeTelegramHtml(server)}` : header;
-      return buildDigestOutput(channel, header, linesByMode, target, server, htmlHeader);
+      // Slack parses `<!channel>` and `<url>` in mrkdwn: escape the name so a
+      // server called `Main <!channel>` cannot ping the channel. (#294 round 3)
+      const slackHeader = channel === 'slack' ? `Actual-sync: ${count} payment alert(s) for ${escapeSlack(server)}` : header;
+      return buildDigestOutput(channel, channel === 'slack' ? slackHeader : header, linesByMode, target, server, htmlHeader);
     };
     const cap = DIGEST_CAPS[channel];
     let count = rendered.length;
