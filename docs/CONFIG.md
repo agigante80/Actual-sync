@@ -65,7 +65,7 @@
 
 ### timezone (optional)
 
-IANA timezone name, for example `"America/New_York"` or `"UTC"`. Cron schedules run in it, and the startup log, the startup notification's "next sync" and the Telegram replies show times in it. Default: the process timezone (`TZ`, else the system zone), which is what schedules used before this key existed. If `TZ` is blank (for example an empty Unraid field) or not a valid IANA name (a typo such as `Europe/Madird`), the service uses `UTC` and logs one startup WARN naming the bad value. An unknown name fails config loading with a message naming `timezone`, even with `CONFIG_STRICT=false`.
+IANA timezone name, for example `"America/New_York"` or `"UTC"`. Cron schedules run in it, and the startup log, the startup notification's "next sync" and the Telegram replies show times in it. Default: the process timezone (`TZ`, else the system zone), which is what schedules used before this key existed. If `TZ` is blank (for example an empty Unraid field) or not a valid IANA name (a typo such as `Europe/Madird`), the service uses `UTC` and logs one startup WARN naming the bad value. POSIX forms such as `TZ=:/etc/localtime` or `TZ=GMT+2` count as invalid too, so schedules run in UTC even though the clock itself is local: use an IANA name in `TZ` or set the `timezone` key. An unknown name fails config loading with a message naming `timezone`, even with `CONFIG_STRICT=false`.
 
 ### servers (required)
 

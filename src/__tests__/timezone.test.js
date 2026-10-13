@@ -40,7 +40,8 @@ describe('timezone (#266)', () => {
                 `console.log(JSON.stringify(require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'timezone.js'))}).describeTimezoneFallback(${cfg})))`],
                 { env: { ...process.env, TZ: tz } }).toString().trim();
             expect(run('Europe/Madird', '{}')).toMatch(/Europe\/Madird.*UTC/);
-            expect(run('', '{}')).toMatch(/UTC/);
+            // The bad value itself (empty) must be named, not just "using UTC".
+            expect(JSON.parse(run('', '{}'))).toMatch(/^TZ="" is blank or not a valid IANA timezone; using UTC/);
             expect(run('Asia/Tokyo', '{}')).toBe('null');
             expect(run('Europe/Madird', '{timezone:"UTC"}')).toBe('null');
         });
