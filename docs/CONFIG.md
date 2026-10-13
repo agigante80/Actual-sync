@@ -145,7 +145,10 @@ Global synchronization behavior configuration. These settings apply to all serve
 - **phaseTimeoutSeconds** (optional, integer, default: 300)
   - Seconds each Actual API call (init, download, load, query, sync, shutdown) may take
   - Range: 30-3600
-  - A call that runs longer fails the sync with the phase named. The sync holds the queue up to one more timeout for the stuck call to finish. If it is still running, the next sync waits up to its own timeout, then fails with `ACTUAL_SESSION_BUSY` and stops waiting for that call, so later syncs proceed
+  - A call that runs longer fails the sync with the phase named. The sync holds the queue up to one more timeout for the stuck call to finish. If it is still running, the next sync waits up to its own timeout, then fails with `ACTUAL_SESSION_BUSY` and stops waiting for that call, so later syncs proceed. When the stuck call does finish in time, the next sync closes the session it may have left open before connecting
+  - Limit: the Actual API cannot cancel a call. One that is still running after both waits is no longer tracked, so if it lands later it can close or disturb the following sync, which then fails and the one after recovers
+  - A bank sync that times out (60 seconds) is given one more timeout to finish before the next account starts; if it is still running, the remaining accounts are skipped and reported as failed
+  - A late call that finally finishes is logged with its phase and outcome
   - Raise it for very large budgets on slow links; bank sync keeps its own 60 second limit per account
   - Can be overridden per server
   - Example: `300` (5 minutes)
@@ -388,7 +391,7 @@ The system merges per-server and global settings using these rules:
 
 1. If a property is specified in `server.sync`, it takes precedence
 2. If a property is not specified in `server.sync`, the global `sync` value is used
-3. You can override any combination of properties (one, two, or all three)
+3. You can override any combination of `schedule`, `maxRetries`, `baseRetryDelayMs`, `phaseTimeoutSeconds` and `autoRetry` (one, several, or all five)
 4. Zero values (e.g., `maxRetries: 0`) are treated as explicit values, not fallbacks
 
 **Example:**

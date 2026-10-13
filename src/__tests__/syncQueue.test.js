@@ -266,7 +266,7 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
     test('timed-out calls are tracked, drained before the slot is released, and checked before init', () => {
         expect(body[0]).toMatch(/timedActual\(actual, phaseTimeoutMs, lateActualCalls\)/);
         expect(body[0]).toMatch(/withTimeout\(\s*actual\.runBankSync\([^)]*\), 60000, 'runBankSync', lateActualCalls/);
-        const busyCheck = body[0].indexOf('if (!(await lateActualCalls.drain(phaseTimeoutMs)))');
+        const busyCheck = body[0].indexOf('await prepareSession({');
         const init = body[0].indexOf('await api.init(');
         expect(busyCheck).toBeGreaterThan(-1);
         expect(busyCheck).toBeLessThan(init);
@@ -278,11 +278,20 @@ describe('runSyncBank bounds every Actual API call (#272)', () => {
     });
 
     test('a refused busy sync stops tracking the stuck call, so later syncs proceed', () => {
-        const busyBlock = body[0].slice(
-            body[0].indexOf('if (!(await lateActualCalls.drain(phaseTimeoutMs)))'),
+        // prepareSession (lib, unit tested in actualTimeouts.test.js) abandons;
+        // runSyncBank must hand it the tracker and a bounded shutdown and refuse on !ok.
+        const block = body[0].slice(
+            body[0].indexOf('await prepareSession({'),
             body[0].indexOf("busy.code = 'ACTUAL_SESSION_BUSY'")
         );
-        expect(busyBlock).toMatch(/lateActualCalls\.abandon\(\)/);
+        expect(block).toMatch(/lateCalls: lateActualCalls/);
+        expect(block).toMatch(/shutdown: \(\) => api\.shutdown\(\)/);
+        expect(block).toMatch(/if \(!prepared\.ok\)/);
+    });
+
+    test('a timed-out runBankSync gets a drain before the next account, and a stuck one stops the loop (#284)', () => {
+        expect(body[0]).toMatch(/if \(bankSyncError instanceof PhaseTimeoutError\) \{\s*sessionStuck = !\(await lateActualCalls\.drain\(phaseTimeoutMs\)\);/);
+        expect(body[0]).toMatch(/if \(sessionStuck\) \{[\s\S]*?\bbreak;/);
     });
 
     test('a sync that never opened the session does not shut it down', () => {

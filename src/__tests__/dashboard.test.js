@@ -60,3 +60,32 @@ describe('dashboard.html is CSP-clean (#243)', () => {
     expect(js).not.toMatch(/\beval\(|new Function\(/);
   });
 });
+
+describe('running sync indicator (#284)', () => {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'services', 'dashboard.js'), 'utf8');
+  const fn = js.match(/function formatRunningSync\(running\) \{[\s\S]*?\n\}/);
+  // eslint-disable-next-line no-new-func
+  const formatRunningSync = fn && new Function(`${fn[0]}; return formatRunningSync;`)();
+
+  test('the page has a slot for it and the script fills it with textContent', () => {
+    expect(html).toContain('id="running-sync"');
+    expect(js).toMatch(/getElementById\('running-sync'\)/);
+    expect(js).toMatch(/runningSyncEl\.textContent = formatRunningSync\(data\.runningSync\)/);
+    expect(js).not.toMatch(/runningSyncEl\.innerHTML/);
+  });
+
+  test('is empty when nothing runs', () => {
+    expect(formatRunningSync(null)).toBe('');
+    expect(formatRunningSync(undefined)).toBe('');
+    expect(formatRunningSync({ startedAt: 'x' })).toBe('');
+  });
+
+  test('names the server and when it started', () => {
+    const text = formatRunningSync({ key: 'Main', startedAt: '2026-09-26T01:00:00.000Z' });
+    expect(text).toMatch(/^Syncing: Main since /);
+  });
+
+  test('keeps a markup-looking name as plain text and survives a bad date', () => {
+    expect(formatRunningSync({ key: '<img src=x>', startedAt: 'nope' })).toBe('Syncing: <img src=x>');
+  });
+});

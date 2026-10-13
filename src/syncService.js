@@ -18,7 +18,7 @@ const { SyncQueue } = require('./lib/syncQueue');
 const { resolveTimezone, describeTimezoneFallback } = require('./lib/timezone');
 const { createShutdownGate, resolveShutdownWaitMs } = require('./lib/shutdownGate');
 const { createAutoRetry } = require('./lib/autoRetry');
-const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
+const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, prepareSession, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts } = require('./lib/scheduleAlertsStep');
 
 // Get version from environment (CI build-arg) or package.json (#132)
@@ -92,7 +92,7 @@ const syncQueue = new SyncQueue({ logger: { info: (message, context) => logger?.
 const shutdownGate = createShutdownGate({ queue: syncQueue });
 // Actual API calls that timed out but are still running (#272). They share the
 // one Actual session with every later sync, so the queue waits for them.
-const lateActualCalls = new LateCalls();
+const lateActualCalls = new LateCalls({ logger: { info: (message, context) => logger?.info(message, context) } });
 try {
     const configLoader = new ConfigLoader();
     config = configLoader.load();
@@ -375,15 +375,24 @@ async function runSyncBank(server, options = {}) {
 
         // A call from an earlier sync that timed out may still be running in the
         // shared session. Give it one more phase timeout; if it is still busy,
-        // fail this sync rather than mix two budgets. (#272)
-        if (!(await lateActualCalls.drain(phaseTimeoutMs))) {
-            // Refuse this one sync, then stop waiting: a call that never
-            // settles must not block every later sync until restart.
-            const abandoned = lateActualCalls.abandon();
-            serverLogger.error('Gave up waiting for Actual API calls that never finished; the next sync will proceed', { abandoned });
+        // fail this sync rather than mix two budgets. When it did finish, close
+        // the session it may have left open before init. (#272, #284)
+        const prepared = await prepareSession({
+            lateCalls: lateActualCalls,
+            timeoutMs: phaseTimeoutMs,
+            shutdown: () => api.shutdown(),
+            logger: serverLogger
+        });
+        if (!prepared.ok) {
+            // Refuse this one sync, then stop waiting: a call that does not
+            // settle in time must not block every later sync until restart.
+            serverLogger.error('Gave up waiting for Actual API calls that did not finish in time; the next sync will proceed', { abandoned: prepared.abandoned });
             const busy = new Error(`An earlier Actual API call is still running after its timeout; skipped this sync so two budgets are not mixed in one session`);
             busy.code = 'ACTUAL_SESSION_BUSY';
             throw busy;
+        }
+        if (prepared.cleaned) {
+            serverLogger.info('Closed a session left open by a late Actual API call before connecting');
         }
 
         serverLogger.info(`Connecting to Actual server`, { url });
@@ -558,8 +567,9 @@ async function runSyncBank(server, options = {}) {
         }
             
         if (accounts && accounts.length > 0) {
-            for (const account of accounts) {
+            for (const [accountIndex, account] of accounts.entries()) {
                 accountsProcessed++;
+                let sessionStuck = false;
                 const accountTimer = serverLogger.startTimer(`account-sync-${account.id}`);
                 serverLogger.info(`Starting bank sync for account`, { 
                     accountId: account.id,
@@ -610,6 +620,13 @@ async function runSyncBank(server, options = {}) {
                         continue;
                     }
 
+                    // A timed-out runBankSync is still running in the one shared
+                    // session. Give it a phase timeout to finish before the next
+                    // account starts; if it does not, stop the loop. (#284)
+                    if (bankSyncError instanceof PhaseTimeoutError) {
+                        sessionStuck = !(await lateActualCalls.drain(phaseTimeoutMs));
+                    }
+
                     serverLogger.warn('runBankSync threw error', {
                         accountId: account.id,
                         accountName: account.name,
@@ -630,6 +647,20 @@ async function runSyncBank(server, options = {}) {
                         errorCode: bankSyncError?.code || 'UNKNOWN',
                         errorStack: bankSyncError?.stack || 'No stack trace available'
                     });
+                }
+                if (sessionStuck) {
+                    for (const skipped of accounts.slice(accountIndex + 1)) {
+                        accountsProcessed++;
+                        accountsFailed++;
+                        failedAccounts.push({
+                            name: skipped.name,
+                            error: 'Skipped: an earlier bank sync is still running in the session'
+                        });
+                    }
+                    serverLogger.error('A timed-out bank sync is still running; skipped the remaining accounts', {
+                        skipped: accounts.length - accountIndex - 1
+                    });
+                    break;
                 }
             }
         } else {

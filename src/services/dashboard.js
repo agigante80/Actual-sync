@@ -99,6 +99,10 @@ async function updateDashboard() {
         statusBadge.textContent = displayStatus;
         statusBadge.className = `status-badge status-${displayStatus === 'READY' ? 'healthy' : data.status.toLowerCase()}`;
 
+        // Name the sync holding the queue, so a stuck one is visible (#272, #284)
+        const runningSyncEl = document.getElementById('running-sync');
+        if (runningSyncEl) runningSyncEl.textContent = formatRunningSync(data.runningSync);
+
         // Update servers list (now with fresh schedule info)
         updateServersList(data.servers);
 
@@ -111,6 +115,15 @@ async function updateDashboard() {
     } catch (error) {
         console.error('Failed to update dashboard:', error);
     }
+}
+
+// Text for the sync holding the queue, or '' when none. Plain text only: it is
+// assigned with textContent, never innerHTML, because the key is a server name. (#284)
+function formatRunningSync(running) {
+    if (!running || typeof running.key !== 'string') return '';
+    const started = new Date(running.startedAt);
+    const since = Number.isNaN(started.getTime()) ? '' : ` since ${started.toLocaleTimeString()}`;
+    return `Syncing: ${running.key}${since}`;
 }
 
 // Escape user-supplied text (account/server names) before innerHTML. (#99)

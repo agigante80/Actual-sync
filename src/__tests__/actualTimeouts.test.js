@@ -6,6 +6,7 @@ const {
     TIMED_METHODS,
     PhaseTimeoutError,
     LateCalls,
+    prepareSession,
     withTimeout,
     timedActual
 } = require('../lib/actualTimeouts');
@@ -151,5 +152,139 @@ describe('LateCalls: a timed-out call is still tracked until it settles (#272)',
         const wrapped = timedActual(api, 10, late);
         await expect(wrapped.downloadBudget('id')).rejects.toBeInstanceOf(PhaseTimeoutError);
         expect(late.size).toBe(1);
+    });
+});
+
+describe('LateCalls drain holds no subscription and logs settles (#284)', () => {
+    const deferred = () => {
+        let resolve, reject;
+        const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+        return { promise, resolve, reject };
+    };
+
+    test('a drain that gives up leaves no waiter behind', async () => {
+        const late = new LateCalls();
+        late.add(never(), { phase: 'sync' });
+        await expect(late.drain(10)).resolves.toBe(false);
+        expect(late.waiters.size).toBe(0);
+    });
+
+    test('a drain wakes as soon as the last call settles, not at its limit', async () => {
+        const late = new LateCalls();
+        const call = deferred();
+        late.add(call.promise, { phase: 'sync' });
+        const started = Date.now();
+        const drained = late.drain(5000);
+        call.resolve();
+        await expect(drained).resolves.toBe(true);
+        expect(Date.now() - started).toBeLessThan(1000);
+        expect(late.waiters.size).toBe(0);
+    });
+
+    test('a drain keeps waiting while a second call is added and still pending', async () => {
+        const late = new LateCalls();
+        const first = deferred();
+        const second = deferred();
+        late.add(first.promise, { phase: 'sync' });
+        const drained = late.drain(5000);
+        late.add(second.promise, { phase: 'shutdown' });
+        first.resolve();
+        await new Promise(r => setTimeout(r, 20));
+        expect(late.size).toBe(1);
+        second.resolve();
+        await expect(drained).resolves.toBe(true);
+    });
+
+    test('logs phase and outcome when a late call settles', async () => {
+        const logger = { info: jest.fn() };
+        const late = new LateCalls({ logger });
+        const ok = deferred();
+        const bad = deferred();
+        late.add(ok.promise, { phase: 'downloadBudget' });
+        late.add(bad.promise, { phase: 'shutdown' });
+        ok.resolve();
+        bad.reject(new Error('x'));
+        await late.drain(1000);
+        const logged = logger.info.mock.calls.map(c => c[1]);
+        expect(logged).toEqual(expect.arrayContaining([
+            expect.objectContaining({ phase: 'downloadBudget', outcome: 'resolved' }),
+            expect.objectContaining({ phase: 'shutdown', outcome: 'rejected' })
+        ]));
+        expect(logger.info.mock.calls[0][0]).toMatch(/finally settled/);
+    });
+
+    test('a throwing logger does not break the tracker', async () => {
+        const late = new LateCalls({ logger: { info: () => { throw new Error('log down'); } } });
+        const call = deferred();
+        late.add(call.promise, { phase: 'sync' });
+        call.resolve();
+        await expect(late.drain(1000)).resolves.toBe(true);
+    });
+
+    test('withTimeout passes its phase to the tracker log', async () => {
+        const logger = { info: jest.fn() };
+        const late = new LateCalls({ logger });
+        const call = deferred();
+        await expect(withTimeout(call.promise, 10, 'loadBudget', late)).rejects.toBeInstanceOf(PhaseTimeoutError);
+        call.resolve();
+        await late.drain(1000);
+        expect(logger.info).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ phase: 'loadBudget' }));
+    });
+});
+
+describe('prepareSession (#284)', () => {
+    const deferred = () => {
+        let resolve;
+        const promise = new Promise((res) => { resolve = res; });
+        return { promise, resolve };
+    };
+
+    test('does nothing when no call is late', async () => {
+        const shutdown = jest.fn();
+        const r = await prepareSession({ lateCalls: new LateCalls(), timeoutMs: 50, shutdown });
+        expect(r).toEqual({ ok: true, cleaned: false, abandoned: 0 });
+        expect(shutdown).not.toHaveBeenCalled();
+    });
+
+    test('shuts the stale session down before init when the late call finished in time', async () => {
+        const late = new LateCalls();
+        const call = deferred();
+        late.add(call.promise, { phase: 'downloadBudget' });
+        const shutdown = jest.fn(async () => {});
+        const prepared = prepareSession({ lateCalls: late, timeoutMs: 1000, shutdown });
+        call.resolve();
+        await expect(prepared).resolves.toEqual({ ok: true, cleaned: true, abandoned: 0 });
+        expect(shutdown).toHaveBeenCalledTimes(1);
+    });
+
+    test('a failing shutdown is not fatal', async () => {
+        const late = new LateCalls();
+        late.add(Promise.resolve(), { phase: 'sync' });
+        const logger = { debug: jest.fn() };
+        const r = await prepareSession({
+            lateCalls: late, timeoutMs: 50, shutdown: async () => { throw new Error('nothing open'); }, logger
+        });
+        expect(r).toEqual({ ok: true, cleaned: false, abandoned: 0 });
+        expect(logger.debug).toHaveBeenCalled();
+    });
+
+    test('refuses and abandons when the late call is still running', async () => {
+        const late = new LateCalls();
+        late.add(never(), { phase: 'sync' });
+        const shutdown = jest.fn();
+        const r = await prepareSession({ lateCalls: late, timeoutMs: 20, shutdown });
+        expect(r).toEqual({ ok: false, cleaned: false, abandoned: 1 });
+        expect(shutdown).not.toHaveBeenCalled();
+        expect(late.size).toBe(0);
+    });
+
+    test('refuses when the cleanup shutdown itself times out, and abandons it', async () => {
+        const late = new LateCalls();
+        late.add(Promise.resolve(), { phase: 'sync' });
+        const timed = timedActual({ q: () => ({}), ...Object.fromEntries(TIMED_METHODS.map(m => [m, never])) }, 20, late);
+        const r = await prepareSession({ lateCalls: late, timeoutMs: 20, shutdown: () => timed.shutdown() });
+        expect(r.ok).toBe(false);
+        expect(r.abandoned).toBe(1);
+        expect(late.size).toBe(0);
     });
 });
