@@ -2125,6 +2125,14 @@ module.exports = [
         tests: 'scheduleAlertDelivery.test'
     },
     {
+        id: '337-immediate-attempt-tiebreak-removed', ticket: '#337',
+        desc: 'immediate mode no longer breaks ties by oldest attempt, so one hanging destination keeps the same alert first and the rest never start',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    if (x.attempt !== y.attempt) return x.attempt < y.attempt ? -1 : 1;",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
         id: '338-immediate-order-reversed', ticket: '#338',
         desc: 'immediate mode sends the most recently sent event first, so the same few reminders use the budget every day and the rest starve',
         file: 'src/lib/scheduleAlertDelivery.js',

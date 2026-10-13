@@ -176,7 +176,9 @@ Order matters under that cutoff, so no mode lets the same alerts or the same cha
   are sent in that order, not in evaluation order, and the order can change from sync to sync.
   Within one event, destinations are also visited in attempt order (the one attempted longest ago
   first, never-attempted first), not configuration order, so a destination that hangs until the
-  budget runs out does not keep later destinations from ever getting a row.
+  budget runs out does not keep later destinations from ever getting a row. Events that tie on
+  last send are likewise ordered by the oldest attempt among their due destinations, so an event
+  that just hung moves behind the ones the budget has not reached yet.
 - **Digest mode** visits channels starting with the one attempted longest ago (never-attempted
   first), not in configuration order. A channel that hangs or fails until the budget runs out is
   stamped as attempted, so on the next sync the channels the budget never reached go first and still

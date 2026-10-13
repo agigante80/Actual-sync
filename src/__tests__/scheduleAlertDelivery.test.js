@@ -1003,16 +1003,19 @@ describe('deliver: delivery budget starvation (#337, #338)', () => {
     const events = ids.map((id) => missingEvent({ alertId: id }));
     const evaluations = ids.map((id) => rentEvaluation({ alertId: id }));
 
-    let discordRun = 0;
-    for (let run = 1; run <= 4 && !discordRun; run += 1) {
+    // Every alert, not just the first, must get a Discord row: from run 3 on
+    // each alert's only due destination is Telegram and nothing has a ledger
+    // row for it, so only the attempt tie-break moves the next alert up.
+    const withDiscord = () => new Set(
+      history.rows.filter((r) => String(r.channel).startsWith('discord')).map((r) => r.alertId)
+    );
+    for (let run = 1; run <= 4 && withDiscord().size < ids.length; run += 1) {
       await deliver(events, {
         evaluations, ruleState: enabledState, history, sender, now: '2026-01-10',
         server: 'starve-337-imm', rules, timezone: 'UTC', logger: quietLogger, deadline: Date.now() + 40
       });
-      if (history.rows.some((r) => String(r.channel).startsWith('discord'))) discordRun = run;
     }
-    expect(discordRun).toBeGreaterThan(0);
-    expect(discordRun).toBeLessThanOrEqual(2);
+    expect([...withDiscord()].sort()).toEqual(ids);
   });
 
   test('over many days, immediate-mode reminders rotate by oldest last send so every alert keeps getting reminded (#338, M2)', async () => {

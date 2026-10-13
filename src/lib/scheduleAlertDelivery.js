@@ -653,16 +653,19 @@ let digestAttemptSeq = 0;
  */
 async function waitingSince(item, sender, history, server, now, timezone) {
   let oldest = Infinity;
+  let oldestAttempt = Infinity;
+  const attempts = digestAttempts.get(server) || new Map();
   try {
     for (const destination of destinationsForRule(item.rule, sender)) {
       const state = await destinationDueState(item.event, item.rule, destination.key, history, server, now, timezone);
       if (!state.due) continue;
       oldest = Math.min(oldest, state.lastSentAt == null ? -Infinity : Date.parse(state.lastSentAt));
+      oldestAttempt = Math.min(oldestAttempt, attempts.get(`dest|${destination.key}`) || 0);
     }
   } catch (_error) {
-    return Infinity;
+    return { since: Infinity, attempt: Infinity };
   }
-  return oldest;
+  return { since: oldest, attempt: oldestAttempt };
 }
 
 /**
@@ -990,8 +993,17 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
   eligible.sort((a, b) => {
     const x = priority.get(a);
     const y = priority.get(b);
-    if (x === y) return 0;
-    return x < y ? -1 : 1;
+    if (x.since !== y.since) return x.since < y.since ? -1 : 1;
+    // #337 round 2: tie-break by the oldest in-memory attempt among each
+    // event's due destinations (never attempted = 0, first). When one
+    // destination (say Telegram) hangs past the budget every run it never
+    // gets a ledger row, so `since` is -Infinity for every event and the
+    // stable sort would keep the same event first forever: it hangs on
+    // Telegram and the events behind it never start. Attempts are stamped
+    // when a send starts, so the event that just hung drops behind the
+    // ones the budget has not reached. The ledger still decides what is due.
+    if (x.attempt !== y.attempt) return x.attempt < y.attempt ? -1 : 1;
+    return 0;
   });
 
   for (let i = 0; i < eligible.length; i += 1) {
