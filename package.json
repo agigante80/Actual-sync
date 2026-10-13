@@ -39,6 +39,13 @@
       "**/__tests__/**/*.test.js",
       "**/?(*.)+(spec|test).js"
     ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/\\.claude/"
+    ],
+    "modulePathIgnorePatterns": [
+      "<rootDir>/\\.claude/"
+    ],
     "coveragePathIgnorePatterns": [
       "/node_modules/",
       "/__tests__/",

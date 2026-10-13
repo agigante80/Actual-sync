@@ -19,6 +19,9 @@ module.exports = {
   testEnvironment: 'node',
   rootDir: __dirname,
   testMatch: ['<rootDir>/tests/e2e/**/*.e2e.js'],
+  // Agent worktrees live under .claude/worktrees/ (#315); never collect their copies.
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/\\.claude/'],
+  modulePathIgnorePatterns: ['<rootDir>/\\.claude/'],
   // Puppeteer launches a real browser and each spec starts a fixture server;
   // slower and noisier than the unit suite's default.
   testTimeout: 30000,
