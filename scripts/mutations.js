@@ -1524,7 +1524,7 @@ module.exports = [
         desc: "a decorator ({{*foo}}) passes validation again and throws at render",
         file: "src/lib/templateRenderer.js",
         anchor: "        fail(key, statement.path && statement.path.original || 'decorator', statement.loc.start.line, 'unknown_helper');",
-        mutant: "\"\"",
+        mutant: "",
         tests: "templateRenderer"
     },
     {
@@ -1532,7 +1532,7 @@ module.exports = [
         desc: "a mismatched block error reports line 1 again",
         file: "src/lib/templateRenderer.js",
         anchor: " || / - (\\d+):\\d+/.exec(err.message);",
-        mutant: "\";\"",
+        mutant: ";",
         tests: "templateRenderer"
     },
     {
