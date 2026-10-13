@@ -420,8 +420,8 @@ dismissal, and the login rate limit, all against fixture states under
 
 A `uses:` line that points at a branch (`@master`, `@main`) runs whatever that branch holds at the moment the job starts, with the job's token and secrets. In March 2025 `tj-actions/changed-files` had its tags repointed to a credential-dumping commit, and every workflow tracking it ran the payload. So:
 
-- **Never reference a branch.** `src/__tests__/workflowPins.test.js` fails the test suite if any workflow does.
-- **Scanners and anything handed secrets are pinned to a full 40-character commit SHA**, with the version in a trailing comment so updates stay readable, for example `aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0`. The same test enforces this for `trivy-action`.
+- **Never reference a branch.** `src/__tests__/workflowPins.test.js` fails the test suite if a workflow `uses:` line ends in `@master`, `@main`, `@develop`, `@development` or `@HEAD`. It matches those names only, unquoted, so a quoted ref or another branch name is not caught yet (#249).
+- **The goal is that scanners and anything handed secrets are pinned to a full 40-character commit SHA**, with the version in a trailing comment so updates stay readable, for example `aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0`. Today only `trivy-action` is SHA-pinned, and the same test enforces it for that action alone. `docker/login-action` and `peter-evans/dockerhub-description` (both handed `DOCKERHUB_TOKEN`) and `github/codeql-action/*` are still on version tags; #249 tracks pinning every action.
 - Other actions still use version tags (`@v4`). Moving them to SHAs is tracked in #249.
 
 To update a pinned action, look up the commit the new release tag points to (`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`, following an annotated tag to its commit) and replace both the SHA and the comment.
