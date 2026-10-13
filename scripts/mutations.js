@@ -1181,8 +1181,8 @@ module.exports = [
         id: '258-interval-violation-boundary-off-by-one', ticket: '#258',
         desc: 'the #271 item 1 window-overlap guard uses > instead of >=, so an exact-equal grace+early no longer trips it',
         file: 'src/lib/scheduleAlerts.js',
-        // #297 F4: the guard uses the rule's own earlyDays again (via the
-        // `effectiveEarlyDays` alias); the linked-early window is clamped instead.
+        // #297 round 1, M2: effectiveEarlyDays includes the linked allowance
+        // again, but only while the interval exceeds it (daily stays valid).
         anchor: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays >= shortestIntervalDays) {',
         mutant: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays > shortestIntervalDays) {',
         tests: 'scheduleAlerts.test'
@@ -1423,6 +1423,22 @@ module.exports = [
         file: 'src/lib/scheduleAlerts.js',
         anchor: '        const linkedBeatsAmount = closestLinked && (!amountMatch || fitsSiblingSchedule(amountMatch.tx, schedule, bindings));',
         mutant: '        const linkedBeatsAmount = closestLinked;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-m2-linked-allowance-ignored-by-overlap-guard', ticket: '#297',
+        desc: 'the overlap guard ignores the linked early allowance again, so weekly graceDays 5 is evaluated and its window swallows the next occurrence\'s early linked payment',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const effectiveEarlyDays = linkedOverlap ? Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS) : binding.earlyDays;',
+        mutant: '      const effectiveEarlyDays = binding.earlyDays;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f4-linked-allowance-rejects-short-intervals', ticket: '#297',
+        desc: 'the linked allowance applies to every interval again, so every daily schedule is a permanent interval violation',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const linkedOverlap = shortestIntervalDays !== null && shortestIntervalDays > LINKED_EARLY_WINDOW_DAYS',
+        mutant: '      const linkedOverlap = shortestIntervalDays !== null && shortestIntervalDays > 0',
         tests: 'scheduleAlerts.test'
     },
     {

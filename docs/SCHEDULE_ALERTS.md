@@ -231,10 +231,12 @@ shares the sync process's own local zone.
   missing required field, a duplicate `id`) can. Instead, the violation is detected the first time
   the rule is evaluated: the rule is skipped for that sync (one `cannotCheck` event, `reason:
   "interval-violation"`) and a warning is logged, rather than risk a double-counted payment or an
-  inverted late window. The +/-2 day linked-transaction early allowance is not part of this sum: a
-  linked payment's early window is clamped to start the day after the previous occurrence's
-  deadline, so it cannot overlap by construction (#297 F4; before, every daily schedule was
-  rejected with a warning on each sync).
+  inverted late window. The +/-2 day linked-transaction early allowance does count towards that sum, but
+  only for schedules whose shortest interval is longer than the allowance: a weekly rule with
+  `graceDays: 5` (5 + 2 >= 7) is rejected, because its on-time window would swallow the next
+  occurrence's early linked payment. For intervals of 2 days or less (daily) the allowance is not
+  counted, since it would reject every daily schedule on every sync (#297 F4); instead a linked
+  payment's early window is clamped to start the day after the previous occurrence's deadline.
 - **A rule's `channels` list must name at least one configured destination, checked at config-load
   time (#295 review, M2), and every template is validated at startup only against the channels a
   rule can actually reach (#295 review round 2, M7).** If a rule's explicit `channels` names only

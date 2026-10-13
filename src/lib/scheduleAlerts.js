@@ -421,13 +421,18 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
     try {
       const { shortestIntervalDays, longestIntervalDays } = computeIntervalStats(dateConfig, today, timezone);
 
-      // The overlap check uses the rule's own earlyDays only. The linked-early
-      // allowance (LINKED_EARLY_WINDOW_DAYS) is NOT part of it: that window is
-      // clamped per occurrence to start after the previous occurrence's
-      // deadline (see earlyStartLinked below), so it cannot overlap by
-      // construction. Counting it here made every daily schedule (and e.g. a
-      // weekly one with graceDays 5) a permanent interval violation (#297 F4).
-      const effectiveEarlyDays = binding.earlyDays;
+      // The overlap check counts the linked-transaction early allowance
+      // (LINKED_EARLY_WINDOW_DAYS) as well as the rule's own earlyDays, but
+      // only while the interval is longer than the allowance itself (#295
+      // round 2 M3; #297 F4 + round 1 M2). Without it, weekly graceDays 5 would
+      // let an occurrence's on-time window swallow the NEXT occurrence's early
+      // linked payment. With it unconditionally, every daily schedule
+      // (interval 1 <= 2) was a permanent interval violation; for such short
+      // intervals the linked early start is clamped per occurrence instead
+      // (see earlyStartLinked below).
+      const linkedOverlap = shortestIntervalDays !== null && shortestIntervalDays > LINKED_EARLY_WINDOW_DAYS
+        && binding.graceDays + LINKED_EARLY_WINDOW_DAYS >= shortestIntervalDays;
+      const effectiveEarlyDays = linkedOverlap ? Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS) : binding.earlyDays;
       if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays >= shortestIntervalDays) {
         warnings.push({
           ruleId: binding.id,
