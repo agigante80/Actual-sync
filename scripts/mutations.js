@@ -803,8 +803,16 @@ module.exports = [
         id: '266-timezone-config-ignored', ticket: '#266',
         desc: 'the configured timezone is ignored and the process zone is always used',
         file: 'src/lib/timezone.js',
-        anchor: "    return (cfg && cfg.timezone) || Intl",
-        mutant: "    return (cfg && false) || Intl",
+        anchor: "    if (cfg && cfg.timezone) return cfg.timezone;",
+        mutant: "    if (cfg && false) return cfg.timezone;",
+        tests: 'timezone'
+    },
+    {
+        id: '266-timezone-process-zone-unvalidated', ticket: '#266',
+        desc: 'a blank or invalid process TZ is returned unvalidated instead of falling back to UTC',
+        file: 'src/lib/timezone.js',
+        anchor: "    return isValidTimezone(processZone) ? processZone : 'UTC';",
+        mutant: "    return processZone;",
         tests: 'timezone'
     },
     {

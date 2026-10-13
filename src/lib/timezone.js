@@ -2,7 +2,7 @@
  * The one timezone the service shows times in and schedules cron jobs in (#266).
  *
  * `timezone` (IANA name) from the config wins; without it the process zone is
- * used (TZ, else the system), which is also what node-schedule used before the
+ * used (TZ, else the system; UTC when that is blank or invalid), which is also what node-schedule used before the
  * key existed, so existing setups keep their behaviour.
  */
 const moment = require('moment-timezone');
@@ -12,7 +12,22 @@ const moment = require('moment-timezone');
  * @returns {string} an IANA timezone name
  */
 function resolveTimezone(cfg) {
-    return (cfg && cfg.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (cfg && cfg.timezone) return cfg.timezone;
+    const processZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    // A blank TZ (Unraid's empty field) gives 'Etc/Unknown' and a typo gives
+    // undefined; either breaks toLocaleString or moment().tz() at startup.
+    return isValidTimezone(processZone) ? processZone : 'UTC';
+}
+
+/**
+ * @param {Object} [cfg] the loaded config object
+ * @returns {string|null} a startup warning when the process zone was unusable
+ *   and UTC is used instead, else null
+ */
+function describeTimezoneFallback(cfg) {
+    if (cfg && cfg.timezone) return null;
+    if (isValidTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone)) return null;
+    return `TZ=${JSON.stringify(process.env.TZ === undefined ? '' : process.env.TZ)} is blank or not a valid IANA timezone; using UTC. Set TZ or the "timezone" config key to a valid name such as "America/New_York".`;
 }
 
 /**
@@ -31,4 +46,4 @@ function isValidTimezone(name) {
     }
 }
 
-module.exports = { resolveTimezone, isValidTimezone };
+module.exports = { resolveTimezone, isValidTimezone, describeTimezoneFallback };

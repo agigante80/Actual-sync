@@ -24,6 +24,26 @@ describe('timezone (#266)', () => {
             expect(run('{}')).toBe('Asia/Tokyo');
             expect(run('undefined')).toBe('Asia/Tokyo');
         });
+
+        test('a blank or invalid process TZ falls back to UTC instead of an unusable zone', () => {
+            const { execFileSync } = require('child_process');
+            const run = (tz) => execFileSync(process.execPath, ['-e',
+                `console.log(require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'timezone.js'))}).resolveTimezone({}))`],
+                { env: { ...process.env, TZ: tz } }).toString().trim();
+            expect(run('')).toBe('UTC');
+            expect(run('Europe/Madird')).toBe('UTC');
+        });
+
+        test('describeTimezoneFallback names the bad TZ only when the fallback kicks in', () => {
+            const { execFileSync } = require('child_process');
+            const run = (tz, cfg) => execFileSync(process.execPath, ['-e',
+                `console.log(JSON.stringify(require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'timezone.js'))}).describeTimezoneFallback(${cfg})))`],
+                { env: { ...process.env, TZ: tz } }).toString().trim();
+            expect(run('Europe/Madird', '{}')).toMatch(/Europe\/Madird.*UTC/);
+            expect(run('', '{}')).toMatch(/UTC/);
+            expect(run('Asia/Tokyo', '{}')).toBe('null');
+            expect(run('Europe/Madird', '{timezone:"UTC"}')).toBe('null');
+        });
     });
 
     describe('isValidTimezone', () => {
@@ -55,9 +75,11 @@ describe('timezone (#266)', () => {
             expect(schema.properties.timezone.type).toBe('string');
             expect(schema.required).not.toContain('timezone');
         });
-        test('config.example.json shows the key', () => {
+        test('config.example.json leaves the key out (copying it must not pin a zone) and CONFIG.md documents it', () => {
             const example = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'config', 'config.example.json'), 'utf8'));
-            expect(typeof example.timezone).toBe('string');
+            expect(example).not.toHaveProperty('timezone');
+            const doc = fs.readFileSync(path.join(__dirname, '..', '..', 'docs', 'CONFIG.md'), 'utf8');
+            expect(doc).toMatch(/`timezone`/);
         });
     });
 

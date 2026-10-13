@@ -91,7 +91,7 @@ function scheduleAlertRuleState() {
  * @param {string} args.serverName - server display name, recorded in the ledger key
  *   and used in message templates
  * @param {string} args.timezone - IANA timezone, e.g. "Europe/Madrid"
- *   (see resolveTimezone in src/syncService.js)
+ *   (see resolveTimezone in src/lib/timezone.js)
  * @param {Object} args.logger - server-scoped logger ({info, warn, ...})
  * @param {Date} [args.now] - injectable clock, defaults to `new Date()`
  * @returns {Promise<Object>} the evaluated result to pass to `deliverScheduleAlerts`

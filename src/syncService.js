@@ -15,7 +15,7 @@ const { enhanceActualApiError, explainBudgetNotOpen } = require('./lib/actualApi
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
 const { SyncQueue } = require('./lib/syncQueue');
-const { resolveTimezone } = require('./lib/timezone');
+const { resolveTimezone, describeTimezoneFallback } = require('./lib/timezone');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts } = require('./lib/scheduleAlertsStep');
 
@@ -104,6 +104,9 @@ try {
     logger.info('Configuration loaded successfully', { 
         serverCount: config.servers.length 
     });
+
+    const timezoneWarning = describeTimezoneFallback(config);
+    if (timezoneWarning) logger.warn(timezoneWarning);
     
     // Initialize sync history service
     syncHistory = new SyncHistoryService({
