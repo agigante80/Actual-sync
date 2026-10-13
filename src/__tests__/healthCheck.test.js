@@ -1650,7 +1650,18 @@ describe('HealthCheckService', () => {
       expect(res.body.runningSync).toEqual(running);
     });
 
-    it('is null when nothing runs, or when the callback throws', async () => {
+    it('is null when nothing is running', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        getRunningSync: () => null
+      });
+      await hc.start();
+      const res = await httpGet(statusUrl());
+      expect(res.statusCode).toBe(200);
+      expect(res.body.runningSync).toBeNull();
+    });
+
+    it('is null when the callback throws', async () => {
       const hc = makeService({
         port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
         getRunningSync: () => { throw new Error('boom'); }

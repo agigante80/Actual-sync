@@ -1174,9 +1174,6 @@ This test verifies that notifications are configured correctly and can reach the
     });
   }
 
-  /**
-   * Get overall service status based on recent sync results
-   */
   /** getRunningSync() guarded, so a failing callback cannot break the status route. (#272) */
   safeRunningSync() {
     try {
@@ -1187,6 +1184,9 @@ This test verifies that notifications are configured correctly and can reach the
     }
   }
 
+  /**
+   * Get overall service status based on recent sync results
+   */
   getOverallStatus() {
     if (this.status.syncCount === 0) return 'PENDING';
     if (this.status.failureCount > 0 && this.status.successCount === 0) return 'UNHEALTHY';
