@@ -63,7 +63,9 @@ describe('dashboard analytics tab (#263)', () => {
         () => document.getElementById('analytics-total-syncs').textContent.trim() !== '0'
       );
       const total = await page.$eval('#analytics-total-syncs', (el) => el.textContent.trim());
-      expect(Number(total)).toBeGreaterThan(0);
+      // analytics-degraded seeds exactly 48 history rows (seedRun count: 48),
+      // all inside the analytics window. (#289)
+      expect(Number(total)).toBe(48);
     });
   });
 });
