@@ -89,7 +89,7 @@ describe('dashboard.html is CSP-clean (#243)', () => {
           addEventListener(e, f) { listeners[e] = f; },
           querySelector: () => null,
           querySelectorAll: () => [],
-          getElementById: () => ({ scrollHeight: 0, scrollTop: 0, clientHeight: 0, innerHTML: '', textContent: '', style: {}, classList: { add() {}, remove() {}, toggle() {} }, appendChild() {}, addEventListener() {} })
+          getElementById: () => ({ scrollHeight: 0, scrollTop: 0, clientHeight: 0, innerHTML: '', textContent: '', style: {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, appendChild() {}, addEventListener() {} })
         },
         window: { location: { protocol: 'http:', host: 'h' } },
         WebSocket: WS, Date: class extends Date { static now() { return now; } }, Math, JSON, Error,
