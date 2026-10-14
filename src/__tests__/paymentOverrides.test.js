@@ -443,6 +443,24 @@ describe('payment alert state routes (#261)', () => {
       expect(history.listMutedRows({ server: 'Main', alertId: 'parking-a' })).toEqual([]);
     });
 
+    test('a failing audit insert rolls the early unmute back and answers 500 (#261)', async () => {
+      await boot();
+      await put('parking-a', { mutedUntil: '2026-12-01', reason: 'vacant' });
+      history.recordScheduleAlert({
+        server: 'Main', alertId: 'parking-a', scheduleId: 's1', occurrenceDate: '2026-10-05',
+        event: 'missing', channel: 'telegram', delivery: 'muted'
+      });
+      const before = history.getOverride('Main', 'parking-a');
+      const auditBefore = audit().length;
+      const spy = jest.spyOn(history, 'insertConfigAudit').mockImplementation(() => { throw new Error('audit down'); });
+      const res = await put('parking-a', { mutedUntil: null });
+      spy.mockRestore();
+      expect(res.status).toBe(500);
+      expect(history.getOverride('Main', 'parking-a')).toEqual(before);
+      expect(history.listMutedRows({ server: 'Main', alertId: 'parking-a' })).toHaveLength(1);
+      expect(audit()).toHaveLength(auditBefore);
+    });
+
     test('enabled:true with no override is a no-op: nothing stored, nothing audited', async () => {
       await boot();
       const res = await put('parking-a', { enabled: true });
@@ -593,6 +611,22 @@ describe('payment alert state routes (#261)', () => {
       expect(history.listMutedRows({ server: 'Main', alertId: 'parking-a' })).toEqual([]);
       expect(audit()).toHaveLength(2);
       expect(JSON.stringify(audit())).not.toContain('vacant');
+    });
+
+    test('a failing audit insert rolls the delete back and answers 500 (#261)', async () => {
+      await boot();
+      await put('parking-a', { enabled: false, mutedUntil: '2026-12-01', reason: 'vacant' });
+      history.recordScheduleAlert({
+        server: 'Main', alertId: 'parking-a', scheduleId: 's1', occurrenceDate: '2026-10-05',
+        event: 'missing', channel: 'telegram', delivery: 'muted'
+      });
+      const before = history.getOverride('Main', 'parking-a');
+      const spy = jest.spyOn(history, 'insertConfigAudit').mockImplementation(() => { throw new Error('audit down'); });
+      const res = await del('parking-a');
+      spy.mockRestore();
+      expect(res.status).toBe(500);
+      expect(history.getOverride('Main', 'parking-a')).toEqual(before);
+      expect(history.listMutedRows({ server: 'Main', alertId: 'parking-a' })).toHaveLength(1);
     });
 
     test('an orphaned override and a config-disabled alert can be deleted', async () => {

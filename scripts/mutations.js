@@ -2859,6 +2859,14 @@ module.exports = [
         tests: "paymentOverrides"
     },
     {
+        id: "261-override-change-not-atomic", ticket: '#261',
+        desc: "the override change and its audit row run outside one transaction",
+        file: "src/services/syncHistory.js",
+        anchor: "    const apply = this.db.transaction(() => {\n      if (dropMutedRows)",
+        mutant: "    const apply = ((fn) => fn)(() => {\n      if (dropMutedRows)",
+        tests: "paymentOverrides"
+    },
+    {
         id: "261-mute-ends-end-of-day", ticket: '#261',
         desc: "a mute ends at the start of the mutedUntil day instead of the end of it",
         file: "src/lib/scheduleAlertRules.js",

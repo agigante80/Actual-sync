@@ -449,24 +449,26 @@ class HealthCheckService {
         next.reason = reason;
       }
 
-      if (before && before.mutedUntil && next.mutedUntil === null) {
-        // Early unmute: no summary, and the held-back rows go (otherwise the
-        // latest 'muted' row would suppress the alert for good).
-        this.syncHistory.deleteMutedRows({ server: serverName, alertId, since: before.mutedFrom || undefined });
-      }
-      const stored = this.syncHistory.setOverride(next);
-
+      // One transaction: the held-back rows, the override and the audit row
+      // change together or not at all. An early unmute drops the rows (no
+      // summary; otherwise the latest 'muted' row would suppress the alert for good).
       const was = { enabled: before ? before.enabled : true, mutedUntil: before ? before.mutedUntil : null, reason: before ? before.reason : null };
-      const is = { enabled: stored ? stored.enabled : true, mutedUntil: stored ? stored.mutedUntil : null, reason: stored ? stored.reason : null };
-      const changes = {};
-      for (const field of Object.keys(was)) {
-        if (was[field] !== is[field]) changes[field] = [was[field], is[field]];
-      }
-      if (Object.keys(changes).length > 0) {
-        this.syncHistory.recordConfigChange({
-          server: serverName, remoteAddr: req.ip, action: 'payment_alert_state', target: alertId, changes
-        });
-      }
+      const stored = this.syncHistory.applyOverrideChange({
+        server: serverName,
+        alertId,
+        override: next,
+        dropMutedRows: Boolean(before && before.mutedUntil && next.mutedUntil === null),
+        mutedSince: before && before.mutedFrom ? before.mutedFrom : undefined,
+        remoteAddr: req.ip,
+        auditChanges: (saved) => {
+          const is = { enabled: saved ? saved.enabled : true, mutedUntil: saved ? saved.mutedUntil : null, reason: saved ? saved.reason : null };
+          const changes = {};
+          for (const field of Object.keys(was)) {
+            if (was[field] !== is[field]) changes[field] = [was[field], is[field]];
+          }
+          return changes;
+        }
+      });
       return res.json({ ruleState: this.publicRuleState(rule, stored, now, timezone) });
     } catch (error) {
       this.logger.error('Failed to update payment alert state', { error: error.message });
@@ -481,18 +483,20 @@ class HealthCheckService {
     try {
       const before = this.syncHistory.getOverride(serverName, alertId);
       if (!before) return res.status(404).json({ error: 'override_not_found' });
-      if (before.mutedUntil) {
-        this.syncHistory.deleteMutedRows({ server: serverName, alertId, since: before.mutedFrom || undefined });
-      }
-      this.syncHistory.deleteOverride(serverName, alertId);
       const changes = {};
       if (before.enabled !== true) changes.enabled = [before.enabled, true];
       if (before.mutedUntil) {
         changes.mutedUntil = [before.mutedUntil, null];
         changes.reason = [before.reason, null];
       }
-      this.syncHistory.recordConfigChange({
-        server: serverName, remoteAddr: req.ip, action: 'payment_alert_state', target: alertId, changes
+      this.syncHistory.applyOverrideChange({
+        server: serverName,
+        alertId,
+        override: null,
+        dropMutedRows: Boolean(before.mutedUntil),
+        mutedSince: before.mutedFrom || undefined,
+        remoteAddr: req.ip,
+        auditChanges: () => changes
       });
       return res.json({ deleted: true });
     } catch (error) {

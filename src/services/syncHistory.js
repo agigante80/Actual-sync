@@ -1432,6 +1432,37 @@ class SyncHistoryService {
       : this.db.prepare("DELETE FROM schedule_alerts WHERE server = ? AND alert_id = ? AND delivery = 'muted'").run(server, alertId).changes;
   }
 
+  /**
+   * Apply one operator change to an override, its held-back muted rows and its
+   * audit row in a single transaction (#261), so a failing audit insert leaves
+   * nothing changed (same pattern as resetServerHistory).
+   * @param {Object} change
+   * @param {string} change.server
+   * @param {string} change.alertId
+   * @param {?Object} change.override - the override to store, or null to delete it
+   * @param {boolean} [change.dropMutedRows] - delete the alert's muted rows
+   * @param {string} [change.mutedSince] - limit that delete to rows since this time
+   * @param {string} [change.remoteAddr]
+   * @param {(stored: ?Object) => Object} change.auditChanges - the audit `changes`, from the stored override
+   * @returns {?Object} the stored override (null when deleted or normalised away)
+   */
+  applyOverrideChange({ server, alertId, override, dropMutedRows = false, mutedSince, remoteAddr, auditChanges }) {
+    const apply = this.db.transaction(() => {
+      if (dropMutedRows) this.deleteMutedRows({ server, alertId, since: mutedSince });
+      let stored = null;
+      if (override) stored = this.setOverride(override);
+      else this.deleteOverride(server, alertId);
+      const changes = auditChanges(stored);
+      if (changes && Object.keys(changes).length > 0) {
+        this.insertConfigAudit({ server, remoteAddr, action: 'payment_alert_state', target: alertId, changes });
+      }
+      return stored;
+    });
+    const stored = apply();
+    this.logger.info('Configuration change recorded', { action: 'payment_alert_state', target: alertId });
+    return stored;
+  }
+
   /** Delete the muted rows of one destination key. @returns {number} */
   deleteMutedRow({ server, alertId, scheduleId, occurrenceDate, event, channel }) {
     return this.db.prepare(`
