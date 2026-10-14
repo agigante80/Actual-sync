@@ -392,7 +392,9 @@ describe('dashboard payments tab (#341)', () => {
         await page.click('button[data-action="paymentsSyncNow"]');
         await page.waitForSelector('.pay-sync-error');
         expect(await page.$eval('.pay-sync-error', (el) => [el.textContent, el.getAttribute('role')]))
-          .toEqual(['Could not start sync (HTTP 429)', 'alert']);
+          .toEqual(['Could not start sync (HTTP 429)', null]);
+        expect(await page.$eval('#payments-sync-status', (el) => [el.textContent, el.getAttribute('role')]))
+          .toEqual(['Main: Could not start sync (HTTP 429)', 'status']);
         await new Promise((r) => setTimeout(r, 500));
         expect(events).not.toContain('status');
         expect(fixture.calls.syncBank).toEqual([]);

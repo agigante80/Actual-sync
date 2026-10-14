@@ -1469,7 +1469,7 @@ let paymentsRequestSeq = 0;
 const paymentsExpanded = new Set();   // row keys whose occurrence strip is open
 const paymentsSyncing = new Set();    // server names with a started sync being watched
 const paymentsSyncErrors = new Map(); // server name -> "Could not start sync (...)"
-const paymentsSyncAlertEls = new Map(); // server name -> its role=alert node, reused across renders
+let paymentsReads = 0;                // status reads of the shared loop since a server was last queued
 const paymentsQueued = new Set();     // subset of paymentsSyncing whose POST succeeded
 let paymentsWatching = false;         // one shared status loop for every server in paymentsSyncing
 let paymentsNullStreak = 0;           // consecutive successful null runningSync reads of that loop
@@ -1711,18 +1711,12 @@ function buildPaymentsGroup(group, groupIndex) {
 
     const syncError = paymentsSyncErrors.get(group.server);
     if (syncError) {
-        // Reuse the node and rewrite its text only on change, so a re-render
-        // (search keystroke, poll) does not make a screen reader announce it again.
-        let alertEl = paymentsSyncAlertEls.get(group.server);
-        if (!alertEl) {
-            alertEl = payEl('div', 'pay-sync-error', '');
-            alertEl.setAttribute('role', 'alert');
-            paymentsSyncAlertEls.set(group.server, alertEl);
-        }
-        if (alertEl.textContent !== syncError) alertEl.textContent = syncError;
-        head.appendChild(alertEl);
-    } else {
-        paymentsSyncAlertEls.delete(group.server);
+        // Plain visible text, deliberately NOT role=alert: renderPayments rebuilds
+        // #payments-content on every keystroke and poll, and a rebuilt (or
+        // re-appended) alert node is announced again by Chromium and Firefox.
+        // The announcement comes from the persistent #payments-sync-status live
+        // region instead. Do not put the role back on this node (round 2, L1).
+        head.appendChild(payEl('div', 'pay-sync-error', syncError));
     }
     section.appendChild(head);
 
@@ -1750,6 +1744,15 @@ function renderPayments() {
 
     if (errorEl.textContent !== paymentsLoadError) errorEl.textContent = paymentsLoadError;
     errorEl.hidden = !paymentsLoadError;
+
+    // Sync-start errors are announced through one live region that lives outside
+    // #payments-content, so it survives re-renders, and is written only when its
+    // text changes (an unchanged rewrite can still re-announce).
+    const liveEl = document.getElementById('payments-sync-status');
+    if (liveEl) {
+        const liveText = [...paymentsSyncErrors].map(([name, msg]) => `${name}: ${msg}`).join('. ');
+        if (liveEl.textContent !== liveText) liveEl.textContent = liveText;
+    }
 
     // Keep the server select in step with the configured servers.
     const select = document.getElementById('payments-server');
@@ -1883,6 +1886,11 @@ async function paymentsSyncNow(serverName) {
     }
     paymentsQueued.add(serverName);
     paymentsNullStreak = 0; // a job was just queued: earlier null reads no longer count
+    // A newly queued server gets the full read budget, not what is left of an
+    // earlier server's run (else it could be marked done on 1 or 2 reads and the
+    // refresh would show pre-job data). Bounded: a server can be queued only once
+    // while busy, so the loop still ends. (round 2, L2)
+    paymentsReads = 0;
     if (!paymentsWatching) await watchPaymentsSync();
 }
 
@@ -1893,8 +1901,10 @@ async function watchPaymentsSync() {
     let stopped = false;
     try {
         // Counted in iterations, not time: the E2E page clock is frozen.
-        for (let reads = 0; reads < PAYMENTS_SYNC_MAX_POLLS && paymentsSyncing.size > 0; reads++) {
+        paymentsReads = 0;
+        while (paymentsReads < PAYMENTS_SYNC_MAX_POLLS && paymentsSyncing.size > 0) {
             await new Promise((resolve) => setTimeout(resolve, PAYMENTS_SYNC_POLL_MS));
+            paymentsReads += 1;
             if (paymentsSyncing.size === 0) break;
             if (document.hidden || !paymentsTabActive()) { stopped = true; break; }
             try {

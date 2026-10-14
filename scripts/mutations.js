@@ -2310,5 +2310,37 @@ module.exports = [
         anchor: '    if (errorEl.textContent !== paymentsLoadError) errorEl.textContent',
         mutant: '    if (true) errorEl.textContent',
         tests: 'dashboardPayments'
+    },
+    {
+        id: '341-loop-end-clears-pending', ticket: '#341',
+        desc: 'the loop ending frees a server whose POST is still pending',
+        file: 'src/services/dashboard.js',
+        anchor: 'paymentsQueued.forEach((name) => paymentsSyncing.delete(name));',
+        mutant: 'paymentsSyncing.clear();',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-late-queue-keeps-streak', ticket: '#341',
+        desc: 'a late-resolving POST keeps the earlier null-read streak',
+        file: 'src/services/dashboard.js',
+        anchor: '    paymentsNullStreak = 0; // a job was just queued',
+        mutant: '    // a job was just queued',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-late-queue-keeps-reads', ticket: '#341',
+        desc: 'a late-queued server inherits the shared loop read count',
+        file: 'src/services/dashboard.js',
+        anchor: '    paymentsReads = 0;\n    if (!paymentsWatching)',
+        mutant: '    if (!paymentsWatching)',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-live-region-rewritten', ticket: '#341',
+        desc: 'the sync-start live region is rewritten on every render',
+        file: 'src/services/dashboard.js',
+        anchor: 'if (liveEl.textContent !== liveText) liveEl.textContent',
+        mutant: 'if (true) liveEl.textContent',
+        tests: 'dashboardPayments'
     }
 ];

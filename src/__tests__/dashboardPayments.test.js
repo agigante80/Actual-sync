@@ -53,7 +53,7 @@ function makeEnv({ route, windowGlobals = {}, dateFormat = null } = {}) {
   const log = [];
   const els = {};
   const make = (id, tag = 'div') => { els[id] = new FakeEl(tag, log); return els[id]; };
-  make('payments-content'); make('payments-summary'); make('payments-error');
+  make('payments-content'); make('payments-summary'); make('payments-error'); make('payments-sync-status');
   const select = make('payments-server', 'select');
   select.value = '';
   const opt = new FakeEl('option', log); opt.value = ''; select.appendChild(opt);
@@ -261,7 +261,8 @@ describe('Payments tab client (#341)', () => {
       await flush();
       const errorEl = env.els['payments-content'].find((e) => e.className === 'pay-sync-error')[0];
       expect(errorEl.textContent).toBe('Could not start sync (HTTP 429)');
-      expect(errorEl.attrs.role).toBe('alert');
+      expect(errorEl.attrs.role).toBeUndefined(); // announced by the live region, not a re-rendered alert
+      expect(env.els['payments-sync-status'].textContent).toBe('Main: Could not start sync (HTTP 429)');
       expect(env.calls.some((c) => c.url.includes('/status'))).toBe(false);
     });
 
@@ -342,7 +343,7 @@ describe('Payments tab client (#341)', () => {
       expect(button.textContent).toBe('Sync now');
     });
 
-    test('re-rendering keeps the same alert nodes and does not rewrite their text', async () => {
+    test('re-rendering does not rewrite the live regions and the inline error has no role=alert', async () => {
       let boom = false;
       const env = makeEnv({
         route: (url, opts) => {
@@ -353,18 +354,91 @@ describe('Payments tab client (#341)', () => {
       });
       await env.api.loadPaymentsTab();
       await env.api.paymentsSyncNow('Main');
-      const syncAlert = () => env.els['payments-content'].find((e) => e.className === 'pay-sync-error')[0];
-      const first = syncAlert();
       boom = true;
       await env.api.loadPaymentsTab();
-      const errorEl = env.els['payments-error'];
       const writes = [];
-      let text = errorEl.textContent;
-      Object.defineProperty(errorEl, 'textContent', { get: () => text, set: (v) => { writes.push(v); text = v; } });
+      for (const id of ['payments-error', 'payments-sync-status']) {
+        const el = env.els[id];
+        let text = el.textContent;
+        Object.defineProperty(el, 'textContent', { get: () => text, set: (v) => { writes.push([id, v]); text = v; } });
+      }
       env.api.setPaymentStateFilter('attention');
       env.api.setPaymentStateFilter('all');
       expect(writes).toEqual([]);
-      expect(syncAlert()).toBe(first);
+      expect(env.els['payments-sync-status'].textContent).toBe('Main: Could not start sync (HTTP 429)');
+      const inline = env.els['payments-content'].find((e) => e.className === 'pay-sync-error')[0];
+      expect(inline.textContent).toBe('Could not start sync (HTTP 429)');
+      expect(inline.attrs.role).toBeUndefined();
+    });
+
+    describe('a second server whose POST resolves late (round 2)', () => {
+      // Main posts at once; Other's POST is held until the status read number
+      // `releaseAt`. statuses(n) gives the reply to read n (1-based).
+      const lateEnv = ({ releaseAt, statuses, windowGlobals }) => {
+        let release;
+        let reads = 0;
+        const env = makeEnv({
+          windowGlobals,
+          route: (url, opts) => {
+            if (opts.method === 'POST') {
+              if (JSON.parse(opts.body).server === 'Other') return new Promise((r) => { release = () => r(ok({ success: true })); });
+              return ok({ success: true });
+            }
+            if (url.includes('/api/dashboard/status')) {
+              reads += 1;
+              const reply = statuses(reads);
+              if (reads === releaseAt && release) release();
+              return ok({ runningSync: reply });
+            }
+            return payments(group({ server: 'Main' }), group({ server: 'Other' }));
+          }
+        });
+        env.statusReads = () => env.calls.filter((c) => c.url.includes('/status')).length;
+        env.release = () => release();
+        return env;
+      };
+      const BUSY = { key: 'x' };
+      const syncButtons = (env) => env.els['payments-content'].find((e) => e.attrs['data-action'] === 'paymentsSyncNow');
+
+      test('Other stays disabled while its POST is pending after Main\'s loop ends, then gets its own reads', async () => {
+        const env = lateEnv({ releaseAt: Infinity, statuses: () => null });
+        await env.api.loadPaymentsTab();
+        const main = env.api.paymentsSyncNow('Main');
+        const other = env.api.paymentsSyncNow('Other');
+        await main;
+        await flush();
+        expect(env.statusReads()).toBe(2); // Main finished on two null reads
+        const [, otherBtn] = syncButtons(env);
+        expect(otherBtn.disabled).toBe(true);
+        expect(otherBtn.textContent).toBe('Syncing...');
+        env.release();
+        await other;
+        await flush();
+        expect(env.statusReads()).toBe(4); // Other's own two null reads
+        expect(syncButtons(env).map((b) => b.disabled)).toEqual([false, false]);
+      });
+
+      test('a POST resolving after one null read restarts the two-null count', async () => {
+        const env = lateEnv({ releaseAt: 2, statuses: () => null });
+        await env.api.loadPaymentsTab();
+        const main = env.api.paymentsSyncNow('Main');
+        const other = env.api.paymentsSyncNow('Other');
+        await Promise.all([main, other]);
+        await flush();
+        // read 1 null (streak 1); Other's POST resolves during read 2, which resets the streak
+        // before read 2's own null is counted; read 3 makes two. Without the reset, read 2 would end it.
+        expect(env.statusReads()).toBe(3);
+      });
+
+      test('a server queued late in another\'s run gets the full read budget', async () => {
+        const env = lateEnv({ releaseAt: 2, statuses: () => BUSY, windowGlobals: { __paymentsSyncMaxPolls: 3 } });
+        await env.api.loadPaymentsTab();
+        const main = env.api.paymentsSyncNow('Main');
+        const other = env.api.paymentsSyncNow('Other');
+        await Promise.all([main, other]);
+        await flush();
+        expect(env.statusReads()).toBe(5); // 2 before the queue, then the cap of 3 again
+      });
     });
 
     test('polling stops, without a refresh, when the tab is switched away', async () => {
