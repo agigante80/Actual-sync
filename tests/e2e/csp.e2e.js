@@ -83,6 +83,14 @@ describe('dashboard under its Content-Security-Policy (#243)', () => {
     })).rejects.toThrow(/CSP violation[\s\S]*cdn\.example\.com/);
   });
 
+  test('withFixture rejects a CSP violation from the spec\'s last step', async () => {
+    await expect(withFixture('healthy', async ({ page, fixture }) => {
+      await page.goto(`${fixture.url}/dashboard`, { waitUntil: 'networkidle0' });
+      // No wait: the guard itself must give the report time to arrive.
+      await page.evaluate(() => fetch('https://cdn.example.com/x.js').catch(() => {}));
+    })).rejects.toThrow(/CSP violation[\s\S]*cdn\.example\.com/);
+  });
+
   test('withFixture rejects a CSP violation that happened before a later navigation', async () => {
     await expect(withFixture('healthy', async ({ page, fixture }) => {
       await page.goto(`${fixture.url}/dashboard`, { waitUntil: 'networkidle0' });

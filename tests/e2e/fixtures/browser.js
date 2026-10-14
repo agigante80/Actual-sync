@@ -284,6 +284,10 @@ async function withFixture(stateName, fn, options = {}) {
         + page.__externalRequests.map((u) => `  ${u}`).join('\n')
       );
     }
+    // The violation report reaches Node through the exposed binding, which is
+    // asynchronous: one page round trip lets a report from fn's last step land
+    // before the list is read. Without it a spec ending on the violation passes.
+    if (!page.isClosed()) await page.evaluate(() => new Promise((r) => setTimeout(r, 0))).catch(() => {});
     const violations = page.__cspViolations;
     if (violations.length) {
       throw new Error(

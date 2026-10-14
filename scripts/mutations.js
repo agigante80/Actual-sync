@@ -2861,6 +2861,14 @@ module.exports = [
         tests: 'e2eHarnessGuard'
     },
     {
+        id: '289-e2e-csp-report-round-trip-dropped', ticket: '#289',
+        desc: "withFixture reads the CSP violation list before a report from the spec's last step reaches Node",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "    if (!page.isClosed()) await page.evaluate(() => new Promise((r) => setTimeout(r, 0))).catch(() => {});",
+        mutant: "",
+        tests: 'e2eHarnessGuard'
+    },
+    {
         id: '289-port-readback-dropped', ticket: '#289',
         desc: "start() no longer reads the OS-assigned port back, so service.port stays 0 after port: 0",
         file: 'src/services/healthCheck.js',

@@ -44,7 +44,7 @@ describe('e2e harness guard (#289)', () => {
         'tests/e2e/csp.e2e.js', '-t', 'withFixture rejects'],
       { cwd: ROOT, encoding: 'utf8', timeout: 110000 }
     );
-    expect(res.stderr + res.stdout).toMatch(/3 passed/);
+    expect(res.stderr + res.stdout).toMatch(/4 passed/);
     expect(res.status).toBe(0);
   }, 120000);
 });
