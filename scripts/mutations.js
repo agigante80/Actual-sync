@@ -2986,6 +2986,153 @@ module.exports = [
         mutant: "if (!ok) { continue; }",
         tests: "scheduleAlertDelivery"
     },
+
+    // ---- #289: now() seam at per-call sites, port read-back ----------------------
+    {
+        id: '289-e2e-external-request-guard-dropped', ticket: '#289',
+        desc: "withFixture no longer fails when a spec's request was blocked by interception",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "    if (page.__externalRequests.length) {\n      throw new Error(",
+        mutant: "    if (false && page.__externalRequests.length) {\n      throw new Error(",
+        tests: 'e2eHarnessGuard'
+    },
+    {
+        id: '289-e2e-csp-violation-guard-dropped', ticket: '#289',
+        desc: "withFixture no longer fails when a CSP violation was recorded on the page",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "    if (violations.length) {\n      throw new Error(",
+        mutant: "    if (false && violations.length) {\n      throw new Error(",
+        tests: 'e2eHarnessGuard'
+    },
+    {
+        id: '289-e2e-csp-report-round-trip-dropped', ticket: '#289',
+        desc: "withFixture reads the CSP violation list before a report from the spec's last step reaches Node",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "    if (!page.isClosed()) await page.evaluate(() => new Promise((r) => setTimeout(r, 0))).catch(() => {});",
+        mutant: "",
+        tests: 'e2eHarnessGuard'
+    },
+    {
+        id: '289-port-readback-dropped', ticket: '#289',
+        desc: "start() no longer reads the OS-assigned port back, so service.port stays 0 after port: 0",
+        file: 'src/services/healthCheck.js',
+        anchor: "            this.port = this.server.address().port;",
+        mutant: "            void this.server.address().port;",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-health-uptime-real-clock', ticket: '#289',
+        desc: "/health computes uptime from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "this.app.get('/health', (req, res) => {\n      const uptime = Math.floor((this.now().getTime()",
+        mutant: "this.app.get('/health', (req, res) => {\n      const uptime = Math.floor((new Date().getTime()",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-health-timestamp-real-clock', ticket: '#289',
+        desc: "/health stamps its timestamp from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "const health = {\n        status: 'UP',\n        timestamp: this.now().toISOString(),",
+        mutant: "const health = {\n        status: 'UP',\n        timestamp: new Date().toISOString(),",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-metrics-uptime-real-clock', ticket: '#289',
+        desc: "/metrics computes uptime from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "this.app.get('/metrics', (req, res) => {\n      const uptime = Math.floor((this.now().getTime()",
+        mutant: "this.app.get('/metrics', (req, res) => {\n      const uptime = Math.floor((new Date().getTime()",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-metrics-timestamp-real-clock', ticket: '#289',
+        desc: "/metrics stamps its timestamp from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "status: this.getOverallStatus(),\n        timestamp: this.now().toISOString(),",
+        mutant: "status: this.getOverallStatus(),\n        timestamp: new Date().toISOString(),",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-ready-window-real-clock', ticket: '#289',
+        desc: "/ready measures its 60s startup window against the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "(this.now().getTime() - new Date(this.status.startTime).getTime()) < 60000;",
+        mutant: "(new Date().getTime() - new Date(this.status.startTime).getTime()) < 60000;",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-ready-timestamp-real-clock', ticket: '#289',
+        desc: "/ready READY response stamps the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "res.json({ status: 'READY', timestamp: this.now().toISOString() });",
+        mutant: "res.json({ status: 'READY', timestamp: new Date().toISOString() });",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-not-ready-timestamp-real-clock', ticket: '#289',
+        desc: "/ready NOT_READY response stamps the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "status: 'NOT_READY', \n          timestamp: this.now().toISOString(),",
+        mutant: "status: 'NOT_READY', \n          timestamp: new Date().toISOString(),",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-last-sync-time-real-clock', ticket: '#289',
+        desc: "updateSyncStatus stamps lastSyncTime from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "this.status.lastSyncTime = this.now().toISOString();",
+        mutant: "this.status.lastSyncTime = new Date().toISOString();",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-server-version-checked-at-real-clock', ticket: '#289',
+        desc: "updateServerVersion stamps checkedAt from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "checkedAt: this.now().toISOString()",
+        mutant: "checkedAt: new Date().toISOString()",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-history-cutoff-real-clock', ticket: '#289',
+        desc: "getHistory measures its days cutoff from the real clock instead of now()",
+        file: 'src/services/syncHistory.js',
+        anchor: "const cutoffDate = this.now();\n        cutoffDate.setDate(cutoffDate.getDate() - filters.days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      query += ' ORDER BY timestamp DESC';",
+        mutant: "const cutoffDate = new Date();\n        cutoffDate.setDate(cutoffDate.getDate() - filters.days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      query += ' ORDER BY timestamp DESC';",
+        tests: 'syncHistory'
+    },
+    {
+        id: '289-statistics-cutoff-real-clock', ticket: '#289',
+        desc: "getStatistics measures its days cutoff from the real clock instead of now()",
+        file: 'src/services/syncHistory.js',
+        anchor: "const cutoffDate = this.now();\n        cutoffDate.setDate(cutoffDate.getDate() - filters.days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      const stmt = this.db.prepare(query);\n      const stats",
+        mutant: "const cutoffDate = new Date();\n        cutoffDate.setDate(cutoffDate.getDate() - filters.days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      const stmt = this.db.prepare(query);\n      const stats",
+        tests: 'syncHistory'
+    },
+    {
+        id: '289-statistics-by-server-cutoff-real-clock', ticket: '#289',
+        desc: "getStatisticsByServer measures its days cutoff from the real clock instead of now()",
+        file: 'src/services/syncHistory.js',
+        anchor: "if (days) {\n        const cutoffDate = this.now();\n        cutoffDate.setDate(cutoffDate.getDate() - days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      query += ' GROUP BY",
+        mutant: "if (days) {\n        const cutoffDate = new Date();\n        cutoffDate.setDate(cutoffDate.getDate() - days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      query += ' GROUP BY",
+        tests: 'syncHistory'
+    },
+    {
+        id: '289-cleanup-cutoff-real-clock', ticket: '#289',
+        desc: "cleanup measures the sync_history retention cutoff from the real clock instead of now()",
+        file: 'src/services/syncHistory.js',
+        anchor: "try {\n      const cutoffDate = this.now();\n      cutoffDate.setDate(cutoffDate.getDate() - this.retentionDays);",
+        mutant: "try {\n      const cutoffDate = new Date();\n      cutoffDate.setDate(cutoffDate.getDate() - this.retentionDays);",
+        tests: 'syncHistory'
+    },
+    {
+        id: '289-schedule-alerts-cutoff-real-clock', ticket: '#289',
+        desc: "cleanup measures the schedule_alerts retention cutoff from the real clock instead of now()",
+        file: 'src/services/syncHistory.js',
+        anchor: "const scheduleAlertsCutoff = this.now();",
+        mutant: "const scheduleAlertsCutoff = new Date();",
+        tests: 'syncHistory'
+    },
+
     // ---- #326: completed one-off schedule closes its open missing ---------
     {
         id: '326-completed-oneoff-not-bound', ticket: '#326',
