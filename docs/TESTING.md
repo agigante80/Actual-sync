@@ -283,8 +283,8 @@ CommonJS runtime refuses unless Node itself starts with
   the fixture server uses) - so a screenshot or an assertion never depends on
   wall-clock time.
 - **Network lockdown**: every request is intercepted. Only same-origin
-  requests to the fixture server and the pinned local copy of Chart.js (served
-  at the exact CDN URL `dashboard.html` hardcodes) are allowed through;
+  requests to the fixture server are allowed through (the dashboard serves
+  Chart.js itself from its npm dependency, #244, so nothing is faked);
   everything else, including the browser's own `/favicon.ico` request on every
   navigation, is answered locally or blocked, so a spec can never reach the
   real network or silently consume its own rate-limit budget on a request it
@@ -294,7 +294,8 @@ CommonJS runtime refuses unless Node itself starts with
 
 ### What is covered
 
-Login and the login rate limit, manual sync triggering and error dismissal,
+Login, the general 60-requests-per-minute rate limiter (the separate login
+failure throttle from #246 has no E2E spec), manual sync triggering and error dismissal,
 and the Overview, History, Analytics, Settings and Accounts tabs - each
 against a fixture state built for that scenario. See the spec files under
 `tests/e2e/*.e2e.js` for the exact assertions.

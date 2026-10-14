@@ -138,6 +138,39 @@ describe('validateTemplate', () => {
       }
     });
 
+    // L1 (#294): decorators used to fall through the statement walk's default
+    // branch, pass validation, and throw "Missing decorator" at render time.
+    test('an inline decorator throws unknown_helper at validation, not render', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{*foo}}', { key: 'dec', variables: [] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_helper');
+        expect(err.key).toBe('dec');
+      }
+    });
+
+    test('a decorator block throws unknown_helper at validation', () => {
+      expect.assertions(1);
+      try {
+        validateTemplate('{{#*inline "x"}}a{{/inline}}', { key: 'dec', variables: [] });
+      } catch (err) {
+        expect(err.reason).toBe('unknown_helper');
+      }
+    });
+
+    // L2 (#294): Handlebars reports a mismatched block as "... - 3:3", not
+    // "Parse error on line N".
+    test('a mismatched block reports the real line, not line 1', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('a\nb\n{{#if x}}c{{/unless}}', { key: 'mm', variables: ['x'] });
+      } catch (err) {
+        expect(err.reason).toBe('parse_error');
+        expect(err.line).toBe(3);
+      }
+    });
+
     test('a partial reference always throws unknown_helper', () => {
       expect.assertions(1);
       try {
@@ -313,6 +346,18 @@ describe('validateTemplate', () => {
   });
 
   describe('Telegram literal markup (channel: telegram)', () => {
+    // L1 (#294 review round 1): a standalone block tag's line is stripped from
+    // node.value, so counting lines in the stripped value under-reported.
+    test('reports the real line after a standalone block tag', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('{{#if x}}\nok\n{{/if}}\n<i>x', { key: 'sa', variables: ['x'], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+        expect(err.line).toBe(4);
+      }
+    });
+
     test('a bare & in literal text throws telegram_markup', () => {
       expect.assertions(2);
       try {
@@ -345,6 +390,70 @@ describe('validateTemplate', () => {
       expect(() => {
         validateTemplate('<b>{{name}}</b>', { key: 'reminder', variables: ['name'], channel: 'telegram' });
       }).not.toThrow();
+    });
+
+    // L3 (#294): the Telegram-valid entities are the only way to write a
+    // literal & in a Telegram template.
+    test.each(['&amp;', '&lt;', '&gt;', '&quot;'])('the Telegram entity %s is allowed in literal text', (entity) => {
+      expect(() => {
+        validateTemplate(`Rent ${entity} fees`, { key: 'reminder', variables: [], channel: 'telegram' });
+      }).not.toThrow();
+    });
+
+    test.each(['&nbsp;', '&#38;', '&amp', '&bogus;'])('%s is still rejected', (bad) => {
+      expect.assertions(1);
+      try {
+        validateTemplate(`Rent ${bad} fees`, { key: 'reminder', variables: [], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+      }
+    });
+
+    // L5 (#294): unbalanced tags were only caught by the runtime 400 retry.
+    test('an unclosed allowed tag throws telegram_markup', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('<b>{{name}}', { key: 'reminder', variables: ['name'], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+        expect(err.token).toBe('<b>');
+      }
+    });
+
+    test('a closing tag with no opener throws telegram_markup', () => {
+      expect.assertions(2);
+      try {
+        validateTemplate('x</b>', { key: 'reminder', variables: [], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+        expect(err.token).toBe('</b>');
+      }
+    });
+
+    test('crossed tags throw telegram_markup', () => {
+      expect.assertions(1);
+      try {
+        validateTemplate('<b><i>{{name}}</b></i>', { key: 'reminder', variables: ['name'], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+      }
+    });
+
+    test('a tag pair that spans a mustache and a block is balanced', () => {
+      expect(() => {
+        validateTemplate('<b>{{name}}</b> <i>{{#if name}}<u>{{name}}</u>{{/if}}</i>', {
+          key: 'reminder', variables: ['name'], channel: 'telegram'
+        });
+      }).not.toThrow();
+    });
+
+    test('a tag opened outside a block and closed inside it throws telegram_markup', () => {
+      expect.assertions(1);
+      try {
+        validateTemplate('<b>{{#if name}}x</b>{{/if}}', { key: 'reminder', variables: ['name'], channel: 'telegram' });
+      } catch (err) {
+        expect(err.reason).toBe('telegram_markup');
+      }
     });
 
     test('without channel: telegram, the same literal & is not checked', () => {
@@ -389,6 +498,20 @@ describe('compileTemplateSet / render', () => {
 
     expect(render('payee', { payee: 'Bob & Co' }, 'telegram')).toBe('BOB &amp; CO');
     expect(render('payee', { payee: 'Bob & Co' }, 'ntfy')).toBe('BOB & CO');
+  });
+
+  // L6 (#294): String(undefined) rendered the word UNDEFINED.
+  test('upper and lower render an undefined or null value as empty, not the word', () => {
+    const { render } = compileTemplateSet({
+      templates: { up: '[{{upper note}}]', low: '[{{lower note}}]' },
+      variables: ['note'],
+      channels: ['ntfy']
+    });
+
+    expect(render('up', {}, 'ntfy')).toBe('[]');
+    expect(render('up', { note: null }, 'ntfy')).toBe('[]');
+    expect(render('low', { note: undefined }, 'ntfy')).toBe('[]');
+    expect(render('up', { note: 0 }, 'ntfy')).toBe('[0]');
   });
 
   test('a raw <b>x</b> value is escaped for both Telegram and Slack', () => {

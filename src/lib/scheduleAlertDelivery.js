@@ -37,7 +37,7 @@
  * endpoint is preserved for the non-digest case in `sendEvent`).
  *
  * #295 review, H5: the ledger is keyed per destination (`schedule_alerts.channel`,
- * e.g. `slack:#a1b2c3d4` - see `destinationKey`, which never stores the raw
+ * e.g. `slack:#ops-alerts:a1b2c3d4` - see `destinationKey`, which never stores the raw
  * webhook URL, #295 review round 2, M8), not just per event. Previously a
  * single `allOk` flag spanned every destination of every requested channel,
  * so one dead destination withheld the ledger row for the whole event and
@@ -52,6 +52,20 @@
 const moment = require('moment-timezone');
 const crypto = require('crypto');
 const { compileTemplateSet } = require('./templateRenderer');
+const { MAX_LOOKBACK_DAYS } = require('./scheduleAlerts');
+const { DISCORD_CONTENT_MAX, SLACK_TEXT_MAX, TELEGRAM_TEXT_MAX, escapeTelegramHtml, escapeSlack } = require('./channelEscape');
+
+/**
+ * Per-channel message length caps a digest must fit under (#294 review
+ * round 1, M1). Channels not listed have no cap worth fitting.
+ */
+const DIGEST_CAPS = { telegram: TELEGRAM_TEXT_MAX, discord: DISCORD_CONTENT_MAX, slack: SLACK_TEXT_MAX };
+
+/** Longest text field of a built digest payload, in code points. */
+function digestLength(channel, outputs) {
+  const payload = outputs[channel] || {};
+  return Math.max(...[payload.html, payload.plain, payload.text].filter((v) => typeof v === 'string').map((v) => [...v].length), 0);
+}
 
 /** Every channel key `deliver` can request from `sender.sendTemplated`. */
 const ALL_CHANNELS = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'];
@@ -59,19 +73,28 @@ const ALL_CHANNELS = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'
 /**
  * A ledger-safe key identifying one destination (#295 review round 2, M8).
  * Previously this was `${channel}:${target.url}`, storing the full webhook
- * URL - a secret - in plain text in sync-history.db. This keys by the
- * operator's own `name` for the webhook when configured (stable and already
- * how they refer to it), or otherwise a short, non-reversible sha256 hash of
- * the URL, e.g. `slack:#a1b2c3d4`. A single-destination channel (telegram,
- * email, ntfy) has no URL at all and keys by the channel name alone, as
- * before.
+ * URL - a secret - in plain text in sync-history.db. A webhook-style target
+ * is now keyed `channel:#name:hash`, e.g. `slack:#ops-alerts:a1b2c3d4`: the
+ * operator's own `name` (readable in the ledger; empty when unset) plus a
+ * short, non-reversible sha256 hash of the URL. A single-destination channel
+ * (telegram, email, ntfy) has no URL at all and keys by the channel name
+ * alone, as before.
  *
- * Trade-off: adding a webhook, renaming one, or rotating its URL (with no
- * name set) changes its key, which the ledger has never seen before, so any
- * currently-open alert is re-sent once to it before settling into the normal
- * per-destination dedup/reminder cycle. This is accepted: it is strictly
- * safer than either storing the secret or silently losing track of in-flight
- * alerts across a rename/rotation.
+ * #297 F3: the hash is ALWAYS part of the key. The key used to be the name
+ * alone when one was set, so two webhooks of one channel sharing a name
+ * (nothing in the config forbids it) collapsed to one key: the first to
+ * succeed wrote the row and the other was treated as already delivered, so a
+ * failed destination was never retried. The URL hash tells them apart.
+ *
+ * Trade-off: adding a webhook, renaming one, or rotating its URL changes its
+ * key, which the ledger has never seen before, so any currently-open alert is
+ * re-sent once to it before settling into the normal per-destination
+ * dedup/reminder cycle. This is accepted: it is strictly safer than either
+ * storing the secret or silently losing track of in-flight alerts across a
+ * rename/rotation. Because a `resolved` message is only sent to a destination
+ * that holds its own `missing` row, an alert that is paid before the renamed
+ * or rotated destination received the re-sent `missing` never sends
+ * `resolved` there (#297 F6, documented in docs/SCHEDULE_ALERTS.md).
  *
  * @param {string} channel
  * @param {{name?:string, url?:string}} target
@@ -79,9 +102,8 @@ const ALL_CHANNELS = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'
  */
 function destinationKey(channel, target) {
   if (!target.url) return channel;
-  if (target.name) return `${channel}:#${target.name}`;
   const hash = crypto.createHash('sha256').update(target.url).digest('hex').slice(0, 8);
-  return `${channel}:#${hash}`;
+  return `${channel}:#${target.name || ''}:${hash}`;
 }
 
 /**
@@ -104,8 +126,8 @@ const VARIABLES = [
   'expected_amount', 'expected_date', 'deadline', 'grace_days',
   'period', 'cadence',
   'days_overdue', 'received_amount', 'received_date', 'difference',
-  'last_sync', 'budget', 'alert_id',
-  'expected_amount_raw', 'expected_date_raw', 'deadline_raw', 'days_overdue_raw',
+  'last_sync', 'reason', 'budget', 'alert_id',
+  'closed_by', 'expected_amount_raw', 'expected_date_raw', 'deadline_raw', 'days_overdue_raw',
   'received_amount_raw', 'received_date_raw', 'difference_raw', 'last_sync_raw'
 ];
 
@@ -122,10 +144,20 @@ const DEFAULT_TEMPLATES = {
     + 'from {{payee}} into {{account}} by {{deadline}} (for {{period}}, {{cadence}}). {{days_overdue}} day(s) overdue.{{/if}}',
   wrongAmount: '⚠️ {{name}}: received {{received_amount}} on {{received_date}}, expected {{expected_amount}} '
     + '(difference {{difference}}).',
-  resolved: '✅ {{name}}: {{received_amount}} arrived {{received_date}}, {{#if (eq days_overdue 0)}}on time'
-    + '{{else}}{{days_overdue}} day(s) after the deadline{{/if}}. Alert closed.',
-  cannotCheck: '⏸️ Cannot check {{name}}: {{account}} has not synced since {{last_sync}} (deadline {{deadline}}). '
-    + 'Check the bank connection.',
+  // #326: `closed_by` is "completed" when the one-off schedule was marked
+  // completed in Actual instead of a payment arriving; the other branch is the
+  // original text, unchanged. #356: "deleted" is the schedule removed from Actual.
+  resolved: '{{#if (eq closed_by "completed")}}✅ {{name}}: marked completed in Actual. Alert closed.'
+    + '{{else if (eq closed_by "deleted")}}✅ {{name}} ({{expected_date}}): removed in Actual. Alert closed.{{else}}'
+    + '✅ {{name}}: {{received_amount}} arrived {{received_date}}, {{#if (eq days_overdue 0)}}on time'
+    + '{{else}}{{days_overdue}} day(s) after the deadline{{/if}}. Alert closed.{{/if}}',
+  // One wording per `reason` (#296): only stale / not-synced are about the bank
+  // connection; interval-violation and error are about the rule and the service.
+  cannotCheck: '{{#if (eq reason "interval-violation")}}⏸️ Cannot check {{name}}: the rule\'s graceDays plus earlyDays '
+    + 'reach the schedule\'s interval between occurrences, so its windows would overlap. Shorten them in config.json.'
+    + '{{else if (eq reason "error")}}⏸️ Cannot check {{name}}: the check failed with an error. See the service log.'
+    + '{{else}}⏸️ Cannot check {{name}}: {{account}} {{#if last_sync}}has not synced since {{last_sync}}{{else}}has never synced{{/if}} (deadline {{deadline}}). '
+    + 'Check the bank connection.{{/if}}',
   ruleUnmatched: '❓ Payment alert "{{alert_id}}" matches no schedule in {{budget}}. Check the schedule name in Actual.'
 };
 
@@ -204,7 +236,7 @@ function buildContext(event, evaluation, rule, { server, timezone }) {
   const daysOverdue = event.daysOverdue != null ? event.daysOverdue : null;
 
   return {
-    name: (evaluation && evaluation.name) || rule.scheduleName || rule.id,
+    name: (evaluation && evaluation.name) || event.scheduleName || rule.scheduleName || rule.id,
     payee: evaluation ? evaluation.payee : null,
     account: evaluation ? evaluation.account : null,
     direction,
@@ -227,6 +259,8 @@ function buildContext(event, evaluation, rule, { server, timezone }) {
     difference_raw: event.difference != null ? event.difference : null,
     last_sync: formatDate(event.lastSync, dateFormat, timezone),
     last_sync_raw: event.lastSync || null,
+    reason: event.reason || null,
+    closed_by: event.closedBy || null,
     budget: server,
     alert_id: event.alertId
   };
@@ -286,8 +320,9 @@ function resolveChannels(rule, sender) {
  * Every individual destination a rule can send to right now: one entry per
  * `(channel, target)` pair `resolveChannels`/`resolveTargets` expose. `key`
  * uniquely identifies the destination for the ledger (#295 review, H5): the
- * channel name alone for a single-destination channel, `channel:url` for a
- * webhook-style channel that can have several.
+ * channel name alone for a single-destination channel, `channel:#name:hash`
+ * (see `destinationKey`, never the raw URL) for a webhook-style channel that
+ * can have several.
  *
  * @param {Object} rule
  * @param {{config?:Object}} sender
@@ -304,16 +339,35 @@ function destinationsForRule(rule, sender) {
 }
 
 /**
- * The subset of a rule's destinations still due for one event: never sent to
- * that destination before (#295 review, H5), or, for `missing`/
- * `ruleUnmatched`, due for a reminder (`rule.remindEveryDays`, calendar-day
- * comparison per M7). Shared by `mayRecord` (the entry gate) and
- * `sendEvent`/`sendDigestBatch` (what actually gets attempted and recorded),
- * so the two can never disagree about what is due.
+ * Whether ONE destination (identified by its ledger key) still needs `event`.
+ * Shared by `dueDestinations` (and so by `mayRecord` and `sendEvent`) and by
+ * `sendDigestBatch`, so the entry gate and what actually gets attempted and
+ * recorded can never disagree about what is due.
  *
- * @returns {Promise<Array<{channel:string, target:Object, key:string}>>}
+ * - `resolved`: due only if this destination holds its own `missing` row and
+ *   no `resolved` row yet (#295 review round 2, M5).
+ * - any other event: due if the destination has no row for it yet (#295
+ *   review, H5); `missing` is additionally due again once `remindEveryDays`
+ *   calendar days (M7) have passed since the latest row. `ruleUnmatched` (#356)
+ *   is sent once per destination while the rule stays unmatched, and is due
+ *   again only after a `ruleMatched` row (see `markRulesMatched`) is newer
+ *   than its latest row.
+ *
+ * @returns {Promise<boolean>}
  */
 async function isDestinationDue(event, rule, destinationKey, history, server, now, timezone) {
+  return (await destinationDueState(event, rule, destinationKey, history, server, now, timezone)).due;
+}
+
+/**
+ * `isDestinationDue` plus when this destination last got the event
+ * (`lastSentAt`, an ISO string, or null when it never has). The digest uses
+ * it to send never-sent and longest-waiting items first (#294 review round 2,
+ * H1).
+ *
+ * @returns {Promise<{due: boolean, lastSentAt: ?string}>}
+ */
+async function destinationDueState(event, rule, destinationKey, history, server, now, timezone) {
   // #295 review round 2, M5: a `resolved` event is only meaningful for a
   // destination that actually received the original `missing` alert, and
   // must retry to any destination that has not YET recorded `resolved`,
@@ -325,25 +379,43 @@ async function isDestinationDue(event, rule, destinationKey, history, server, no
       server, alertId: event.alertId, scheduleId: event.scheduleId,
       occurrenceDate: event.occurrence, event: 'missing', channel: destinationKey
     });
-    if (!missingRow) return false; // this destination was never told it was missing
+    if (!missingRow) return { due: false, lastSentAt: null }; // this destination was never told it was missing
     const resolvedRow = await history.findLatestScheduleAlert({
       server, alertId: event.alertId, scheduleId: event.scheduleId,
       occurrenceDate: event.occurrence, event: 'resolved', channel: destinationKey
     });
-    return !resolvedRow;
+    // #326 review M2: a resolved is final only if no `missing` was recorded after
+    // it. A schedule completed (resolved), then uncompleted, restarts its
+    // reminders; the next close (payment or completion) must be delivered
+    // again. Same for a transaction unlinked after a resolved and relinked.
+    return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };
   }
 
   const latest = await history.findLatestScheduleAlert({
     server, alertId: event.alertId, scheduleId: event.scheduleId,
     occurrenceDate: event.occurrence, event: event.event, channel: destinationKey
   });
-  if (!latest) return true;
-  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return false; // one row per destination, ever
-  const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;
-  if (!remindEveryDays) return false;
-  return calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays;
+  if (!latest) return { due: true, lastSentAt: null };
+  if (event.event === 'ruleUnmatched') {
+    // #356: no reminder interval. The rule matching again (a `ruleMatched`
+    // marker newer than this destination's row) re-arms it.
+    const matchedRow = await history.findLatestScheduleAlert({
+      server, alertId: event.alertId, scheduleId: null, occurrenceDate: null, event: 'ruleMatched'
+    });
+    return { due: !!matchedRow && matchedRow.recordedAt > latest.recordedAt, lastSentAt: latest.recordedAt };
+  }
+  if (event.event !== 'missing') return { due: false, lastSentAt: null }; // one row per destination, ever
+  const remindEveryDays = rule.remindEveryDays;
+  if (!remindEveryDays) return { due: false, lastSentAt: null };
+  return { due: calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays, lastSentAt: latest.recordedAt };
 }
 
+/**
+ * The subset of a rule's destinations still due for one event
+ * (`isDestinationDue` applied to each of `destinationsForRule`).
+ *
+ * @returns {Promise<Array<{channel:string, target:Object, key:string}>>}
+ */
 async function dueDestinations(event, rule, sender, history, server, now, timezone) {
   const destinations = destinationsForRule(rule, sender);
   const due = [];
@@ -492,13 +564,23 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
       return false;
     }
 
-    const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+    const templates = templatesFor(event, rule);
     const channels = Array.from(new Set(destinations.map((d) => d.channel)));
     const modes = channels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
     const context = buildContext(event, evaluation, rule, { server, timezone });
 
+    // #337: immediate mode visits the destination attempted longest ago
+    // first (never-attempted before all), sharing the digest attempt map
+    // under a 'dest|' key prefix. Without this, a hanging first destination
+    // spends the budget every run and later ones never get a row. Sort is
+    // stable, so ties keep configured order.
+    const attempts = digestAttempts.get(server) || new Map();
+    digestAttempts.set(server, attempts);
+    const ordered = [...destinations]
+      .sort((a, b) => (attempts.get(`dest|${a.key}`) || 0) - (attempts.get(`dest|${b.key}`) || 0));
+
     let sentAny = false;
-    for (const destination of destinations) {
+    for (const destination of ordered) {
       if (deadline != null && Date.now() >= deadline) {
         logger.warn('Schedule alert delivery budget exhausted; destination deferred to next sync', {
           server, alertId: event.alertId, event: event.event, channel: destination.channel
@@ -506,6 +588,8 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
         break;
       }
       let ok = false;
+      digestAttemptSeq += 1;
+      attempts.set(`dest|${destination.key}`, digestAttemptSeq);
       try {
         const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
         const channelOutputs = buildChannelOutput(renderer, event.event, context, destination.channel, destination.target, context.name);
@@ -518,11 +602,22 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
         });
       }
       if (ok) {
-        await history.recordScheduleAlert({
-          server, alertId: event.alertId, scheduleId: event.scheduleId, occurrenceDate: event.occurrence,
-          event: event.event, delivery: 'sent', channel: destination.key
-        });
-        sentAny = true;
+        // #332: the message already went out, so a failed ledger write must not
+        // abort the remaining destinations or turn the event into "skipped"
+        // when an earlier destination has a row. Same rule as the digest path:
+        // this destination has no row (may be resent next sync) and does not
+        // count as sent.
+        try {
+          await history.recordScheduleAlert({
+            server, alertId: event.alertId, scheduleId: event.scheduleId, occurrenceDate: event.occurrence,
+            event: event.event, delivery: 'sent', channel: destination.key
+          });
+          sentAny = true;
+        } catch (error) {
+          logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {
+            server, alertId: event.alertId, event: event.event, channel: destination.channel, error: error.message
+          });
+        }
       }
     }
     return sentAny;
@@ -538,12 +633,12 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
  * Build one channel's merged digest payload: every eligible event's own
  * render, in that channel's mode, joined under one header.
  */
-function buildDigestOutput(channel, header, linesByMode, target, server) {
+function buildDigestOutput(channel, header, linesByMode, target, server, htmlHeader = header) {
   switch (channel) {
     case 'telegram': {
       return {
         telegram: {
-          html: `${header}\n\n${linesByMode.telegram.join('\n')}`,
+          html: `${htmlHeader}\n\n${linesByMode.telegram.join('\n')}`,
           plain: `${header}\n\n${linesByMode.email_text.join('\n')}`
         }
       };
@@ -553,7 +648,7 @@ function buildDigestOutput(channel, header, linesByMode, target, server) {
         email: {
           subject: `Actual-sync: payment alerts for ${server}`,
           text: `${header}\n\n${linesByMode.email_text.join('\n')}`,
-          html: `<p>${header}</p><ul>${linesByMode.email_html.map((line) => `<li>${line}</li>`).join('')}</ul>`
+          html: `<p>${htmlHeader}</p><ul>${linesByMode.email_html.map((line) => `<li>${line}</li>`).join('')}</ul>`
         }
       };
     case 'slack':
@@ -577,6 +672,38 @@ function buildDigestOutput(channel, header, linesByMode, target, server) {
  */
 function eventKey(event) {
   return `${event.alertId}|${event.scheduleId}|${event.occurrence}|${event.event}`;
+}
+
+/**
+ * #337: per server, the sequence number of the last digest send STARTED per
+ * channel. In memory on purpose: it only has to break the tie between
+ * channels that the ledger cannot (a channel that never succeeds has no
+ * ledger row, so "least recently delivered" cannot tell it from one the
+ * deadline never reached). A process restart resets it to insertion order.
+ */
+const digestAttempts = new Map();
+let digestAttemptSeq = 0;
+
+/**
+ * #338: when an eligible event's longest-waiting due destination last got it
+ * (epoch ms; -Infinity when some due destination never has). A failing
+ * ledger lookup sorts the event last rather than throwing.
+ */
+async function waitingSince(item, sender, history, server, now, timezone) {
+  let oldest = Infinity;
+  let oldestAttempt = Infinity;
+  const attempts = digestAttempts.get(server) || new Map();
+  try {
+    for (const destination of destinationsForRule(item.rule, sender)) {
+      const state = await destinationDueState(item.event, item.rule, destination.key, history, server, now, timezone);
+      if (!state.due) continue;
+      oldest = Math.min(oldest, state.lastSentAt == null ? -Infinity : Date.parse(state.lastSentAt));
+      oldestAttempt = Math.min(oldestAttempt, attempts.get(`dest|${destination.key}`) || 0);
+    }
+  } catch (_error) {
+    return { since: Infinity, attempt: Infinity };
+  }
+  return { since: oldest, attempt: oldestAttempt };
 }
 
 /**
@@ -621,7 +748,17 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
 
   const sentKeys = new Set();
 
-  for (const [channel, channelItems] of perChannelItems) {
+  // #337: visit the channel attempted longest ago first (never-attempted
+  // before all), not in Map insertion order. A channel whose send hangs or
+  // fails until the budget is spent is stamped as attempted below, so next
+  // run it yields to the channels the deadline cut off. Array.prototype.sort
+  // is stable, so ties keep insertion order.
+  const attempts = digestAttempts.get(server) || new Map();
+  digestAttempts.set(server, attempts);
+  const orderedChannels = Array.from(perChannelItems.entries())
+    .sort((a, b) => (attempts.get(a[0]) || 0) - (attempts.get(b[0]) || 0));
+
+  for (const [channel, channelItems] of orderedChannels) {
     if (deadline != null && Date.now() >= deadline) {
       logger.warn('Schedule alert delivery budget exhausted; remaining digest channels deferred to next sync', {
         server, channel
@@ -634,23 +771,45 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     if (!target) continue; // resolveChannels already guarantees this, defensive only
     const key = destinationKey(channel, target);
 
+    // #332: same guard as `sendEvent` (#297 round 1, L1). A ledger read that
+    // fails (e.g. SQLITE_BUSY) withholds only this channel's digest this sync
+    // (WARN, no send, no row; retried next sync), never the other channels.
     const dueItems = [];
-    for (const item of channelItems) {
-      if (await isDestinationDue(item.event, item.rule, key, history, server, now, timezone)) dueItems.push(item);
+    try {
+      for (const item of channelItems) {
+        const state = await destinationDueState(item.event, item.rule, key, history, server, now, timezone);
+        if (state.due) dueItems.push({ item, lastSentAt: state.lastSentAt });
+      }
+    } catch (error) {
+      logger.warn('Schedule alert ledger lookup failed; destination withheld until the next sync', {
+        server, channel, error: error.message
+      });
+      continue;
     }
     if (dueItems.length === 0) continue;
 
     const modes = CHANNEL_TO_MODES[channel] || [];
-    const linesByMode = {};
-    for (const mode of modes) linesByMode[mode] = [];
+    // #294 review round 2, H1: fit never-sent items first, then the ones
+    // that have waited longest on this destination. Without this a daily
+    // reminder (`remindEveryDays: 1`, or `ruleUnmatched`) re-sorts the items
+    // already sent ahead of the deferred tail and fills the cap again, so the
+    // tail never goes out. Array.prototype.sort is stable, so ties keep their
+    // original order.
+    const sentAtMs = (d) => (d.lastSentAt == null ? -Infinity : Date.parse(d.lastSentAt));
+    dueItems.sort((a, b) => {
+      const x = sentAtMs(a);
+      const y = sentAtMs(b);
+      return x === y ? 0 : (x < y ? -1 : 1);
+    });
     const rendered = [];
-    for (const item of dueItems) {
+    for (const { item } of dueItems) {
       try {
-        const templates = { ...DEFAULT_TEMPLATES, ...(item.rule.templates || {}) };
+        const templates = templatesFor(item.event, item.rule);
         const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
         const context = buildContext(item.event, item.evaluation, item.rule, { server, timezone });
-        for (const mode of modes) linesByMode[mode].push(renderer.render(item.event.event, context, mode));
-        rendered.push(item);
+        const lines = {};
+        for (const mode of modes) lines[mode] = renderer.render(item.event.event, context, mode);
+        rendered.push({ item, lines });
       } catch (error) {
         logger.warn('Schedule alert digest render failed for one item; item skipped', {
           server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message
@@ -659,18 +818,58 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     }
     if (rendered.length === 0) continue;
 
-    const header = `Actual-sync: ${rendered.length} payment alert(s) for ${server}`;
-    const channelOutputs = buildDigestOutput(channel, header, linesByMode, target, server);
+    // #294 review round 1, M1: add whole items while the digest fits this
+    // channel's length cap; only the items actually included are recorded,
+    // so the rest stay due and go on the next sync instead of being cut off
+    // mid-message and ledgered as sent. The first item is always included
+    // (a single oversized event is truncated by the sender as a safety net).
+    const build = (count) => {
+      const linesByMode = {};
+      for (const mode of modes) linesByMode[mode] = rendered.slice(0, count).map((r) => r.lines[mode]);
+      const header = `Actual-sync: ${count} payment alert(s) for ${server}`;
+      // Telegram's html and the email html body are parsed as HTML: an unescaped
+      // `&` or `<` in the server name would make every Telegram digest fall back
+      // to plain text and would inject markup into the email.
+      const htmlHeader = (channel === 'telegram' || channel === 'email') ? `Actual-sync: ${count} payment alert(s) for ${escapeTelegramHtml(server)}` : header;
+      // Slack parses `<!channel>` and `<url>` in mrkdwn: escape the name so a
+      // server called `Main <!channel>` cannot ping the channel. (#294 round 3)
+      const slackHeader = channel === 'slack' ? `Actual-sync: ${count} payment alert(s) for ${escapeSlack(server)}` : header;
+      return buildDigestOutput(channel, channel === 'slack' ? slackHeader : header, linesByMode, target, server, htmlHeader);
+    };
+    const cap = DIGEST_CAPS[channel];
+    let count = rendered.length;
+    if (cap) {
+      count = 1;
+      while (count < rendered.length && digestLength(channel, build(count + 1)) <= cap) count += 1;
+      if (count < rendered.length) {
+        logger.warn('Schedule alert digest exceeds the channel length cap; remaining items deferred to next sync', {
+          server, channel, sentItems: count, deferredItems: rendered.length - count
+        });
+      }
+    }
+    const included = rendered.slice(0, count).map((r) => r.item);
+    const channelOutputs = build(count);
+    digestAttemptSeq += 1;
+    attempts.set(channel, digestAttemptSeq);
     const ok = await sendOnce(sender, channelOutputs, { server, alertId: 'digest', event: 'digest', occurrence: null, logger });
     if (!ok) continue; // H5: withhold only this channel's rows; other channels are unaffected
 
-    for (const item of rendered) {
-      await history.recordScheduleAlert({
-        server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
-        occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent',
-        channel: key
-      });
-      sentKeys.add(eventKey(item.event));
+    for (const item of included) {
+      // #332: the digest already went out, so a failed ledger write must not
+      // stop the remaining items or channels. That item has no row and may be
+      // resent next sync; it is not counted as sent.
+      try {
+        await history.recordScheduleAlert({
+          server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
+          occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent',
+          channel: key
+        });
+        sentKeys.add(eventKey(item.event));
+      } catch (error) {
+        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {
+          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message
+        });
+      }
     }
   }
 
@@ -698,14 +897,96 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
  * @param {string} server
  * @returns {Promise<Object[]>} synthesized `resolved` events, shaped like `evaluate()`'s AlertEvent
  */
-async function deriveResolvedEvents(evaluations, history, server) {
+async function deriveResolvedEvents(evaluations, history, server, logger, { completedSchedules, existingScheduleIds, rules, now, timezone } = {}) {
   const resolved = [];
+  // #356: a schedule deleted in Actual is gone from the schedule list, so its
+  // open `missing` rows (same look-back window) are closed with a `resolved`
+  // carrying `closedBy: 'deleted'`, from the ledger alone: the name, payee and
+  // account are not stored there, so the text uses the rule's exact
+  // `schedule` name, or its id for a prefix rule. `existingScheduleIds` is null
+  // when the schedule list could not be trusted (see evaluateScheduleAlerts);
+  // nothing is inferred then.
+  if (existingScheduleIds) {
+    const sinceDate = moment.tz(now, timezone).startOf('day').subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');
+    for (const rule of rules || []) {
+      let rows;
+      try {
+        rows = await history.listMissingScheduleAlertSchedules({ server, alertId: rule.id, sinceDate });
+      } catch (error) {
+        logger.warn('Schedule alert ledger lookup failed; deleted-schedule check withheld until the next sync', {
+          server, alertId: rule.id, event: 'resolved', error: error.message
+        });
+        continue;
+      }
+      for (const row of rows) {
+        if (existingScheduleIds.has(row.scheduleId)) continue;
+        resolved.push({
+          event: 'resolved',
+          closedBy: 'deleted',
+          scheduleName: rule.schedule || null, // exact-name rules only; a prefix rule falls back to its id
+          alertId: rule.id,
+          scheduleId: row.scheduleId,
+          occurrence: row.occurrenceDate,
+          deadline: null,
+          daysOverdue: null,
+          receivedAmount: null,
+          receivedDate: null,
+          expectedAmount: null
+        });
+      }
+    }
+  }
+  // #326: a one-off schedule marked completed in Actual is no longer
+  // evaluated, so close any `missing` it left open (within the same look-back
+  // window evaluation uses) with a `resolved` carrying `closedBy: 'completed'`.
+  // Only completed one-offs bound to a rule are looked up. The per-destination
+  // "already resolved here" check in destinationDueState keeps it to one send.
+  if ((completedSchedules || []).length > 0) {
+    let sinceDate = moment.tz(now, timezone).startOf('day').subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');
+    for (const schedule of completedSchedules) {
+      let occurrences;
+      try {
+        occurrences = await history.listMissingScheduleAlertOccurrences({
+          server, alertId: schedule.alertId, scheduleId: schedule.scheduleId, sinceDate
+        });
+      } catch (error) {
+        logger.warn('Schedule alert ledger lookup failed; completed-schedule check withheld until the next sync', {
+          server, alertId: schedule.alertId, event: 'resolved', error: error.message
+        });
+        continue;
+      }
+      for (const occurrence of occurrences) {
+        resolved.push({
+          event: 'resolved',
+          closedBy: 'completed',
+          alertId: schedule.alertId,
+          scheduleId: schedule.scheduleId,
+          occurrence,
+          deadline: null,
+          daysOverdue: null,
+          receivedAmount: null,
+          receivedDate: null,
+          expectedAmount: schedule.expectedAmount
+        });
+      }
+    }
+  }
   for (const evaluation of evaluations) {
     for (const occ of evaluation.occurrences || []) {
       if (occ.state !== 'received' && occ.state !== 'late') continue;
-      const missingRow = await history.findLatestScheduleAlert({
-        server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId, occurrenceDate: occ.date, event: 'missing'
-      });
+      // #297 round 1, L1: a lookup that fails withholds only this occurrence
+      // (retried next sync), never the whole batch.
+      let missingRow;
+      try {
+        missingRow = await history.findLatestScheduleAlert({
+          server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId, occurrenceDate: occ.date, event: 'missing'
+        });
+      } catch (error) {
+        logger.warn('Schedule alert ledger lookup failed; resolved check withheld until the next sync', {
+          server, alertId: evaluation.alertId, event: 'resolved', occurrence: occ.date, error: error.message
+        });
+        continue;
+      }
       if (!missingRow) continue;
 
       const daysOverdue = occ.receivedDate ? moment(occ.receivedDate).diff(moment(occ.deadline), 'days') : 0;
@@ -726,14 +1007,65 @@ async function deriveResolvedEvents(evaluations, history, server) {
 }
 
 /**
+ * #356: `ruleUnmatched` is sent once per destination, so the ledger must also
+ * remember when the rule matched a schedule again, or a later unmatch could
+ * never be told apart from the same ongoing one. For every rule that matched
+ * this sync and has a `ruleUnmatched` row not yet followed by a `ruleMatched`
+ * marker, record one (`delivery: 'inferred'`, no destination: it is a state
+ * change of the rule, not a message). A failure only delays the re-arm to the
+ * next sync, so it is logged and never blocks delivery.
+ */
+async function markRulesMatched(matchedAlertIds, history, server, now, logger) {
+  for (const alertId of matchedAlertIds) {
+    try {
+      const key = { server, alertId, scheduleId: null, occurrenceDate: null };
+      const unmatched = await history.findLatestScheduleAlert({ ...key, event: 'ruleUnmatched' });
+      if (!unmatched) continue;
+      const matched = await history.findLatestScheduleAlert({ ...key, event: 'ruleMatched' });
+      if (matched && matched.recordedAt >= unmatched.recordedAt) continue;
+      await history.recordScheduleAlert({ ...key, event: 'ruleMatched', delivery: 'inferred' });
+    } catch (error) {
+      logger.warn('Could not record that a schedule alert rule matches again; ruleUnmatched re-arm withheld until the next sync', {
+        server, alertId, error: error.message
+      });
+    }
+  }
+}
+
+/**
+ * The template set for one event: the built-ins overlaid with the rule's own
+ * (block-level templates are already merged into `rule.templates`). #326: a
+ * custom `resolved` written before `closed_by` existed would render
+ * "arrived ," with empty amount and date for a completed one-off, falsely
+ * saying money arrived. So when the event is closed by completion and the
+ * custom `resolved` never mentions `closed_by`, the built-in `resolved` is
+ * used for that event. #356: the same holds for `closedBy: 'deleted'`.
+ * A custom `resolved` is honoured only when it mentions `closed_by` and, if
+ * it compares `closed_by` to quoted literals, one of them is this event's
+ * value: a #326-style template that branches on `(eq closed_by "completed")`
+ * and sends the payment text otherwise would render "arrived ." for a deleted
+ * schedule, so it gets the built-in text for the value it does not handle. A
+ * bare `{{#if closed_by}}` has no literals and is honoured as written.
+ */
+function templatesFor(event, rule) {
+  const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+  if (event.closedBy) {
+    const custom = templates.resolved;
+    // Both argument orders: `eq` is symmetric, so `(eq "completed" closed_by)` is the same branch.
+    const literals = [...custom.matchAll(/\bclosed_by\s+["']([^"']*)["']|["']([^"']*)["']\s+closed_by\b/g)]
+      .map((m) => m[1] ?? m[2]);
+    const handled = /\bclosed_by\b/.test(custom) && (literals.length === 0 || literals.includes(event.closedBy));
+    if (!handled) templates.resolved = DEFAULT_TEMPLATES.resolved;
+  }
+  return templates;
+}
+
+/**
  * Whether this event has at least one destination still worth attempting
- * (#295 review, H5: this is now per-destination, via `dueDestinations`, not
- * a single ledger row per event - see the module doc comment). Every event
- * type gets at most one row per destination ever, except `missing`, which
- * additionally allows a reminder once `rule.remindEveryDays` calendar days
- * (M7) have passed since that destination's latest row (`ruleUnmatched`,
- * whose `occurrence` is always `null`, is deduplicated the same way: one row
- * per rule per calendar day, via `remindEveryDays: 1` applied by the caller).
+ * (#295 review, H5: per destination, via `dueDestinations`, not a single
+ * ledger row per event - see the module doc comment). What counts as due,
+ * including the `resolved` rules and `missing`/`ruleUnmatched` reminders, is
+ * defined once in `isDestinationDue`.
  *
  * @returns {Promise<boolean>}
  */
@@ -766,14 +1098,29 @@ async function mayRecord(event, rule, sender, history, server, now, timezone) {
  *   this promise settles (see `sendEvent`'s doc comment).
  * @returns {Promise<{sent: number, skipped: number}>}
  */
-async function deliver(events, { evaluations, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
+async function deliver(events, { evaluations, completedSchedules, existingScheduleIds, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
   const log = logger || { warn() {} };
   const rulesById = new Map((rules || []).map((r) => [r.id, r]));
   let sent = 0;
   let skipped = 0;
 
-  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server);
+  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log, { completedSchedules, existingScheduleIds, rules, now, timezone });
+  // #356 L2: a rule matched this sync unless it produced a `ruleUnmatched`
+  // event. Deriving it from evaluations missed rules whose schedule only
+  // yields cannotCheck or is a completed recurring one, leaving the
+  // ruleUnmatched re-arm marker unwritten.
+  const unmatchedIds = new Set((events || []).filter((e) => e.event === 'ruleUnmatched').map((e) => e.alertId));
+  await markRulesMatched(
+    new Set((rules || []).map((r) => r.id).filter((id) => !unmatchedIds.has(id))),
+    history, server, now, log
+  );
   const allEvents = [...(events || []), ...resolvedEvents];
+  // Render context for the #326 completed-schedule `resolved` events: name,
+  // payee and account come from the same lookup as for any other event.
+  const renderEvaluations = [
+    ...(evaluations || []),
+    ...(completedSchedules || []).map((s) => ({ ...s, cadenceText: null, occurrences: [] }))
+  ];
 
   const eligible = [];
   for (const event of allEvents) {
@@ -796,9 +1143,22 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
       continue;
     }
 
-    if (!(await mayRecord(event, rule, sender, history, server, now, timezone))) { skipped += 1; continue; }
+    // #297 round 1, L1: a failing ledger lookup withholds this one event
+    // (WARN, no row, no send; retried next sync) instead of rejecting the
+    // whole batch or, worse, being read as "never recorded" and resent.
+    let due;
+    try {
+      due = await mayRecord(event, rule, sender, history, server, now, timezone);
+    } catch (error) {
+      log.warn('Schedule alert ledger lookup failed; event withheld until the next sync', {
+        server, alertId: event.alertId, event: event.event, occurrence: event.occurrence, error: error.message
+      });
+      skipped += 1;
+      continue;
+    }
+    if (!due) { skipped += 1; continue; }
 
-    const evaluation = (evaluations || []).find(
+    const evaluation = renderEvaluations.find(
       (e) => e.alertId === event.alertId && e.scheduleId === event.scheduleId
     ) || null;
 
@@ -821,6 +1181,28 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
     }
     return { sent, skipped };
   }
+
+  // #338: same ordering as the digest (#294 round 2, H1): events never sent
+  // first, then the one whose due destination has waited longest. Without it a
+  // daily reminder (`remindEveryDays: 1`) that sorts early re-uses the budget
+  // every run and the tail is never reached. Stable, so ties keep order.
+  const priority = new Map();
+  for (const item of eligible) priority.set(item, await waitingSince(item, sender, history, server, now, timezone));
+  eligible.sort((a, b) => {
+    const x = priority.get(a);
+    const y = priority.get(b);
+    if (x.since !== y.since) return x.since < y.since ? -1 : 1;
+    // #337 round 2: tie-break by the oldest in-memory attempt among each
+    // event's due destinations (never attempted = 0, first). When one
+    // destination (say Telegram) hangs past the budget every run it never
+    // gets a ledger row, so `since` is -Infinity for every event and the
+    // stable sort would keep the same event first forever: it hangs on
+    // Telegram and the events behind it never start. Attempts are stamped
+    // when a send starts, so the event that just hung drops behind the
+    // ones the budget has not reached. The ledger still decides what is due.
+    if (x.attempt !== y.attempt) return x.attempt < y.attempt ? -1 : 1;
+    return 0;
+  });
 
   for (let i = 0; i < eligible.length; i += 1) {
     if (deadline != null && Date.now() >= deadline) {

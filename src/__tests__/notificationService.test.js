@@ -78,7 +78,11 @@ describe('NotificationService', () => {
         host: 'smtp.test.com',
         port: 587,
         secure: false,
-        auth: { user: 'test', pass: 'pass' }
+        auth: { user: 'test', pass: 'pass' },
+        // #297 F5: bounded socket timeouts so a dead SMTP host cannot hold the sync queue
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 30000
       });
       expect(service.emailTransporter).toBeDefined();
     });
@@ -640,6 +644,28 @@ describe('NotificationService', () => {
       await expect(service.sendWebhook(url, { a: 1 }, { timeout: 150 }))
         .rejects.toThrow(/timed out/);
       blackhole.close();
+    });
+  });
+
+  // #294: a payee/account name in an embed or message must never ping
+  // @everyone/@here/a user, with or without branding.
+  describe('Discord allowed_mentions on non-templated senders (#294)', () => {
+    const notification = { serverName: 'S', timestamp: 't', errorMessage: 'e', consecutiveFailures: 1, thresholds: { failureRate: 0, consecutiveExceeded: false, rateExceeded: false } };
+
+    test.each([true, false])('sendDiscordFormattedWebhooks sends allowed_mentions parse [] (branding %s)', async (branding) => {
+      const service = new NotificationService({ branding, webhooks: { discord: [{ name: 'd', url: 'https://discord.com/api/webhooks/x' }] } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendDiscordFormattedWebhooks({ embeds: [] });
+      expect(spy.mock.calls[0][1].allowed_mentions).toEqual({ parse: [] });
+      spy.mockRestore();
+    });
+
+    test.each([true, false])('sendDiscordWebhooks sends allowed_mentions parse [] (branding %s)', async (branding) => {
+      const service = new NotificationService({ branding, webhooks: { discord: [{ name: 'd', url: 'https://discord.com/api/webhooks/x' }] } });
+      const spy = jest.spyOn(service, 'sendWebhook').mockResolvedValue({ statusCode: 200 });
+      await service.sendDiscordWebhooks(notification);
+      expect(spy.mock.calls[0][1].allowed_mentions).toEqual({ parse: [] });
+      spy.mockRestore();
     });
   });
 

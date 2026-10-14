@@ -13,6 +13,16 @@ const path = require('path');
 const http = require('http');
 const { HealthCheckService } = require('../services/healthCheck');
 
+function getJson(port, urlPath) {
+  return new Promise((resolve, reject) => {
+    http.get({ hostname: '127.0.0.1', port, path: urlPath }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+    }).on('error', reject);
+  });
+}
+
 function get(port, urlPath) {
   return new Promise((resolve, reject) => {
     http.get({ hostname: '127.0.0.1', port, path: urlPath }, (res) => {
@@ -40,6 +50,8 @@ describe('HealthCheckService port and rate limit seams (#263)', () => {
 
     const assigned = service.server.address().port;
     expect(assigned).toBeGreaterThan(0);
+    // start() reads the OS-assigned port back onto the service, replacing 0. (#289)
+    expect(service.port).toBe(assigned);
   });
 
   test('defaults to port 3000 when no port option is given', () => {
@@ -84,5 +96,64 @@ describe('HealthCheckService port and rate limit seams (#263)', () => {
     const startTime = new Date(service.status.startTime).getTime();
     expect(startTime).toBeGreaterThanOrEqual(before);
     expect(startTime).toBeLessThanOrEqual(Date.now());
+  });
+
+  // The constructor test above only proves startTime is read from now() once.
+  // These drive the clock after construction, so a call site that reads the
+  // real clock instead of this.now() reports a wildly different value. (#289)
+  describe('now() seam at per-call sites (#289)', () => {
+    const START = new Date('2026-01-15T12:00:00.000Z');
+    let current;
+
+    beforeEach(() => {
+      current = START;
+      service = new HealthCheckService({
+        port: 0, host: '127.0.0.1', now: () => current, loggerConfig: { level: 'ERROR' }
+      });
+    });
+
+    test('/health reports uptime and timestamp from now()', async () => {
+      await service.start();
+      current = new Date(START.getTime() + 90 * 1000);
+
+      const { body } = await getJson(service.port, '/health');
+      expect(body.uptime).toBe(90);
+      expect(body.timestamp).toBe('2026-01-15T12:01:30.000Z');
+    });
+
+    test('/metrics reports uptime and timestamp from now()', async () => {
+      await service.start();
+      current = new Date(START.getTime() + 125 * 1000);
+
+      const { body } = await getJson(service.port, '/metrics');
+      expect(body.uptime).toBe(125);
+      expect(body.timestamp).toBe('2026-01-15T12:02:05.000Z');
+    });
+
+    test('/ready uses now() for both the startup window and the timestamp', async () => {
+      await service.start();
+
+      current = new Date(START.getTime() + 30 * 1000);
+      const inWindow = await getJson(service.port, '/ready');
+      expect(inWindow.status).toBe(200);
+      expect(inWindow.body.timestamp).toBe('2026-01-15T12:00:30.000Z');
+
+      current = new Date(START.getTime() + 120 * 1000);
+      const pastWindow = await getJson(service.port, '/ready');
+      expect(pastWindow.status).toBe(503);
+      expect(pastWindow.body.timestamp).toBe('2026-01-15T12:02:00.000Z');
+    });
+
+    test('updateSyncStatus stamps lastSyncTime from now()', () => {
+      current = new Date('2026-01-15T13:00:00.000Z');
+      service.updateSyncStatus({ status: 'success', serverName: 'Main' });
+      expect(service.status.lastSyncTime).toBe('2026-01-15T13:00:00.000Z');
+    });
+
+    test('updateServerVersion stamps checkedAt from now()', () => {
+      current = new Date('2026-01-15T14:00:00.000Z');
+      service.updateServerVersion('Main', { serverVersion: '25.1.0', verdict: 'tested' });
+      expect(service.status.serverVersions.Main.checkedAt).toBe('2026-01-15T14:00:00.000Z');
+    });
   });
 });

@@ -8,6 +8,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
+const { resolveTimezone } = require('../lib/timezone');
 
 class TelegramBotService {
   /**
@@ -393,6 +394,11 @@ class TelegramBotService {
     await this.sendMessage('🏓 Pong! Bot is responsive.');
   }
 
+  /** Zone every time in a reply is shown in (#266). */
+  timezone() {
+    return resolveTimezone(this.config);
+  }
+
   /**
    * Handle /status command
    */
@@ -435,7 +441,7 @@ class TelegramBotService {
       if (status.lastSyncTime) {
         const lastSync = new Date(status.lastSyncTime);
         message += `\nLast Sync: ${lastSync.toLocaleString('en-US', { 
-          timeZone: 'Europe/Madrid' 
+          timeZone: this.timezone() 
         })}`;
         message += `\nStatus: ${status.lastSyncStatus}`;
       } else {
@@ -471,7 +477,7 @@ class TelegramBotService {
       for (const record of history) {
         const emoji = record.status === 'success' ? '✅' : '❌';
         const time = new Date(record.timestamp).toLocaleString('en-US', {
-          timeZone: 'Europe/Madrid',
+          timeZone: this.timezone(),
           dateStyle: 'short',
           timeStyle: 'short'
         });
@@ -514,7 +520,7 @@ class TelegramBotService {
       if (stats.latest_sync) {
         const lastSync = new Date(stats.latest_sync);
         message += `\nLast Sync: ${lastSync.toLocaleString('en-US', { 
-          timeZone: 'Europe/Madrid' 
+          timeZone: this.timezone() 
         })}`;
       }
 
@@ -635,7 +641,7 @@ class TelegramBotService {
       let message = `❌ Recent Errors (last ${limit}):\n\n`;
       for (const error of errors) {
         const time = new Date(error.timestamp).toLocaleString('en-US', {
-          timeZone: 'Europe/Madrid',
+          timeZone: this.timezone(),
           dateStyle: 'short',
           timeStyle: 'short'
         });

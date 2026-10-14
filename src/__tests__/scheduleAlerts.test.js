@@ -74,6 +74,18 @@ describe('evaluate: missing / cannotCheck', () => {
     expect(evaluations[0].state).toBe('missing');
   });
 
+  test('#296: an account never bank-synced (last_sync null) gives cannotCheck, never missing', () => {
+    const { events } = evaluate({
+      rules: rentRule(),
+      schedules: [rentSchedule()],
+      transactions: [],
+      accounts: [account({ last_sync: null })],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'stale', lastSync: null })]);
+  });
+
   test('stale bank connection (last_sync more than staleAfterDays ago) -> cannotCheck, reason stale', () => {
     const { events } = evaluate({
       rules: rentRule(),
@@ -181,6 +193,48 @@ describe('evaluate: received / late / wrongAmount', () => {
     expect(events).toEqual([]); // late is not a "problem" event; resolved is derived by the delivery layer
     expect(evaluations[0].state).toBe('late');
     expect(evaluations[0].occurrences[0]).toMatchObject({ state: 'late', receivedDate: '2026-01-09' });
+  });
+
+  test('#296: an outgoing refund of the same size is not the incoming payment (sign must match)', () => {
+    const run = (amount) => evaluate({
+      rules: rentRule({ amountTolerancePct: 0 }),
+      schedules: [rentSchedule({ amount: 6000 })],
+      transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount, date: '2026-01-05', schedule: null }],
+      accounts: [account()],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(run(6000).evaluations[0].state).toBe('received');
+    expect(run(-6000).evaluations[0].state).toBe('missing');
+    expect(run(-6000).events.map((e) => e.event)).not.toContain('resolved');
+  });
+
+  describe('#296 round 1 M1: the sign check holds in every fallback pass', () => {
+    const run = (transactions) => evaluate({
+      rules: rentRule({ amountTolerancePct: 0 }),
+      schedules: [rentSchedule({ amount: 6000, amountOp: 'is', date: '2026-01-05' })],
+      transactions,
+      accounts: [account({ last_sync: epochMs('2026-01-14') })],
+      now: '2026-01-14',
+      timezone: TZ
+    });
+    const tx = (id, amount, date, schedule = null) => ({ id, account: 'acc1', payee: 'pay1', amount, date, schedule });
+
+    test('(a) only an opposite-sign transaction in the late window -> missing', () => {
+      const { events, evaluations } = run([tx('t1', -6000, '2026-01-10')]);
+      expect(evaluations[0].state).toBe('missing');
+      expect(events.map((e) => e.event)).toContain('missing');
+    });
+
+    test('(b) opposite sign in the on-time window plus a right-sign payment later -> late', () => {
+      const { evaluations } = run([tx('t1', -6000, '2026-01-04'), tx('t2', 6000, '2026-01-10')]);
+      expect(evaluations[0].state).toBe('late');
+    });
+
+    test('(c) a LINKED opposite-sign transaction stays authoritative (Actual\'s link wins)', () => {
+      const { evaluations } = run([tx('t1', -6000, '2026-01-10', 's1')]);
+      expect(evaluations[0].state).toBe('late');
+    });
   });
 
   test('a transaction linked via transaction.schedule counts regardless of amount', () => {
@@ -488,6 +542,154 @@ describe('evaluate: R2-H2 (next_date can advance from a later linked payment, no
   });
 });
 
+describe('evaluate: #297 F1 (remember the skip decision)', () => {
+  const monthly = (nextDate) => rentSchedule({ date: { start: '2026-01-01', frequency: 'monthly' }, next_date: nextDate });
+
+  test('a skip inferred for the first time is reported as a skipDecision so the caller can persist it', () => {
+    const { evaluations, skipDecisions, events } = evaluate({
+      rules: rentRule(),
+      schedules: [monthly('2026-02-01')],
+      transactions: [],
+      accounts: [account({ last_sync: epochMs('2026-01-20') })],
+      now: '2026-01-25',
+      timezone: TZ
+    });
+    expect(evaluations[0].occurrences.find((o) => o.date === '2026-01-01').state).toBe('skipped');
+    expect(events).toEqual([]);
+    expect(skipDecisions).toEqual([{ alertId: 'rent', scheduleId: 's1', occurrence: '2026-01-01' }]);
+  });
+
+  test('January skipped, February paid and linked: with the remembered skip, January stays skipped (no false missing)', () => {
+    // next_date is now 2026-03-01 and the February payment sits between January's deadline
+    // and next_date - indistinguishable from a real miss without the remembered decision.
+    const { evaluations, events, skipDecisions } = evaluate({
+      rules: rentRule(),
+      schedules: [monthly('2026-03-01')],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-02-09') })],
+      skips: ['s1|2026-01-01'],
+      now: '2026-02-10',
+      timezone: TZ
+    });
+    expect(evaluations[0].occurrences.find((o) => o.date === '2026-01-01').state).toBe('skipped');
+    expect(events).toEqual([]);
+    expect(skipDecisions).toEqual([]); // already remembered, nothing new to persist
+  });
+
+  test('a remembered skip is scoped to its schedule and occurrence', () => {
+    const { evaluations } = evaluate({
+      rules: rentRule(),
+      schedules: [monthly('2026-03-01')],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-02-09') })],
+      skips: ['other|2026-01-01', 's1|2025-12-01'],
+      now: '2026-02-10',
+      timezone: TZ
+    });
+    expect(evaluations[0].occurrences.find((o) => o.date === '2026-01-01').state).toBe('missing');
+  });
+
+  test('an intervening linked payment with no remembered skip is not recorded as a skip decision', () => {
+    const { skipDecisions } = evaluate({
+      rules: rentRule(),
+      schedules: [monthly('2026-03-01')],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-02-09') })],
+      now: '2026-02-10',
+      timezone: TZ
+    });
+    expect(skipDecisions).toEqual([]);
+  });
+
+  test('a remembered skip never hides an occurrence that a payment actually settled', () => {
+    const { evaluations } = evaluate({
+      rules: rentRule(),
+      schedules: [monthly('2026-02-01')],
+      transactions: [{ id: 'jan', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-01', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-01-20') })],
+      skips: ['s1|2026-01-01'],
+      now: '2026-01-25',
+      timezone: TZ
+    });
+    expect(evaluations[0].occurrences.find((o) => o.date === '2026-01-01').state).toBe('received');
+  });
+});
+
+describe('evaluate: #297 F2 / F2b (linked payments take precedence over unlinked lookalikes)', () => {
+  function sibling(id, name) {
+    return rentSchedule({ id, name });
+  }
+  function twoRules() {
+    return getRules({
+      staleAfterDays: 3,
+      alerts: [
+        { id: 'a', schedule: 'Alpha', graceDays: 3, earlyDays: 0 },
+        { id: 'b', schedule: 'Beta', graceDays: 3, earlyDays: 0 }
+      ]
+    });
+  }
+
+  test('F2: an unlinked exact-amount payment does not beat a payment linked to the schedule', () => {
+    // A and B share account+payee and amount. tA (-51000) is linked to A on 01-03 (inside Actual's
+    // 2-day link tolerance, outside earlyDays 0); tB (-50000) is unlinked on 01-05.
+    const { events, evaluations } = evaluate({
+      rules: twoRules(),
+      schedules: [sibling('sA', 'Alpha'), sibling('sB', 'Beta')],
+      transactions: [
+        { id: 'tA', account: 'acc1', payee: 'pay1', amount: -51000, date: '2026-01-03', schedule: 'sA' },
+        { id: 'tB', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null }
+      ],
+      accounts: [account()],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(events.filter((e) => e.event === 'missing')).toEqual([]);
+    expect(evaluations.find((e) => e.alertId === 'a').occurrences[0].receivedDate).toBe('2026-01-03');
+    expect(evaluations.find((e) => e.alertId === 'b').occurrences[0].receivedDate).toBe('2026-01-05');
+  });
+
+  test('F2b: pass 2 prefers a payment linked to the schedule over an earlier unlinked lookalike', () => {
+    // A due 01-05, B due 01-10. tB (unlinked) lands 01-10; tA (linked to A) lands 01-11, late for A.
+    const { events, evaluations } = evaluate({
+      rules: twoRules(),
+      schedules: [sibling('sA', 'Alpha'), rentSchedule({ id: 'sB', name: 'Beta', date: '2026-01-10' })],
+      transactions: [
+        { id: 'tB', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: null },
+        { id: 'tA', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-11', schedule: 'sA' }
+      ],
+      accounts: [account({ last_sync: epochMs('2026-01-12') })],
+      now: '2026-01-12',
+      timezone: TZ
+    });
+    expect(events.filter((e) => e.event === 'missing')).toEqual([]);
+    expect(evaluations.find((e) => e.alertId === 'a').occurrences[0]).toMatchObject({ state: 'late', receivedDate: '2026-01-11' });
+    expect(evaluations.find((e) => e.alertId === 'b').occurrences[0]).toMatchObject({ state: 'received', receivedDate: '2026-01-10' });
+  });
+});
+
+describe('evaluate: #297 round 1 M1 (the linked allowance does not steal an in-window exact-amount payment)', () => {
+  test('a late linked January payment dated 01-31 does not beat February\'s own unlinked payment on 02-01', () => {
+    // Monthly on the 1st, grace 5, early 0. Jan was paid late on 01-31 (linked by hand, odd amount);
+    // Feb was paid on time on 02-01 for the exact amount (unlinked). No sibling rule shares the payee.
+    const schedule = rentSchedule({ date: { start: '2026-01-01', frequency: 'monthly' } });
+    const { events, evaluations } = evaluate({
+      rules: rentRule({ graceDays: 5, earlyDays: 0 }),
+      schedules: [schedule],
+      transactions: [
+        { id: 'tJan', account: 'acc1', payee: 'pay1', amount: -52500, date: '2026-01-31', schedule: 's1' },
+        { id: 'tFeb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: null }
+      ],
+      accounts: [account({ last_sync: epochMs('2026-02-15') })],
+      now: '2026-02-15',
+      timezone: TZ
+    });
+    expect(events.filter((e) => e.event === 'missing')).toEqual([]);
+    const byDate = Object.fromEntries(evaluations[0].occurrences.map((o) => [o.date, o]));
+    expect(byDate['2026-01-01']).toMatchObject({ state: 'late', receivedDate: '2026-01-31' });
+    expect(byDate['2026-02-01']).toMatchObject({ state: 'received', receivedDate: '2026-02-01' });
+  });
+});
+
 describe('evaluate: R2-M4 (next_date boundary)', () => {
   test('next_date equal to the unpaid occurrence date is not "before" it -> missing, not skipped', () => {
     const schedule = rentSchedule({ next_date: '2026-01-05' }); // equal to the occurrence date itself
@@ -718,22 +920,89 @@ describe("evaluate: R2-M1 (wrong-amount / late fallback must not steal a sibling
   });
 });
 
-describe('evaluate: R2-M3 (overlap guard accounts for the linked-early window)', () => {
-  test('graceDays + LINKED_EARLY_WINDOW_DAYS >= shortest interval trips the guard even when graceDays + earlyDays alone would not', () => {
+describe('evaluate: R2-M3 / #297 F4 / round 1 M2 (overlap guard and the linked-early window)', () => {
+  // R2-M3: the linked +/-2 day allowance counts towards the overlap guard, so a
+  // weekly schedule with graceDays 5 (5 + 2 >= 7) is rejected: its on-time window
+  // would swallow the next occurrence's early linked payment (#297 round 1, M2).
+  // #297 F4: the allowance only applies while the interval is longer than the
+  // allowance itself, so a daily schedule (interval 1) is not rejected for good.
+  // For such short intervals the linked early start is clamped to the day after
+  // the previous occurrence's deadline.
+  test('weekly, graceDays 5, earlyDays 0 is an interval violation (cannotCheck + one warning)', () => {
     const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } }); // 7-day interval
     const { events, warnings } = evaluate({
-      // 5 + 0 = 5 < 7 (old guard would NOT trip); 5 + max(0, 2) = 7 >= 7 (new guard trips).
       rules: rentRule({ graceDays: 5, earlyDays: 0 }),
       schedules: [schedule],
-      // Linked, meant for the 12 Jan occurrence (2 days early); without the
-      // widened guard this was wrongly claimed by the 5 Jan occurrence instead.
-      transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }],
-      accounts: [account({ last_sync: epochMs('2026-01-09') })],
-      now: '2026-01-11',
+      transactions: [],
+      accounts: [account({ last_sync: epochMs('2026-01-20') })],
+      now: '2026-01-21',
       timezone: TZ
     });
-    expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'interval-violation' })]);
     expect(warnings).toHaveLength(1);
+    // #297 round 2 L-b: the operator's own earlyDays (0), not the effective 2.
+    expect(warnings[0].message).toMatch(/graceDays \(5\) \+ earlyDays \(0, raised to the 2-day linked-payment allowance\) >= /);
+    expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'interval-violation' })]);
+  });
+
+  test('M2 scenario: a missed 01-05 and a linked early 01-10 payment for 01-12 produce no received/skipped and no skip decision', () => {
+    const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' }, next_date: '2026-01-19' });
+    const result = evaluate({
+      rules: rentRule({ graceDays: 5, earlyDays: 0 }),
+      schedules: [schedule],
+      transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-01-18') })],
+      now: '2026-01-18',
+      timezone: TZ
+    });
+    expect(result.skipDecisions).toEqual([]);
+    expect(result.events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'interval-violation' })]);
+  });
+
+  test('weekly, graceDays 4, earlyDays 0 is evaluated (4 + 2 < 7)', () => {
+    const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } });
+    const { events, warnings } = evaluate({
+      rules: rentRule({ graceDays: 4, earlyDays: 0 }),
+      schedules: [schedule],
+      transactions: [],
+      accounts: [account({ last_sync: epochMs('2026-01-20') })],
+      now: '2026-01-21',
+      timezone: TZ
+    });
+    expect(warnings).toEqual([]);
+    expect(events.some((e) => e.reason === 'interval-violation')).toBe(false);
+  });
+
+  test('a daily schedule with graceDays 0 and earlyDays 0 is evaluated, not rejected (#297 F4)', () => {
+    const schedule = rentSchedule({ date: { start: '2026-01-01', frequency: 'daily' } });
+    const { events, warnings, evaluations } = evaluate({
+      rules: rentRule({ graceDays: 0, earlyDays: 0 }),
+      schedules: [schedule],
+      transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-09', schedule: 's1' }],
+      accounts: [account({ last_sync: epochMs('2026-01-09') })],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(warnings).toEqual([]);
+    expect(events.some((e) => e.reason === 'interval-violation')).toBe(false);
+    expect(evaluations[0].state).not.toBe('cannotCheck');
+  });
+
+  test('daily: a second linked payment dated on the previous occurrence is not pulled forward onto the next one (clamp)', () => {
+    const schedule = rentSchedule({ date: { start: '2026-01-01', frequency: 'daily' } });
+    const { evaluations } = evaluate({
+      rules: rentRule({ graceDays: 0, earlyDays: 0 }),
+      schedules: [schedule],
+      transactions: [
+        { id: 't0', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-08', schedule: 's1' },
+        { id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-08', schedule: 's1' }
+      ],
+      accounts: [account({ last_sync: epochMs('2026-01-09') })],
+      now: '2026-01-09',
+      timezone: TZ
+    });
+    const byDate = Object.fromEntries(evaluations[0].occurrences.map((o) => [o.date, o]));
+    expect(byDate['2026-01-08'].state).toBe('received');
+    expect(byDate['2026-01-09'].state).not.toBe('received');
   });
 });
 
@@ -940,5 +1209,62 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     const dec = evaluations[0].occurrences.find((o) => o.date === '2026-12-05');
     expect(oct).toMatchObject({ state: 'late', receivedDate: '2026-11-02' });
     expect(dec).toMatchObject({ state: 'received', receivedDate: '2026-12-04' });
+  });
+});
+
+describe('#296 round 2 L1: sign check inside the tolerance comparison', () => {
+  test('an opposite-sign amount of the same size is not a better match for a sibling schedule', () => {
+    const tx = { id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null };
+    const rules = getRules({
+      staleAfterDays: 3,
+      alerts: [
+        { id: 'rent', schedule: 'Rent', graceDays: 3, earlyDays: 2 },
+        { id: 'dep', schedule: 'Deposit', graceDays: 3, earlyDays: 2 }
+      ]
+    });
+    const { evaluations } = evaluate({
+      rules,
+      schedules: [
+        rentSchedule({ amount: -40000 }),
+        rentSchedule({ id: 's2', name: 'Deposit', amount: 50000 })
+      ],
+      transactions: [tx],
+      accounts: [account()],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    // Without the sign check in amountWithinTolerance, the Deposit's +50000
+    // "fits" the -50000 payment and Rent becomes missing via betterMatchedElsewhere.
+    expect(evaluations.find((e) => e.name === 'Rent').state).toBe('wrongAmount');
+  });
+});
+
+describe('#296 round 2: sign compatibility edge cases', () => {
+  const tx = (id, amount, date, schedule = null) => ({ id, account: 'acc1', payee: 'pay1', amount, date, schedule });
+  const run = (scheduleOverrides, transactions, now, ruleOverrides = {}) => evaluate({
+    rules: rentRule(ruleOverrides),
+    schedules: [rentSchedule(scheduleOverrides)],
+    transactions,
+    accounts: [account({ last_sync: epochMs(now) })],
+    now,
+    timezone: TZ
+  });
+
+  test('M1: a zero-amount schedule still reports wrongAmount for a non-zero unlinked payment', () => {
+    for (const amountOp of ['is', 'isapprox']) {
+      const { evaluations } = run({ amount: 0, amountOp, date: '2026-01-05' }, [tx('t1', -1234, '2026-01-05')], '2026-01-10');
+      expect(evaluations[0].state).toBe('wrongAmount');
+    }
+  });
+
+  test('M2: a range of negative bounds ignores an unlinked positive refund (day 10 and day 5)', () => {
+    const range = { amountOp: 'isbetween', amount: { num1: -5000, num2: -7000 }, date: '2026-01-05' };
+    expect(run(range, [tx('t1', 6000, '2026-01-10')], '2026-01-14').evaluations[0].state).toBe('missing');
+    expect(run(range, [tx('t1', 6000, '2026-01-05')], '2026-01-10').evaluations[0].state).toBe('missing');
+  });
+
+  test('M2: a range spanning zero still matches a positive amount inside it', () => {
+    const range = { amountOp: 'isbetween', amount: { num1: -5000, num2: 5000 }, date: '2026-01-05' };
+    expect(run(range, [tx('t1', 3000, '2026-01-05')], '2026-01-10').evaluations[0].state).toBe('received');
   });
 });

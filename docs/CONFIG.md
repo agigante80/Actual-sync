@@ -63,6 +63,10 @@
 
 ## Configuration Reference
 
+### timezone (optional)
+
+IANA timezone name, for example `"America/New_York"` or `"UTC"`. Cron schedules run in it, and the startup log, the startup notification's "next sync" and the Telegram replies show times in it. Default: the process timezone (`TZ`, else the system zone), which is what schedules used before this key existed. If `TZ` is blank (for example an empty Unraid field) or not a valid IANA name (a typo such as `Europe/Madird`), the service uses `UTC` and logs one startup WARN naming the bad value. POSIX forms such as `TZ=:/etc/localtime` or `TZ=GMT+2` count as invalid too, so schedules run in UTC even though the clock itself is local: use an IANA name in `TZ` or set the `timezone` key. An unknown name fails config loading with a message naming `timezone`, even with `CONFIG_STRICT=false`.
+
 ### servers (required)
 
 Array of Actual Budget server configurations. At least one server is required.
@@ -127,6 +131,10 @@ Global synchronization behavior configuration. These settings apply to all serve
   - Can be overridden per server
   - Example: `5`
 
+- **autoRetry** (optional, object; also per server)
+  - After a failed *scheduled* sync (every account failed, or the sync itself errored), the service schedules another run: `enabled` (default `true`), `maxAttempts` (default `1`), `delayMinutes` (default `31`).
+  - A failed manual sync (dashboard, Telegram, `--force-run`) never schedules a retry, and a manual sync cancels a pending one. A partial sync (some accounts failed) is not retried. Pending retries are cancelled on shutdown.
+
 - **baseRetryDelayMs** (optional, integer, default: 3000)
   - Base delay in milliseconds for exponential backoff
   - Range: 1000-10000ms (1-10 seconds)
@@ -137,7 +145,10 @@ Global synchronization behavior configuration. These settings apply to all serve
 - **phaseTimeoutSeconds** (optional, integer, default: 300)
   - Seconds each Actual API call (init, download, load, query, sync, shutdown) may take
   - Range: 30-3600
-  - A call that runs longer fails the sync with the phase named. The sync holds the queue up to one more timeout for the stuck call to finish. If it is still running, the next sync waits up to its own timeout, then fails with `ACTUAL_SESSION_BUSY` and stops waiting for that call, so later syncs proceed
+  - A call that runs longer fails the sync with the phase named. The sync holds the queue up to one more timeout for the stuck call to finish. If it is still running, the next sync waits up to its own timeout, then fails with `ACTUAL_SESSION_BUSY` and stops waiting for that call, so later syncs proceed. When the stuck call does finish in time, a budget it left open is closed by Actual's own close-budget step when the next sync downloads or loads a budget
+  - Limit: the Actual API cannot cancel a call. One that is still running after both waits is no longer tracked, so if it lands later it can close or disturb the following sync, which then fails and the one after recovers
+  - A bank sync that times out (60 seconds) is given one more timeout to finish before the next account starts; if it is still running, the remaining accounts are skipped and reported as failed, and the final file sync and schedule alerts are skipped (Actual's shutdown syncs before closing). A bank sync that finishes during that extra wait counts as succeeded
+  - A late call that finally finishes is logged with its phase and outcome
   - Raise it for very large budgets on slow links; bank sync keeps its own 60 second limit per account
   - Can be overridden per server
   - Example: `300` (5 minutes)
@@ -189,10 +200,15 @@ message-template variables.
 ```json
 "scheduleAlerts": {
   "alerts": [
-    { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+    { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6, "earlyDays": 2 }
   ]
 }
 ```
+
+- **`graceDays`** (default `3`): days after the occurrence date before it counts as overdue.
+- **`earlyDays`** (default `2`, 0-31): days before the occurrence date a matching transaction still counts as on time. `graceDays + earlyDays` must stay below the schedule's shortest interval between occurrences, otherwise the rule is skipped with a `cannotCheck` (reason `interval-violation`) and a warning.
+- **Timezone**: occurrence dates, deadlines and "today" use the top-level [`timezone`](#timezone-optional) (default: `TZ`, then the system zone, then `UTC`).
+- An account that was never bank-synced (`last_sync` is null) always gives `cannotCheck`, never `missing`.
 
 ### healthCheck (optional)
 
@@ -202,18 +218,20 @@ HTTP server for health probes, Prometheus metrics, and the web dashboard.
 
 - **port** (integer, default: `3000`, range 1024-65535) — port for `/health`, `/ready`, `/metrics`, `/metrics/prometheus`, and `/dashboard`.
 - **host** (string, default: `"0.0.0.0"`) — bind address. **Keep `0.0.0.0` in containers.** Setting it to the host's LAN IP is not bindable in bridge mode (`EADDRNOTAVAIL`) and makes the dashboard unreachable; startup warns if it is set to anything other than `0.0.0.0`/`::`/`::1`/`127.0.0.1`/`localhost`.
-- **trustProxy** (default: `false`): set this only when a reverse proxy you control (nginx, Traefik, Caddy) is in front. It makes Express read the client address from `X-Forwarded-For`, so the 60 requests/minute rate limit and the dashboard login throttle (10 failures per 15 minutes) apply per client, and auth-failure logs name the real client, not the proxy. Without it, 10 bad logins through the proxy lock out every user behind it. Accepted values:
+- **trustProxy** (default: `false`): set this only when a reverse proxy you control (nginx, Traefik, Caddy) is in front. It makes Express read the client address from `X-Forwarded-For`, so the 60 requests/minute rate limit and the dashboard login throttle (10 failures per 15 minutes) apply per client, and auth-failure logs name the real client, not the proxy. Without it, 10 bad logins through the proxy lock out every user behind it. Startup cannot see this, so the first request that carries `X-Forwarded-For` while this is unset logs a one-time warning. Accepted values:
   - `false` (default): direct exposure. Behind a proxy, every client shares one rate-limit bucket.
   - a hop count, an integer `0` to `10`: `1` means one proxy in front (the usual choice), `0` trusts nothing. Non-integers and objects are rejected at config load even with `CONFIG_STRICT=false`.
   - an IP/CIDR string or array, for example `"172.20.0.10"` (the proxy container's fixed IP) or `["loopback", "10.0.0.5"]`: trust only those proxy addresses. The Express keyword `loopback` also works. Avoid `uniquelocal` and wide ranges such as `172.16.0.0/12`: they cover the Docker bridge networks, so any container on the host could forge `X-Forwarded-For`.
   - `true`: trusts every hop. **Do not use it if the port is reachable without the proxy**: any client could then send its own `X-Forwarded-For`, pick any IP and bypass rate limiting. Startup warns when it is set.
   An invalid IP/CIDR fails at startup with a message naming `healthCheck.trustProxy`.
+- **hsts** (boolean, default: `false`): send the `Strict-Transport-Security` header (`max-age=15552000`, 180 days, without `includeSubDomains`, so other hosts under the same domain are not affected). Leave it off unless browsers reach the dashboard over HTTPS. Sent over plain HTTP it does nothing, and the service is plain HTTP in most deployments; TLS and HSTS are normally the reverse proxy's job (set it there, or enable this when the service is the TLS endpoint behind a proxy that does not add it). Once a browser has seen it, that host refuses plain HTTP for 180 days, so enable it only when HTTPS is permanent.
 - **dashboard.enabled** (boolean, default: `true`) — serve the web dashboard.
 - **dashboard.auth.type** (string, default: `"none"`) — `"none"`, `"basic"`, or `"token"`.
   - `"basic"` requires **username** and **password**.
   - `"token"` requires **token** (sent as `Authorization: Bearer <token>`).
   - A missing or blank credential locks the dashboard out (every request gets 500 `Invalid authentication configuration`), so set the credentials when you enable auth.
-- **dashboard.allowedOrigins** (array of `scheme://host[:port]`, default: `[]`) - extra browser origins allowed to open the `/ws/logs` live log stream. Same-origin is always allowed, and a request with no `Origin` header (a script, not a browser) is not origin-checked. Any other browser origin is refused with 403 at every auth type; this is the guard against Cross-Site WebSocket Hijacking. Add an entry only if the dashboard page is served under a different origin than the host the browser connects to, for example `["https://budget.example.com"]`.
+- **dashboard.allowedOrigins** (array of `scheme://host[:port]`, default: `[]`) - extra browser origins allowed to open the `/ws/logs` live log stream and to send state-changing requests (the four dashboard POSTs: `sync`, `dismiss-error`, `reset-history`, `test-notification`). Same-origin is always allowed, and a request with no `Origin` header (a script, not a browser) is not origin-checked. Any other browser origin is refused with 403 at every auth type (`origin_rejected` on a POST); this is the guard against Cross-Site WebSocket Hijacking and cross-site request forgery. Listing an origin lets that site act as the dashboard, so list only origins you control. Same-origin means `Origin` equals the `Host` header the service receives, port included, so a proxy that rewrites `Host` causes a 403 (see the troubleshooting in [DASHBOARD.md](DASHBOARD.md)). Add an entry only if the dashboard page is served under a different origin than the host the browser connects to, for example `["https://budget.example.com"]`.
+- **dashboard.allowConfigWrites** (boolean, default: `false`) - opt in to dashboard routes that change configuration. The dashboard is read-only for configuration until this is `true`. Even then, writes are refused while `dashboard.auth.type` is `none`. Every configuration change is recorded in the "Configuration changes" list (Settings tab, `GET /api/dashboard/config-audit`) with secrets redacted. The service logs an ERROR at startup when writes are enabled with auth `none`, and a WARN naming `allowedOrigins` when that list is non-empty.
 
 ```json
 "healthCheck": {
@@ -256,7 +274,8 @@ These are global runtime flags, not per-server config:
 |----------|-------------|
 | `CONFIG_STRICT` | Migration escape hatch. Default (unset) = strict: a schema-invalid config stops startup (#121). Set to `false` (or `0`/`no`/`off`) to **temporarily** downgrade schema validation errors to warnings so the service starts while you fix the config. It only affects schema validation, not the business-logic checks, and should be removed once the config is valid. |
 | `PUID` / `PGID` | User/group IDs to run as (Docker/Unraid; default `1001:1001`, Unraid `99:100`). |
-| `TZ` | Container timezone for scheduling and log timestamps. |
+| `TZ` | Container timezone for scheduling and log timestamps. Used when the `timezone` config key is not set. A blank or invalid value falls back to `UTC` with a startup WARN. |
+| `SHUTDOWN_WAIT_MS` | How long a SIGTERM waits for a running sync before closing the session (default `8000`). Keep it about 2 s below the container's stop timeout. See [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#stopping-the-container). |
 
 ---
 
@@ -378,7 +397,7 @@ The system merges per-server and global settings using these rules:
 
 1. If a property is specified in `server.sync`, it takes precedence
 2. If a property is not specified in `server.sync`, the global `sync` value is used
-3. You can override any combination of properties (one, two, or all three)
+3. You can override any combination of `schedule`, `maxRetries`, `baseRetryDelayMs`, `phaseTimeoutSeconds` and `autoRetry` (one, several, or all five)
 4. Zero values (e.g., `maxRetries: 0`) are treated as explicit values, not fallbacks
 
 **Example:**

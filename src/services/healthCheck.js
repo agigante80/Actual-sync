@@ -6,12 +6,48 @@
  */
 
 const express = require('express');
+const helmet = require('helmet');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 const { resolveVersion } = require('../lib/version');
 const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
+
+// 16 KB JSON parser for configuration writes (#259), used by configWrite().
+// markParser tags an error with fromBodyParser so jsonBodyErrors can tell a
+// body-parser failure from a 4xx raised by a route. A corrupt gzip body arrives
+// as createError(400, zlibErr) with no `type`, so only a marker works. (#259)
+const markParser = (parser) => (req, res, next) =>
+  parser(req, res, (e) => next(e && Object.assign(e, { fromBodyParser: true })));
+
+const configJson = markParser(express.json({ limit: '16kb' }));
+
+/**
+ * Four-argument error middleware that answers body-parser failures as JSON
+ * instead of Express's HTML error page. Registered after the global
+ * express.json() and as the last element of every configWrite() chain. (#259)
+ */
+function jsonBodyErrors(err, req, res, next) {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'payload_too_large' });
+  }
+  if (err && err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'invalid_json' });
+  }
+  if (err && (err.type === 'charset.unsupported' || err.type === 'encoding.unsupported')) {
+    return res.status(400).json({ error: 'invalid_body_encoding' });
+  }
+  // Any other 4xx body-parser failure (a corrupt gzip body, an aborted
+  // request, a bad Content-Length) gets a JSON body, never Express's HTML page
+  // with a stack trace. Only errors marked by markParser qualify: a 4xx that a
+  // route passed to next(err) keeps its own status via the final handler.
+  const status = err && (err.status || err.statusCode);
+  if (err && err.fromBodyParser && status >= 400 && status < 500 && !res.headersSent) {
+    return res.status(status).json({ error: 'invalid_body' });
+  }
+  return next(err);
+}
 
 /**
  * Fixed-window count of failed dashboard logins per client key. (#246)
@@ -23,13 +59,26 @@ class AuthFailureCounter {
   constructor(windowMs) {
     this.windowMs = windowMs;
     this.entries = new Map();
+    this.sweeper = null;
+    this.arm();
+  }
+
+  /** Start the sweep timer (unref'd, so it never keeps the process alive). */
+  arm() {
+    if (this.sweeper) return;
     this.sweeper = setInterval(() => {
       const now = Date.now();
       for (const [key, entry] of this.entries) {
         if (entry.resetTime <= now) this.entries.delete(key);
       }
-    }, windowMs);
+    }, this.windowMs);
     this.sweeper.unref();
+  }
+
+  /** Stop the sweep timer. A later increment() re-arms it, so a restarted service still sweeps. (#286) */
+  shutdown() {
+    if (this.sweeper) clearInterval(this.sweeper);
+    this.sweeper = null;
   }
 
   get(key) {
@@ -37,6 +86,7 @@ class AuthFailureCounter {
   }
 
   increment(key) {
+    this.arm();
     const now = Date.now();
     let entry = this.entries.get(key);
     if (!entry || entry.resetTime <= now) {
@@ -64,6 +114,7 @@ class HealthCheckService {
    * @param {Function} options.getSchedules - Function to get schedule info (optional)
    * @param {Function} options.getCronSchedules - Function to get cron schedule details (optional)
    * @param {Object} options.loggerConfig - Logger configuration
+   * @param {boolean} options.hsts - send Strict-Transport-Security (#243); off unless true
    * @param {boolean|number|string|string[]} options.trustProxy - Express 'trust proxy' value (#245); off when unset
    */
   constructor(options = {}) {
@@ -96,6 +147,21 @@ class HealthCheckService {
     // unless configured. express-rate-limit's own validation stays enabled.
     if (options.trustProxy !== undefined && options.trustProxy !== false) {
       this.app.set('trust proxy', options.trustProxy);
+    } else {
+      // Without trustProxy every request through a proxy shares the proxy's
+      // address, so one guesser burns the dashboard login budget for everyone.
+      // The header is the only sign of that, so warn once, on the first
+      // request that carries it. (#286)
+      let warned = false;
+      this.app.use((req, res, next) => {
+        if (!warned && req.headers['x-forwarded-for']) {
+          warned = true;
+          this.logger.warn('Request carries X-Forwarded-For but healthCheck.trustProxy is not set: all clients behind a proxy share one rate limit and one dashboard login failure budget. Set healthCheck.trustProxy if a reverse proxy you control is in front.', {
+            remoteAddress: req.ip
+          });
+        }
+        next();
+      });
     }
     this.server = null;
     this.wsClients = new Set();
@@ -124,10 +190,91 @@ class HealthCheckService {
     // "Tested up to" = the installed @actual-app/api client version (#154).
     this.testedUpTo = null;
     
-    // Parse JSON bodies
-    this.app.use(express.json());
+    // Security headers first, so every response carries them: static assets,
+    // the 401 from the auth middleware, and body-parser's own errors. (#243)
+    this.app.disable('x-powered-by');
+    this.app.use(helmet(this.helmetOptions(options.hsts === true)));
+
+    // Order matters (#259): helmet, then the rate limiter, then configRouter,
+    // then the global body parser, then the routes. The limiter sits before
+    // configRouter so a configWrite() route can answer 429; configRouter sits
+    // before the global express.json() so a configWrite() route meets its own
+    // 16 KB parser first. Every route that uses configWrite() is registered on
+    // this.configRouter, never on this.app. Unmatched requests fall through to
+    // the global parser (100 KB default, unchanged).
+    this.app.use(this.createRateLimiter());
+    this.configRouter = express.Router();
+    this.app.use(this.configRouter);
+
+    // Parse JSON bodies. jsonBodyErrors keeps a malformed body on the four
+    // existing POSTs a JSON answer instead of Express's HTML page (#259).
+    this.app.use(markParser(express.json()));
+    this.app.use(jsonBodyErrors);
     
     this.setupRoutes();
+  }
+
+  /**
+   * The per-IP rate limiter, mounted in the constructor (it used to be created
+   * in setupRoutes(); it moved so configRouter sits behind it). (#259)
+   */
+  createRateLimiter() {
+    return rateLimit({
+      windowMs: 60 * 1000, // 1 minute
+      max: this.rateLimitMax, // requests per minute per IP (60 unless a test overrides it)
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: 'Too many requests, please try again later.',
+      // The dashboard fetches /icon.png as its favicon + header logo on every
+      // load; exempt this cacheable static asset so it never competes with the
+      // dashboard API calls for the per-IP abuse budget. (#113)
+      skip: (req) => req.path === '/icon.png' || req.path === '/vendor/chart.umd.min.js' || req.path === '/dashboard.js'
+    });
+  }
+
+  /**
+   * helmet configuration (#243).
+   *
+   * The dashboard page and script are same-origin only, so script-src is
+   * 'self' with no 'unsafe-inline'; dashboard.html carries no inline script or
+   * inline handler attribute (dashboard.js wires events with addEventListener).
+   * style-src keeps 'unsafe-inline' because the page uses many style="..."
+   * attributes and sets styles on rendered fragments; it only widens style
+   * injection, not script execution. connect-src 'self' covers fetch() and the
+   * same-origin /ws/logs WebSocket (CSP3: 'self' matches ws:/wss: of the same
+   * host).
+   *
+   * Deliberately NOT sent: upgrade-insecure-requests (helmet's default). The
+   * service is usually plain HTTP on a LAN, and that directive makes the browser
+   * rewrite every subresource to https, which breaks the page. HSTS is opt-in
+   * for the same reason; TLS belongs to the reverse proxy.
+   *
+   * @param {boolean} hsts - enable Strict-Transport-Security
+   */
+  helmetOptions(hsts) {
+    return {
+      contentSecurityPolicy: {
+        useDefaults: false,
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          scriptSrcAttr: ["'none'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", 'data:'],
+          connectSrc: ["'self'"],
+          fontSrc: ["'self'"],
+          objectSrc: ["'none'"],
+          baseUri: ["'self'"],
+          formAction: ["'self'"],
+          frameAncestors: ["'none'"]
+        }
+      },
+      frameguard: { action: 'deny' },
+      // includeSubDomains off: helmet adds it by default, and an operator
+      // serving https://example.com would otherwise lock every plain-HTTP
+      // subdomain (nas.example.com) out for 180 days (#243 round 1 L1).
+      strictTransportSecurity: hsts ? { maxAge: 15552000, includeSubDomains: false } : false
+    };
   }
 
   /**
@@ -152,7 +299,9 @@ class HealthCheckService {
     // the same tick, so with an await in between (express-rate-limit's async
     // MemoryStore) all of them read the old count and a single write of 60
     // wrong guesses was checked in full against a limit of 10.
-    return (req, res, next) => {
+    // Named (not an anonymous arrow): the route-enumeration test in
+    // dashboardWriteSecurity.test.js matches layers by layer.handle.name. (#259)
+    const dashboardAuth = (req, res, next) => {
       // Skip if dashboard is disabled
       if (!this.dashboardConfig.enabled) {
         return res.status(403).json({ error: 'Dashboard is disabled' });
@@ -182,6 +331,94 @@ class HealthCheckService {
         next(err);
       }
     };
+    return dashboardAuth;
+  }
+
+  /**
+   * Origin guard for state-changing requests (#259). Applied per route, after
+   * dashboardAuth() (an unauthenticated cross-origin request gets 401 and
+   * learns nothing about the origin policy), on every route whose method is
+   * not GET, HEAD or OPTIONS. The route-enumeration test enforces that.
+   *
+   * - Origin decides when present; otherwise the Referer's origin does.
+   * - No Origin, no Referer and no Sec-Fetch-Site: not a browser (curl, Home
+   *   Assistant), accepted.
+   * - Sec-Fetch-Site with neither Origin nor Referer is refused, even
+   *   same-origin: a browser always adds Origin to a state-changing request.
+   * - Origin: null, malformed values and unparseable Referers are refused.
+   */
+  checkOrigin() {
+    // Named for the route-enumeration test (see dashboardAuth).
+    const checkOrigin = (req, res, next) => {
+      const { origin, referer } = req.headers;
+      const candidate = origin !== undefined ? origin : referer;
+      let ok;
+      if (candidate === undefined) {
+        ok = req.headers['sec-fetch-site'] === undefined;
+      } else {
+        ok = this.isAllowedOrigin(candidate, req.headers.host);
+      }
+      if (ok) return next();
+      this.logger.warn('Request refused: origin not allowed', {
+        method: req.method,
+        path: req.path,
+        origin: typeof candidate === 'string' ? candidate.slice(0, 200) : null,
+        remoteAddress: req.ip
+      });
+      return res.status(403).json({ error: 'origin_rejected' });
+    };
+    return checkOrigin;
+  }
+
+  /** Why configuration writes are unavailable, or null when they are allowed. */
+  configWritesReason() {
+    if (this.dashboardConfig.allowConfigWrites !== true) return 'disabled';
+    if ((this.dashboardConfig.auth?.type || 'none') === 'none') return 'auth-none';
+    return null;
+  }
+
+  /** Refuses configuration writes unless enabled and auth is not none. (#259) */
+  requireConfigWrites() {
+    const requireConfigWrites = (req, res, next) => {
+      const reason = this.configWritesReason();
+      if (reason) return res.status(403).json({ error: 'config_writes_disabled', reason });
+      return next();
+    };
+    return requireConfigWrites;
+  }
+
+  /**
+   * The middleware chain for every route that changes configuration (#261,
+   * #262): auth, Origin, writes enabled, a JSON-only 16 KB body, and last the
+   * JSON error mapper (it must be part of the chain: Express runs an error
+   * handler only for layers registered before it, so a router-level handler
+   * would never see a route registered later). Register such routes on
+   * this.configRouter, not this.app, so the 16 KB parser runs first.
+   * @returns {Function[]}
+   */
+  configWrite() {
+    const configBody = (req, res, next) => {
+      const hasBody = req.headers['transfer-encoding'] !== undefined ||
+        Number(req.headers['content-length']) > 0;
+      if (!hasBody) {
+        // body-parser leaves req.body undefined when there is no body.
+        req.body = {};
+        return next();
+      }
+      // req.is() is type-is, the matcher express.json() uses by default, so
+      // this check and the parser cannot disagree.
+      if (!req.is('application/json')) {
+        return res.status(415).json({ error: 'invalid_content_type' });
+      }
+      return configJson(req, res, next);
+    };
+    return [
+      this.dashboardAuth(),
+      this.checkOrigin(),
+      this.requireConfigWrites(),
+      configBody,
+      jsonBodyErrors
+    ];
   }
 
   /**
@@ -202,8 +439,8 @@ class HealthCheckService {
         return res.status(401).json({ error: 'Authentication required' });
       }
       res.locals.authFailed = true;
+      // Never log the username: users paste passwords into that field. (#286)
       this.logger.warn('Dashboard authentication failed', {
-        username: result.username,
         remoteAddress: req.ip
       });
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -224,22 +461,6 @@ class HealthCheckService {
    * Set up Express routes
    */
   setupRoutes() {
-    // Rate limiting middleware - prevent abuse
-    const limiter = rateLimit({
-      windowMs: 60 * 1000, // 1 minute
-      max: this.rateLimitMax, // requests per minute per IP (60 unless a test overrides it)
-      standardHeaders: true,
-      legacyHeaders: false,
-      message: 'Too many requests, please try again later.',
-      // The dashboard fetches /icon.png as its favicon + header logo on every
-      // load; exempt this cacheable static asset so it never competes with the
-      // dashboard API calls for the per-IP abuse budget. (#113)
-      skip: (req) => req.path === '/icon.png'
-    });
-
-    // Apply rate limiting to all routes
-    this.app.use(limiter);
-
     // Health endpoint - simple alive check
     this.app.get('/health', (req, res) => {
       const uptime = Math.floor((this.now().getTime() - new Date(this.status.startTime).getTime()) / 1000);
@@ -353,6 +574,32 @@ class HealthCheckService {
     this.app.get('/icon.png', (req, res) => {
       res.sendFile(path.join(__dirname, 'icon.png'), {
         headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=3600' }
+      }, (err) => {
+        if (err && !res.headersSent) res.status(err.statusCode || 500).end();
+      });
+    });
+
+    // The dashboard's own script, split out of dashboard.html so the CSP can
+    // forbid inline script. A single fixed route, like /icon.png. It is the page's
+    // static code, not data, so it needs no auth (the API it calls does). (#243)
+    this.app.get('/dashboard.js', (req, res) => {
+      res.sendFile(path.join(__dirname, 'dashboard.js'), {
+        headers: { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache' }
+      }, (err) => {
+        if (err && !res.headersSent) res.status(err.statusCode || 500).end();
+      });
+    });
+
+    // Chart.js, served from the npm dependency instead of a CDN so the dashboard
+    // works offline and no third party can run script in the admin page. A single
+    // fixed route (not a directory mount), so no other file under node_modules is
+    // reachable and there is nothing to traverse. No auth, like /icon.png. (#244)
+    // chart.js's package "exports" map does not expose its dist/ files, so the
+    // bundle is located beside the resolved main entry (dist/chart.cjs).
+    const chartJsPath = path.join(path.dirname(require.resolve('chart.js')), 'chart.umd.min.js');
+    this.app.get('/vendor/chart.umd.min.js', (req, res) => {
+      res.sendFile(chartJsPath, {
+        headers: { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'public, max-age=86400' }
       }, (err) => {
         if (err && !res.headersSent) res.status(err.statusCode || 500).end();
       });
@@ -540,7 +787,7 @@ class HealthCheckService {
     });
 
     // Dashboard API: Dismiss server error (with authentication)
-    this.app.post('/api/dashboard/dismiss-error', this.dashboardAuth(), (req, res) => {
+    this.app.post('/api/dashboard/dismiss-error', this.dashboardAuth(), this.checkOrigin(), (req, res) => {
       try {
         const { server } = req.body;
         
@@ -578,7 +825,7 @@ class HealthCheckService {
     });
 
     // Dashboard API: Trigger manual sync (with authentication)
-    this.app.post('/api/dashboard/sync', this.dashboardAuth(), async (req, res) => {
+    this.app.post('/api/dashboard/sync', this.dashboardAuth(), this.checkOrigin(), async (req, res) => {
       if (!this.syncBank) {
         return res.status(503).json({ 
           error: 'Sync function not available',
@@ -656,7 +903,7 @@ class HealthCheckService {
     });
 
     // Dashboard API: Reset sync history (with authentication)
-    this.app.post('/api/dashboard/reset-history', this.dashboardAuth(), async (req, res) => {
+    this.app.post('/api/dashboard/reset-history', this.dashboardAuth(), this.checkOrigin(), async (req, res) => {
       if (!this.syncHistory) {
         return res.status(503).json({ 
           error: 'Sync history service not available'
@@ -667,8 +914,24 @@ class HealthCheckService {
         const { server } = req.body;
         
         if (server && server !== 'all') {
+          if (typeof server !== 'string') {
+            return res.status(400).json({ error: 'invalid_server' });
+          }
+          if (server.length > 200) {
+            return res.status(400).json({ error: 'server_name_too_long' });
+          }
+          // Only a configured server, or an orphan that still has history rows
+          // (the orphaned-servers cleanup), can be reset. Anything else would
+          // write a history_reset audit row for a name that never existed.
+          const configured = this.getServers ? (this.getServers() || []).map(sv => sv.name) : null;
+          const known = configured === null ||
+            configured.includes(server) ||
+            this.syncHistory.hasServerData(server);
+          if (!known) {
+            return res.status(404).json({ error: 'server_not_found' });
+          }
           // Reset history for specific server
-          await this.syncHistory.resetServerHistory(server);
+          await this.syncHistory.resetServerHistory(server, { remoteAddr: req.ip });
           
           this.logger.info('Sync history reset for server via dashboard', {
             server: server,
@@ -681,7 +944,7 @@ class HealthCheckService {
           });
         } else if (server === 'all') {
           // Reset all history
-          await this.syncHistory.resetAllHistory();
+          await this.syncHistory.resetAllHistory({ remoteAddr: req.ip });
           
           this.logger.info('All sync history reset via dashboard', {
             remoteAddress: req.ip
@@ -705,7 +968,7 @@ class HealthCheckService {
     });
 
     // Dashboard API: Test notification channels (with authentication)
-    this.app.post('/api/dashboard/test-notification', this.dashboardAuth(), async (req, res) => {
+    this.app.post('/api/dashboard/test-notification', this.dashboardAuth(), this.checkOrigin(), async (req, res) => {
       const { channel } = req.body;
 
       if (!channel) {
@@ -1024,7 +1287,12 @@ This test verifies that notifications are configured correctly and can reach the
 
       try {
         const limit = parseInt(req.query.limit) || 10;
-        const history = this.syncHistory.getHistory({ limit });
+        const filters = { limit };
+        // The History tab's server filter (#288). A repeated ?serverName=a&serverName=b
+        // arrives as an array; only a single non-empty string is a filter.
+        const { serverName } = req.query;
+        if (typeof serverName === 'string' && serverName !== '') filters.serverName = serverName;
+        const history = this.syncHistory.getHistory(filters);
         res.json(history);
       } catch (error) {
         this.logger.error('Failed to get sync history', {
@@ -1050,6 +1318,74 @@ This test verifies that notifications are configured correctly and can reach the
       }
     });
 
+    // Payment alert snapshot (#260): what the #258 evaluation last said about
+    // every watched schedule, persisted during each sync, so the dashboard
+    // needs no connection to Actual. `lastAlertAt` is joined from the
+    // schedule_alerts ledger at request time, not stored (the snapshot is saved
+    // before the ledger is written for the same sync).
+    this.app.get('/api/dashboard/payments', this.dashboardAuth(), (req, res) => {
+      if (!this.getServers) {
+        return res.status(503).json({ error: 'Server list not available' });
+      }
+      if (!this.syncHistory) {
+        return res.status(503).json({ error: 'Sync history not available' });
+      }
+
+      // Only a single non-empty string selects a server: ?server=a&server=b,
+      // ?server[]=x, ?server[a]=b and ?server= are all rejected.
+      // Express 5's default "simple" query parser does not nest, so
+      // `server[]=x` and `server[a]=b` arrive as the literal keys "server[]" and
+      // "server[a]"; they are rejected by name rather than ignored.
+      const requested = req.query.server;
+      const bracketed = Object.keys(req.query).some((k) => k.startsWith('server['));
+      if (bracketed || (requested !== undefined && (typeof requested !== 'string' || requested === ''))) {
+        return res.status(400).json({ error: 'Invalid server parameter' });
+      }
+
+      try {
+        // Matched by name against the configured list (never as an object key),
+        // so `__proto__` is just an unknown server.
+        let servers = this.getServers() || [];
+        if (requested !== undefined) {
+          const match = servers.find((s) => s.name === requested);
+          if (!match) return res.status(404).json({ error: 'Server not found' });
+          servers = [match];
+        }
+
+        const daysBetween = (from, to) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000);
+
+        const result = servers.map((server) => {
+          if (!server.scheduleAlerts) {
+            return { server: server.name, configured: false, lastRun: null, items: [] };
+          }
+          const { items, run } = this.syncHistory.getPaymentSnapshot(server.name);
+          const lastSent = this.syncHistory.getLastSentAlerts(server.name);
+          return {
+            server: server.name,
+            configured: true,
+            lastRun: run,
+            items: items.map((item) => ({
+              ...item,
+              lastAlertAt: lastSent.get(JSON.stringify([item.alertId, item.scheduleId])) || null,
+              // Constants until #262 (source) and #261 (rule state) land.
+              source: 'config',
+              ruleState: { enabled: true, mutedUntil: null, reason: null },
+              occurrences: item.occurrences.map((o) => ({
+                ...o,
+                daysLate: o.state === 'late' && o.receivedDate && o.deadline
+                  ? daysBetween(o.deadline, o.receivedDate)
+                  : null
+              }))
+            }))
+          };
+        });
+        res.json({ servers: result });
+      } catch (error) {
+        this.logger.error('Failed to get payments', { error: error.message });
+        res.status(500).json({ error: 'Failed to retrieve payments' });
+      }
+    });
+
     // Notification activity and how much rate-limit budget is left (#188).
     // Rate limiting was otherwise invisible: a user whose failure alerts were
     // being suppressed had no surface telling them so. `rateLimit` is echoed
@@ -1071,6 +1407,38 @@ This test verifies that notifications are configured correctly and can reach the
       }
     });
 
+    // What the dashboard may do: whether configuration writes are available
+    // and, when not, why. (#259)
+    this.app.get('/api/dashboard/capabilities', this.dashboardAuth(), (req, res) => {
+      const reason = this.configWritesReason();
+      res.json({ configWrites: reason === null, reason });
+    });
+
+    // Configuration change audit, newest first. (#259)
+    this.app.get('/api/dashboard/config-audit', this.dashboardAuth(), (req, res) => {
+      if (!this.syncHistory) {
+        return res.status(503).json({ error: 'Sync history not available' });
+      }
+
+      // One query value of 1 to 3 digits, then 1 to 200. A repeated ?limit
+      // arrives as an array and fails the first step.
+      let limit = 50;
+      if (req.query.limit !== undefined) {
+        const raw = req.query.limit;
+        limit = typeof raw === 'string' && /^\d{1,3}$/.test(raw) ? Number(raw) : NaN;
+        if (!(limit >= 1 && limit <= 200)) {
+          return res.status(400).json({ error: 'invalid_limit' });
+        }
+      }
+
+      try {
+        res.json({ entries: this.syncHistory.getConfigAudit({ limit }) });
+      } catch (error) {
+        this.logger.error('Failed to get configuration audit', { error: error.message });
+        res.status(500).json({ error: 'Failed to retrieve configuration changes' });
+      }
+    });
+
     // 404 handler
     this.app.use((req, res) => {
       this.logger.warn('Unknown endpoint requested', { 
@@ -1089,11 +1457,42 @@ This test verifies that notifications are configured correctly and can reach the
         availableEndpoints: endpoints
       });
     });
+
+    // Final error handler (#259): a thrown or passed error is logged and answered
+    // as JSON. Express's default handler would render the stack trace as HTML.
+    this.app.use((err, req, res, next) => {
+      this.logger.error('Unhandled request error', {
+        error: err && err.message,
+        path: req.path,
+        method: req.method
+      });
+      if (res.headersSent) return next(err);
+      // A 4xx from a route or middleware keeps its status; never a stack. (#259)
+      const status = err && (err.status || err.statusCode);
+      if (status >= 400 && status < 500) {
+        return res.status(status).json({ error: 'request_error' });
+      }
+      return res.status(500).json({ error: 'internal_error' });
+    });
   }
 
   /**
-   * Get overall service status based on recent sync results
+   * Startup notices about configuration writes (#259), logged once from start().
+   * allowedOrigins authorizes writes as well as the log stream, so say so.
    */
+  logWriteConfigWarnings() {
+    if (this.dashboardConfig.allowConfigWrites !== true) return;
+    if (this.configWritesReason() === 'auth-none') {
+      this.logger.error('dashboard.allowConfigWrites is true but dashboard.auth.type is "none": configuration writes stay refused. Enable basic or token auth to use them.');
+    }
+    const origins = this.dashboardConfig.allowedOrigins || [];
+    if (origins.length > 0) {
+      this.logger.warn('dashboard.allowedOrigins also authorizes state-changing requests: pages on these origins can submit configuration writes. Review the list.', {
+        allowedOrigins: origins
+      });
+    }
+  }
+
   /** getRunningSync() guarded, so a failing callback cannot break the status route. (#272) */
   safeRunningSync() {
     try {
@@ -1104,6 +1503,9 @@ This test verifies that notifications are configured correctly and can reach the
     }
   }
 
+  /**
+   * Get overall service status based on recent sync results
+   */
   getOverallStatus() {
     if (this.status.syncCount === 0) return 'PENDING';
     if (this.status.failureCount > 0 && this.status.successCount === 0) return 'UNHEALTHY';
@@ -1222,23 +1624,41 @@ This test verifies that notifications are configured correctly and can reach the
    *   403, at every auth type. This is the Cross-Site WebSocket Hijacking
    *   guard. A request with no Origin is not from a browser and is let through
    *   to the credential check.
-   * - more than maxWsConnectionsPerIp open sockets from one address: 429
-   * - auth type basic/token: a valid ?ticket= from /api/dashboard/ws-ticket,
-   *   or a valid Authorization header (non-browser clients). Otherwise 401.
+   * - more than maxWsConnectionsPerIp open sockets from one address (the
+   *   trustProxy-resolved client address): 429
+   * - auth type basic/token: a valid single-use ?ticket= from
+   *   /api/dashboard/ws-ticket. Otherwise 401. The ticket is consumed first,
+   *   so it dies with any refusal. An Authorization header is not accepted on
+   *   the handshake (it would be an unthrottled password oracle).
    * @param {{origin?: string, req: import('http').IncomingMessage}} info
    * @param {Function} done - ws callback (result, code, message)
    */
   verifyWsClient(info, done) {
     const req = info.req;
-    const remoteAddress = req.socket.remoteAddress;
+    const remoteAddress = this.resolveWsClientIp(req);
     const refuse = (code, message) => {
       this.logger.warn('WebSocket handshake refused', { status: code, reason: message, remoteAddress });
       done(false, code, message);
     };
 
+    const authConfig = this.dashboardConfig.auth || {};
+    const needsTicket = (authConfig.type || 'none') !== 'none';
+
+    // Spend the ticket before any other check, so a handshake refused for its
+    // Origin, the cap or a disabled dashboard cannot leave a usable ticket
+    // behind in a proxy access log (the URL carries it). (#280)
+    let ticketOk = false;
+    if (needsTicket) {
+      let ticket = null;
+      try {
+        ticket = new URL(req.url, 'http://localhost').searchParams.get('ticket');
+      } catch { /* malformed URL: no ticket */ }
+      ticketOk = Boolean(ticket) && this.wsTickets.consume(ticket);
+    }
+
     if (!this.dashboardConfig.enabled) return refuse(403, 'Dashboard is disabled');
 
-    if (info.origin && !this.isAllowedWsOrigin(info.origin, req.headers.host)) {
+    if (info.origin && !this.isAllowedOrigin(info.origin, req.headers.host)) {
       return refuse(403, 'Origin not allowed');
     }
 
@@ -1246,28 +1666,45 @@ This test verifies that notifications are configured correctly and can reach the
       return refuse(429, 'Too many connections');
     }
 
-    const authConfig = this.dashboardConfig.auth || {};
-    if ((authConfig.type || 'none') === 'none') return done(true);
+    if (!needsTicket) return done(true);
 
-    let ticket = null;
-    try {
-      ticket = new URL(req.url, 'http://localhost').searchParams.get('ticket');
-    } catch { /* malformed URL: no ticket */ }
     // Ticket only. An Authorization header is deliberately NOT accepted here:
     // WebSocket upgrades bypass the Express rate limiter, so a header check on
     // the handshake would be an unthrottled password oracle. Scripts get a
     // ticket from /api/dashboard/ws-ticket with their header instead. (#242)
-    if (ticket && this.wsTickets.consume(ticket)) return done(true);
+    if (ticketOk) return done(true);
 
     return refuse(401, 'Authentication required');
   }
 
   /**
-   * @param {string} origin - the handshake's Origin header
-   * @param {string} host - the handshake's Host header
+   * The client address for the per-address socket cap and the handshake log.
+   * Resolved the way Express resolves req.ip, so it honours healthCheck.trustProxy
+   * (X-Forwarded-For only from trusted hops) and is the raw peer address when
+   * that is off. A WebSocket upgrade never passes through Express, so req.ip is
+   * not set on it. (#280)
+   * @param {import('http').IncomingMessage} req
+   * @returns {string}
+   */
+  resolveWsClientIp(req) {
+    const probe = Object.create(this.app.request);
+    probe.headers = req.headers;
+    probe.socket = req.socket;
+    return probe.ip || req.socket.remoteAddress;
+  }
+
+  /**
+   * The one origin rule, shared by the /ws/logs handshake and the Origin guard
+   * on state-changing requests (#242, #259). Same-origin is a host comparison
+   * (port included), not scheme + host, so a TLS-terminating proxy that does
+   * not set trustProxy still works: the service sees plain HTTP but the
+   * browser's Origin says https. dashboard.allowedOrigins is the only extra
+   * list; there is deliberately no separate write list.
+   * @param {string} origin - the Origin header (or a Referer URL)
+   * @param {string} host - the Host header
    * @returns {boolean} true when same-origin or listed in dashboard.allowedOrigins
    */
-  isAllowedWsOrigin(origin, host) {
+  isAllowedOrigin(origin, host) {
     let parsed;
     try {
       parsed = new URL(origin);
@@ -1317,6 +1754,7 @@ This test verifies that notifications are configured correctly and can reach the
    * @returns {Promise<void>}
    */
   async start() {
+    this.logWriteConfigWarnings();
     return new Promise((resolve, reject) => {
       try {
         const http = require('http');
@@ -1348,12 +1786,12 @@ This test verifies that notifications are configured correctly and can reach the
 
         this.wss.on('connection', (ws, req) => {
           this.logger.info('WebSocket client connected', {
-            remoteAddress: req.socket.remoteAddress
+            remoteAddress: this.resolveWsClientIp(req)
           });
 
           this.wsClients.add(ws);
           ws.isAlive = true;
-          const ip = req.socket.remoteAddress;
+          const ip = this.resolveWsClientIp(req);
           this.wsConnectionsPerIp.set(ip, (this.wsConnectionsPerIp.get(ip) || 0) + 1);
           ws.once('close', () => {
             const left = (this.wsConnectionsPerIp.get(ip) || 1) - 1;
@@ -1494,6 +1932,7 @@ This test verifies that notifications are configured correctly and can reach the
    * @returns {Promise<void>}
    */
   async stop() {
+    if (this.authFailures) this.authFailures.shutdown();
     return new Promise((resolve, reject) => {
       if (!this.server) {
         resolve();

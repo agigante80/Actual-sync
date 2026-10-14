@@ -118,7 +118,8 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Modern Web Dashboard** - Tabbed interface with Overview, Analytics, History, and Settings
 - ✅ **2-Column Overview Layout** - Service health, server list, recent activity, and live logs
 - ✅ **Sync Status Badges** - Color-coded badges showing success/partial/failure for each server
-- ✅ **Interactive Charts** - Success rates by server, duration trends, and sync timeline visualizations
+- ✅ **Security Headers** - The dashboard is served with a strict Content-Security-Policy (no inline script), clickjacking protection, `nosniff` and no `X-Powered-By` (via helmet); HSTS is opt-in with `healthCheck.hsts`
+- ✅ **Interactive Charts** - Success rates by server, duration trends, and sync timeline visualizations; Chart.js is bundled with the service, so the UI needs no internet access
 - ✅ **Date Format Preferences** - 11 customizable date formats including 3-letter months (persisted in browser)
 - ✅ **Orphaned Server Cleanup** - Identify and remove historical data for decommissioned budgets
 - ✅ **Health Check Endpoints** - HTTP endpoints for monitoring (`/health`, `/metrics`, `/ready`)
@@ -138,6 +139,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate) applied to failures
 - ✅ **Rate Limiting** - Failure-notification spam prevention with configurable intervals
 - ✅ **Missing-Payment Alerts** - Compares Actual's own schedules against posted transactions per server and notifies when an expected payment is late, missing, wrong-amount, or cannot be checked (stale bank connection); see [Missing-Payment Alerts](#-missing-payment-alerts)
+- ✅ **Payments Tab** - Read-only dashboard view of every watched schedule: state, expected amount, next due date, deadline, the last 6 occurrences and the last alert sent; works without a connection to Actual; see [Payments tab](#payments-tab)
 
 ### 🛡️ Reliability & Security
 
@@ -364,6 +366,8 @@ Configuration is managed via `config/config.json` with JSON schema validation.
 }
 ```
 
+Optional top-level `"timezone"` (an IANA name such as `"America/New_York"`) sets the zone cron schedules run in and times are shown in; default is the process timezone (`TZ`). See [CONFIG.md](docs/CONFIG.md#timezone-optional).
+
 **Configuration Notes:**
 
 - **`encryptionPassword`** (optional): Required only if your budget file has end-to-end encryption (E2EE) enabled. This is separate from the server password.
@@ -406,7 +410,7 @@ See **[docs/CONFIG.md](docs/CONFIG.md)** for complete configuration reference in
 | `npm test` | `jest` | Run test suite |
 | `npm run test:watch` | `jest --watch` | Run tests in watch mode |
 | `npm run test:coverage` | `jest --coverage` | Generate coverage report |
-| `npm run test:e2e` | `jest --config jest.e2e.config.js` | Run the browser E2E suite (see [TESTING.md](docs/TESTING.md#-browser-e2e-tests-263)) |
+| `npm run test:e2e` | `node --experimental-vm-modules node_modules/.bin/jest --config jest.e2e.config.js --runInBand` | Run the browser E2E suite (see [TESTING.md](docs/TESTING.md#-browser-e2e-tests-263)) |
 
 ### Command Line Examples
 
@@ -667,6 +671,26 @@ Access the interactive dashboard at `http://localhost:3000/dashboard`:
 
 ---
 
+#### Payments tab
+
+The **Payments** tab lists every schedule watched by [Missing-Payment Alerts](#-missing-payment-alerts), grouped per server, with a "Sync now" button per server. It reads the snapshot saved by each sync, so it works even when Actual is unreachable.
+
+![Payments tab](docs/screenshots/dashboard-payments.png)
+
+| Pill | Meaning | Needs attention |
+|---|---|---|
+| Upcoming (outline) | not due yet | no |
+| Received (green) | paid on time, right amount | no |
+| Late (amber) | paid after the deadline | no |
+| Missing (red) | deadline passed, no payment | yes |
+| Wrong amount (amber) | paid, but not the expected amount | yes |
+| Cannot check (grey) | the bank connection is too stale to tell | yes |
+| Skipped (grey, dashed) | skipped in Actual | no |
+
+See [docs/DASHBOARD.md](docs/DASHBOARD.md#payments-tab) for dates, refresh and failure messages.
+
+---
+
 **Dashboard Capabilities:**
 - 📈 **Real-time Charts** - Success rates, duration trends, sync timelines
 - 🖥️ **System Status** - Live uptime, statistics, and server health
@@ -696,6 +720,34 @@ npm run screenshots
 ```
 
 See **[docs/DASHBOARD.md](docs/DASHBOARD.md)** for complete dashboard documentation including authentication setup, API endpoints, and reverse proxy configuration.
+
+#### Editing from the dashboard
+
+The dashboard is read-only for configuration by default. State-changing requests (sync, dismiss, reset, test notification) are refused when they come from another browser origin.
+
+```json
+"dashboard": { "enabled": true }
+```
+
+Enable writes only with authentication:
+
+```json
+"dashboard": {
+  "enabled": true,
+  "allowConfigWrites": true,
+  "auth": { "type": "basic", "username": "admin", "password": "change-me" }
+}
+```
+
+Behind a reverse proxy that serves the page under another origin, list it (this also authorizes POSTs from it):
+
+```json
+"dashboard": { "allowedOrigins": ["https://budget.example.com"] }
+```
+
+Every configuration change is listed, with secrets redacted, in the Settings tab:
+
+![Configuration changes](docs/screenshots/dashboard-settings-audit.png)
 
 ### Health Check Endpoints
 
@@ -941,7 +993,7 @@ schedule in Actual was renamed to `"Rent - Apartment"` (or deleted). The rule's 
 
 > ❓ Payment alert "rent" matches no schedule in Main. Check the schedule name in Actual.
 
-This repeats once per day while unmatched (a fixed interval, independent of `remindEveryDays`).
+This is sent once per destination while the rule stays unmatched, not on every sync. It is sent again only after the rule matches a schedule again and later stops matching.
 
 **9. Overlapping windows** - a *weekly* schedule (7-day interval between occurrences) with
 `graceDays: 5, earlyDays: 3` (5 + 3 = 8, greater than or equal to the 7-day interval): a late
@@ -958,10 +1010,10 @@ Logged warning:
 
 > Rule "rent": graceDays (5) + earlyDays (3) >= the schedule's shortest interval between occurrences (7 days); the on-time and late windows of consecutive occurrences would overlap, so this rule was skipped.
 
-Sent alert (the shared `cannotCheck` template has no `occurrence`/`deadline` to fill in for this
-reason, so those two fields render blank - this is expected for `interval-violation`):
+Sent alert (the built-in `cannotCheck` template has its own wording per `reason`, so this one points
+at the rule, not at the bank connection):
 
-> ⏸️ Cannot check Rent - Apartment: Checking has not synced since  (deadline ). Check the bank connection.
+> ⏸️ Cannot check Rent - Apartment: the rule's graceDays plus earlyDays reach the schedule's interval between occurrences, so its windows would overlap. Shorten them in config.json.
 
 **10. Digest** - in the same sync, the Rent rule above is `missing` and a second rule, watching an
 income schedule **"Salary"** (recurrence Monthly on the 5th, expected +3200.00 into Checking from
@@ -1007,6 +1059,8 @@ Every template (built-in or an override under `templates`) can reference these; 
 | `received_date` / `received_date_raw` | The date the matching transaction posted |
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
+| `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events) |
+| `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual, `deleted` when the schedule was removed in Actual (empty otherwise) |
 | `budget` | The server name |
 | `alert_id` | The rule's `id` |
 
@@ -1014,7 +1068,7 @@ A variable that does not apply to the current event type is always present as `n
 
 ### Timezone
 
-Every date in this feature - an occurrence date, a deadline, "today", account staleness - is computed in one timezone: `timezone` from the top-level config, falling back to the host machine's own local IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) when unset. A global `timezone` config key does not exist yet (tracked separately); until it does, every server's alerts use the sync process's own local zone.
+Every date in this feature - an occurrence date, a deadline, "today", account staleness - is computed in one timezone: the top-level `timezone` config key (see [CONFIG.md](docs/CONFIG.md#timezone-optional)), falling back to the process timezone (`TZ`, else the system zone), and to `UTC` when that is blank or not a valid IANA name. All servers share it.
 
 See **[docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md)** for the full configuration reference, the algorithm's edge cases, and message-template overrides.
 
@@ -1103,7 +1157,8 @@ See **[docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md)** for details
 Please report security vulnerabilities privately via GitHub's
 **[Report a vulnerability](https://github.com/agigante80/Actual-sync/security/advisories/new)**
 form (Security tab → Report a vulnerability). Do not open public GitHub issues
-for security vulnerabilities.
+for security vulnerabilities. The full policy (supported versions, what to include
+and what to leave out, response targets) is in **[SECURITY.md](SECURITY.md)**.
 
 ---
 
@@ -1306,6 +1361,7 @@ git push origin feature/amazing-feature
 - **Documentation** - Update relevant docs in `docs/` directory
 - **Commit Messages** - Use conventional commits (feat, fix, docs, chore, etc.)
 - **Pull Requests** - Include description, tests, and documentation updates
+- **GitHub Actions** - Reference every action by full commit SHA with a `# vX.Y.Z` comment, never a tag or branch (CI fails otherwise; see [docs/CI_CD.md](docs/CI_CD.md#pinning-third-party-actions))
 
 See **[CLAUDE.md](CLAUDE.md)** for developer and AI-agent guidelines (commands, architecture, conventions).
 
