@@ -125,7 +125,7 @@ const VARIABLES = [
   'expected_amount', 'expected_date', 'deadline', 'grace_days',
   'period', 'cadence',
   'days_overdue', 'received_amount', 'received_date', 'difference',
-  'last_sync', 'budget', 'alert_id',
+  'last_sync', 'reason', 'budget', 'alert_id',
   'expected_amount_raw', 'expected_date_raw', 'deadline_raw', 'days_overdue_raw',
   'received_amount_raw', 'received_date_raw', 'difference_raw', 'last_sync_raw'
 ];
@@ -145,8 +145,13 @@ const DEFAULT_TEMPLATES = {
     + '(difference {{difference}}).',
   resolved: '✅ {{name}}: {{received_amount}} arrived {{received_date}}, {{#if (eq days_overdue 0)}}on time'
     + '{{else}}{{days_overdue}} day(s) after the deadline{{/if}}. Alert closed.',
-  cannotCheck: '⏸️ Cannot check {{name}}: {{account}} has not synced since {{last_sync}} (deadline {{deadline}}). '
-    + 'Check the bank connection.',
+  // One wording per `reason` (#296): only stale / not-synced are about the bank
+  // connection; interval-violation and error are about the rule and the service.
+  cannotCheck: '{{#if (eq reason "interval-violation")}}⏸️ Cannot check {{name}}: the rule\'s graceDays plus earlyDays '
+    + 'reach the schedule\'s interval between occurrences, so its windows would overlap. Shorten them in config.json.'
+    + '{{else if (eq reason "error")}}⏸️ Cannot check {{name}}: the check failed with an error. See the service log.'
+    + '{{else}}⏸️ Cannot check {{name}}: {{account}} {{#if last_sync}}has not synced since {{last_sync}}{{else}}has never synced{{/if}} (deadline {{deadline}}). '
+    + 'Check the bank connection.{{/if}}',
   ruleUnmatched: '❓ Payment alert "{{alert_id}}" matches no schedule in {{budget}}. Check the schedule name in Actual.'
 };
 
@@ -248,6 +253,7 @@ function buildContext(event, evaluation, rule, { server, timezone }) {
     difference_raw: event.difference != null ? event.difference : null,
     last_sync: formatDate(event.lastSync, dateFormat, timezone),
     last_sync_raw: event.lastSync || null,
+    reason: event.reason || null,
     budget: server,
     alert_id: event.alertId
   };

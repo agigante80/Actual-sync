@@ -200,10 +200,15 @@ message-template variables.
 ```json
 "scheduleAlerts": {
   "alerts": [
-    { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+    { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6, "earlyDays": 2 }
   ]
 }
 ```
+
+- **`graceDays`** (default `3`): days after the occurrence date before it counts as overdue.
+- **`earlyDays`** (default `2`, 0-31): days before the occurrence date a matching transaction still counts as on time. `graceDays + earlyDays` must stay below the schedule's shortest interval between occurrences, otherwise the rule is skipped with a `cannotCheck` (reason `interval-violation`) and a warning.
+- **Timezone**: occurrence dates, deadlines and "today" use the top-level [`timezone`](#timezone-optional) (default: `TZ`, then the system zone, then `UTC`).
+- An account that was never bank-synced (`last_sync` is null) always gives `cannotCheck`, never `missing`.
 
 ### healthCheck (optional)
 

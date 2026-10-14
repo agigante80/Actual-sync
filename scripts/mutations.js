@@ -2457,6 +2457,103 @@ module.exports = [
         mutant: 'if (true) liveEl.textContent',
         tests: 'dashboardPayments'
     },
+    // ---- #296: low findings from the #258 review ----------------------------
+    {
+        id: '296-cannotcheck-one-wording-for-all-reasons', ticket: '#296',
+        desc: 'interval-violation and error cannotCheck render the bank-connection text again',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  cannotCheck: '{{#if (eq reason \"interval-violation\")}}",
+        mutant: "  cannotCheck: '{{#if (eq reason \"never-matches\")}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-error-reason-uses-bank-wording', ticket: '#296',
+        desc: 'the error reason falls through to the bank-connection wording',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{else if (eq reason \"error\")}}",
+        mutant: "{{else if (eq reason \"never-matches\")}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-reason-not-in-context', ticket: '#296',
+        desc: 'the cannotCheck reason is no longer passed to the template',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    reason: event.reason || null,",
+        mutant: "    reason: null,",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-refund-sign-ignored', ticket: '#296',
+        desc: 'an unlinked opposite-sign refund is accepted by the wrong-amount fallback and the late pass',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "        .filter((c) => c.match.linked || signCompatible(c.tx.amount, schedule.amount))",
+        mutant: "        .filter((c) => c.match.linked || signCompatible(c.tx.amount, schedule.amount) || true)",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-tolerance-sign-ignored', ticket: '#296',
+        desc: 'amountWithinTolerance ignores the sign, so a sibling schedule of opposite sign hijacks the payment',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  if (!signCompatible(amount, expected)) return false;",
+        mutant: "  if (false) return false;",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-zero-amount-rejects-all', ticket: '#296',
+        desc: 'a zero-amount schedule drops every non-zero transaction (wrongAmount becomes missing)',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  return bounds.some((b) => b === 0 || Math.sign(txAmount) === Math.sign(b));",
+        mutant: "  return bounds.some((b) => Math.sign(txAmount) === Math.sign(b));",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-range-unchecked', ticket: '#296',
+        desc: 'a range schedule skips the sign check, so a positive refund is taken as late or wrongAmount',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1, scheduleAmount.num2] : [scheduleAmount];",
+        mutant: "  if (typeof scheduleAmount === 'object') return true;\n  const bounds = [scheduleAmount];",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-range-first-bound-only', ticket: '#296',
+        desc: 'a range spanning zero only honours its first bound, rejecting a sign matching the other bound',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1, scheduleAmount.num2] : [scheduleAmount];",
+        mutant: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1] : [scheduleAmount];",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-never-synced-wording', ticket: '#296',
+        desc: 'a never-synced account renders "has not synced since  (deadline" with an empty date',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{#if last_sync}}has not synced since {{last_sync}}{{else}}has never synced{{/if}}",
+        mutant: "has not synced since {{last_sync}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-redelivery-after-restart', ticket: '#296',
+        desc: 'a sent missing alert is considered due again (no de-duplication across syncs and restarts)',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  if (!latest) return { due: true, lastSentAt: null };\n  if (event.event !== 'missing'",
+        mutant: "  if (!latest || true) return { due: true, lastSentAt: null };\n  if (event.event !== 'missing'",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '296-resolved-sent-every-sync', ticket: '#296',
+        desc: 'a resolved alert is not de-duplicated, so it repeats on every later sync',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    return { due: !resolvedRow, lastSentAt: null };",
+        mutant: "    return { due: true, lastSentAt: null };",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '296-never-synced-account-reports-missing', ticket: '#296',
+        desc: 'an account with no last_sync is treated as synced, so a missing payment is reported',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "const stale = !lastSync || today.diff(lastSync, 'days') > binding.staleAfterDays;\n        const lastSyncAfterDeadline = lastSync && lastSync.isAfter(occ.deadline, 'day');",
+        mutant: "const stale = lastSync ? today.diff(lastSync, 'days') > binding.staleAfterDays : false;\n        const lastSyncAfterDeadline = !lastSync || lastSync.isAfter(occ.deadline, 'day');",
+        tests: 'scheduleAlerts.test'
+    },
     {
         id: '332-digest-lookup-failure-rejects-batch', ticket: '#332',
         desc: "a failing per-destination ledger read in digest mode rejects the whole deliver() batch again instead of withholding only that channel",

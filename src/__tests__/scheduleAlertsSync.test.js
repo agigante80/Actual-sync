@@ -751,3 +751,93 @@ describe('persistPaymentSnapshot and error codes (#260)', () => {
     expect(warnings).toEqual([]);
   });
 });
+
+describe('scheduleAlertsSync: Telegram requests across syncs and restarts (#296)', () => {
+  let fake;
+  let baseUrl;
+  let requests;
+  let dbDir;
+  let dbPath;
+  let history;
+
+  beforeEach((done) => {
+    requests = [];
+    fake = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        requests.push({ url: req.url, body: JSON.parse(body || '{}') });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    fake.listen(0, '127.0.0.1', () => {
+      baseUrl = `http://127.0.0.1:${fake.address().port}`;
+      dbDir = createTempDir();
+      dbPath = path.join(dbDir, 'sync-history.db');
+      history = new SyncHistoryService({ dbPath, loggerConfig: { level: 'ERROR' } });
+      done();
+    });
+  });
+
+  afterEach((done) => {
+    history.close();
+    cleanupTempDir(dbDir);
+    fake.close(done);
+  });
+
+  const notifier = () => new NotificationService(
+    { telegram: { enabled: true, botToken: 'TOKEN', chatId: '42' } },
+    { level: 'ERROR' },
+    { telegramApiBaseUrl: baseUrl }
+  );
+  const block = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'] }] } };
+  const apiFor = (transactions, lastSync) => makeFakeApi({
+    schedules: [rentSchedule()],
+    payees: [{ id: 'pay1', name: 'Landlord' }],
+    accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs(lastSync) }],
+    transactions
+  });
+  const run = (api, now, syncHistory = history) => runScheduleAlertsStep({
+    api, server: block, serverName: 'Main', timezone: 'UTC', syncHistory,
+    notificationService: notifier(), logger: quietLogger, now: new Date(now)
+  });
+
+  test('two syncs of the same missing payment give exactly one Telegram request', async () => {
+    await run(apiFor([], '2026-01-09'), '2026-01-10T00:00:00.000Z');
+    await run(apiFor([], '2026-01-10'), '2026-01-10T12:00:00.000Z');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe('/botTOKEN/sendMessage');
+    expect(requests[0].body.text).toMatch(/Rent/);
+  });
+
+  test('a restart (database reopened from the same file) does not send the alert again', async () => {
+    await run(apiFor([], '2026-01-09'), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+
+    history.close();
+    history = new SyncHistoryService({ dbPath, loggerConfig: { level: 'ERROR' } });
+
+    const second = await run(apiFor([], '2026-01-10'), '2026-01-10T12:00:00.000Z');
+    expect(second).toEqual({ events: 1, sent: 0, skipped: 1 });
+    expect(requests).toHaveLength(1);
+  });
+
+  test('late payment: missing, then resolved once, then silence on later syncs', async () => {
+    await run(apiFor([], '2026-01-09'), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body.text).toMatch(/not received|did not go out/);
+
+    const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: null }];
+    await run(apiFor(paid, '2026-01-11'), '2026-01-11T00:00:00.000Z');
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.text).toMatch(/arrived/);
+
+    const third = await run(apiFor(paid, '2026-01-12'), '2026-01-12T00:00:00.000Z');
+    expect(third.events).toBe(0);
+    expect(requests).toHaveLength(2);
+    const fourth = await run(apiFor(paid, '2026-01-13'), '2026-01-13T00:00:00.000Z');
+    expect(fourth.events).toBe(0);
+    expect(requests).toHaveLength(2);
+  });
+});

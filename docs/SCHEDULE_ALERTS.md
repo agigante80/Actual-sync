@@ -37,7 +37,8 @@ For each server with a `scheduleAlerts` block:
 3. For every occurrence of a watched schedule, a matching transaction is looked for by two means:
    Actual's own transaction-to-schedule link (authoritative, regardless of amount) or an
    account + payee match within an early/grace window around the occurrence date.
-4. What happened for the most recent occurrence becomes zero or one event: `missing`,
+4. What happened for each occurrence in the look-back window (up to 90 days: twice the schedule's longest interval, at least 7) becomes zero or one event
+   of its own, so several overdue occurrences can each produce one: `missing`,
    `wrongAmount`, `cannotCheck`, `resolved`, or (for a rule matching no schedule) `ruleUnmatched`.
    See [Event types](#event-types).
 5. Each event is de-duplicated against a ledger (the `schedule_alerts` table in the sync-history
@@ -102,7 +103,7 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 | `graceDays` | integer, 0-60 | `3` | Days after the occurrence date before it counts as overdue (deadline = occurrence + `graceDays`). |
 | `earlyDays` | integer, 0-31 | `2` | Days before the occurrence date a matching transaction still counts as on time. |
 | `period` | `"occurrence"` \| `"next"` | `"occurrence"` | What `{{period}}` names: the occurrence's own month, or the following month (for a payment due at month end, for the month ahead). |
-| `amountTolerancePct` | number, 0-100 | derived | How far a posted amount may differ from the schedule's expected amount and still be on time. Defaults to Actual's own schedule amount mode: `0` for an exact amount, `7.5` for "approximately". |
+| `amountTolerancePct` | number, 0-100 | derived | How far a posted amount may differ from the schedule's expected amount and still be on time. The sign must match for an unlinked transaction, in both the on-time and the late window: an outgoing refund of the same size is not the incoming payment and is never reported as a wrong amount or a late payment. A transaction Actual itself linked to the schedule is always trusted. A schedule with amount `0` accepts any sign (a non-zero payment is then a wrong amount). A range amount ("between") accepts the sign of either bound, so a range spanning zero or with a zero bound accepts anything. Defaults to Actual's own schedule amount mode: `0` for an exact amount, `7.5` for "approximately". |
 | `remindEveryDays` | integer, 1-30 | off | Repeat an unresolved `missing` alert every N days instead of sending it once. |
 | `channels` | array of `telegram`\|`email`\|`slack`\|`discord`\|`webhook`\|`ntfy` | every configured channel | Which notification channels this rule uses. A channel with no usable destination configured is silently skipped. |
 | `templates` | object | - | Per-rule template overrides. Takes priority over the block-level `templates`. |
@@ -113,7 +114,7 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 |---|---|---|
 | `missing` | No matching transaction by the deadline, and the account is synced past it. | Repeats every `remindEveryDays`, if set. |
 | `wrongAmount` | A matching transaction posted in-window, but its amount is outside tolerance. | One-time; not repeated. |
-| `cannotCheck` | The account's last sync is stale (`reason: "stale"`), not yet past the deadline (`reason: "not-synced"`), or the rule's own window configuration is unsound (`reason: "interval-violation"`, see below). | Never a false `missing`. |
+| `cannotCheck` | The account's last sync is stale (`reason: "stale"`), not yet past the deadline (`reason: "not-synced"`), the rule's own window configuration is unsound (`reason: "interval-violation"`, see below), or the rule threw while being evaluated (`reason: "error"`). | Never a false `missing`. An account that was never bank-synced (no `last_sync` yet) always gives `cannotCheck` (`reason: "stale"`) until its first sync. The built-in message has its own wording per reason; only `stale` and `not-synced` mention the bank connection. |
 | `resolved` | A payment previously reported `missing` later posts, on time or late. | Closes out the alert; no manual dismissal needed. |
 | `ruleUnmatched` | A rule's `schedule`/`schedulePrefix` matches no schedule in Actual (renamed, deleted, or a typo). | Repeats once per day while unmatched (a fixed interval, independent of the rule's own `remindEveryDays`). |
 
@@ -265,16 +266,16 @@ template that wants to format it differently.
 | `received_date` / `received_date_raw` | The date the matching transaction posted |
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
+| `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events) |
 | `budget` | The server name |
 | `alert_id` | The rule's `id` |
 
 ## Timezone
 
 Every date computed by this feature - an occurrence date, a deadline, "today", account staleness -
-is computed in one timezone: the top-level `timezone` config key, falling back to the host
-machine's own local IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) when unset. A
-`timezone` config key does not exist yet as of this release, so in practice every server currently
-shares the sync process's own local zone.
+is computed in one timezone: the top-level `timezone` config key (see
+[CONFIG.md](CONFIG.md#timezone-optional)), falling back to the process timezone (`TZ`, else the
+system zone), and to `UTC` when that is blank or not a valid IANA name. All servers share it.
 
 ## Payment snapshot and the dashboard API
 
