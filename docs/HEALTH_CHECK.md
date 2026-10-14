@@ -247,7 +247,7 @@ the config-writes gate (see above), so it needs `dashboard.allowConfigWrites: tr
 |-----|------|
 | `enabled` | boolean |
 | `mutedUntil` | `YYYY-MM-DD` from today to today + 365 days (in the configured timezone), or `null` to unmute |
-| `reason` | string, 1 to 200 characters after trimming; required when `mutedUntil` is a date, ignored when it is `null` |
+| `reason` | string, 1 to 200 characters after trimming; required when `mutedUntil` is a date; given alone, checked the same way on a muted alert and ignored otherwise; ignored when `mutedUntil` is `null` |
 
 It merges the given keys into the stored override and answers `200 {"ruleState": {...}}` (the shape
 above). `{"enabled":true}` when nothing is stored is a no-op: nothing is stored and nothing is audited.
@@ -260,7 +260,7 @@ change that alters the stored state is written to the configuration audit trail 
 | 400 | `invalid_json`, `invalid_body_encoding` | a malformed body or an unsupported charset or content encoding (the shared body parser) |
 | 400 | `invalid_body` | not an object, no known key, an unknown key, or a wrong type |
 | 400 | `invalid_muted_until` | not a real date, in the past, or more than 365 days ahead |
-| 400 | `reason_required` | a mute date with a missing or blank reason |
+| 400 | `reason_required` | a mute date with a missing or blank reason, or a blank reason alone on a muted alert |
 | 400 | `invalid_reason` | a reason over 200 characters after trimming |
 | 401 | | no or bad credentials (the dashboard auth bodies) |
 | 403 | `origin_rejected`, `config_writes_disabled` | the Origin or config-writes gate |

@@ -2854,8 +2854,24 @@ module.exports = [
         id: "261-reason-only-unvalidated", ticket: '#261',
         desc: "a reason-only PUT skips the trim, required and length check",
         file: "src/services/healthCheck.js",
-        anchor: "if (typeof body.mutedUntil === 'string' || (typeof body.reason === 'string' && body.mutedUntil !== null)) {",
-        mutant: "if (typeof body.mutedUntil === 'string') {",
+        anchor: "if (typeof body.reason === 'string' && !('mutedUntil' in body) && before && before.mutedUntil) {",
+        mutant: "if (false) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-reason-checked-unmuted", ticket: '#261',
+        desc: "a reason-only check also rejects a request on an alert that is not muted",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof body.reason === 'string' && !('mutedUntil' in body) && before && before.mutedUntil) {",
+        mutant: "if (typeof body.reason === 'string' && body.mutedUntil !== null) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-noop-change-logged", ticket: '#261',
+        desc: "a no-op override change still logs 'Configuration change recorded'",
+        file: "src/services/syncHistory.js",
+        anchor: "if (audited) this.logger.info('Configuration change recorded'",
+        mutant: "if (true) this.logger.info('Configuration change recorded'",
         tests: "paymentOverrides"
     },
     {
@@ -2902,7 +2918,7 @@ module.exports = [
         id: "261-mute-reason-optional", ticket: '#261',
         desc: "a mute without a reason is accepted",
         file: "src/services/healthCheck.js",
-        anchor: "if (reason === '') return bad('reason_required');",
+        anchor: "if (reason === '') return 'reason_required';",
         mutant: "",
         tests: "paymentOverrides"
     },
@@ -2926,8 +2942,8 @@ module.exports = [
         id: "261-noop-put-audited", ticket: '#261',
         desc: "a PUT that changes nothing is still written to the audit trail",
         file: "src/services/syncHistory.js",
-        anchor: "if (changes && Object.keys(changes).length > 0) {",
-        mutant: "if (true) {",
+        anchor: "const audited = Boolean(changes && Object.keys(changes).length > 0);",
+        mutant: "const audited = true;",
         tests: "paymentOverrides"
     },
     {

@@ -469,6 +469,26 @@ describe('payment alert state routes (#261)', () => {
       expect(audit()).toEqual([]);
     });
 
+    test('a no-op PUT logs no "Configuration change recorded" line (#261 round 2)', async () => {
+      await boot();
+      const info = jest.spyOn(history.logger, 'info');
+      await put('parking-a', { enabled: true });
+      expect(info.mock.calls.filter(([msg]) => msg === 'Configuration change recorded')).toHaveLength(0);
+      await put('parking-a', { enabled: false });
+      expect(info.mock.calls.filter(([msg]) => msg === 'Configuration change recorded')).toHaveLength(1);
+      info.mockRestore();
+    });
+
+    test('a reason on an alert that is not muted is ignored, not validated (#261 round 2)', async () => {
+      await boot();
+      const res = await put('parking-a', { enabled: false, reason: '' });
+      expect(res.status).toBe(200);
+      expect(history.getOverride('Main', 'parking-a').enabled).toBe(false);
+      expect(history.getOverride('Main', 'parking-a').reason).toBeNull();
+      expect((await put('parking-a', { reason: 'ok' })).status).toBe(200);
+      expect(history.getOverride('Main', 'parking-a').reason).toBeNull();
+    });
+
     test('mutedUntil:null with a reason ignores the reason', async () => {
       await boot();
       const res = await put('parking-a', { mutedUntil: null, reason: 'x' });

@@ -411,10 +411,17 @@ class HealthCheckService {
     }
     // A reason given with a date, or alone on a muted alert, passes the same
     // trim, required and length check (a long reason is rejected, never cut).
-    if (typeof body.mutedUntil === 'string' || (typeof body.reason === 'string' && body.mutedUntil !== null)) {
+    // The reason-only case is checked once the stored mute is known: on an
+    // alert that is not muted the reason is ignored, as before (#261 round 2).
+    const checkReason = () => {
       reason = typeof body.reason === 'string' ? body.reason.trim() : '';
-      if (reason === '') return bad('reason_required');
-      if (reason.length > 200) return bad('invalid_reason');
+      if (reason === '') return 'reason_required';
+      if (reason.length > 200) return 'invalid_reason';
+      return null;
+    };
+    if (typeof body.mutedUntil === 'string') {
+      const reasonError = checkReason();
+      if (reasonError) return bad(reasonError);
     }
 
     const serverName = req.params.server;
@@ -429,6 +436,10 @@ class HealthCheckService {
 
     try {
       const before = this.syncHistory.getOverride(serverName, alertId);
+      if (typeof body.reason === 'string' && !('mutedUntil' in body) && before && before.mutedUntil) {
+        const reasonError = checkReason();
+        if (reasonError) return bad(reasonError);
+      }
       const next = {
         server: serverName,
         alertId,
@@ -445,7 +456,7 @@ class HealthCheckService {
         next.mutedFrom = before && before.mutedUntil && before.mutedFrom ? before.mutedFrom : now.toISOString();
         next.mutedUntil = body.mutedUntil;
         next.reason = reason;
-      } else if ('reason' in body && next.mutedUntil && typeof body.reason === 'string' && body.reason.trim() !== '') {
+      } else if (typeof body.reason === 'string' && before && before.mutedUntil) {
         next.reason = reason;
       }
 

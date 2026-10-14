@@ -1453,13 +1453,15 @@ class SyncHistoryService {
       if (override) stored = this.setOverride(override);
       else this.deleteOverride(server, alertId);
       const changes = auditChanges(stored);
-      if (changes && Object.keys(changes).length > 0) {
+      const audited = Boolean(changes && Object.keys(changes).length > 0);
+      if (audited) {
         this.insertConfigAudit({ server, remoteAddr, action: 'payment_alert_state', target: alertId, changes });
       }
-      return stored;
+      return { stored, audited };
     });
-    const stored = apply();
-    this.logger.info('Configuration change recorded', { action: 'payment_alert_state', target: alertId });
+    const { stored, audited } = apply();
+    // Logged only when an audit row was written: a no-op change records nothing.
+    if (audited) this.logger.info('Configuration change recorded', { action: 'payment_alert_state', target: alertId });
     return stored;
   }
 
