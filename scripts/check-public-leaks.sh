@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-public-leaks-version: 19
+# check-public-leaks-version: 38
 #
 # The public half of the leak guard: home paths, unlisted "~/" roots and reachable addresses.
 #
@@ -17,17 +17,23 @@
 # guard that overstates its reach is worse than a narrow one that admits it.
 #
 # THE TREE MODES NEVER LOOK AT HISTORY; --history DOES, AND IT IS OPT-IN (#185, #191). `--all`
-# enumerates `git ls-files`: tracked files in the WORKING TREE. `--staged` reads the index. `--range`
-# enumerates `git diff --no-renames --name-only --diff-filter=ACMT` between two endpoints and reads
-# each file at HEAD, so a file added AND deleted inside the range is excluded at both ends. A home
-# path committed in one commit and removed in the next is invisible to all three, in the public
-# repository where it stays readable forever, and that is exactly the going-public moment this
-# component exists for. `--no-renames` and the `T` are load-bearing (#208): with rename detection
-# on, a renamed-and-edited file is status R and was listed by nothing, so the commit hook said
-# clean on an ordinary `git mv` plus an appended leak; a symlink replaced by a file is T and was
-# invisible the same way. The tree modes also FAIL CLOSED like `--history` now: a temp directory
-# that cannot be made, a blob git has but cannot write, a tracked file this process cannot open,
-# are each exit 2 with the file named, where every one used to be exit 0.
+# and `--head` change to the repository root first, so from any directory they cover every tracked
+# file and print root-relative paths (#401). `--all`
+# enumerates `git ls-files`: tracked files in the WORKING TREE. `--head` reads HEAD's COMMITTED
+# tree (#375; `git ls-tree -r -z HEAD`, each blob by `git show "HEAD:./$f"`), so an uncommitted
+# edit, or a tracked file deleted in the working tree, cannot mask what a push publishes: the
+# pre-push hook uses it. It is HEAD's tree and not every pushed commit. `--staged` reads the
+# index. `--range` enumerates `git diff --no-renames --name-only --diff-filter=ACMT` between two
+# endpoints and reads each file at HEAD, so a file added AND deleted inside the range is excluded
+# at both ends. A home path committed in one commit and removed in the next is invisible to all
+# four, in the public repository where it stays readable forever, and that is exactly the
+# going-public moment this component exists for. `--no-renames` and the `T` are load-bearing
+# (#208): with rename detection on, a renamed-and-edited file is status R and was listed by
+# nothing, so the commit hook said clean on an ordinary `git mv` plus an appended leak; a symlink
+# replaced by a file is T and was invisible the same way. The tree modes also FAIL CLOSED like
+# `--history` now: a temp directory that cannot be made, a blob git has but cannot write, a
+# tracked file this process cannot open, are each exit 2 with the file named, where every one
+# used to be exit 0.
 #
 # `--history` reads the publishable history: every blob reachable from EVERY REF EXCEPT refs/stash,
 # plus every worktree's HEAD (`--exclude=refs/stash --all`, the exclude BEFORE the selector it
@@ -60,22 +66,22 @@
 #
 # COST AND ITS LIMITS (#211, #239). Rules A and B are linear in the line length in TREE mode and
 # under `--history --show-evidence`: the tail walk is one anchored match rather than a per-byte
-# loop, the segment is cut with a literal prefix strip rather than `${raw##*/}`, and a trailing
-# slash is tested before it is stripped rather than through `${m%/}`, which tries every suffix when
-# the string does not end in one. A 64 KB punctuation tail cost 40 s and now costs 0.15 s; 1 MB is
-# 2 s. The REDACTED `--history` report is still quadratic in the match, which is #217 and is not
-# claimed here. Measured on bash 5.2.21 and glibc; this repository's stated floor is bash 3.2.57,
-# where the COST is unmeasured. Correctness does not rest on that floor behaving: a failed tail
-# match falls back to the byte loop, so an engine that does not reload the locale the way
-# `local LC_ALL=C` expects reports a finding slowly rather than missing it (review of #239).
+# loop, the segment is cut with a shortest-match strip (`${raw#/*/}`) rather than `${raw##*/}`,
+# which a 262144-byte dot-tail case in the suite pins with a mutant, and a trailing slash is
+# tested before it is stripped rather than through `${m%/}`, which tries every suffix when the
+# string does not end in one. A 64 KB punctuation tail cost 40 s and now costs 0.15 s; 1 MB took
+# 2 s unloaded and 3.7 s under load. The REDACTED `--history` report is linear too (#217): redact
+# builds its mask by doubling and the home arms cut the segment with IFS=/ read, and the suite
+# times a 256 KB email match and 1 MB home-path and home-root segments under a UTF-8 locale.
+# Measured on bash 5.2.21 and glibc; this repository's stated floor is bash 3.2.57, where the
+# COST is unmeasured. Correctness does not rest on that floor behaving: a failed tail match falls back to the byte loop, so an engine that
+# does not reload the locale the way `local LC_ALL=C` expects reports a finding slowly rather
+# than missing it (review of #239).
 # Rule C is linear in the line length in both modes: the anchored
 # RE_MAIL keeps grep on its DFA, LC_ALL=C on the tree-mode grep keeps it there under any locale,
 # and judge() splits the address with `IFS=@ read` rather than `${addr#*@}`. A 1 MB token followed
 # by an address costs 0.08 s where it once cost minutes, which is what matters: a hook that stalls
-# is a hook that gets --no-verify, and that is how this guard gets removed. Two things are NOT
-# linear and are #217 rather than part of that claim: `redact`'s append loop, so a REDACTED
-# --history report over a long match is still slow (20 s at 128 KB, 81 s at 256 KB, four times per
-# doubling), which is why the timing cases that use a glued match pass --show-evidence.
+# is a hook that gets --no-verify, and that is how this guard gets removed.
 #
 # THREE SHAPES THIS DELIBERATELY DOES NOT REPORT, the first two consequences of the above, each
 # pinned by a test case so they cannot be rediscovered as bugs:
@@ -109,6 +115,10 @@
 # its paths and its skips; a true orphan has no path, so nothing is skipped by name for it and the
 # self-skip falls back to a weaker content test (shebang plus marker line).
 #
+# --history NEEDS leak-lib.sh BESIDE THIS SCRIPT (#206): the reader and the object selection are
+# defined there once, for both scanners. Without it (or with one that is unreadable or too old)
+# --history refuses, exit 2. The tree modes, which the git hooks run, never read it.
+#
 # WHAT --history REFUSES, exit 2, because a store it cannot read honestly is worse than none: an
 # alternates file (a `git clone --shared`, resolved through `git rev-parse --git-path` so a linked
 # worktree's .git FILE is handled), GIT_ALTERNATE_OBJECT_DIRECTORIES or GIT_OBJECT_DIRECTORY set (the
@@ -139,7 +149,8 @@
 # half of the leak. Catching those needs the name, which is the private half's job. This was found
 # by review AFTER the paragraph above shipped, which is the argument for the paragraph.
 #
-#   check-public-leaks.sh [--staged | --range <base> | --all] [--allow-file <path>] [paths...]
+#   check-public-leaks.sh [--staged | --range <base> | --head | --all] [--allow-file <path>]
+#                         [paths...]
 #   check-public-leaks.sh --history [--orphans] [--show-evidence] [--allow-file <path>]
 #
 # Exit 0 clean, 1 when something was found, 2 when it could not run. One line per violation:
@@ -166,6 +177,13 @@
 # in the project that runs it, which keeps the exemption visible in that project's own config
 # rather than hidden in this file.
 
+# NO `awk -v` IN THIS FILE (#259). `-v` runs a backslash-escape pass over its value, and the temp
+# paths this scanner hands to awk (`types`, `labels`) are built under `mktemp -d`, so they carry
+# whatever the caller's TMPDIR is named. Under a TMPDIR named `t\tx` (backslash, t) the paths read
+# back with a TAB, every `getline` failed, and `--history` reported CLEAN over a committed finding.
+# Every value now reaches awk through ENVIRON (`LG_*`); the 0-or-1 flags (`orphans`) moved as
+# hardening only. The suite counts zero `awk ... -v` lines (scripts/awkv-count.sh, continuations
+# joined), and no awk takes a file operand (#405): under a TMPDIR named `x=y` one was an assignment.
 set -uo pipefail
 
 # --- portability ------------------------------------------------------------
@@ -183,7 +201,7 @@ fi
 abspath() {
   local d b
   d="$(dirname -- "$1")"; b="$(basename -- "$1")"
-  d="$(cd -- "$d" 2>/dev/null && pwd -P)" || { printf '%s' "$1"; return; }
+  d="$(CDPATH= cd -- "$d" 2>/dev/null && pwd -P)" || { printf '%s' "$1"; return; }
   printf '%s/%s' "$d" "$b"
 }
 
@@ -202,19 +220,22 @@ die() { printf 'check-public-leaks: %s\n' "$1" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     # One mode per run. The last flag used to win silently, so "--history --staged" scanned the
-    # index and reported clean on the history the user asked about.
-    --all)        [ "$MODESET" = 0 ] || die "one mode only: --all, --staged, --range or --history"; MODESET=1; MODE=all ;;
-    --staged)     [ "$MODESET" = 0 ] || die "one mode only: --all, --staged, --range or --history"; MODESET=1; MODE=staged ;;
-    --range)      [ "$MODESET" = 0 ] || die "one mode only: --all, --staged, --range or --history"; MODESET=1
+    # index and reported clean on the history the user asked about. The five mode arms below carry
+    # the same one-line refusal as their siblings and stay over 100 columns on purpose: they are
+    # meant to be read as a column, and wrapping one would hide that they are identical (#384).
+    --all)        [ "$MODESET" = 0 ] || die "one mode only: --all, --staged, --range, --head or --history"; MODESET=1; MODE=all ;;
+    --staged)     [ "$MODESET" = 0 ] || die "one mode only: --all, --staged, --range, --head or --history"; MODESET=1; MODE=staged ;;
+    --range)      [ "$MODESET" = 0 ] || die "one mode only: --all, --staged, --range, --head or --history"; MODESET=1
                   MODE=range; shift; [ $# -gt 0 ] || die "--range needs a base ref"; BASE="$1" ;;
-    --history)    [ "$MODESET" = 0 ] || die "one mode only: --all, --staged, --range or --history"; MODESET=1; MODE=history ;;
+    --history)    [ "$MODESET" = 0 ] || die "one mode only: --all, --staged, --range, --head or --history"; MODESET=1; MODE=history ;;
+    --head)       [ "$MODESET" = 0 ] || die "one mode only: --all, --staged, --range, --head or --history"; MODESET=1; MODE=head ;;
     --orphans)    ORPHANS=1 ;;
     --show-evidence) SHOW_EVIDENCE=1 ;;
     --allow-file) shift; [ $# -gt 0 ] || die "--allow-file needs a path"; ALLOW_FILE="$1" ;;
     # Prints the whole comment header, rather than a hardcoded line range. The range was the bug:
     # growing the header by seven lines truncated --help mid-sentence and dropped the synopsis, and
     # help text that rots silently is worse than none because it still reads as current.
-    --help|-h)    awk 'NR==1{next} /^# *[a-z0-9-]+-version: [0-9]+$/{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$SELF"; exit 0 ;;
+    --help|-h)    awk 'NR==1{next} /^# *[a-z0-9-]+-version: [0-9]+$/{next} /^#/{sub(/^# ?/,""); print; next} {exit}' < "$SELF"; exit 0 ;;
     --)           shift; while [ $# -gt 0 ]; do PATHS+=("$1"); shift; done; break ;;
     -*)           die "unknown flag: $1" ;;
     *)            PATHS+=("$1") ;;
@@ -317,11 +338,15 @@ if [ -n "$ALLOW_FILE" ]; then
   while IFS= read -r raw || [ -n "$raw" ]; do
     lineno=$((lineno + 1))
     line="${raw%$'\r'}"
-    line="${line#"${line%%[![:space:]]*}"}"          # strip leading whitespace
-    line="${line%"${line##*[![:space:]]}"}"          # strip trailing whitespace
+    # The trims are an ASCII BYTE list, never `[[:space:]]` (#403): RE_HOME and RE_ROOT run under
+    # LC_ALL=C, so an edge U+2003 is part of a live entry there, and a caller-locale class trimmed it
+    # under UTF-8 only, giving one allow-file two meanings. Under UTF-8 an edge-U+2003 key, comment
+    # or U+2003-only line is therefore an entry like any other, and exits 2 where it is malformed.
+    line="${line#"${line%%[!$' \t\n\v\f\r']*}"}"          # strip leading whitespace
+    line="${line%"${line##*[!$' \t\n\v\f\r']}"}"          # strip trailing whitespace
     case "$line" in ''|'#'*) continue ;; esac
     key="${line%% *}"; val="${line#* }"
-    val="${val#"${val%%[![:space:]]*}"}"              # two spaces after the key are not part of the value (#240)
+    val="${val#"${val%%[!$' \t\n\v\f\r']*}"}"              # two spaces after the key are not part of the value (#240)
     [ "$key" != "$val" ] || die "$ALLOW_FILE:$lineno: entry has no value: $line"
     case "$key" in
       # A root is written the way it appears in prose, "~/name", so the config reads like the
@@ -343,9 +368,14 @@ if [ -n "$ALLOW_FILE" ]; then
         # Rule B's match class yields no whitespace, double quote or backtick, so an entry carrying
         # one could never match (#239). The SINGLE quote is a name byte, not punctuation here:
         # `root o'brien` suppresses a live `~/o'brien` row, and refusing it would break a working
-        # allow-file at exit 2.
+        # allow-file at exit 2. The whitespace is spelled as BYTES, as the prefix arm's is (#400, the
+        # twin of #242): RE_ROOT's class runs under LC_ALL=C, where only these ASCII bytes are
+        # whitespace, while `[[:space:]]` here would follow the caller's locale and, under UTF-8,
+        # also refuse U+2003, which rule B can yield; so one entry got exit 0 or 2 by locale. The
+        # allow-file line and value trims above use the same byte list, so an EDGE U+2003 is kept
+        # in every locale too (#403).
         case "$rootv" in
-          *[[:space:]]*|*'"'*|*'`'*) die "$ALLOW_FILE:$lineno: root cannot contain whitespace, a double quote or a backtick (rule B's match class yields none of them), so this entry could never match: $val" ;;
+          *[$' \t\n\v\f\r']*|*'"'*|*'`'*) die "$ALLOW_FILE:$lineno: root cannot contain whitespace, a double quote or a backtick (rule B's match class yields none of them), so this entry could never match: $val" ;;
         esac
         strip_tail "$rootv"
         [ -n "$STRIPPED" ] || die "$ALLOW_FILE:$lineno: root cannot be entirely punctuation (rule B never reports one), so this entry could never match: $val"
@@ -380,13 +410,53 @@ if [ -n "$ALLOW_FILE" ]; then
         # naming one could never match anything. Refuse it rather than accept a dead entry.
         strip_tail "$rest"
         [ -n "$STRIPPED" ] || die "$ALLOW_FILE:$lineno: prefix segment cannot be a username (entirely punctuation), so this entry could never match: $pfx"
+        # Two more dead shapes (#242). Where both apply (a segment ending in a double quote, or
+        # holding a space and ending in a period) the whitespace/quote/backtick message wins,
+        # because it is checked first and is the deeper fault: RE_HOME could never yield the
+        # segment at all, ending in punctuation or not.
+        # Rule A's match class (RE_HOME) yields no [[:space:]], double quote or backtick.
+        # The whitespace set is spelled as bytes, not [[:space:]], so this test gives the same
+        # verdict in every caller locale: RE_HOME's [[:space:]] runs under LC_ALL=C and a UTF-8
+        # caller's [[:space:]] would also match U+2003, which rule A's C-locale class does yield,
+        # so refusing it would refuse a live entry.
+        case "$rest" in
+          *[$' \t\n\v\f\r']*|*'"'*|*'`'*) die "$ALLOW_FILE:$lineno: prefix segment cannot contain whitespace, a double quote or a backtick (rule A's match class yields none of them), so this entry could never match: $pfx" ;;
+        esac
+        # DELIBERATELY unlike root, which exempts a bracketed literal (#239): rule A strips the
+        # match and compares it EXACTLY against the unstripped entry (no in_list_stripping, which
+        # only rule B and PLACEHOLDER_USERS use), so an entry ending in a TAIL_PUNCT byte can
+        # never equal a stripped match, bracketed or not. Do not copy root's exemption here.
+        # Only the final byte is tested: punctuation inside a name (`a.b`, `o'brien`) is fine.
+        [ "$STRIPPED" = "$rest" ] || die "$ALLOW_FILE:$lineno: prefix segment cannot end in punctuation (rule A strips it from the match before compare), so this entry could never match: $pfx"
         ALLOW_PREFIXES+=("$pfx") ;;
+      # A custom redaction marker (#391): the built-in three are literals, and `~/[myco]/` is a root
+      # unless the repository says its rewrite wrote that token. It joins BOTH lists the built-ins
+      # sit in, so it is accepted in a `~/` root and in a `/home/` segment. One bracketed token and
+      # nothing else: the unclosed `root [myco` spelling is deliberately not documented or pinned.
+      marker)
+        case "$val" in
+          \[*\]) : ;;
+          *) die "$ALLOW_FILE:$lineno: marker must be one bracketed token, [name]: $val" ;;
+        esac
+        mk="${val#\[}"; mk="${mk%\]}"
+        case "$mk" in
+          '') die "$ALLOW_FILE:$lineno: marker cannot be empty, write [name]: $val" ;;
+          *[$' \t\n\v\f\r']*|*/*|*'"'*|*'`'*) die "$ALLOW_FILE:$lineno: marker cannot contain a slash, whitespace, a double quote or a backtick (a path segment yields none of them), so this entry could never match: $val" ;;
+        esac
+        ALLOW_ROOTS+=("$val"); PLACEHOLDER_USERS+=("$val") ;;
       email)  ALLOW_EMAILS+=("$val") ;;
-      skip)   SKIP_PATHS+=("$val") ;;
+      # skip_by_name() compares a skip value QUOTED, as an exact path or a slash-anchored suffix,
+      # so `*` and `?` are literal there and a value holding one is a dead entry that reads as a
+      # glob. Refused, as check-private-leaks.sh refuses it, so one shared line has one meaning
+      # (#226). `[` is NOT refused: `app/[slug]/page.tsx` is a real path and matches literally.
+      skip)
+        case "$val" in *[*?]*) die "$ALLOW_FILE:$lineno: skip is matched as an exact path or a path suffix, so a wildcard could never match: $val" ;; esac
+        case "$val" in */) die "$ALLOW_FILE:$lineno: skip names a file, so a value ending in / could never match: $val" ;; esac
+        SKIP_PATHS+=("$val") ;;
       # REFUSE rather than skip the entry. A silently ignored line in a security config is a guard
       # that reports a coverage it does not have, which is the failure this whole component exists
       # to end.
-      *)      die "$ALLOW_FILE:$lineno: unknown key '$key' (want root, prefix, email or skip)" ;;
+      *)      die "$ALLOW_FILE:$lineno: unknown key '$key' (want root, prefix, marker, email or skip)" ;;
     esac
   done < "$ALLOW_FILE"
 fi
@@ -403,6 +473,8 @@ else
   [ "$ORPHANS" = 0 ] || die "--orphans is only valid with --history"
   [ "$SHOW_EVIDENCE" = 0 ] || die "--show-evidence is only valid with --history"
 fi
+# Explicit paths would switch MODE to `paths` below and silently ignore --head (#375).
+[ "$MODE" != head ] || [ "${#PATHS[@]}" -eq 0 ] || die "--head takes no paths"
 
 # --- which files ------------------------------------------------------------
 in_git() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
@@ -416,6 +488,18 @@ else
   # natural target. The tree modes need the tree.
   if [ "$MODE" = history ]; then git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
   else in_git || die "not inside a git work tree (pass explicit paths to scan without git)"; fi
+  # THE TREE MODES SCAN THE WHOLE REPOSITORY FROM ANY DIRECTORY (#401). `ls-files` and `ls-tree`
+  # list only the current directory's subtree, so a run from `sub/` used to pass clean over a
+  # committed root leak. Anchoring here, after the allow file is read (a caller-relative
+  # `--allow-file ../x` still resolves against the caller's directory), makes `--all` and
+  # `--head` see every tracked file and print root-relative paths, the form `--staged` prints.
+  # `--staged` and `--range` are not anchored: their enumeration is already root-relative.
+  # The empty-`top` test is defensive: the work-tree check above already refuses where
+  # `--show-toplevel` would be empty, but a bare `cd ""` returns 0 without moving.
+  if [ "$MODE" = all ] || [ "$MODE" = head ]; then
+    top="$(git rev-parse --show-toplevel 2>/dev/null)"
+    [ -n "$top" ] && CDPATH= cd -- "$top" || die "could not change to the work-tree root"
+  fi
   case "$MODE" in
     history) : ;;
     all)
@@ -430,6 +514,19 @@ else
         || die "base ref not found: $BASE (fetch it first)"
       while IFS= read -r -d '' f; do FILES+=("$f"); done \
         < <(git diff --no-renames --name-only --diff-filter=ACMT -z "$BASE...HEAD") ;;
+    head)
+      # HEAD's committed tree (#375): what a push publishes, whatever the working tree says. The
+      # unborn-HEAD check is explicit because the enumeration below hides a failure and an empty
+      # list exits 0 further down. The pre-check is the mechanism for a failing `ls-tree`, since
+      # `< <(...)` hides its exit status. Only blob entries (100644, 100755, 120000) are kept, so
+      # a 160000 gitlink is skipped and no per-file `cat-file -t` is needed. `ls-tree` lists paths
+      # relative to the CURRENT directory, which is why the read below is `HEAD:./$f`.
+      git rev-parse --verify --quiet "HEAD^{commit}" >/dev/null \
+        || die "HEAD not found: no commits yet, so --head has nothing to scan"
+      git ls-tree -r -z HEAD >/dev/null 2>&1 || die "could not list HEAD's tree"
+      while IFS= read -r -d '' ent; do
+        case "${ent%% *}" in 100644|100755|120000) FILES+=("${ent#*$'\t'}") ;; esac
+      done < <(git ls-tree -r -z HEAD) ;;
   esac
 fi
 
@@ -491,18 +588,52 @@ report() { printf '%s:%s: %s: %s\n' "$1" "$2" "$3" "$4"; violations=$((violation
 
 # Two leading characters and stars for the rest, the private half's shape. Applied in --history
 # only, because that report is a pre-publish artifact and the likeliest thing to be pasted.
+# LINEAR (#217): the length is counted once and the mask is built by doubling. A per-character
+# loop that recounts ${#n} is quadratic under a UTF-8 locale (41 s at 128 KB), and a slow default
+# pushes the operator to --show-evidence, which prints the secret. The k <= 0 guard runs BEFORE any
+# slice: a negative length in ${s:0:k} is an error on bash 3.2, and on bash 5 too for a length-0
+# input (k = -2), so lengths 0 to 2 print the input itself, exactly as ${1:0:2} always did.
+# Characters, not bytes, in every locale (#416): the UTF-8 lead bytes, i.e. every byte but the 0x80 to
+# 0xBF continuation bytes, so the length no longer depends on the locale (`${#n}` is bytes under C, characters under UTF-8).
+# Sets CHARS. The tr is pinned to C because only under C is it a byte filter (a multibyte-aware tr
+# can reject these bytes); the count after it needs no pin, since what is left holds no continuation
+# byte and reads as one unit per byte (verified for C and UTF-8 only). One tr, so it is linear in any locale (#217);
+# the trailing x keeps $( ) from eating a final newline.
+char_len() {
+  local t
+  t="$(printf '%sx' "$1" | LC_ALL=C tr -d '\200-\277')"
+  CHARS=$(( ${#t} - 1 ))
+}
+# redact keeps two whole characters (#416): a lead byte and its continuation bytes, twice, then one
+# star per remaining character. `local LC_ALL=C` makes the match and the slice count bytes whatever the caller's
+# locale; the single regex match below is linear (a `%%` strip of each run is quadratic, 13 s at
+# 1 MB), and the awk `redact` in --history is the reference for malformed input: a leading
+# continuation byte is kept without counting, a run of any length is kept whole. The pin is
+# behaviour (#439): the suite's malformed-name rows differ without it under a UTF-8 caller. Scope
+# of the mask: in a single-byte encoding such as Windows-1252, bytes 0x80 to 0xBF include letters,
+# so the report can show up to the whole name (a 3-letter name such as Ziz with carons prints
+# unmasked); the awk copy does the same.
 redact() {
-  local n="$1" out="${1:0:2}" i
-  for ((i = 2; i < ${#n}; i++)); do out+='*'; done
-  printf '%s' "$out"
+  local LC_ALL=C n="$1" CHARS k p='' c nc re s='*'
+  char_len "$n"; k=$(( CHARS - 2 ))
+  if [ "$k" -le 0 ]; then printf '%s' "$n"; return; fi
+  # The kept prefix in ONE anchored match: any leading continuation bytes, a lead byte and its
+  # continuation bytes, twice. The classes sit in variables, the bash 3.2 form. A failed match
+  # leaves p empty, so the name prints as stars only (fail closed): rc 2 keeps a stale BASH_REMATCH.
+  c=$'[\200-\277]'; nc=$'[^\200-\277]'; re="^$c*$nc$c*$nc$c*"
+  [[ $n =~ $re ]] && p=${BASH_REMATCH[0]}
+  while [ ${#s} -lt "$k" ]; do s="$s$s"; done
+  printf '%s%s' "$p" "${s:0:k}"
 }
 show_evidence() {  # show_evidence <rule> <evidence>: what the report prints for it
   if [ "$MODE" != history ] || [ "$SHOW_EVIDENCE" = 1 ]; then printf '%s' "$2"; return; fi
   local e="$2" root seg
   case "$1" in
-    home-path) root="${e%%/*}"; e="${e#/}"; root="/${e%%/*}"; e="${e#*/}"; seg="${e%%/*}"
+    # IFS=/ read, not seg="${e%%/*}": on a segment of any length that cut is quadratic under a
+    # UTF-8 locale (76 s at 1 MB), the shape rule C's IFS=@ read already avoids (#211, #217).
+    home-path) root="${e%%/*}"; e="${e#/}"; root="/${e%%/*}"; e="${e#*/}"; IFS=/ read -r seg _ <<< "$e"
                printf '%s/%s/' "$root" "$(redact "$seg")" ;;
-    home-root) e="${e#\~/}"; seg="${e%%/*}"; printf '~/%s/' "$(redact "$seg")" ;;
+    home-root) e="${e#\~/}"; IFS=/ read -r seg _ <<< "$e"; printf '~/%s/' "$(redact "$seg")" ;;
     *)         printf '%s' "$(redact "$e")" ;;
   esac
 }
@@ -529,15 +660,16 @@ judge() {
       # NOT `seg="${raw##*/}"` (#239): a longest-match strip tries every prefix, so it is quadratic
       # in the segment and a 64 KB punctuation tail cost 3.3 s of the 3.5 s a scan took. RE_HOME
       # matches `(/home|/Users)/` followed by a class that excludes `/`, so the segment is exactly
-      # the text after that literal prefix, and a shortest-match strip of a literal is linear.
+      # the text after the first two slashes. A shortest-match `#` strip stops at the first
+      # matching prefix (the root), whatever the segment holds, so it is linear where `##` tries
+      # every prefix. Excluding `/` from the class is not what makes it fast: it is what makes
+      # the result equal the old per-root `case`. The speed relies on RE_HOME guaranteeing that
+      # early match (a `#` strip that never matches tests every prefix too). It holds for any
+      # single-segment root, so a third root needs no new arm (#239, #243).
       # `${m%/}` is quadratic when the string does NOT end in `/`: bash tries every suffix and the
       # match fails at each (2.5 s at 256 KB, #239). Test the last byte first, then strip one.
       case "$m" in */) raw="${m%?}" ;; *) raw="$m" ;; esac
-      case "$raw" in
-        /home/*)  seg="${raw#/home/}" ;;
-        /Users/*) seg="${raw#/Users/}" ;;
-        *)        seg="${raw##*/}" ;;   # unreachable while RE_HOME keeps its two roots: a guard, not a path
-      esac
+      seg="${raw#/*/}"
       # Checked at every strip step: "..." is entirely punctuation, so stripping the trailing dots
       # would leave nothing to compare and the guard would reject its own documented placeholder,
       # and "[redacted]." holds its marker one step in (#227).
@@ -595,172 +727,14 @@ judge() {
 }
 
 # --- history mode --------------------------------------------------------------
-# The reader. One awk program, POSIX, run under LC_ALL=C over the --batch stream with NUL already
-# mapped to \001 by tr. It is in the r<0 state between objects, where the only thing it will accept
-# is a header; inside an object it COUNTS: r starts at the declared size plus the newline git adds,
-# every line subtracts its length plus one, and the object ends when r reaches zero. A content line
-# that looks like a header is therefore content. No regex touches a content line (see the header
-# for why); index, substr and length are byte operations. It emits "<label>\t<line>\t<text>" for
-# every content line of every object it keeps, and DROPS an object when it contains NUL (seen as
-# \001, so a genuine \001 byte drops it too), or when it is the scanner's own source: an oid marked
-# "cand" (some path has this scanner's basename) is self when it carries the marker line; an oid
-# with NO known path (--orphans) is self under the weaker content test of shebang plus marker on
-# lines 1 and 2. Once an object is dropped nothing more of it is buffered, so memory is bounded by
-# the largest KEPT object, not the largest object. The record on which r reaches zero and that is
-# empty is git's terminator, not a line, and is never emitted.
-# The "r < 0 {" line is the load-bearing one, and the contract test mutates exactly it.
-READER='
-BEGIN {
-  r = -1
-  while ((getline l < labels) > 0) {
-    split(l, a, "\t"); label[a[1]] = a[2]
-    if (a[2] != "") haspath[a[1]] = 1
-    if (a[3] == "cand") cand[a[1]] = 1
-  }
-  close(labels)
-}
-r < 0 {
-  if (NF == 3 && (length($1) == 40 || length($1) == 64) && ($2 == "blob" || $2 == "commit" || $2 == "tag") && $3 ~ /^[0-9]+$/) {
-    oid = $1; type = $2; r = $3 + 1; n = 0; drop = 0; cnt = 0; body = (type == "blob")
-    if (type == "blob") { lab = ((oid in label) && label[oid] != "") ? label[oid] "@" oid : "blob@" oid } else lab = type "@" oid
-    next
-  }
-  print "malformed cat-file header: " $0 > "/dev/stderr"; exit 2
-}
-{
-  r -= length($0) + 1; n++
-  if (!drop) {
-    if (n == 1) first = $0
-    if (index($0, "\001")) drop = 1
-    else if (substr($0, 1, 8) == "# check-" && index($0, "-leaks-version: ")) {
-      if (oid in cand) drop = 1
-      else if (orphans && n == 2 && !(oid in haspath) && substr(first, 1, 2) == "#!") drop = 1
-    }
-    if (drop) split("", buf)
-    else if (body) { if (!(r <= 0 && $0 == "")) buf[cnt++] = n "\t " $0 }
-    else if ($0 == "") body = 1
-  }
-  if (r <= 0) {
-    if (!drop) for (i = 0; i < cnt; i++) print lab "\t" buf[i]
-    split("", buf); r = -1
-  }
-}
-END { if (r > 0) { print "truncated cat-file stream" > "/dev/stderr"; exit 2 } }
-'
-
-# Every pipeline in here checks EVERY stage. A stage that fails leaves a partial map or a partial
-# stream, and a partial scan that reports clean is the exact outcome this mode exists to prevent.
-pipe_ok() {  # pipe_ok <what> <PIPESTATUS...>
-  local what="$1"; shift; local st
-  for st in "$@"; do [ "$st" = 0 ] || die "$what failed (a stage exited $st); nothing was scanned"; done
-}
-
+# The reader and the object selection are leak-lib.sh (#206), sourced by the --history branch
+# below and only there. This is the part that is this scanner's own: matching and reporting.
 history_scan() {
-  # Refusals first. Each is a store this scanner would read as if it were the repository, and is not.
-  # Replacement refs and grafts make git SHOW a different object than the one a push sends; the
-  # env var turns the first off for every git call below, and the second cannot be turned off.
-  export GIT_NO_REPLACE_OBJECTS=1
-  local grafts
-  grafts="$(git rev-parse --git-path info/grafts 2>/dev/null)"
-  [ -n "$grafts" ] && [ -f "$grafts" ] && die "refusing --history: info/grafts exists, and grafts hide objects a push still sends"
-  [ -z "${GIT_OBJECT_DIRECTORY:-}" ] || die "refusing --history: GIT_OBJECT_DIRECTORY is set"
-  [ -z "${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}" ] || die "refusing --history: GIT_ALTERNATE_OBJECT_DIRECTORIES is set"
-  local alt promisor
-  alt="$(git rev-parse --git-path objects/info/alternates 2>/dev/null)"
-  [ -n "$alt" ] && [ -f "$alt" ] && die "refusing --history: objects/info/alternates points outside this repository ($alt)"
-  promisor="$(git config --get extensions.partialclone 2>/dev/null || true)"
-  [ -n "$promisor" ] || promisor="$(git config --get-regexp '^remote\..*\.promisor$' true 2>/dev/null | sed -n 's/^remote\.\(.*\)\.promisor.*/\1/p' | head -1)"
-  [ -z "$promisor" ] || die "refusing --history: this is a partial clone; --history would fetch every missing object from $promisor"
-
-  local objects="$TMPD/objects" types="$TMPD/types" pathmap="$TMPD/paths" labels="$TMPD/labels" oids="$TMPD/oids"
+  history_read " "
   local tagged="$TMPD/tagged" hits="$TMPD/hits"
-  # Enumerate the publishable set: every ref except refs/stash, plus every worktree's HEAD, which is
-  # what a mirror push sends (#210: --branches --tags --remotes missed refs/original, refs/notes
-  # and every custom namespace). --exclude narrows only the selector AFTER it, so it must precede
-  # --all; the other way round the stash is scanned and the suite's stash case fails. No
-  # --single-worktree: a linked worktree's detached HEAD over-reports, the safe side.
-  # --batch-all-objects (--orphans) carries no path; the map below still supplies paths for
-  # whatever is reachable.
-  if [ "$ORPHANS" = 1 ]; then
-    git cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' > "$types"; pipe_ok "git cat-file --batch-check" "${PIPESTATUS[@]}"
-    : > "$objects"
-  else
-    git rev-list --objects --exclude=refs/stash --all > "$objects"; pipe_ok "git rev-list" "${PIPESTATUS[@]}"
-    cut -d' ' -f1 "$objects" | git cat-file --batch-check='%(objectname) %(objecttype)' > "$types"; pipe_ok "git cat-file --batch-check" "${PIPESTATUS[@]}"
-  fi
-  # An object git cannot read prints "<oid> missing" with exit 0. That is a store this scanner
-  # cannot read honestly, so it refuses rather than scanning what is left.
-  local unreadable
-  unreadable="$(LC_ALL=C awk '$2 != "blob" && $2 != "commit" && $2 != "tag" && $2 != "tree" { print; exit }' "$types")"
-  [ -z "$unreadable" ] || die "refusing --history: git cannot read every object ($unreadable); repair the store first"
-  # Every path each blob has ever had, from every commit's diff against every parent (-m: a merge
-  # resolved to content in neither parent has no other entry). -z then tr, because --raw quotes
-  # unusual paths without it. Deletions carry the null oid and drop out with the "D" status.
-  # The -c overrides pin the output shape against user config that would otherwise change it
-  # silently: log.showSignature injects lines, log.diffMerges=combined changes the record shape and
-  # the field that holds the merge result, diff.relative drops entries outside the cwd, and
-  # log.showRoot=false drops the root commit. Each was reproduced hiding a reachable leak.
-  # The parser then REFUSES a record that is not the five-field meta line it expects (a path
-  # containing a newline, split by tr, is the known way to produce one), because a desynchronised
-  # map suppresses every older entry. The shape test uses no regex over the path line.
-  git -c log.showRoot=true -c log.showSignature=false -c log.diffMerges=separate -c diff.relative=false \
-      log -m --exclude=refs/stash --all --raw --no-abbrev --no-renames --format= -z \
-    | LC_ALL=C tr '\0' '\n' \
-    | LC_ALL=C awk '
-        NR % 2 == 1 { if (substr($0, 1, 1) != ":" || split($0, a, " ") != 5) { print "path map desynchronised at record " NR ": " $0 > "/dev/stderr"; exit 2 }
-                      oid = a[4]; st = a[5]; next }
-        st != "D" && oid !~ /^0+$/ { print oid "\t" $0 }' \
-    | LC_ALL=C sort -u > "$pathmap"; pipe_ok "the path map (git log --raw)" "${PIPESTATUS[@]}"
-  # Decide, per object, whether it is read and under what label. A blob is read unless EVERY path
-  # it ever had is skipped; when its only unskipped paths carry this scanner's basename it is a
-  # candidate for the identity test, which the reader completes by looking for the marker line. An
-  # object with no path at all (--orphans, or a blob the map never saw) is read.
-  # One sorted merge of every (blob, path) pair, the rev-list path first for each blob, then one
-  # sequential read: no process runs per object, which is what keeps this under a second.
-  local merged="$TMPD/merged"
-  {
-    # No regex over a line that carries a path (the header says why): the path is what follows the
-    # first space.
-    # && inside the group: a brace group's pipeline status is its LAST command's, so without it a
-    # failure of the first awk would be invisible to pipe_ok (found in review round 2).
-    LC_ALL=C awk '{ i = index($0, " "); p = i ? substr($0, i + 1) : ""; if (p != "") print $1 "\t0\t" p }' "$objects" \
-    && LC_ALL=C awk -F'\t' '{ print $1 "\t1\t" $2 }' "$pathmap"
-  } | LC_ALL=C sort -t'	' -k1,1 -k2,2 -k3,3 -u \
-    | LC_ALL=C awk -F'\t' -v types="$types" '
-        BEGIN { while ((getline l < types) > 0) { split(l, a, " "); t[a[1]] = a[2] } close(types) }
-        t[$1] == "blob" { seen[$1] = 1; n = split($3, b, "/"); print $1 "\t" $3 "\t" tolower(b[n]) }
-        END { for (o in t) if (t[o] == "blob" && !(o in seen)) print o "\t\t" }' > "$merged"; pipe_ok "the object merge" "${PIPESTATUS[@]}"
-  local oid type path lower cur="" keep="" selfnamed=0 first="" selfbase="${SELF##*/}"
-  set_lower "$selfbase"; local selflower="$LOWER"
-  : > "$labels"
-  finish_blob() {
-    [ -n "$cur" ] || return 0
-    if [ "$keep" = blob ]; then printf '%s\n' "$cur" >> "$labels"
-    elif [ -n "$keep" ]; then printf '%s\t%s\t\n' "$cur" "$keep" >> "$labels"
-    elif [ "$selfnamed" = 1 ]; then printf '%s\t%s\tcand\n' "$cur" "$first" >> "$labels"
-    fi
-  }
-  while read -r oid type; do
-    case "$type" in commit|tag) printf '%s\n' "$oid" >> "$labels" ;; esac
-  done < "$types"
-  while IFS='	' read -r oid path lower; do
-    if [ "$oid" != "$cur" ]; then finish_blob; cur="$oid"; keep=""; selfnamed=0; first=""; fi
-    [ -n "$path" ] || { keep=blob; continue; }
-    [ -n "$first" ] || first="$path"
-    [ -z "$keep" ] || continue
-    skip_by_name "$path" "$lower" && continue
-    [ "$lower" != "$selflower" ] || { selfnamed=1; continue; }
-    keep="$path"
-  done < "$merged"
-  finish_blob
-  cut -f1 "$labels" > "$oids"
-  [ -s "$oids" ] || return 0
   # Read. One cat-file, one tr, one awk; then ONE grep over the tagged stream and one more over the
   # hit lines only, with the tag prefix as an alternation branch so the label, the line and every
   # match arrive in order and no process runs per hit. -a on both: the stream carries raw bytes.
-  git cat-file --batch < "$oids" \
-    | LC_ALL=C tr '\0' '\001' \
-    | LC_ALL=C awk -v labels="$labels" -v orphans="$ORPHANS" "$READER" > "$tagged"; pipe_ok "the history reader" "${PIPESTATUS[@]}"
   LC_ALL=C grep -aE "$RE_ANY" "$tagged" > "$hits" || true
   # Into a file, not a process substitution: bash reads a pipe one byte per syscall, and this loop
   # read 25x slower from one on the store this was measured on.
@@ -775,6 +749,16 @@ history_scan() {
 }
 
 if [ "$MODE" = history ]; then
+  # Sourced HERE and nowhere else (#206): the tree modes, which both git hooks run, must work in a
+  # project whose copy of the leak-guard assets predates leak-lib.sh. The message never prints the
+  # directory looked in, which is an absolute home path in a refusal someone pastes into an issue.
+  LIB="$(dirname "$SELF")/leak-lib.sh"
+  [ -f "$LIB" ] || die "--history needs leak-lib.sh beside this script and it is not there; the tree modes do not need it. Install the leak-guard assets together"
+  # -r as well: `.` on an unreadable file prints bash's own error, which carries the absolute path.
+  [ -r "$LIB" ] || die "--history cannot read the leak-lib.sh beside this script"
+  # shellcheck source=leak-lib.sh
+  . "$LIB"
+  type history_read >/dev/null 2>&1 || die "the leak-lib.sh beside this script does not define history_read; it is not the version this scanner expects"
   history_scan
   [ "$violations" -eq 0 ] || exit 1
   exit 0
@@ -796,11 +780,21 @@ for f in "${FILES[@]}"; do
             { git show ":0:$f" > "$BLOB"; } 2>/dev/null || die "could not read $f"; scanfile="$BLOB" ;;
     range)  [ "$(git cat-file -t "HEAD:$f" 2>/dev/null)" = blob ] || continue
             { git show "HEAD:$f" > "$BLOB"; } 2>/dev/null || die "could not read $f"; scanfile="$BLOB" ;;
+    # --head (#375): the mode and type come from `ls-tree`, so only blobs are in FILES. "HEAD:./$f",
+    # never "HEAD:$f": `ls-tree` paths are relative to the current directory and a bare
+    # "HEAD:<path>" is root-relative, so from a subdirectory the bare form reads the ROOT file of
+    # the same name (a leaking sub/README.md judged by the clean ./README.md). Same failure rule.
+    # Since #401 the tree modes run from the root, where the two forms agree; `./` stays so the read
+    # does not depend on the anchor above, and the mutant that dropped it is retired as equivalent.
+    # The arm stays on one line like the `range` arm above it (#384).
+    head)   { git show "HEAD:./$f" > "$BLOB"; } 2>/dev/null || die "could not read $f"; scanfile="$BLOB" ;;
     *)      scanfile="$f" ;;
   esac
   # A tracked SYMLINK is its target text in git, and the worktree read followed it: a dangling
   # link whose target is a home path was reported by --staged and clean under --all, the pre-push
   # hook's mode (review of #208). The link text is what git commits, so it is what is scanned.
+  # --head is deliberately NOT in the gate below: its scanfile is the regular-file $BLOB, so -L is
+  # false and `git show` already yields the link text.
   if [ "$MODE" != staged ] && [ "$MODE" != range ] && [ -L "$scanfile" ]; then
     { readlink -- "$scanfile" > "$BLOB"; } 2>/dev/null || die "could not read $f"; scanfile="$BLOB"
   fi

@@ -74,7 +74,7 @@ git -C "$lc" init -q
 mk "$lc/.forgejo/issue_template" feature 4
 mk "$lc/.forgejo/issue_template" bug 99
 out=$( (cd "$lc" && bash "$SCRIPT" 2>&1) ); rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'DRIFT'; then
+if [ "$rc" -eq 1 ] && grep -q 'DRIFT' <<< "$out"; then
   echo "  ok: lowercase .forgejo/issue_template is resolved and drift is caught"
   pass=$((pass + 1))
 else
@@ -92,7 +92,7 @@ mk "$mg/.github/ISSUE_TEMPLATE" bug 4
 mk "$mg/.forgejo/issue_template" feature 4
 mk "$mg/.forgejo/issue_template" bug 99
 out=$( (cd "$mg" && bash "$SCRIPT" 2>&1) ); rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'forgejo/issue_template'; then
+if [ "$rc" -eq 1 ] && grep -q 'forgejo/issue_template' <<< "$out"; then
   echo "  ok: live legacy Forgejo dir outranks a stale .github dir (host-grouped order)"
   pass=$((pass + 1))
 else
@@ -116,7 +116,7 @@ mk "$bc/.forgejo/ISSUE_TEMPLATE" feature 4
 mk "$bc/.forgejo/ISSUE_TEMPLATE" bug 4
 mk "$bc/.forgejo/issue_template" stale 99
 out=$( (cd "$bc" && bash "$SCRIPT" 2>&1) ); rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'WARNING.*issue_template'; then
+if [ "$rc" -eq 0 ] && grep -q 'WARNING.*issue_template' <<< "$out"; then
   echo "  ok: with both casings, uppercase wins and the duplicate dir is warned about"
   pass=$((pass + 1))
 else

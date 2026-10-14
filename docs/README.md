@@ -128,6 +128,7 @@ npm run list-accounts
 |----------|-------------|
 | [DASHBOARD.md](./DASHBOARD.md) | **NEW!** Web dashboard with charts, live logs, and manual controls |
 | [NOTIFICATIONS.md](./NOTIFICATIONS.md) | Email, Telegram bot, and webhook notifications |
+| [SCHEDULE_ALERTS.md](./SCHEDULE_ALERTS.md) | Missing-payment alerts (schedule vs. transaction detection) |
 | [PROMETHEUS.md](./PROMETHEUS.md) | Metrics export and Grafana dashboards |
 | [HEALTH_CHECK.md](./HEALTH_CHECK.md) | Health endpoints and status monitoring |
 | [SYNC_HISTORY.md](./SYNC_HISTORY.md) | SQLite sync tracking and history queries |

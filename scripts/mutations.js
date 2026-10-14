@@ -560,9 +560,9 @@ module.exports = [
     {
         id: '188-panel-never-loads', ticket: '#188',
         desc: 'the endpoint exists but the dashboard never calls it — the #182 mistake again',
-        file: 'src/services/dashboard.html',
-        anchor: '            loadNotificationStats();\n            try {',
-        mutant: '            try {',
+        file: 'src/services/dashboard.js',
+        anchor: '    loadNotificationStats();\n    try {',
+        mutant: '    try {',
         tests: 'docDriftGuards'
     },
 
@@ -798,6 +798,84 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #266: timezone hardcoded to Europe/Madrid ---------------------------
+    {
+        id: '266-timezone-config-ignored', ticket: '#266',
+        desc: 'the configured timezone is ignored and the process zone is always used',
+        file: 'src/lib/timezone.js',
+        anchor: "    if (cfg && cfg.timezone) return cfg.timezone;",
+        mutant: "    if (cfg && false) return cfg.timezone;",
+        tests: 'timezone'
+    },
+    {
+        id: '266-timezone-process-zone-unvalidated', ticket: '#266',
+        desc: 'a blank or invalid process TZ is returned unvalidated instead of falling back to UTC',
+        file: 'src/lib/timezone.js',
+        anchor: "    return isValidTimezone(processZone) ? processZone : 'UTC';",
+        mutant: "    return processZone;",
+        tests: 'timezone'
+    },
+    {
+        id: '266-timezone-unvalidated', ticket: '#266',
+        desc: 'an unknown timezone name passes config validation',
+        file: 'src/lib/configLoader.js',
+        anchor: "if (config.timezone !== undefined && !isValidTimezone(config.timezone)) {",
+        mutant: "if (false) {",
+        tests: 'timezone'
+    },
+    {
+        id: '266-telegram-timezone-fixed', ticket: '#266',
+        desc: 'Telegram replies ignore the configured timezone',
+        file: 'src/services/telegramBot.js',
+        anchor: "    return resolveTimezone(this.config);",
+        mutant: "    return 'UTC';",
+        tests: 'telegramBot'
+    },
+
+    // ---- #273: auto-retry never fired because syncBank never rejected --------
+    {
+        id: '273-sync-result-not-returned', ticket: '#273',
+        desc: 'runSyncBank swallows its outcome again (returns undefined), so the retry policy never sees a failure',
+        file: 'src/syncService.js',
+        anchor: "    return { status: syncOutcome };",
+        mutant: "    return undefined;",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-failure-status-ignored', ticket: '#273',
+        desc: 'the retry policy no longer treats a returned failure status as a failure',
+        file: 'src/lib/autoRetry.js',
+        anchor: "failed = result?.status === 'failure';",
+        mutant: "failed = false;",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-sigterm-not-registered', ticket: '#273',
+        desc: 'the SIGTERM handler is no longer registered, so docker stop kills a running sync',
+        file: 'src/syncService.js',
+        anchor: "process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));",
+        mutant: "// SIGTERM handler removed",
+        tests: 'autoRetry'
+    },
+    {
+        id: '273-shutdown-gate-open', ticket: '#273',
+        desc: 'shutdown no longer closes the gate, so syncs queued after the signal still start',
+        file: 'src/lib/shutdownGate.js',
+        anchor: "        closed = true;",
+        mutant: "        closed = false;",
+        tests: 'shutdownGate'
+    },
+
+    // ---- #278: trustProxy shape bypassed validation in non-strict mode -------
+    {
+        id: '278-trust-proxy-shape-unchecked', ticket: '#278',
+        desc: 'a non-integer or object trustProxy passes logic validation, so CONFIG_STRICT=false lets 1.5 trust 2 hops',
+        file: 'src/lib/configLoader.js',
+        anchor: "        if (!trustProxyShapeOk) {",
+        mutant: "        if (false && !trustProxyShapeOk) {",
+        tests: 'configLoader'
+    },
+
     // ---- #248: trivy-action ran from a floating branch ----------------------
     {
         id: '248-trivy-floating-branch', ticket: '#248',
@@ -813,7 +891,7 @@ module.exports = [
         id: '265-sync-bypasses-queue', ticket: '#265',
         desc: 'syncBank calls runSyncBank directly, so two syncs can run at once again',
         file: 'src/syncService.js',
-        anchor: '    return syncQueue.run(server.name, () => runSyncBank(server, options));',
+        anchor: '    return shutdownGate.run(server.name, () => runSyncBank(server, options));',
         mutant: '    return runSyncBank(server, options);',
         tests: 'syncQueue'
     },
@@ -873,10 +951,10 @@ module.exports = [
     // ---- #272: a hung Actual API call blocked the queue forever ------------------
     {
         id: '272-download-unbounded', ticket: '#272',
-        desc: 'downloadBudget is no longer timed, so a server that never answers hangs the queue again',
+        desc: 'downloadBudget is called without a timer, so a server that never answers hangs the queue again',
         file: 'src/lib/actualTimeouts.js',
-        anchor: "const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
-        mutant: "const TIMED_METHODS = ['init', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'];",
+        anchor: '        wrapped[method] = (...args) => withTimeout(',
+        mutant: "        wrapped[method] = method === 'downloadBudget' ? (...args) => api[method](...args) : (...args) => withTimeout(",
         tests: 'actualTimeouts'
     },
     {
@@ -931,7 +1009,7 @@ module.exports = [
         id: '272-late-call-untracked', ticket: '#272',
         desc: 'a timed-out call is forgotten, so it can land inside the next sync',
         file: 'src/lib/actualTimeouts.js',
-        anchor: '            if (lateCalls) lateCalls.add(call);',
+        anchor: '            if (lateCalls) lateCalls.add(call, { phase });',
         mutant: '',
         tests: 'actualTimeouts'
     },
@@ -939,7 +1017,7 @@ module.exports = [
         id: '272-no-busy-check', ticket: '#272',
         desc: 'a sync opens the session while an earlier late call still runs',
         file: 'src/syncService.js',
-        anchor: '        if (!(await lateActualCalls.drain(phaseTimeoutMs))) {',
+        anchor: '        if (!prepared.ok) {',
         mutant: '        if (false) {',
         tests: 'syncQueue'
     },
@@ -954,10 +1032,10 @@ module.exports = [
     {
         id: '272-never-abandoned', ticket: '#272',
         desc: 'a call that never settles blocks every later sync until restart',
-        file: 'src/syncService.js',
-        anchor: '            const abandoned = lateActualCalls.abandon();',
-        mutant: '            const abandoned = lateActualCalls.size;',
-        tests: 'syncQueue'
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '    return { ok: false, abandoned: lateCalls.abandon() };',
+        mutant: '    return { ok: false, abandoned: lateCalls.size };',
+        tests: 'actualTimeouts'
     },
     {
         id: '272-abandon-keeps-calls', ticket: '#272',
@@ -966,6 +1044,96 @@ module.exports = [
         anchor: '        this.pending.clear();',
         mutant: '',
         tests: 'actualTimeouts'
+    },
+
+    // ---- #284: hung-call hardening follow-ups --------------------------------------
+    {
+        id: '284-drain-leaks-waiter', ticket: '#284',
+        desc: 'a drain that gives up stays registered as a waiter',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '        this.waiters.delete(wake);',
+        mutant: '',
+        tests: 'actualTimeouts'
+    },
+    {
+        id: '284-no-settle-log', ticket: '#284',
+        desc: 'a late call settling is not logged',
+        file: 'src/lib/actualTimeouts.js',
+        anchor: '            this.logSettled(meta, outcome, Date.now() - addedAt);',
+        mutant: '',
+        tests: 'actualTimeouts'
+    },
+    {
+        id: '284-account-drain-skipped', ticket: '#284',
+        desc: 'the account loop starts the next account while a timed-out bank sync still runs',
+        file: 'src/syncService.js',
+        anchor: 'sessionStuck = !(await lateActualCalls.drain(phaseTimeoutMs));',
+        mutant: 'sessionStuck = false;',
+        tests: 'syncQueue'
+    },
+    {
+        id: '284-stuck-loop-continues', ticket: '#284',
+        desc: 'the account loop carries on after a bank sync that never settles',
+        file: 'src/syncService.js',
+        anchor: '                if (sessionStuck) {',
+        mutant: '                if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '284-final-sync-overlaps', ticket: '#284',
+        desc: 'a stuck bank sync no longer skips the final file sync and schedule alerts, so they overlap it',
+        file: 'src/syncService.js',
+        anchor: '        if (sessionStuckAfterLoop) {',
+        mutant: '        if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '284-late-success-lost', ticket: '#284',
+        desc: 'a bank sync that succeeds during the drain is still reported failed',
+        file: 'src/syncService.js',
+        anchor: "if (!sessionStuck && lateBankSync === 'ok') {",
+        mutant: 'if (false) {',
+        tests: 'syncQueue'
+    },
+    {
+        id: '284-late-success-double-counted', ticket: '#284',
+        desc: 'a bank sync that succeeds during the drain is counted succeeded and then also failed',
+        file: 'src/syncService.js',
+        anchor: "                                accountName: account.name\n                            });\n                            continue;\n                        }\n                        // It finished during the drain and failed",
+        mutant: "                                accountName: account.name\n                            });\n                        }\n                        // It finished during the drain and failed",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '284-stuck-final-sync-runs', ticket: '#284',
+        desc: 'the final file sync runs even when a bank sync is stuck (the else branch is always taken)',
+        file: 'src/syncService.js',
+        anchor: "        } else {\n            serverLogger.info('Starting final file sync');",
+        mutant: "        } {\n            serverLogger.info('Starting final file sync');",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '284-late-failure-masked', ticket: '#284',
+        desc: 'a late bank sync failure is reported with the timeout message, so a late "No new transactions" is a failure',
+        file: 'src/syncService.js',
+        anchor: "failure = lateBankError;",
+        mutant: "failure = bankSyncError;",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '284-running-sync-not-rendered', ticket: '#284',
+        desc: 'the dashboard never shows the sync holding the queue',
+        file: 'src/services/dashboard.js',
+        anchor: '        if (runningSyncEl) runningSyncEl.textContent = formatRunningSync(data.runningSync);',
+        mutant: '',
+        tests: 'dashboard'
+    },
+    {
+        id: '284-running-sync-blank', ticket: '#284',
+        desc: 'the running-sync text is always empty',
+        file: 'src/services/dashboard.js',
+        anchor: '    return `Syncing: ${running.key}${since}`;',
+        mutant: "    return '';",
+        tests: 'dashboard'
     },
 
     // ---- #242: /ws/logs streamed to anyone ----------------------------------
@@ -994,6 +1162,54 @@ module.exports = [
         tests: 'dashboardCredentials'
     },
     {
+        id: '280-ws-ticket-spent-late', ticket: '#280',
+        desc: 'the handshake only looks the ticket up instead of spending it first, so a refused handshake leaves it valid',
+        file: 'src/services/healthCheck.js',
+        anchor: '      ticketOk = Boolean(ticket) && this.wsTickets.consume(ticket);',
+        mutant: '      ticketOk = Boolean(ticket) && this.wsTickets.tickets.has(ticket);',
+        tests: 'healthCheck'
+    },
+    {
+        id: '280-ws-cap-ignores-trustproxy', ticket: '#280',
+        desc: 'the per-address cap uses the TCP peer address and ignores healthCheck.trustProxy',
+        file: 'src/services/healthCheck.js',
+        anchor: '    return probe.ip || req.socket.remoteAddress;',
+        mutant: '    return req.socket.remoteAddress;',
+        tests: 'healthCheck'
+    },
+    {
+        id: '280-ws-origin-ignores-port', ticket: '#280',
+        desc: 'same-origin compares hostname only, so a different port on the same host passes',
+        file: 'src/services/healthCheck.js',
+        anchor: '    if (host && parsed.host === host) return true;',
+        mutant: "    if (host && parsed.hostname === host.split(':')[0]) return true;",
+        tests: 'healthCheck'
+    },
+    {
+        id: '280-stale-socket-close-reschedules', ticket: '#280',
+        desc: 'a replaced socket closing late still schedules a retry, orphaning the live socket',
+        file: 'src/services/dashboard.js',
+        anchor: '        sock.onclose = () => {\n            if (sock !== ws) return;\n',
+        mutant: '        sock.onclose = () => {\n',
+        tests: 'dashboard'
+    },
+    {
+        id: '280-ws-connect-guard-removed', ticket: '#280',
+        desc: 'connectWebSocket no longer returns when a socket is open or connecting, so a late retry orphans a socket',
+        file: 'src/services/dashboard.js',
+        anchor: '    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;\n',
+        mutant: '',
+        tests: 'dashboard'
+    },
+    {
+        id: '280-ws-pong-clock-not-reset', ticket: '#280',
+        desc: 'a new socket keeps the stale lastPingTime, so after one keep-alive timeout every socket closes at its first tick',
+        file: 'src/services/dashboard.js',
+        anchor: '            lastPingTime = Date.now();\n            addLogEntry',
+        mutant: '            addLogEntry',
+        tests: 'dashboard'
+    },
+    {
         id: '246-basic-auth-short-circuits', ticket: '#246',
         desc: 'a wrong username skips the password comparison, a timing signal for valid usernames',
         file: 'src/lib/dashboardCredentials.js',
@@ -1001,13 +1217,21 @@ module.exports = [
         mutant: '    const passOk = userOk && safeEqual(password, authConfig.password);',
         tests: 'dashboardCredentials'
     },
+    {
+        id: '281-basic-auth-splits-every-colon', ticket: '#281',
+        desc: 'the password is cut at its first colon, so a password containing one never logs in',
+        file: 'src/lib/dashboardCredentials.js',
+        anchor: '    const password = sep === -1 ? undefined : credentials.slice(sep + 1);',
+        mutant: "    const password = sep === -1 ? undefined : credentials.slice(sep + 1).split(':')[0];",
+        tests: 'dashboardCredentials'
+    },
 
     {
         id: '242-ws-header-oracle', ticket: '#242',
         desc: 'the handshake accepts an Authorization header again, an unthrottled password oracle',
         file: 'src/services/healthCheck.js',
-        anchor: '    if (ticket && this.wsTickets.consume(ticket)) return done(true);\n',
-        mutant: '    if (ticket && this.wsTickets.consume(ticket)) return done(true);\n    if (checkCredentials(req.headers, authConfig).ok) return done(true);\n',
+        anchor: '    if (ticketOk) return done(true);\n',
+        mutant: '    if (ticketOk) return done(true);\n    if (checkCredentials(req.headers, authConfig).ok) return done(true);\n',
         tests: 'healthCheck'
     },
     {
@@ -1070,6 +1294,55 @@ module.exports = [
     },
 
     {
+        id: '286-none-auth-throttled', ticket: '#286',
+        desc: 'auth type none goes through the failure throttle, so a client with recorded failures is refused',
+        file: 'src/services/healthCheck.js',
+        anchor: "      if (authType === 'none') return next();\n\n      try {",
+        mutant: '      try {',
+        tests: 'healthCheck'
+    },
+    {
+        id: '286-username-logged', ticket: '#286',
+        desc: 'a failed basic login logs the typed username again, which may be a pasted password',
+        file: 'src/services/healthCheck.js',
+        anchor: "      this.logger.warn('Dashboard authentication failed', {\n        remoteAddress",
+        mutant: "      this.logger.warn('Dashboard authentication failed', {\n        username: Buffer.from((req.headers.authorization || '').slice(6), 'base64').toString('utf8'),\n        remoteAddress",
+        tests: 'healthCheck'
+    },
+    {
+        id: '286-xff-warning-every-request', ticket: '#286',
+        desc: 'the X-Forwarded-For misconfiguration warning repeats on every request',
+        file: 'src/services/healthCheck.js',
+        anchor: '          warned = true;\n',
+        mutant: '',
+        tests: 'healthCheck'
+    },
+    {
+        id: '286-xff-warning-never', ticket: '#286',
+        desc: 'no warning when requests carry X-Forwarded-For and trustProxy is off',
+        file: 'src/services/healthCheck.js',
+        anchor: "if (!warned && req.headers['x-forwarded-for']) {",
+        mutant: 'if (false) {',
+        tests: 'healthCheck'
+    },
+    {
+        id: '286-sweeper-not-cleared', ticket: '#286',
+        desc: 'shutdown() leaves the failure sweep timer running',
+        file: 'src/services/healthCheck.js',
+        anchor: '    if (this.sweeper) clearInterval(this.sweeper);\n',
+        mutant: '',
+        tests: 'healthCheck'
+    },
+    {
+        id: '286-stop-keeps-sweeper', ticket: '#286',
+        desc: 'stop() no longer shuts the failure counter down',
+        file: 'src/services/healthCheck.js',
+        anchor: '    if (this.authFailures) this.authFailures.shutdown();\n',
+        mutant: '',
+        tests: 'healthCheck'
+    },
+
+    {
         id: '263-metrics-echoes-error', ticket: '#263',
         desc: 'the unauthenticated /metrics shows the sync error text',
         file: 'src/services/healthCheck.js',
@@ -1078,6 +1351,844 @@ module.exports = [
         tests: 'healthCheck'
     },
 
+    // ---- #257: message template layer -----------------------------------
+    {
+        id: '257-lookup-allowed', ticket: '#257',
+        desc: 'lookup becomes an allowed helper, defeating the security boundary',
+        file: 'src/lib/templateRenderer.js',
+        anchor: "const KNOWN_HELPERS = new Set(['eq', 'default', 'upper', 'lower']);",
+        mutant: "const KNOWN_HELPERS = new Set(['eq', 'default', 'upper', 'lower', 'lookup']);",
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-false-branch-not-checked', ticket: '#257',
+        desc: 'an unknown name inside a false #if branch no longer fails validation',
+        file: 'src/lib/templateRenderer.js',
+        anchor: '        walkProgram(statement.inverse, scopeVars);',
+        mutant: '',
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-telegram-bare-ampersand-allowed', ticket: '#257',
+        desc: 'a bare & in template literal text no longer fails Telegram markup validation',
+        file: 'src/lib/templateRenderer.js',
+        anchor: "      fail(key, '&', line, 'telegram_markup');",
+        mutant: '',
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-telegram-not-html-escaped', ticket: '#257',
+        desc: 'Telegram output stops HTML-escaping values, so a payee value can break message structure',
+        file: 'src/lib/templateRenderer.js',
+        anchor: "  telegram: { noEscape: false, postProcess: (text) => truncateTelegramHtml(text) },",
+        mutant: "  telegram: { noEscape: true, postProcess: (text) => truncateTelegramHtml(text) },",
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-slack-not-escaped', ticket: '#257',
+        desc: 'Slack output stops escaping the whole rendered string, so a payee value can inject markup',
+        file: 'src/lib/templateRenderer.js',
+        anchor: "  slack: { noEscape: true, postProcess: escapeSlack },",
+        mutant: '  slack: { noEscape: true },',
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-telegram-truncate-ignores-closing-cost', ticket: '#257',
+        desc: 'Telegram truncation forgets to budget for closing tags, so the result can exceed the length limit',
+        file: 'src/lib/channelEscape.js',
+        anchor: '    if (output.length + token.raw.length + closingSuffix.length > max) break;',
+        mutant: '    if (output.length + token.raw.length > max) break;',
+        tests: 'channelEscape'
+    },
+    {
+        id: '257-webhook-statuscode-not-set', ticket: '#257',
+        desc: 'a rejected webhook error no longer carries statusCode, so the Telegram 400 retry can never fire',
+        file: 'src/services/notificationService.js',
+        anchor: '            error.statusCode = res.statusCode;',
+        mutant: '',
+        tests: 'templatedDelivery'
+    },
+    {
+        id: '257-telegram-message-always-true', ticket: '#257',
+        desc: 'sendTelegramMessage reports success even when Telegram never accepted the message',
+        file: 'src/services/notificationService.js',
+        anchor: '    return (await this.sendTelegramMessageDetailed(message, options)).ok;',
+        mutant: '    return true;',
+        tests: 'notificationService'
+    },
+    {
+        id: '257-telegram-base-url-ignores-test-seam', ticket: '#257',
+        desc: 'the constructor stops honoring telegramApiBaseUrl, so tests can no longer reach a fake Telegram server',
+        file: 'src/services/notificationService.js',
+        anchor: "    this.telegramApiBaseUrl = options.telegramApiBaseUrl || 'https://api.telegram.org';",
+        mutant: "    this.telegramApiBaseUrl = 'https://api.telegram.org';",
+        tests: 'templatedDelivery'
+    },
+    {
+        id: '257-telegram-retry-not-limited-to-400', ticket: '#257',
+        desc: 'the Telegram retry fires on every failure, not only a 400, silently doubling every non-400 failure',
+        file: 'src/services/notificationService.js',
+        anchor: '    if (result.ok || result.statusCode !== 400) {',
+        mutant: '    if (result.ok) {',
+        tests: 'templatedDelivery'
+    },
+    {
+        id: '257-review-data-var-whitelist-bypassed', ticket: '#257',
+        desc: 'any @data path (including @root, the whole render context) is allowed again, bypassing the variable whitelist',
+        file: 'src/lib/templateRenderer.js',
+        anchor: '      if (node.parts.length === 1 && ALLOWED_DATA_VARS.has(node.parts[0])) return;',
+        mutant: '      return;',
+        tests: 'templateRenderer'
+    },
+    {
+        id: '257-review-dotted-path-bypassed', ticket: '#257',
+        desc: 'a dotted path off a non-block-param variable, or through a dangerous prototype-chain property, is allowed again',
+        file: 'src/lib/templateRenderer.js',
+        anchor: '      if (!isBlockParam || hasDangerousPart) {',
+        mutant: '      if (false) {',
+        tests: 'templateRenderer'
+    },
+
+    // ---- #258: missing-payment alerts ------------------------------------
+    {
+        id: '258-interval-violation-boundary-off-by-one', ticket: '#258',
+        desc: 'the #271 item 1 window-overlap guard uses > instead of >=, so an exact-equal grace+early no longer trips it',
+        file: 'src/lib/scheduleAlerts.js',
+        // #297 round 1, M2: effectiveEarlyDays includes the linked allowance
+        // again, but only while the interval exceeds it (daily stays valid).
+        anchor: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays >= shortestIntervalDays) {',
+        mutant: '      if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays > shortestIntervalDays) {',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-amount-tolerance-boundary-off-by-one', ticket: '#258',
+        desc: 'an amount exactly at the tolerance boundary is no longer accepted, narrowing the allowed range',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '  return Math.abs(Math.abs(amount) - Math.abs(expected)) <= allowed;',
+        mutant: '  return Math.abs(Math.abs(amount) - Math.abs(expected)) < allowed;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-staleness-check-disabled', ticket: '#258',
+        desc: 'a stale bank connection is never detected, so a merely-unsynced account is reported missing instead of cannotCheck',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const stale = !lastSync || today.diff(lastSync, \'days\') > binding.staleAfterDays;',
+        mutant: '      const stale = false;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-schedule-link-ignored', ticket: '#258',
+        desc: "Actual's own transaction-to-schedule link is ignored, falling back to account+payee matching even when linked",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '    const linked = !!schedule.id && tx.schedule === schedule.id;',
+        mutant: '    const linked = false;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-duplicate-alert-id-not-rejected', ticket: '#258',
+        desc: 'checkUniqueIds no longer throws on a duplicate alert id, silently allowing two rules to collide',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: '      if (seen.has(id)) {',
+        mutant: '      if (false) {',
+        tests: 'scheduleAlertRules'
+    },
+    {
+        id: '258-unmatched-rule-not-flagged', ticket: '#258',
+        desc: 'a rule matching no schedule silently expands to zero bindings instead of one unmatched binding, so no ruleUnmatched event fires',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: '    if (matches.length === 0) {',
+        mutant: '    if (false) {',
+        tests: 'scheduleAlertRules'
+    },
+    {
+        id: '258-reminder-interval-not-enforced', ticket: '#258',
+        desc: 'a missing-payment reminder resends on every sync instead of waiting remindEveryDays, spamming every channel',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: 'due: calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays,',
+        mutant: 'due: true,',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-ruleUnmatched-reminder-uses-configured-interval', ticket: '#258',
+        desc: 'ruleUnmatched reminders stop using the fixed 1-day interval and instead honor (or skip, when unset) the rule\'s own remindEveryDays',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;",
+        mutant: '  const remindEveryDays = rule.remindEveryDays;',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-disabled-webhook-not-skipped', ticket: '#258',
+        desc: 'a generic webhook with enabled:false is sent to anyway, since the enabled check is dropped from resolveTargets',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      return (cfg.webhooks?.generic || []).filter((w) => w.enabled !== false && w.url);",
+        mutant: "      return (cfg.webhooks?.generic || []).filter((w) => w.url);",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-sent-skipped-swapped', ticket: '#258',
+        desc: 'runScheduleAlertsStep swaps sent and skipped in its return value, so syncService would log an inverted count',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '    return { events: events.length, sent: deliverResult.sent, skipped: deliverResult.skipped };',
+        mutant: '    return { events: events.length, sent: deliverResult.skipped, skipped: deliverResult.sent };',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '258-ledger-null-key-matching-broken', ticket: '#258',
+        desc: 'the schedule_alerts ledger lookup uses = instead of IS for nullable key columns, so a NULL scheduleId/occurrenceDate never matches itself',
+        file: 'src/services/syncHistory.js',
+        anchor: '          AND schedule_id IS ? AND occurrence_date IS ? AND event = ?',
+        mutant: '          AND schedule_id = ? AND occurrence_date = ? AND event = ?',
+        tests: 'syncHistory'
+    },
+    {
+        id: '258-ledger-retention-floor-dropped', ticket: '#258',
+        desc: 'the schedule_alerts ledger loses its 120-day retention floor, so a low sync-history retentionDays purges alert history too early',
+        file: 'src/services/syncHistory.js',
+        anchor: '      const scheduleAlertsRetentionDays = Math.max(this.retentionDays, 120);',
+        mutant: '      const scheduleAlertsRetentionDays = this.retentionDays;',
+        tests: 'syncHistory'
+    },
+    {
+        id: '258-weekend-skip-mode-inverted', ticket: '#258',
+        desc: 'a "before" weekend solve mode rolls a Saturday to Monday instead of back to Friday (the before/after branches are swapped)',
+        file: 'src/lib/vendor/actualSchedules.js',
+        anchor: "    if (solveMode === 'after') {\n      return d.nextMonday(date);\n    } else if (solveMode === 'before') {\n      return d.previousFriday(date);\n    }",
+        mutant: "    if (solveMode === 'after') {\n      return d.previousFriday(date);\n    } else if (solveMode === 'before') {\n      return d.nextMonday(date);\n    }",
+        tests: 'actualSchedules.vendor'
+    },
+
+    // ---- #258 additional guards from PR #295 review round 1 ----------------
+    {
+        id: '258-h1-last-sync-epoch-ms-not-parsed', ticket: '#258',
+        desc: 'account.last_sync (a production epoch-ms string) is parsed with plain moment.tz instead of as a number, so missing never fires in production',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const parsed = isNumeric ? moment.tz(Number(lastSync), timezone) : moment.tz(lastSync, timezone);",
+        mutant: "  const parsed = moment.tz(lastSync, timezone);",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-h2-binding-isolation-removed', ticket: '#258',
+        desc: 'one schedule that throws during evaluation is no longer isolated, so it aborts evaluate() and silences every other rule',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '    } catch (error) {',
+        mutant: '    } catch (error) { throw error;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-h2-cadence-date-format-missing', ticket: '#258',
+        desc: 'getRecurringDescription is called with no date-fns format again, throwing for an on_date endMode schedule',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "\n        cadenceText: typeof dateConfig === 'string' ? null : getRecurringDescription(dateConfig, CADENCE_DATE_FORMAT),",
+        mutant: "\n        cadenceText: typeof dateConfig === 'string' ? null : getRecurringDescription(dateConfig),",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-h3-lookback-ignores-early-days', ticket: '#258',
+        desc: "the transaction fetch window is sized off MAX_LOOKBACK_DAYS alone again, so an early payment near the boundary can fall outside the query",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "        .subtract(MAX_LOOKBACK_DAYS + maxEarlyDays, 'days')",
+        mutant: "        .subtract(MAX_LOOKBACK_DAYS, 'days')",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '258-h4-completed-schedule-not-skipped', ticket: '#258',
+        desc: 'a completed schedule is matched again, so it keeps producing false "missing" events for an occurrence nobody expects anymore',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: '    const isActive = (s) => s.completed !== true;',
+        mutant: '    const isActive = (s) => true;',
+        tests: 'scheduleAlertRules'
+    },
+    {
+        id: '258-h5-destination-key-ignores-target', ticket: '#258',
+        desc: 'the per-destination ledger key collapses back to the channel name alone, so a dead multi-target destination (e.g. one of two webhooks) blocks resending to the other',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        // #295 review round 2, M8 moved the key computation into destinationKey()
+        // (never storing the raw webhook URL); this anchor was retargeted to the
+        // new call site, since the old inline ternary no longer appears in the file.
+        anchor: '      destinations.push({ channel, target, key: destinationKey(channel, target) });',
+        mutant: '      destinations.push({ channel, target, key: channel });',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-h6-template-not-validated-at-startup', ticket: '#258',
+        desc: 'a rule\'s merged template is no longer compiled at config-load time, so a bad template only fails at send time',
+        // R2-M7 rewrote the compiled channel set from a fixed allModes to the
+        // rule's own resolved modes; retargeted to the call itself, which is
+        // unaffected by which channel list it is passed (#258 review round 2).
+        file: 'src/lib/configLoader.js',
+        anchor: '                    compileTemplateSet({ templates, variables: VARIABLES, channels: modes });',
+        mutant: '                    void 0;',
+        tests: 'configLoader'
+    },
+    {
+        id: '258-m1-digest-ignores-rule-channel-restriction', ticket: '#258',
+        desc: "digest mode groups by every channel again instead of each item's own resolveChannels, leaking a channel-restricted rule's content onto channels it never allowed",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '    for (const channel of resolveChannels(item.rule, sender)) {',
+        mutant: '    for (const channel of ALL_CHANNELS) {',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-m2-unreachable-channels-not-rejected-at-startup', ticket: '#258',
+        desc: "a rule whose explicit channels restriction names no configured destination is no longer rejected at startup",
+        // R2-M7 hoisted resolveChannels(rule, sender) into a ruleChannels
+        // local (reused for the per-rule template modes too); retargeted to
+        // that same guard, now read from ruleChannels (#258 review round 2).
+        file: 'src/lib/configLoader.js',
+        anchor: '                if (rule.channels && rule.channels.length && ruleChannels.length === 0) {',
+        mutant: '                if (false) {',
+        tests: 'configLoader'
+    },
+    {
+        id: '258-m4-transactions-query-explodes-splits', ticket: '#258',
+        desc: "the transactions query requests splits: 'inline' again, exploding a split parent into subtransactions that lose the schedule link",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "            .options({ splits: 'none' })",
+        mutant: "            .options({ splits: 'inline' })",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '258-m7-calendar-days-uses-raw-24h-periods', ticket: '#258',
+        desc: 'calendarDaysBetween goes back to raw 24h-period diffing instead of calendar-day comparison in the configured timezone, letting a reminder skip or double-fire near a day boundary',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  return moment.tz(now, timezone).startOf('day').diff(moment.tz(recordedAt, timezone).startOf('day'), 'days');",
+        mutant: '  return moment(now).diff(moment(recordedAt), \'days\');',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-m9-skip-next-date-not-honored', ticket: '#258',
+        desc: "an occurrence Actual's \"Skip next date\" already moved past is reported missing again instead of skipped",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const nextDateMoment = schedule.next_date ? moment.tz(schedule.next_date, timezone).startOf(\'day\') : null;',
+        mutant: '      const nextDateMoment = null;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-m10-isbetween-range-check-removed', ticket: '#258',
+        desc: "an isbetween schedule's amount range check always passes, so wrongAmount can never fire for it",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '    return amount >= lo && amount <= hi;',
+        mutant: '    return true;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-m11-pass1-ignores-link-and-amount-preference', ticket: '#258',
+        desc: 'on-time matching goes back to taking the earliest in-window candidate regardless of link/amount, reintroducing false wrongAmount',
+        file: 'src/lib/scheduleAlerts.js',
+        // #295 review round 2, M1/M3 reworked this block (betterMatchedElsewhere,
+        // strictLinked/closestLinked); this anchor was retargeted to the current
+        // preference chain, since the old text no longer appears in the file.
+        anchor: "        const candidate = strictLinked\n          || (linkedBeatsAmount ? closestLinked : null)\n          || amountMatch\n          || closestLinked\n          // Wrong-amount fallback (M11): only take a candidate that is not a\n          // better, correctly-amounted match for some OTHER bound schedule\n          // (#295 review round 2, M1).\n          || inWindow.find((c) => !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))\n          || null;",
+        mutant: '        const candidate = inWindow[0] || null;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-m12-linked-early-window-not-widened', ticket: '#258',
+        desc: "a linked transaction's early window goes back to the rule's own (possibly narrower) earlyDays instead of Actual's +/-2 day linking tolerance",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "        let earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');",
+        mutant: '        let earlyStartLinked = earlyStart;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-m1-linked-allowance-beats-in-window-amount-match', ticket: '#297',
+        desc: "the 2-day linked allowance wins over an in-window exact-amount payment again, so a late linked payment for the previous occurrence steals this one's payment",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        const linkedBeatsAmount = closestLinked && (!amountMatch || fitsSiblingSchedule(amountMatch.tx, schedule, bindings));',
+        mutant: '        const linkedBeatsAmount = closestLinked;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-m2-linked-allowance-ignored-by-overlap-guard', ticket: '#297',
+        desc: 'the overlap guard ignores the linked early allowance again, so weekly graceDays 5 is evaluated and its window swallows the next occurrence\'s early linked payment',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const effectiveEarlyDays = linkedOverlap ? Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS) : binding.earlyDays;',
+        mutant: '      const effectiveEarlyDays = binding.earlyDays;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f4-linked-allowance-rejects-short-intervals', ticket: '#297',
+        desc: 'the linked allowance applies to every interval again, so every daily schedule is a permanent interval violation',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '      const linkedOverlap = shortestIntervalDays !== null && shortestIntervalDays > LINKED_EARLY_WINDOW_DAYS',
+        mutant: '      const linkedOverlap = shortestIntervalDays !== null && shortestIntervalDays > 0',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-l1-ledger-lookup-failure-rejects-batch', ticket: '#297',
+        desc: "a failing ledger lookup rejects the whole deliver() batch again instead of withholding only that event",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      log.warn('Schedule alert ledger lookup failed; event withheld until the next sync', {",
+        mutant: "      throw error;\n      log.warn('Schedule alert ledger lookup failed; event withheld until the next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '297-l1-resolved-lookup-failure-rejects-batch', ticket: '#297',
+        desc: "a failing ledger lookup while deriving resolved events rejects the whole deliver() batch again",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        logger.warn('Schedule alert ledger lookup failed; resolved check withheld until the next sync', {",
+        mutant: "        throw error;\n        logger.warn('Schedule alert ledger lookup failed; resolved check withheld until the next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '297-f4-linked-early-not-clamped-to-previous-deadline', ticket: '#297',
+        desc: "a linked payment's early window is no longer clamped to start after the previous occurrence's deadline, so a payment inside the previous grace is pulled onto the next occurrence",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "          if (earlyStartLinked.isBefore(afterPrevDeadline, 'day')) earlyStartLinked = afterPrevDeadline;",
+        mutant: '          void afterPrevDeadline;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-m13-lookback-fallback-too-short', ticket: '#258',
+        desc: "the interval-stats fallback goes back to a hard-coded 30 days for a schedule with fewer than two occurrences in range, undersizing the window for a yearly schedule",
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '  return { shortestIntervalDays: shortest, longestIntervalDays: longest || MAX_LOOKBACK_DAYS };',
+        mutant: '  return { shortestIntervalDays: shortest, longestIntervalDays: longest || 30 };',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-h1-shared-pool-claim-ignores-schedule', ticket: '#258',
+        desc: 'the shared transaction pool goes back to a plain used-set, so a second rule bound to the same schedule cannot reuse a transaction the first rule already claimed for that SAME schedule, reporting every occurrence missing',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        .filter((c) => c.match.eligible && (!globallyUsedTx.has(c.tx) || globallyUsedTx.get(c.tx) === schedule.id))',
+        mutant: '        .filter((c) => c.match.eligible && !globallyUsedTx.has(c.tx))',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-h2-skip-inference-ignores-intervening-linked-payment', ticket: '#258',
+        desc: 'next_date-based skip inference goes back to firing on ANY occurrence before next_date, even when a later linked payment (not an explicit skip) is what advanced next_date, hiding a genuinely missed payment',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '          if (!hasInterveningLinkedPayment) {',
+        mutant: '          if (true) {',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-m1-pass2-late-fallback-ignores-sibling-match', ticket: '#258',
+        desc: 'the pass-2 late fallback goes back to taking any unlinked candidate in window, even one that is a better, correctly-amounted match for a sibling schedule on the same account+payee',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '            && (c.linked || !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))',
+        mutant: '            && true',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '258-r2-m2-completed-only-match-fires-rule-unmatched', ticket: '#258',
+        desc: 'a rule whose name matched only completed schedules goes back to producing an unmatched: true binding (and a daily ruleUnmatched) instead of no binding at all',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: "      if (rawMatches.length === 0) {\n        bindings.push({ ...rule, scheduleId: null, scheduleName: null, schedule: null, unmatched: true });\n      }",
+        mutant: '        bindings.push({ ...rule, scheduleId: null, scheduleName: null, schedule: null, unmatched: true });',
+        tests: 'scheduleAlertRules.test'
+    },
+    {
+        id: '258-r2-m5-resolved-resent-after-already-resolved-here', ticket: '#258',
+        desc: 'a resolved event goes back to being resendable to a destination that already has its own resolved row recorded, resending indefinitely instead of once per destination',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: 'due: !resolvedRow,',
+        mutant: 'due: true,',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-r2-m6-deadline-not-enforced-per-destination', ticket: '#258',
+        desc: 'sendEvent goes back to never checking the delivery deadline between destinations, so a short budget no longer stops a new destination send from starting',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: '      if (deadline != null && Date.now() >= deadline) {',
+        mutant: '      if (false) {',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '258-r2-m8-destination-key-stores-raw-url', ticket: '#258',
+        desc: 'destinationKey goes back to embedding the raw webhook URL (a secret) in the ledger key instead of a short hash, for a destination with no configured name',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  const hash = crypto.createHash('sha256').update(target.url).digest('hex').slice(0, 8);",
+        mutant: '  const hash = target.url;',
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '258-r2-m9-legacy-null-channel-row-not-matched', ticket: '#258',
+        desc: 'a channel-scoped ledger lookup goes back to an exact-match-only filter, so a legacy pre-H5 row (recorded before the channel column existed, and therefore NULL) is invisible to a lookup for any specific destination key, defeating dedup for upgraded installs',
+        file: 'src/services/syncHistory.js',
+        // #297 F7 limited the NULL wildcard to delivered rows; this anchor was
+        // retargeted to the current text.
+        anchor: "          ${filterChannel ? \"AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))\" : ''}",
+        mutant: "          ${filterChannel ? 'AND channel IS ?' : ''}",
+        tests: 'syncHistory.test'
+    },
+    {
+        id: '258-r2-m7-startup-template-check-ignores-rule-channels', ticket: '#258',
+        desc: 'startup template validation goes back to compiling every rule against every channel mode, so a Telegram-only literal-markup restriction rejects a valid template for a rule that can only ever reach slack/email',
+        file: 'src/lib/configLoader.js',
+        anchor: '                const ruleChannels = resolveChannels(rule, sender);',
+        mutant: "                const ruleChannels = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'];",
+        tests: 'configLoader.test'
+    },
+
+    // ---- #294: template low findings -----------------------------------------
+    {
+        id: "294-decorator-passes-validation", ticket: '#294',
+        desc: "a decorator ({{*foo}}) passes validation again and throws at render",
+        file: "src/lib/templateRenderer.js",
+        anchor: "        fail(key, statement.path && statement.path.original || 'decorator', statement.loc.start.line, 'unknown_helper');",
+        mutant: "",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-mismatched-block-line-lost", ticket: '#294',
+        desc: "a mismatched block error reports line 1 again",
+        file: "src/lib/templateRenderer.js",
+        anchor: " || / - (\\d+):\\d+/.exec(err.message);",
+        mutant: ";",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-any-entity-allowed", ticket: '#294',
+        desc: "Telegram validation accepts entities Telegram rejects (&nbsp;)",
+        file: "src/lib/templateRenderer.js",
+        anchor: "const TELEGRAM_ENTITY_RE = /^&(?:amp|lt|gt|quot);/;",
+        mutant: "const TELEGRAM_ENTITY_RE = /^&(?:amp|lt|gt|quot|nbsp);/;",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-entity-rejected", ticket: '#294',
+        desc: "the Telegram entities are rejected again, so a literal & cannot be written",
+        file: "src/lib/templateRenderer.js",
+        anchor: "      if (entity) {",
+        mutant: "      if (false) {",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-unclosed-tag-passes", ticket: '#294',
+        desc: "an unclosed Telegram tag passes validation again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "    if (tagStack.length > 0) {",
+        mutant: "    if (false) {",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-telegram-crossed-tags-pass", ticket: '#294',
+        desc: "crossed Telegram tags pass validation again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "if (!open || open.tag !== tag) fail(",
+        mutant: "if (!open) fail(",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-upper-undefined-renders-word", ticket: '#294',
+        desc: "upper of an undefined value renders UNDEFINED again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "  upper: (value) => (value == null ? '' : String(value).toUpperCase()),",
+        mutant: "  upper: (value) => String(value).toUpperCase(),",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-lower-undefined-renders-word", ticket: '#294',
+        desc: "lower of a null value renders NULL again",
+        file: "src/lib/templateRenderer.js",
+        anchor: "  lower: (value) => (value == null ? '' : String(value).toLowerCase())",
+        mutant: "  lower: (value) => String(value).toLowerCase()",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-webhook-field-overrides-text", ticket: '#294',
+        desc: "a webhook field named text overrides the rendered text again",
+        file: "src/services/notificationService.js",
+        anchor: "{ ...(fields || {}), text }",
+        mutant: "{ text, ...(fields || {}) }",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-discord-content-uncapped", ticket: '#294',
+        desc: "templated Discord content is no longer capped at 2000 characters",
+        file: "src/services/notificationService.js",
+        anchor: "content: truncateWithEllipsis(text, DISCORD_CONTENT_MAX)",
+        mutant: "content: text",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-slack-text-uncapped", ticket: '#294',
+        desc: "templated Slack text is no longer capped",
+        file: "src/services/notificationService.js",
+        anchor: "{ text: truncateWithEllipsis(text, SLACK_TEXT_MAX) }",
+        mutant: "{ text }",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-ellipsis-exceeds-cap", ticket: '#294',
+        desc: "the ellipsis is added on top of the cap, so Discord content ends up 2001 characters",
+        file: "src/lib/channelEscape.js",
+        anchor: "truncateCodePoints(value, max - 1)",
+        mutant: "truncateCodePoints(value, max)",
+        tests: "channelEscape"
+    },
+    {
+        id: "294-discord-mentions-allowed", ticket: '#294',
+        desc: "non-templated Discord payloads allow mentions again (@everyone pings)",
+        file: "src/services/notificationService.js",
+        anchor: "if (payload) payload.allowed_mentions = { parse: [] };",
+        mutant: "if (payload) payload.allowed_mentions = { parse: ['everyone'] };",
+        tests: "notificationService.test"
+    },
+    {
+        id: "294-discord-formatted-mentions-missing", ticket: '#294',
+        desc: "the formatted Discord sender stops suppressing mentions",
+        file: "src/services/notificationService.js",
+        anchor: "(#114)\n    this._suppressDiscordMentions(payload);",
+        mutant: "(#114)",
+        tests: "notificationService.test"
+    },
+    {
+        id: "294-discord-legacy-mentions-missing", ticket: '#294',
+        desc: "the dashboard-test Discord sender stops suppressing mentions",
+        file: "src/services/notificationService.js",
+        anchor: "this._brandPayload(payload, 'avatar_url');\n    this._suppressDiscordMentions(payload);",
+        mutant: "this._brandPayload(payload, 'avatar_url');",
+        tests: "notificationService.test"
+    },
+    {
+        id: "294-digest-records-deferred-items", ticket: '#294',
+        desc: "a capped digest records every rendered item as sent, including the ones cut off by the channel cap",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "const included = rendered.slice(0, count).map((r) => r.item);",
+        mutant: "const included = rendered.map((r) => r.item);",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-digest-no-fair-order", ticket: '#294',
+        desc: "the digest no longer sends never-sent and longest-waiting items first, so daily reminders starve the deferred tail",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "return x === y ? 0 : (x < y ? -1 : 1);",
+        mutant: "return 0;",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-telegram-digest-header-unescaped", ticket: '#294',
+        desc: "the Telegram digest header interpolates the server name into HTML unescaped again",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "for ${escapeTelegramHtml(server)}`",
+        mutant: "for ${server}`",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-email-digest-header-unescaped", ticket: '#294',
+        desc: "the email digest html body interpolates the server name unescaped again",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "html: `<p>${htmlHeader}</p><ul>",
+        mutant: "html: `<p>${header}</p><ul>",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-slack-digest-header-unescaped", ticket: '#294',
+        desc: "the Slack digest header carries the raw server name again, so <!channel> in a name pings the channel",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "return buildDigestOutput(channel, channel === 'slack' ? slackHeader : header,",
+        mutant: "return buildDigestOutput(channel, header,",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-digest-reminders-not-oldest-first", ticket: '#294',
+        desc: "already-sent digest items no longer rotate by oldest last send, so the first items take every reminder slot",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "const sentAtMs = (d) => (d.lastSentAt == null ? -Infinity : Date.parse(d.lastSentAt));",
+        mutant: "const sentAtMs = (d) => (d.lastSentAt == null ? -Infinity : 0);",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-digest-ignores-cap", ticket: '#294',
+        desc: "the digest no longer stops adding items at the channel cap, so Discord gets a message cut at 2000",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "digestLength(channel, build(count + 1)) <= cap",
+        mutant: "digestLength(channel, build(count + 1)) <= Infinity",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "294-slack-cap-4000", ticket: '#294',
+        desc: "the Slack cap goes back to 4000, cutting a 40-item digest short",
+        file: "src/lib/channelEscape.js",
+        anchor: "const SLACK_TEXT_MAX = 40000;",
+        mutant: "const SLACK_TEXT_MAX = 4000;",
+        tests: "templatedDelivery"
+    },
+    {
+        id: "294-markup-line-from-stripped-value", ticket: '#294',
+        desc: "the Telegram markup check counts lines in the whitespace-stripped value again, so the line after a standalone block tag is wrong",
+        file: "src/lib/templateRenderer.js",
+        anchor: "const text = node.original;",
+        mutant: "const text = node.value;",
+        tests: "templateRenderer"
+    },
+    {
+        id: "294-ellipsis-splits-surrogate", ticket: '#294',
+        desc: "truncateWithEllipsis cuts by UTF-16 unit and can leave a lone surrogate",
+        file: "src/lib/channelEscape.js",
+        anchor: "${truncateCodePoints(value, max - 1)}",
+        mutant: "${value.slice(0, max - 1)}",
+        tests: "channelEscape"
+    },
+
+
+    // ---- #297: findings left open when the #258 review loop stopped -------
+    {
+        id: '297-f1-remembered-skip-ignored', ticket: '#297',
+        desc: 'a remembered skip decision is no longer honoured, so January (skipped, then February paid and linked) is reported missing once next_date has moved past it',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        if (rememberedSkips.has(skipKey(binding.scheduleId, occurrenceKey))) {',
+        mutant: '        if (false) {',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f1-skip-decision-not-reported', ticket: '#297',
+        desc: 'a first-time skip inference is no longer reported as a skipDecision, so nothing is ever written to the ledger and the skip is forgotten',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '            skipDecisions.push({ alertId: binding.id, scheduleId: binding.scheduleId, occurrence: occurrenceKey });',
+        mutant: '            void occurrenceKey;',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f1-skips-not-loaded-from-ledger', ticket: '#297',
+        desc: 'the sync step stops loading remembered skips from the ledger before evaluating, so a skip recorded by an earlier sync is forgotten',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '            skips = rows.map((r) => skipKey(r.scheduleId, r.occurrenceDate));',
+        mutant: '            skips = [];',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '297-f1-skip-decisions-not-persisted', ticket: '#297',
+        desc: 'the deliver phase stops writing newly inferred skip decisions to the ledger',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '    for (const decision of skipDecisions || []) {',
+        mutant: '    for (const decision of []) {',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '297-f2-unlinked-exact-amount-beats-linked', ticket: '#297',
+        desc: 'pass 1 prefers an unlinked exact-amount lookalike over a payment linked to the schedule again, so a sibling schedule on the same account+payee loses its payment and reports a false missing',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "          || (linkedBeatsAmount ? closestLinked : null)\n",
+        mutant: "",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f2b-pass2-ignores-linked-preference', ticket: '#297',
+        desc: 'pass 2 takes the earliest late candidate again instead of preferring one linked to the schedule, so an earlier unlinked lookalike starves its sibling',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: '        const candidate = lateCandidates.find((c) => c.linked) || lateCandidates[0];',
+        mutant: '        const candidate = lateCandidates[0];',
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '297-f7-null-channel-wildcard-matches-any-delivery', ticket: '#297',
+        desc: 'a NULL-channel ledger row of any delivery kind (muted, inferred skip) matches a lookup for a specific destination again, so it can suppress every destination',
+        file: 'src/services/syncHistory.js',
+        anchor: "          ${filterChannel ? \"AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))\" : ''}",
+        mutant: "          ${filterChannel ? 'AND (channel IS ? OR channel IS NULL)' : ''}",
+        tests: 'syncHistory.test'
+    },
+
+    {
+        id: '297-f3-destination-key-collapses-duplicate-names', ticket: '#297',
+        desc: 'the destination key is the webhook name alone again when one is set, so two webhooks of one channel sharing a name collapse into one ledger key and a failed one is never retried',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  return `${channel}:#${target.name || ''}:${hash}`;",
+        mutant: "  return target.name ? `${channel}:#${target.name}` : `${channel}:#${hash}`;",
+        tests: 'scheduleAlertDelivery'
+    },
+    // ---- #243: helmet security headers -------------------------------------
+    {
+        id: '243-frame-ancestors-allowed', ticket: '#243',
+        desc: 'the CSP lets any site frame the dashboard again (clickjacking)',
+        file: 'src/services/healthCheck.js',
+        anchor: "          frameAncestors: [\"'none'\"]",
+        mutant: "          frameAncestors: ['*']",
+        tests: 'healthCheck.test'
+    },
+    {
+        id: '243-inline-script-allowed', ticket: '#243',
+        desc: 'the CSP allows inline scripts again',
+        file: 'src/services/healthCheck.js',
+        anchor: "          scriptSrc: [\"'self'\"],",
+        mutant: "          scriptSrc: [\"'self'\", \"'unsafe-inline'\"],",
+        tests: 'healthCheck.test'
+    },
+    {
+        id: '243-hsts-include-subdomains', ticket: '#243',
+        desc: 'HSTS sends includeSubDomains again, locking plain-HTTP sibling hosts out',
+        file: 'src/services/healthCheck.js',
+        anchor: "      strictTransportSecurity: hsts ? { maxAge: 15552000, includeSubDomains: false } : false",
+        mutant: "      strictTransportSecurity: hsts ? { maxAge: 15552000 } : false",
+        tests: 'healthCheck.test'
+    },
+    // ---- #288: the History tab server filter was ignored by the route -------
+    {
+        id: '288-history-server-filter-dropped', ticket: '#288',
+        desc: 'the history route drops serverName again, so the server filter shows every server',
+        file: 'src/services/healthCheck.js',
+        anchor: "if (typeof serverName === 'string' && serverName !== '') filters.serverName = serverName;",
+        mutant: "if (false) filters.serverName = serverName;",
+        tests: 'healthCheck.test'
+    },
+    // ---- #337/#338: digest and immediate delivery starvation at the budget ---
+    {
+        id: '337-digest-channel-order-fixed', ticket: '#337',
+        desc: 'the digest visits channels in insertion order again, so a channel that eats the whole budget starves later channels every run',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    .sort((a, b) => (attempts.get(a[0]) || 0) - (attempts.get(b[0]) || 0));",
+        mutant: "    .sort(() => 0);",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '337-digest-attempt-not-stamped', ticket: '#337',
+        desc: 'a digest send that fails is no longer stamped as attempted, so the rotation never moves off the failing channel',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    attempts.set(channel, digestAttemptSeq);",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '338-immediate-order-fixed', ticket: '#338',
+        desc: 'immediate mode sends events in evaluation order again, so early daily reminders use the budget every run and starve the tail',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    if (x.since !== y.since) return x.since < y.since ? -1 : 1;",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '338-never-sent-not-first', ticket: '#338',
+        desc: 'a destination that never got the event no longer sorts ahead of ones that did',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "oldest = Math.min(oldest, state.lastSentAt == null ? -Infinity : Date.parse(state.lastSentAt));",
+        mutant: "oldest = Math.min(oldest, state.lastSentAt == null ? Infinity : Date.parse(state.lastSentAt));",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '337-immediate-destination-order-fixed', ticket: '#337',
+        desc: 'immediate mode visits destinations in configured order again, so a hanging first destination starves later ones every run',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      .sort((a, b) => (attempts.get(`dest|${a.key}`) || 0) - (attempts.get(`dest|${b.key}`) || 0));",
+        mutant: "      .sort(() => 0);",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '337-immediate-attempt-not-stamped', ticket: '#337',
+        desc: 'an immediate-mode destination send is no longer stamped as attempted, so the rotation never moves off a hanging destination',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      attempts.set(`dest|${destination.key}`, digestAttemptSeq);",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '337-immediate-attempt-tiebreak-removed', ticket: '#337',
+        desc: 'immediate mode no longer breaks ties by oldest attempt, so one hanging destination keeps the same alert first and the rest never start',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    if (x.attempt !== y.attempt) return x.attempt < y.attempt ? -1 : 1;",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '338-immediate-order-reversed', ticket: '#338',
+        desc: 'immediate mode sends the most recently sent event first, so the same few reminders use the budget every day and the rest starve',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    if (x.since !== y.since) return x.since < y.since ? -1 : 1;",
+        mutant: "    if (x.since !== y.since) return x.since < y.since ? 1 : -1;",
+        tests: 'scheduleAlertDelivery.test'
+    },
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',
@@ -1086,5 +2197,135 @@ module.exports = [
         anchor: '- **Notifies** you of sync results via Telegram',
         mutant: '- **Notifies** you of failures via Telegram',
         tests: 'docDriftGuards'
+    },
+
+    // ---- #260: payment alert snapshot and GET /api/dashboard/payments -----
+    {
+        id: '260-sync-drops-evaluation-outcome', ticket: '#260',
+        desc: 'syncService stops passing the outcome object to the evaluation, so a failed evaluation leaves lastRun.ok true',
+        file: 'src/syncService.js',
+        anchor: "                logger: serverLogger,\n                syncHistory,\n                outcome: paymentOutcome\n",
+        mutant: "                logger: serverLogger,\n                syncHistory\n",
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '260-sync-persists-when-stuck', ticket: '#260',
+        desc: 'the payment snapshot is persisted even when a bank sync is stuck',
+        file: 'src/syncService.js',
+        anchor: '        if (sessionStuckAfterLoop) {\n            serverLogger.warn(\'Skipping the final file sync',
+        mutant: '        persistPaymentSnapshot(server, null, { syncHistory, serverName: name, outcome: {}, logger: serverLogger });\n        if (sessionStuckAfterLoop) {\n            serverLogger.warn(\'Skipping the final file sync',
+        tests: 'syncLateBankSync'
+    },
+    {
+        id: '260-no-transaction', ticket: '#260',
+        desc: 'replacePaymentSnapshot runs its writes without a transaction, so a mid-way failure leaves partial rows',
+        file: 'src/services/syncHistory.js',
+        anchor: '      const replace = this.db.transaction(() => {',
+        mutant: '      const replace = ((fn) => fn)(() => {',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-persist-no-synchistory-guard', ticket: '#260',
+        desc: 'persistPaymentSnapshot drops its missing-syncHistory guard and logs a WARN instead of returning quietly',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '    if (!syncHistory) return;',
+        mutant: '',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-replace-keeps-removed', ticket: '#260',
+        desc: 'a pair no longer evaluated is never deleted, so a removed rule lingers on the dashboard',
+        file: 'src/services/syncHistory.js',
+        anchor: '          if (!keep.has(pairKey(row.alert_id, row.schedule_id))) {',
+        mutant: '          if (false) {',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-range-not-normalised', ticket: '#260',
+        desc: 'an isbetween range is stored in config order instead of min/max',
+        file: 'src/services/syncHistory.js',
+        anchor: '            min = Math.min(amount.num1, amount.num2);',
+        mutant: '            min = amount.num1;',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-lastsent-includes-inferred', ticket: '#260',
+        desc: 'lastAlertAt counts inferred skip rows as sent alerts',
+        file: 'src/services/syncHistory.js',
+        anchor: "        WHERE server = ? AND delivery = 'sent'",
+        mutant: '        WHERE server = ?',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-reset-keeps-payment-rows', ticket: '#260',
+        desc: 'resetServerHistory leaves the payment snapshot rows behind',
+        file: 'src/services/syncHistory.js',
+        anchor: '        delPaymentItems.run(s);',
+        mutant: '        void s;',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-failure-clears-last-success', ticket: '#260',
+        desc: 'a failed run wipes last_success_at',
+        file: 'src/services/syncHistory.js',
+        anchor: '          evaluated_at = excluded.evaluated_at, ok = 0, error_code = excluded.error_code',
+        mutant: '          evaluated_at = excluded.evaluated_at, ok = 0, error_code = excluded.error_code, last_success_at = NULL',
+        tests: 'paymentSnapshot'
+    },
+    {
+        id: '260-errored-pairs-count-interval-violation', ticket: '#260',
+        desc: 'an interval-violation rule (warning plus cannotCheck evaluation) is counted as errored',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '                if (evaluatedPairs.has(key) || seen.has(key)) continue;',
+        mutant: '                if (seen.has(key)) continue;',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-error-code-passthrough', ticket: '#260',
+        desc: 'a raw error code (PHASE_TIMEOUT, ECONNRESET) is stored instead of the closed list',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "    return PAYMENT_ERROR_CODES.includes(code) ? code : 'evaluation_failed';",
+        mutant: "    return code || 'evaluation_failed';",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-block-removed-keeps-snapshot', ticket: '#260',
+        desc: 'removing the scheduleAlerts block no longer erases the server snapshot',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '            syncHistory.deletePaymentSnapshot(serverName);',
+        mutant: '            void serverName;',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-failure-overwrites-items', ticket: '#260',
+        desc: 'a failed evaluation replaces the items with an empty set instead of only recording the run',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '            syncHistory.recordPaymentRunFailure(serverName, outcome.errorCode);',
+        mutant: '            syncHistory.replacePaymentSnapshot(serverName, [], {});',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-outcome-failure-lost', ticket: '#260',
+        desc: 'maybeRunScheduleAlerts no longer reports that it failed',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: '            outcome.failed = true;',
+        mutant: '            outcome.failed = false;',
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '260-days-late-reversed', ticket: '#260',
+        desc: 'daysLate is computed with the dates swapped (negative)',
+        file: 'src/services/healthCheck.js',
+        anchor: '                  ? daysBetween(o.deadline, o.receivedDate)',
+        mutant: '                  ? daysBetween(o.receivedDate, o.deadline)',
+        tests: 'paymentsRoute'
+    },
+    {
+        id: '260-bracket-server-accepted', ticket: '#260',
+        desc: '?server[]=x and ?server[a]=b are silently ignored instead of rejected',
+        file: 'src/services/healthCheck.js',
+        anchor: '      if (bracketed || (requested !== undefined',
+        mutant: '      if ((requested !== undefined',
+        tests: 'paymentsRoute'
     }
 ];

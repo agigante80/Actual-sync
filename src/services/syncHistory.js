@@ -106,17 +106,95 @@ class SyncHistoryService {
       )
     `;
 
+    // Missing-payment alert de-duplication ledger (#258). One row per
+    // successfully delivered event *destination*, keyed by (server, alert,
+    // schedule, occurrence, event, channel); `deliver()`
+    // (src/lib/scheduleAlertDelivery.js) reads it before sending and writes
+    // it only after a successful send, so a failed send is retried on the
+    // next sync instead of being lost.
+    //
+    // `channel` (#295 review, H5) identifies the individual destination a
+    // row was recorded for (e.g. `slack:https://hooks.example/a`, or just
+    // `telegram` for a single-destination channel), so one dead destination
+    // no longer forces every other, already-succeeding destination to resend
+    // on the next sync (see scheduleAlertDelivery.js's `dueDestinations`).
+    // It is nullable so a lookup that does not care which destination
+    // recorded an event (e.g. `deriveResolvedEvents`, which only asks "was
+    // `missing` ever recorded for this occurrence, on any channel") can omit
+    // it and match any row.
+    const createScheduleAlertsTable = `
+      CREATE TABLE IF NOT EXISTS schedule_alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        server TEXT NOT NULL,
+        alert_id TEXT NOT NULL,
+        schedule_id TEXT,
+        occurrence_date TEXT,
+        event TEXT NOT NULL,
+        delivery TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        channel TEXT
+      )
+    `;
+
+    // Missing-payment alert snapshot (#260): what the #258 evaluation last
+    // said about every watched schedule, so the dashboard can show it without
+    // a connection to Actual. Replaced per server on every successful
+    // evaluation (replacePaymentSnapshot). `expected_amount` is integer cents
+    // (NULL for a range or an absent amount); an `isbetween` range is stored
+    // normalised in expected_min/expected_max. `occurrences_json` is the
+    // evaluation's occurrences[] unchanged. No last_alert_at: that is joined
+    // from the schedule_alerts ledger at request time (getLastSentAlerts).
+    const createPaymentAlertStatusTable = `
+      CREATE TABLE IF NOT EXISTS payment_alert_status (
+        server TEXT NOT NULL,
+        alert_id TEXT NOT NULL,
+        schedule_id TEXT NOT NULL,
+        name TEXT,
+        cadence_text TEXT,
+        account TEXT,
+        payee TEXT,
+        expected_amount INTEGER,
+        expected_min INTEGER,
+        expected_max INTEGER,
+        next_date TEXT,
+        deadline TEXT,
+        state TEXT NOT NULL,
+        occurrences_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (server, alert_id, schedule_id)
+      )
+    `;
+
+    // One row per server describing the latest evaluation attempt. `evaluated_at`
+    // is the latest attempt; `last_success_at` the latest success (kept when a
+    // later run fails, NULL until the first success). (#260)
+    const createPaymentAlertRunTable = `
+      CREATE TABLE IF NOT EXISTS payment_alert_run (
+        server TEXT PRIMARY KEY,
+        evaluated_at TEXT NOT NULL,
+        ok INTEGER NOT NULL,
+        error_code TEXT,
+        rules_errored INTEGER NOT NULL DEFAULT 0,
+        last_success_at TEXT
+      )
+    `;
+
     const createIndexes = [
       'CREATE INDEX IF NOT EXISTS idx_timestamp ON sync_history(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_server_name ON sync_history(server_name)',
       'CREATE INDEX IF NOT EXISTS idx_status ON sync_history(status)',
       'CREATE INDEX IF NOT EXISTS idx_correlation_id ON sync_history(correlation_id)',
-      'CREATE INDEX IF NOT EXISTS idx_account_meta_server ON account_metadata(server_name)'
+      'CREATE INDEX IF NOT EXISTS idx_account_meta_server ON account_metadata(server_name)',
+      'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_lookup ON schedule_alerts(server, alert_id, schedule_id, occurrence_date, event)',
+      'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_recorded_at ON schedule_alerts(recorded_at)'
     ];
 
     this.db.exec(createSyncHistoryTable);
     this.db.exec(createAccountMetadataTable);
-    this.logger.debug('Created sync_history and account_metadata tables');
+    this.db.exec(createScheduleAlertsTable);
+    this.db.exec(createPaymentAlertStatusTable);
+    this.db.exec(createPaymentAlertRunTable);
+    this.logger.debug('Created sync_history, account_metadata, schedule_alerts and payment snapshot tables');
 
     createIndexes.forEach(idx => {
       this.db.exec(idx);
@@ -142,10 +220,121 @@ class SyncHistoryService {
       this.logger.info('Migrated sync_history: added accounts_skipped column');
     }
 
-    // NOTE: account_metadata is created via CREATE TABLE IF NOT EXISTS in
-    // createTables() (so a missing table is added to existing DBs). If a NEW
-    // COLUMN is ever added to account_metadata, add an ALTER guard here too —
-    // CREATE TABLE IF NOT EXISTS will not add columns to an existing table. (#99)
+    // #295 review, H5: schedule_alerts.channel, added to an existing
+    // database created before per-destination ledger keying existed.
+    // Existing rows read as NULL for it: a row written back when there was
+    // only ever one implicit "destination" per event. `findLatestScheduleAlert`
+    // (#295 review round 2, M9) treats such a row as a match for ANY specific
+    // destination key, not just "any destination" lookups that omit `channel`
+    // entirely - otherwise every pre-upgrade "sent" row would become invisible
+    // to the new per-destination lookups the moment a real `channel` value is
+    // queried, and every already-delivered alert would resend once per
+    // destination on the first post-upgrade sync.
+    const scheduleAlertsColumns = this.db.prepare('PRAGMA table_info(schedule_alerts)').all();
+    if (!scheduleAlertsColumns.some((col) => col.name === 'channel')) {
+      this.db.exec('ALTER TABLE schedule_alerts ADD COLUMN channel TEXT');
+      this.logger.info('Migrated schedule_alerts: added channel column');
+    }
+
+    // NOTE: account_metadata and schedule_alerts are created via CREATE TABLE
+    // IF NOT EXISTS in createTables() (so a missing table is added to
+    // existing DBs). If a NEW COLUMN is ever added to either, add an ALTER
+    // guard here too, since CREATE TABLE IF NOT EXISTS will not add columns
+    // to an existing table. (#99, #258)
+  }
+
+  /**
+   * Look up the most recent `schedule_alerts` ledger row for one
+   * `(server, alertId, scheduleId, occurrenceDate, event)` key.
+   * `scheduleAlertDelivery.deliver()`'s de-duplication and reminder logic.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @param {string} key.alertId
+   * @param {?string} key.scheduleId
+   * @param {?string} key.occurrenceDate
+   * @param {string} key.event
+   * @param {string} [key.channel] - #295 review, H5: when given, a row
+   *   recorded for this exact destination matches, and so does a legacy row
+   *   recorded before per-destination keying existed (`channel IS NULL` AND
+   *   `delivery = 'sent'`, #295 review round 2, M9; #297 F7 limited the
+   *   wildcard to delivered rows so a NULL-channel muted/skip row can never
+   *   suppress a real destination - otherwise upgrading an existing database
+   *   made every previously-delivered alert resend once per destination,
+   *   since no old row could ever match a specific destination key again).
+   *   When `channel` is omitted entirely, any row for the event matches
+   *   regardless of which destination recorded it (used by
+   *   `deriveResolvedEvents`, which only needs to know an event was ever
+   *   recorded at all, not on which channel).
+   * @returns {Promise<{recordedAt:string}|null>}
+   */
+  async findLatestScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, channel }) {
+    try {
+      const filterChannel = channel !== undefined;
+      const row = this.db.prepare(`
+        SELECT recorded_at AS recordedAt FROM schedule_alerts
+        WHERE server = ? AND alert_id = ?
+          AND schedule_id IS ? AND occurrence_date IS ? AND event = ?
+          ${filterChannel ? "AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))" : ''}
+        ORDER BY recorded_at DESC, id DESC
+        LIMIT 1
+      `).get(...[server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, ...(filterChannel ? [channel] : [])]);
+      return row || null;
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts ledger', { error: error.message, server, alertId, event });
+      throw error;
+    }
+  }
+
+  /**
+   * Remembered skip decisions for one server (#297 F1): every `skipped` row,
+   * as `{scheduleId, occurrenceDate}`. `evaluate()` takes these back in as
+   * `skips` so an occurrence inferred as skipped stays skipped after a later
+   * payment advances the schedule's `next_date`.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @returns {Promise<Array<{scheduleId:string, occurrenceDate:string}>>}
+   */
+  async listScheduleAlertSkips({ server }) {
+    try {
+      return this.db.prepare(`
+        SELECT DISTINCT schedule_id AS scheduleId, occurrence_date AS occurrenceDate
+        FROM schedule_alerts
+        WHERE server = ? AND event = 'skipped' AND schedule_id IS NOT NULL AND occurrence_date IS NOT NULL
+      `).all(server);
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts skips', { error: error.message, server });
+      throw error;
+    }
+  }
+
+  /**
+   * Record a delivered (or muted/disabled, for #261) schedule alert event.
+   *
+   * @param {Object} record
+   * @param {string} record.server
+   * @param {string} record.alertId
+   * @param {?string} record.scheduleId
+   * @param {?string} record.occurrenceDate
+   * @param {string} record.event
+   * @param {'sent'|'muted'|'disabled'|'inferred'} record.delivery
+   * @param {?string} [record.channel] - #295 review, H5: the destination
+   *   this row was recorded for (see `findLatestScheduleAlert`); `null`/
+   *   omitted for a record with no single destination (e.g. legacy rows).
+   * @returns {Promise<number>} inserted row id
+   */
+  async recordScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, delivery, channel }) {
+    try {
+      const result = this.db.prepare(`
+        INSERT INTO schedule_alerts (server, alert_id, schedule_id, occurrence_date, event, delivery, recorded_at, channel)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, delivery, this.now().toISOString(), channel ?? null);
+      return result.lastInsertRowid;
+    } catch (error) {
+      this.logger.error('Failed to record schedule alert', { error: error.message, server, alertId, event });
+      throw error;
+    }
   }
 
   /**
@@ -245,6 +434,185 @@ class SyncHistoryService {
         error: error.message,
         serverName
       });
+      throw error;
+    }
+  }
+
+  /**
+   * Replace a server's payment alert snapshot with the latest #258 evaluation,
+   * in ONE transaction (#260): upsert every evaluation, delete the server's
+   * rows whose (alertId, scheduleId) pair is in neither `evaluations` nor
+   * `runInfo.erroredPairs`, then upsert the run row as a success. Rows of
+   * disabled or muted rules are kept because #258 still evaluates them. A
+   * rule that threw (an errored pair) keeps its previous row. A successful
+   * run with zero evaluations replaces the set (all rows go, errored pairs
+   * excepted).
+   * @param {string} serverName
+   * @param {Array<Object>} evaluations - evaluate().evaluations
+   * @param {{erroredPairs?: Array<{alertId:string, scheduleId:string}>}} [runInfo]
+   * @returns {number} number of evaluations stored
+   */
+  replacePaymentSnapshot(serverName, evaluations = [], runInfo = {}) {
+    try {
+      const erroredPairs = runInfo.erroredPairs || [];
+      const pairKey = (alertId, scheduleId) => JSON.stringify([alertId, scheduleId]);
+      const keep = new Set(erroredPairs.map((p) => pairKey(p.alertId, p.scheduleId)));
+      for (const e of evaluations) keep.add(pairKey(e.alertId, e.scheduleId));
+      const now = this.now().toISOString();
+
+      const upsert = this.db.prepare(`
+        INSERT OR REPLACE INTO payment_alert_status (
+          server, alert_id, schedule_id, name, cadence_text, account, payee,
+          expected_amount, expected_min, expected_max, next_date, deadline,
+          state, occurrences_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const listPairs = this.db.prepare('SELECT alert_id, schedule_id FROM payment_alert_status WHERE server = ?');
+      const delRow = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ? AND alert_id = ? AND schedule_id = ?');
+      const upsertRun = this.db.prepare(`
+        INSERT INTO payment_alert_run (server, evaluated_at, ok, error_code, rules_errored, last_success_at)
+        VALUES (?, ?, 1, NULL, ?, ?)
+        ON CONFLICT(server) DO UPDATE SET
+          evaluated_at = excluded.evaluated_at, ok = 1, error_code = NULL,
+          rules_errored = excluded.rules_errored, last_success_at = excluded.last_success_at
+      `);
+
+      const replace = this.db.transaction(() => {
+        for (const e of evaluations) {
+          const amount = e.expectedAmount;
+          let cents = null;
+          let min = null;
+          let max = null;
+          if (typeof amount === 'number') {
+            cents = amount;
+          } else if (amount && typeof amount === 'object') {
+            min = Math.min(amount.num1, amount.num2);
+            max = Math.max(amount.num1, amount.num2);
+          }
+          upsert.run(
+            serverName, e.alertId, e.scheduleId, e.name ?? null, e.cadenceText ?? null,
+            e.account ?? null, e.payee ?? null, cents, min, max, e.nextDate ?? null,
+            e.deadline ?? null, e.state, JSON.stringify(e.occurrences || []), now
+          );
+        }
+        for (const row of listPairs.all(serverName)) {
+          if (!keep.has(pairKey(row.alert_id, row.schedule_id))) {
+            delRow.run(serverName, row.alert_id, row.schedule_id);
+          }
+        }
+        upsertRun.run(serverName, now, erroredPairs.length, now);
+      });
+      replace();
+      this.logger.debug('Payment snapshot persisted', { serverName, count: evaluations.length });
+      return evaluations.length;
+    } catch (error) {
+      this.logger.error('Failed to persist payment snapshot', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Record a failed evaluation (#260): upserts only the run row (ok = 0, the
+   * error code, evaluated_at). Item rows, rules_errored and last_success_at
+   * are untouched, so the dashboard keeps the last good snapshot.
+   * @param {string} serverName
+   * @param {string} errorCode - one of the closed list in scheduleAlertsStep
+   */
+  recordPaymentRunFailure(serverName, errorCode) {
+    try {
+      this.db.prepare(`
+        INSERT INTO payment_alert_run (server, evaluated_at, ok, error_code, rules_errored, last_success_at)
+        VALUES (?, ?, 0, ?, 0, NULL)
+        ON CONFLICT(server) DO UPDATE SET
+          evaluated_at = excluded.evaluated_at, ok = 0, error_code = excluded.error_code
+      `).run(serverName, this.now().toISOString(), errorCode);
+    } catch (error) {
+      this.logger.error('Failed to record payment run failure', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Delete both payment snapshot tables' rows for a server in one transaction
+   * (#260), used when the server's scheduleAlerts block is removed.
+   * @param {string} serverName
+   */
+  deletePaymentSnapshot(serverName) {
+    try {
+      const delItems = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ?');
+      const delRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');
+      this.db.transaction((s) => {
+        delItems.run(s);
+        delRun.run(s);
+      })(serverName);
+    } catch (error) {
+      this.logger.error('Failed to delete payment snapshot', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Read a server's stored payment snapshot (#260).
+   * @param {string} serverName
+   * @returns {{items: Array<Object>, run: Object|null}} `run` is null before
+   *   the first evaluation. `expectedAmount` is cents, null, or
+   *   `{num1, num2}` (min, max) for a range.
+   */
+  getPaymentSnapshot(serverName) {
+    try {
+      const rows = this.db.prepare(`
+        SELECT * FROM payment_alert_status WHERE server = ? ORDER BY alert_id, schedule_id
+      `).all(serverName);
+      const items = rows.map((r) => ({
+        alertId: r.alert_id,
+        scheduleId: r.schedule_id,
+        name: r.name,
+        cadenceText: r.cadence_text,
+        account: r.account,
+        payee: r.payee,
+        expectedAmount: r.expected_min != null
+          ? { num1: r.expected_min, num2: r.expected_max }
+          : r.expected_amount,
+        nextDate: r.next_date,
+        deadline: r.deadline,
+        state: r.state,
+        occurrences: JSON.parse(r.occurrences_json)
+      }));
+      const runRow = this.db.prepare('SELECT * FROM payment_alert_run WHERE server = ?').get(serverName);
+      const run = runRow ? {
+        at: runRow.evaluated_at,
+        ok: runRow.ok === 1,
+        errorCode: runRow.error_code,
+        lastSuccessAt: runRow.last_success_at,
+        rulesErrored: runRow.rules_errored
+      } : null;
+      return { items, run };
+    } catch (error) {
+      this.logger.error('Failed to read payment snapshot', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Latest DELIVERED alert per (alertId, scheduleId) for a server (#260),
+   * computed at request time from the schedule_alerts ledger because the
+   * snapshot is saved before the ledger is written for the same sync. Includes
+   * "resolved" notices; null once the last alert is older than the ledger
+   * retention. `inferred` rows (#297 skips) are not alerts.
+   * @param {string} serverName
+   * @returns {Map<string, string>} key is JSON `[alertId, scheduleId]`, value an ISO time
+   */
+  getLastSentAlerts(serverName) {
+    try {
+      const rows = this.db.prepare(`
+        SELECT alert_id, schedule_id, MAX(recorded_at) AS last_sent_at
+        FROM schedule_alerts
+        WHERE server = ? AND delivery = 'sent'
+        GROUP BY alert_id, schedule_id
+      `).all(serverName);
+      return new Map(rows.map((r) => [JSON.stringify([r.alert_id, r.schedule_id]), r.last_sent_at]));
+    } catch (error) {
+      this.logger.error('Failed to read last sent alerts', { error: error.message, serverName });
       throw error;
     }
   }
@@ -611,6 +979,27 @@ class SyncHistoryService {
         });
       }
 
+      // schedule_alerts (#258) is purged at max(retentionDays, 120) days, on
+      // its own recorded_at column, independently of sync_history's own
+      // retentionDays. 120 is longer than the 90-day evaluation look-back
+      // cap, so the ledger never forgets an occurrence that could still be
+      // re-evaluated (which would otherwise re-send a "missing" alert).
+      const scheduleAlertsRetentionDays = Math.max(this.retentionDays, 120);
+      const scheduleAlertsCutoff = this.now();
+      scheduleAlertsCutoff.setDate(scheduleAlertsCutoff.getDate() - scheduleAlertsRetentionDays);
+      const scheduleAlertsResult = this.db.prepare(`
+        DELETE FROM schedule_alerts
+        WHERE recorded_at < ?
+      `).run(scheduleAlertsCutoff.toISOString());
+
+      if (scheduleAlertsResult.changes > 0) {
+        this.logger.info('Cleaned up old schedule alert ledger rows', {
+          deletedRecords: scheduleAlertsResult.changes,
+          retentionDays: scheduleAlertsRetentionDays,
+          cutoffDate: scheduleAlertsCutoff.toISOString()
+        });
+      }
+
       // Vacuum database to reclaim space
       this.db.exec('VACUUM');
 
@@ -629,13 +1018,21 @@ class SyncHistoryService {
    */
   async resetServerHistory(serverName) {
     try {
-      // Clear sync history AND the dashboard account snapshot atomically, so a
-      // reset never leaves orphaned account badges (or half-cleared state). (#99)
+      // Clear sync history, the dashboard account snapshot and the schedule
+      // alert ledger atomically, so a reset never leaves orphaned account
+      // badges, half-cleared state, or a ledger that still blocks a "missing"
+      // alert this reset was meant to let re-fire. (#99, #258)
       const delHistory = this.db.prepare('DELETE FROM sync_history WHERE server_name = ?');
       const delMeta = this.db.prepare('DELETE FROM account_metadata WHERE server_name = ?');
+      const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts WHERE server = ?');
+      const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ?');
+      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');
       const reset = this.db.transaction((s) => {
         const r = delHistory.run(s);
         delMeta.run(s);
+        delScheduleAlerts.run(s);
+        delPaymentItems.run(s);
+        delPaymentRun.run(s);
         return r;
       });
       const result = reset(serverName);
@@ -660,12 +1057,19 @@ class SyncHistoryService {
    */
   async resetAllHistory() {
     try {
-      // Clear all sync history AND all account snapshots atomically. (#99)
+      // Clear all sync history, all account snapshots and the whole schedule
+      // alert ledger atomically. (#99, #258)
       const delHistory = this.db.prepare('DELETE FROM sync_history');
       const delMeta = this.db.prepare('DELETE FROM account_metadata');
+      const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts');
+      const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status');
+      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');
       const reset = this.db.transaction(() => {
         const r = delHistory.run();
         delMeta.run();
+        delScheduleAlerts.run();
+        delPaymentItems.run();
+        delPaymentRun.run();
         return r;
       });
       const result = reset();

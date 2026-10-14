@@ -14,15 +14,35 @@ The dashboard is a responsive single-page application that offers:
 - **🔐 Authentication** - Optional basic auth or token-based authentication
 - **🎨 Dark Theme** - Modern UI optimized for long monitoring sessions
 
+## Content-Security-Policy and customising the page
+
+Every response carries a strict Content-Security-Policy (details and the full header list in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md#http-security-headers-243)). The rules that matter if you edit the dashboard:
+
+- **No inline `<script>` and no inline event attributes** (`onclick="..."`, `onchange="..."`, `onerror="..."`). The browser silently refuses them. The page's code lives in `src/services/dashboard.js`, served at `/dashboard.js`. Wire a button with `data-action="name"` (and optional `data-arg="value"`) plus an entry in `CLICK_ACTIONS`, or `data-change="name"` plus an entry in `CHANGE_ACTIONS`; one delegated listener handles buttons added later by `innerHTML`.
+- Scripts may only come from this origin. Do not add a `<script src="https://...">`.
+- Inline `style="..."` attributes are allowed (`style-src 'unsafe-inline'`), because the page uses many of them.
+- Network calls may only go to this origin (`connect-src 'self'`), which includes the `/ws/logs` WebSocket.
+- The page cannot be shown inside an iframe (`frame-ancestors 'none'` and `X-Frame-Options: DENY`), which blocks clickjacking. A Home Assistant `panel_iframe` or a Homarr or Organizr iframe tile shows an empty frame; link to the dashboard so it opens in its own tab instead.
+- If the page is blank or a button does nothing after an edit, open the browser console: a blocked resource is reported as `Refused to ...`. The e2e suite (`tests/e2e/csp.e2e.js`) fails on any violation.
+
+## No external network dependencies
+
+The dashboard loads nothing from the internet. Chart.js is a regular npm dependency of the service and is served from the app itself at `/vendor/chart.umd.min.js`, the same way the logo is served at `/icon.png`. The page therefore renders fully, charts included, on an air-gapped host or with all outbound traffic blocked, and no third party is contacted when you open it.
+
 ## Live Logs authentication
 
 The Live Logs panel streams from `/ws/logs`, which is authenticated like the rest of the dashboard. Before each connect the page fetches a single-use, 30 second ticket from `/api/dashboard/ws-ticket` using the same credentials as every other dashboard request, then opens the stream with it. You do not configure anything for this.
 
-If the panel keeps showing "Disconnected from log stream. Reconnecting...", check the service log for `WebSocket handshake refused`:
+If the panel keeps showing "Disconnected from log stream. Reconnecting...", look at the service log and the browser's network tab:
 
-- **status 401**: the ticket request failed or the ticket expired; reload the page and sign in again.
-- **status 403, Origin not allowed**: the page was loaded from an origin that is not the host the browser connects to. Add that origin to `dashboard.allowedOrigins` (see [CONFIG.md](CONFIG.md)).
-- **status 429**: more than 10 log streams are open from one address (every browser tab holds one). Behind a reverse proxy all streams share the proxy's address.
+- **No `WebSocket handshake refused` line, and a failing `/api/dashboard/ws-ticket` request** (401, 429 or 5xx): the ticket request never reached the handshake, so nothing is logged for it. Look for `Dashboard authentication failed` or `Dashboard authentication throttled` instead, then reload the page and sign in again.
+- **`WebSocket handshake refused`, status 401**: the ticket was missing, already used or older than 30 seconds. A ticket is spent by any handshake attempt, including a refused one, so a retry always asks for a new one.
+- **status 403, Origin not allowed**: the `Origin` header does not match the `Host` header the service received. The usual cause is a reverse proxy that rewrites `Host`: nginx `proxy_set_header Host $host;` drops a non-default port (the browser says `example.com:8443`, the service sees `example.com`). Use `proxy_set_header Host $http_host;` so the original Host is passed through. Only if the page really is served from a different origin than the one the browser connects to, add that origin to `dashboard.allowedOrigins` (see [CONFIG.md](CONFIG.md)).
+- **status 429**: more than 10 log streams are open from one address (every browser tab holds one). Behind a reverse proxy, set `healthCheck.trustProxy` so the count is per real client instead of per proxy.
+
+## DNS rebinding with `auth.type: none`
+
+The Origin check compares `Origin` with `Host`. A DNS rebinding attack makes both name the attacker's domain while it resolves to your service, so the check passes. With `dashboard.auth.type: none` that exposes the live log stream and every dashboard page to a web page open in a browser on the same network. There is no Host allowlist (it would need a new setting, and the maintainer has not chosen one). If the dashboard is reachable from browsers that visit untrusted sites, do not leave auth at `none`: use `basic` or `token`, which a rebinding page cannot supply, or bind to `127.0.0.1` behind a proxy that only forwards your own host name.
 
 ## Locked out after failed logins
 
@@ -45,4 +65,4 @@ Served at `GET /api/dashboard/accounts` (subject to the dashboard's auth setting
 
 ## Behind a reverse proxy
 
-If nginx, Traefik or Caddy sits in front of the dashboard, set `healthCheck.trustProxy` (usually `1`, one proxy) so the per-client rate limit and the auth-failure log see the real client IP instead of the proxy's. Keep `dashboard.auth` enabled, and do not also publish the port directly. See [CONFIG.md](CONFIG.md#healthcheck-optional) for the accepted values and [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#1-security) for an nginx example.
+If nginx, Traefik or Caddy sits in front of the dashboard, set `healthCheck.trustProxy` (usually `1`, one proxy) so the per-client rate limit and the auth-failure log see the real client IP instead of the proxy's. Keep `dashboard.auth` enabled, and do not also publish the port directly. See [CONFIG.md](CONFIG.md#healthcheck-optional) for the accepted values and [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#1-security) for an nginx example, including the `/ws/logs` location.

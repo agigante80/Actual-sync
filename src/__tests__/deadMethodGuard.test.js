@@ -40,6 +40,10 @@ const ROOT = path.resolve(__dirname, '..', '..');
  * this repository can reach them.
  */
 const REVIEWED_KEPT = new Map([
+    // `src/lib/templateRenderer.js:render` was listed here as a #257 false
+    // positive until #258 landed: it is now called in production by
+    // `scheduleAlertDelivery.sendEvent`/`sendDigestBatch`, so it is no longer
+    // unreferenced and the entry was removed rather than left stale.
 ]);
 
 // The body may start on the same line; a guard that only saw multi-line

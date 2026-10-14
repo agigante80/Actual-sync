@@ -57,7 +57,7 @@ Actual-sync is a scheduled automation service that orchestrates bank transaction
 
 **Key Features**:
 - Cron-based job scheduling
-- Timezone-aware execution (Europe/Madrid)
+- Timezone-aware execution (config `timezone`, default the process timezone)
 - Next invocation calculation and logging
 
 **Location**: `sync_all_banks.js` (lines 143-156)
@@ -98,6 +98,8 @@ const SCHEDULE_CRON = '03 03 */2 * *'; // Every other day at 03:03 AM
 9. Shutdown API connection
 
 **Account Metadata (dashboard syncability)**: After partitioning, each account is classified `syncable` (bank-linked + open), `manual` (not bank-linked), or `closed` and written to the `account_metadata` table via `SyncHistoryService.replaceAccountMetadata()` (the server's previous snapshot is replaced in one transaction). The dashboard reads it at `GET /api/dashboard/accounts`, so it can show per-account badges **without a live Actual connection**. The data is as fresh as the last sync.
+
+**Payment alert snapshot (dashboard payments)**: Right after `maybeRunScheduleAlerts` (still inside the sync, Actual session open), `persistPaymentSnapshot()` in `lib/scheduleAlertsStep.js` saves the #258 evaluation into `payment_alert_status` and `payment_alert_run` through `SyncHistoryService.replacePaymentSnapshot()` (one transaction: upsert the evaluations, delete rows for rules that no longer evaluate, write the run row). A failed evaluation only updates the run row (`recordPaymentRunFailure`), a server without a `scheduleAlerts` block has its rows deleted, and any persistence error is logged at WARN and never changes the sync result. The dashboard reads it at `GET /api/dashboard/payments` without touching Actual; `lastAlertAt` is joined from the `schedule_alerts` ledger at request time because the ledger is written after the snapshot. Same pattern as account metadata above.
 
 ---
 
@@ -326,7 +328,7 @@ Actual-sync/
 
 **Purpose**: Timezone-aware date/time handling
 
-**Usage**: Log current time in Europe/Madrid timezone for debugging
+**Usage**: Log current time in the configured timezone for debugging
 
 ---
 
@@ -392,8 +394,15 @@ Actual session, so the sync keeps its queue slot for up to one more phase timeou
 finishes, and only then runs `shutdown`, so a late download cannot leave its budget open for the
 next server. If a call is still running when the next sync starts, that sync waits up to its own
 phase timeout and then fails with `ACTUAL_SESSION_BUSY` rather than open a second budget in the
-same session. That sync also stops tracking the stuck call, so a call that never finishes costs
-one refused sync, not every sync until restart. With the default of 300 seconds, a server that
+same session. When the calls did finish in time, a budget a late download left open is closed by
+Actual itself (`close-budget` inside `download-budget` and `load-budget`); Actual's `shutdown`
+is a no-op before `init`, so Actual-sync runs no extra one. A sync that refuses also stops tracking the stuck call, so a call that does not finish in
+time costs one refused sync, not every sync until restart. Limit: the Actual API cannot cancel a
+call, so one that outlives both waits and lands later can still disturb the following sync, which
+fails and lets the next one recover. A `runBankSync` that times out gets one more phase timeout to
+finish before the next account starts; if it finishes in that time and succeeded, the account
+counts as succeeded; if it does not finish, the remaining accounts are reported as failed and the
+final file sync and schedule alerts are skipped (`shutdown` syncs before closing). A late call that settles is logged with its phase and outcome. With the default of 300 seconds, a server that
 never answers holds the queue for up to about 20 minutes (the stuck call, the wait, a stuck
 `shutdown`, and the next sync's wait). The dashboard status
 (`/api/dashboard/status`, `runningSync`) names the server holding the queue and when it started;

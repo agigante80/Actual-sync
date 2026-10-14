@@ -2,8 +2,12 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const Ajv = require('ajv');
+const { isValidTimezone } = require('./timezone');
 const addFormats = require('ajv-formats');
 const { resolveSchemaPath } = require('./configBootstrap');
+const { checkUniqueIds, getRules } = require('./scheduleAlertRules');
+const { DEFAULT_TEMPLATES, VARIABLES, CHANNEL_TO_MODES, resolveChannels } = require('./scheduleAlertDelivery');
+const { compileTemplateSet } = require('./templateRenderer');
 
 // AJV combinator keywords whose failures are pure structural noise: when an
 // allOf/if-then/anyOf branch fails, AJV (allErrors:true) ALSO emits the concrete
@@ -448,10 +452,35 @@ class ConfigLoader {
             );
         }
 
+        // timezone (#266): checked here too, because CONFIG_STRICT=false turns
+        // schema errors into warnings and an unknown zone would throw later in
+        // node-schedule and toLocaleString.
+        if (config.timezone !== undefined && !isValidTimezone(config.timezone)) {
+            throw new Error(
+                `Invalid timezone: ${JSON.stringify(config.timezone)}\n` +
+                `Use an IANA timezone name such as "America/New_York", "Asia/Tokyo" or "UTC".`
+            );
+        }
+
         // healthCheck.trustProxy (#245): the schema checks the shape; the IP/CIDR
         // content is checked here with Express's own parser, so a typo fails at
         // startup instead of at the first request.
         const trustProxy = config.healthCheck && config.healthCheck.trustProxy;
+        // Shape check runs in logic validation too, because CONFIG_STRICT=false turns
+        // schema errors into warnings: 1.5 would trust 2 hops in Express, and an
+        // object throws in the HealthCheckService constructor. (#278)
+        const trustProxyShapeOk =
+            trustProxy === undefined ||
+            typeof trustProxy === 'boolean' ||
+            typeof trustProxy === 'string' ||
+            Array.isArray(trustProxy) ||
+            (Number.isInteger(trustProxy) && trustProxy >= 0 && trustProxy <= 10);
+        if (!trustProxyShapeOk) {
+            throw new Error(
+                `Invalid healthCheck.trustProxy value: ${JSON.stringify(trustProxy)}\n` +
+                `Use false, true, an integer hop count from 0 to 10, an IP or CIDR string, or an array of them.`
+            );
+        }
         if (typeof trustProxy === 'string' || Array.isArray(trustProxy)) {
             try {
                 express().set('trust proxy', trustProxy);
@@ -494,6 +523,76 @@ class ConfigLoader {
                 `Invalid cron schedule: "${config.sync.schedule}"\n` +
                 `Expected 5 fields (minute hour day month dayOfWeek) or 6 with a leading seconds field`
             );
+        }
+
+        // scheduleAlerts.alerts[].id uniqueness per server (#258): AJV cannot
+        // express key uniqueness across array items, so it is checked here.
+        // Throws with the exact colliding indices and server name.
+        checkUniqueIds(config.servers);
+
+        // #295 review: validate every scheduleAlerts rule at startup rather
+        // than at send time (H6/M2). Throws with the rule id and server name.
+        this.validateScheduleAlerts(config.servers, config.notifications || {});
+    }
+
+    /**
+     * Startup validation for every server's `scheduleAlerts` rules (#295 review).
+     *
+     * - H6: a rule's merged (built-in default + block + alert) template must
+     *   `compileTemplateSet` for every channel `deliver()` could ever send it
+     *   to. Without this, a bad template only surfaces at send time, and
+     *   since `deliver()` throwing mid-loop for one event would otherwise
+     *   abort the whole sync's alert delivery, one bad rule could silently
+     *   block every OTHER rule's alerts for that server, every sync, until
+     *   an operator noticed (`sendEvent`/`sendDigestBatch` also wrap
+     *   rendering per event now, as a second line of defense - see
+     *   scheduleAlertDelivery.js).
+     *   (#295 review round 2, M7) The check used to compile every template
+     *   against every channel's mode, including ones the rule can never be
+     *   sent on. That made a Telegram-only markup character (say, a bare `&`)
+     *   in a rule's template fail startup even for a server whose rule is
+     *   restricted to slack/email, or whose config has no telegram
+     *   destination at all. Modes are now built from the rule's own resolved
+     *   channels (`resolveChannels`, the same set `deliver()` will actually
+     *   use), so a template is only validated against modes it could really
+     *   be rendered for.
+     * - M2: a rule with an explicit `channels` restriction that names only
+     *   channels nothing is configured for can never deliver anything; that
+     *   is a config mistake worth failing startup for, rather than "sending"
+     *   successfully with zero destinations (see `channelSucceeded`'s doc
+     *   comment in scheduleAlertDelivery.js for why the runtime send path
+     *   depends on this never happening).
+     *
+     * @param {Object[]} servers
+     * @param {Object} notificationsConfig - `config.notifications`, the same
+     *   shape `NotificationService`/`sender.config` uses
+     * @throws {Error}
+     */
+    validateScheduleAlerts(servers, notificationsConfig) {
+        const sender = { config: notificationsConfig || {} };
+
+        for (const server of servers || []) {
+            const rules = getRules(server.scheduleAlerts);
+            for (const rule of rules) {
+                const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+                const ruleChannels = resolveChannels(rule, sender);
+                const modes = ruleChannels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
+                try {
+                    compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
+                } catch (error) {
+                    throw new Error(
+                        `Invalid scheduleAlerts template for rule "${rule.id}" (server "${server.name}"): ${error.message}`
+                    );
+                }
+
+                if (rule.channels && rule.channels.length && ruleChannels.length === 0) {
+                    throw new Error(
+                        `scheduleAlerts rule "${rule.id}" (server "${server.name}") restricts channels to `
+                        + `[${rule.channels.join(', ')}], but none of those channels have a configured destination `
+                        + `in notifications. Configure at least one, or remove the channels restriction.`
+                    );
+                }
+            }
         }
     }
 

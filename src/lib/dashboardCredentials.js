@@ -16,7 +16,7 @@ const isSet = (value) => typeof value === 'string' && value.length > 0;
  * Check an Authorization header against the dashboard auth config.
  * @param {Object} headers - request headers (only `authorization` is read)
  * @param {Object} authConfig - dashboard.auth
- * @returns {{ ok: boolean, reason?: 'missing'|'invalid'|'config', username?: string }}
+ * @returns {{ ok: boolean, reason?: 'missing'|'invalid'|'config' }}
  */
 function checkCredentials(headers, authConfig = {}) {
   const authType = authConfig.type || 'none';
@@ -28,11 +28,14 @@ function checkCredentials(headers, authConfig = {}) {
     if (!isSet(authConfig.username) || !isSet(authConfig.password)) return { ok: false, reason: 'config' };
     if (!authHeader.startsWith('Basic ')) return { ok: false, reason: 'missing' };
     const credentials = Buffer.from(authHeader.substring(6), 'base64').toString('utf8');
-    const [username, password] = credentials.split(':');
+    // RFC 7617: only the first colon separates; the password may contain more. (#281)
+    const sep = credentials.indexOf(':');
+    const username = sep === -1 ? credentials : credentials.slice(0, sep);
+    const password = sep === -1 ? undefined : credentials.slice(sep + 1);
     // Both comparisons run every time, so a wrong username takes as long as a wrong password.
     const userOk = safeEqual(username, authConfig.username);
     const passOk = safeEqual(password, authConfig.password);
-    return userOk && passOk ? { ok: true } : { ok: false, reason: 'invalid', username };
+    return userOk && passOk ? { ok: true } : { ok: false, reason: 'invalid' };
   }
 
   if (authType === 'token') {

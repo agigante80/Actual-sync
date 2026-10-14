@@ -138,6 +138,7 @@ returns the Prometheus text format. No authentication. See
 ### Other public endpoints
 
 - `GET /icon.png` — the project icon (served locally; used by the dashboard and notifications).
+- `GET /vendor/chart.umd.min.js`: the Chart.js bundle from the installed npm package, used by the dashboard charts. Fixed path, no directory listing, cached for one day.
 
 ### Internal dashboard API (`/api/dashboard/*`)
 
@@ -153,13 +154,72 @@ match the code, not as an integration surface:
 | GET  | `/api/dashboard/orphaned-servers` | History for servers no longer in config |
 | GET  | `/api/dashboard/schedules` | Per-server schedules / next run |
 | GET  | `/api/dashboard/metrics` | Aggregated metrics for the Analytics tab |
-| GET  | `/api/dashboard/history` | Sync history records |
+| GET  | `/api/dashboard/history` | Sync history records (`?limit=N`, optional `?serverName=` to filter to one server) |
 | GET  | `/api/dashboard/accounts` | Discovered bank accounts |
+| GET  | `/api/dashboard/payments` | Missing-payment alert snapshot per server (optional `?server=`), no connection to Actual needed |
 | GET  | `/api/dashboard/notifications` | Failure-alert rate-limit usage + recent sync outcomes per server |
 | POST | `/api/dashboard/sync` | Trigger a manual sync |
 | POST | `/api/dashboard/dismiss-error` | Clear a server's last error |
 | POST | `/api/dashboard/reset-history` | Reset stored sync history |
 | POST | `/api/dashboard/test-notification` | Send a test notification (`email`, `discord`, `slack`, `telegram`, `ntfy`, `generic`) |
+
+`GET /api/dashboard/payments` serves the snapshot of the last missing-payment evaluation
+(#258) that a sync persists after evaluating (#260), so a dashboard can list every watched schedule without
+reaching Actual. Its data is as fresh as `lastRun.at`; a sync that skips or aborts before the evaluation
+(including a stuck bank sync, #284) leaves the items and `lastRun` unchanged. With the
+default `auth.type: none` the route is open to anyone who can reach the port, so enable dashboard
+auth when `scheduleAlerts` is used (it exposes schedule, payee and account names and amounts).
+
+```json
+{
+  "servers": [
+    {
+      "server": "Main",
+      "configured": true,
+      "lastRun": { "at": "2026-01-14T08:01:00Z", "ok": true, "errorCode": null, "lastSuccessAt": "2026-01-14T08:01:00Z", "rulesErrored": 0 },
+      "items": [
+        {
+          "alertId": "parking-a", "scheduleId": "b1c2...", "name": "Rent - Parking A",
+          "cadenceText": "Every month on the 5th", "account": "Main", "payee": "Tenant A",
+          "expectedAmount": 6000, "nextDate": "2026-02-05", "deadline": "2026-01-11",
+          "state": "missing", "lastAlertAt": "2026-01-12T08:01:00Z", "source": "config",
+          "ruleState": { "enabled": true, "mutedUntil": null, "reason": null },
+          "occurrences": [ { "date": "2026-01-05", "deadline": "2026-01-11", "state": "missing", "receivedDate": null, "receivedAmount": null, "daysLate": null } ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `expectedAmount` is integer cents (6000 = 60.00), `null`, or `{ "num1": 5000, "num2": 7000 }`
+  (min, max) for a range. `receivedAmount` is cents or `null`.
+- `state` is one of `upcoming`, `received`, `late`, `missing`, `wrongAmount`, `cannotCheck`, `skipped`.
+- `daysLate` is computed per request: for a `late` occurrence, `receivedDate - deadline` in
+  calendar days; `null` for every other state.
+- `lastAlertAt` is the latest delivered alert (`delivery = 'sent'`, resolved notices included)
+  from the `schedule_alerts` ledger, computed at request time; `null` when none was sent or the
+  last one is older than the ledger retention.
+- `source` is always `"config"` and `ruleState` always `{ enabled: true, mutedUntil: null, reason: null }`
+  until rule editing (#262) and enable/mute (#261) land.
+- `configured: false` (no `scheduleAlerts` block) gives `items: []` and `lastRun: null`; a
+  configured server has `lastRun: null` before its first run. `lastRun.at` is the latest attempt,
+  `lastSuccessAt` the latest success (`null` until one happens). On a failed run the previous
+  `items` are still returned and `lastRun.errorCode` is one of `rules_invalid`,
+  `actual_read_failed`, `evaluation_failed`.
+
+| Status | Body | When |
+|--------|------|------|
+| 400 | `{"error":"Invalid server parameter"}` | `server` is not a single non-empty string (repeated, `server[]=`, `server[a]=`, or empty) |
+| 401 | | no or bad credentials |
+| 403 | `{"error":"Dashboard is disabled"}` | the dashboard is disabled |
+| 404 | `{"error":"Server not found"}` | no configured server with that name |
+| 429 | `{"error":"Too many failed authentication attempts, try again later"}` | auth throttle after repeated bad credentials |
+| 429 | `Too many requests, please try again later.` | the request limiter |
+| 500 | `{"error":"Invalid authentication configuration"}` | `auth.type` is unrecognised |
+| 503 | `{"error":"Server list not available"}` | the server list is not wired |
+| 503 | `{"error":"Sync history not available"}` | sync history is disabled |
+| 500 | `{"error":"Failed to retrieve payments"}` | the snapshot or ledger read threw (logged) |
 
 `GET /api/dashboard/notifications` exposes rate-limit headroom and recent sync outcomes per
 server. Rate limiting is otherwise invisible: a server at zero remaining is having its failure
@@ -524,7 +584,7 @@ Real-time log streaming via WebSocket connection. **Not public**: the handshake 
 | more than 10 open log streams from one address | always | 429 |
 | no valid ticket (an `Authorization` header is not accepted here) | `dashboard.auth.type` basic or token | 401 |
 
-The per-address cap uses the TCP peer address, so behind a reverse proxy it counts every stream through that proxy together.
+The per-address cap and the `handshake refused` log lines use the client address Express resolves: the TCP peer address by default, or the `X-Forwarded-For` client when `healthCheck.trustProxy` is set. Without `trustProxy`, behind a reverse proxy the cap counts every stream through that proxy together. The ticket is spent before any other check, so a handshake refused for its Origin, the cap or a disabled dashboard cannot be retried with the same ticket. With `auth.type: none` the Origin check does not stop DNS rebinding; see [DASHBOARD.md](DASHBOARD.md).
 
 **Authenticating from a browser.** A browser cannot put an `Authorization` header on a WebSocket, so the dashboard first calls `GET /api/dashboard/ws-ticket` (behind the normal dashboard auth) and gets a ticket that is single use and valid for 30 seconds:
 

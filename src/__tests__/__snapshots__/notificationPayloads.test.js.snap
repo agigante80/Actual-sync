@@ -1,0 +1,874 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`notification payload baseline (#257) formatStartupNotification startup with multiple servers and schedules 1`] = `
+{
+  "discord": {
+    "embeds": [
+      {
+        "color": 5025616,
+        "fields": [
+          {
+            "inline": true,
+            "name": "Status",
+            "value": "✅ Service is now running",
+          },
+          {
+            "inline": true,
+            "name": "Version",
+            "value": "1.17.2",
+          },
+          {
+            "name": "Servers",
+            "value": "Main Server, Backup Server",
+          },
+          {
+            "name": "Schedules",
+            "value": "\`\`\`
+Main Server: every 30 minutes
+Backup Server: every hour
+\`\`\`",
+          },
+          {
+            "name": "Next Sync",
+            "value": "2026-01-15T10:30:00.000Z",
+          },
+        ],
+        "timestamp": "2026-01-15T10:00:00.000Z",
+        "title": "🚀 Service Started",
+      },
+    ],
+  },
+  "generic": {
+    "event": "startup",
+    "message": "Service Started",
+    "nextSync": "2026-01-15T10:30:00.000Z",
+    "servers": "Main Server, Backup Server",
+    "timestamp": "2026-01-15T10:00:00.000Z",
+    "version": "1.17.2",
+  },
+  "html": "
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: #28a745; color: white; padding: 15px; border-radius: 5px 5px 0 0; }
+    .content { background: #f8f9fa; padding: 20px; border: 1px solid #dee2e6; }
+    pre { background: #e9ecef; padding: 10px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>🚀 Service Started</h2>
+    </div>
+    <div class="content">
+      <p>✅ <strong>Service is now running</strong></p>
+      <p>📦 <strong>Version:</strong> 1.17.2</p>
+      <p><strong>Servers:</strong> Main Server, Backup Server</p>
+      <h3>Schedules:</h3>
+      <pre>Main Server: every 30 minutes
+Backup Server: every hour</pre>
+      <p><strong>Next sync:</strong> 2026-01-15T10:30:00.000Z</p>
+    </div>
+  </div>
+</body>
+</html>",
+  "ntfy": {
+    "level": "info",
+    "message": "🚀 Service Started
+
+✅ Service is now running
+📦 Version: 1.17.2
+
+Servers: Main Server, Backup Server
+
+Schedules:
+Main Server: every 30 minutes
+Backup Server: every hour
+
+Next sync: 2026-01-15T10:30:00.000Z",
+    "tags": [
+      "rocket",
+    ],
+    "title": "Service Started",
+  },
+  "slack": {
+    "blocks": [
+      {
+        "text": {
+          "text": "🚀 Service Started",
+          "type": "plain_text",
+        },
+        "type": "header",
+      },
+      {
+        "fields": [
+          {
+            "text": "*Status:*
+✅ Service is now running",
+            "type": "mrkdwn",
+          },
+          {
+            "text": "*Version:*
+1.17.2",
+            "type": "mrkdwn",
+          },
+          {
+            "text": "*Servers:*
+Main Server, Backup Server",
+            "type": "mrkdwn",
+          },
+          {
+            "text": "*Next Sync:*
+2026-01-15T10:30:00.000Z",
+            "type": "mrkdwn",
+          },
+        ],
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*Schedules:*
+\`\`\`
+Main Server: every 30 minutes
+Backup Server: every hour
+\`\`\`",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+    ],
+    "text": "*🚀 Service Started*",
+  },
+  "text": "🚀 Service Started
+
+✅ Service is now running
+📦 Version: 1.17.2
+
+Servers: Main Server, Backup Server
+
+Schedules:
+Main Server: every 30 minutes
+Backup Server: every hour
+
+Next sync: 2026-01-15T10:30:00.000Z",
+}
+`;
+
+exports[`notification payload baseline (#257) formatSyncNotification failure with a server-level error and no accounts reached 1`] = `
+{
+  "discord": {
+    "embeds": [
+      {
+        "color": 15158332,
+        "fields": [
+          {
+            "inline": true,
+            "name": "Server",
+            "value": "Main Server",
+          },
+          {
+            "inline": true,
+            "name": "Duration",
+            "value": "120ms",
+          },
+          {
+            "name": "Error",
+            "value": "Unable to connect to Actual server",
+          },
+          {
+            "inline": true,
+            "name": "Code",
+            "value": "ECONNREFUSED",
+          },
+        ],
+        "timestamp": "2026-01-15T10:00:00.000Z",
+        "title": "❌ Sync Failed",
+      },
+    ],
+  },
+  "generic": {
+    "accounts": {
+      "failed": 0,
+      "skipped": 0,
+      "synced": 0,
+    },
+    "durationMs": 120,
+    "event": "sync",
+    "failedAccounts": [],
+    "message": "Sync Failed",
+    "server": "Main Server",
+    "skippedAccounts": [],
+    "status": "failure",
+    "succeededAccounts": [],
+    "timestamp": "2026-01-15T10:00:00.000Z",
+  },
+  "html": "
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: #dc3545; color: white; padding: 15px; border-radius: 5px 5px 0 0; }
+    .content { background: #f8f9fa; padding: 20px; border: 1px solid #dee2e6; }
+    .field { margin: 10px 0; }
+    .label { font-weight: bold; color: #495057; }
+    .value { color: #212529; }
+    .account-list { list-style: none; padding-left: 0; }
+    .account-item { padding: 5px 0; }
+    .error-detail { color: #6c757d; font-size: 0.9em; margin-left: 20px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>❌ Sync Failed</h2>
+    </div>
+    <div class="content">
+      <div class="field">
+        <span class="label">Server:</span>
+        <span class="value">Main Server</span>
+      </div>
+      <div class="field">
+        <span class="label">Duration:</span>
+        <span class="value">120ms</span>
+      </div>
+      <div class="field">
+        <span class="label">Error:</span>
+        <span class="value">Unable to connect to Actual server</span>
+      </div>
+      <div class="field">
+        <span class="label">Code:</span>
+        <span class="value">ECONNREFUSED</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>",
+  "ntfy": {
+    "level": "failure",
+    "message": "❌ Sync Failed
+
+Server: Main Server
+Duration: 120ms
+Error: Unable to connect to Actual server
+Code: ECONNREFUSED
+",
+    "tags": [
+      "x",
+    ],
+    "title": "Sync Failed: Main Server",
+  },
+  "slack": {
+    "blocks": [
+      {
+        "text": {
+          "text": "❌ Sync Failed",
+          "type": "plain_text",
+        },
+        "type": "header",
+      },
+      {
+        "fields": [
+          {
+            "text": "*Server:*
+Main Server",
+            "type": "mrkdwn",
+          },
+          {
+            "text": "*Duration:*
+120ms",
+            "type": "mrkdwn",
+          },
+        ],
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*Error:*
+Unable to connect to Actual server
+*Code:* ECONNREFUSED",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+    ],
+    "text": "*❌ Sync Failed*",
+  },
+  "text": "❌ Sync Failed
+
+Server: Main Server
+Duration: 120ms
+Error: Unable to connect to Actual server
+Code: ECONNREFUSED
+",
+}
+`;
+
+exports[`notification payload baseline (#257) formatSyncNotification failure with per-account errors 1`] = `
+{
+  "discord": {
+    "embeds": [
+      {
+        "color": 15158332,
+        "fields": [
+          {
+            "inline": true,
+            "name": "Server",
+            "value": "Main Server",
+          },
+          {
+            "inline": true,
+            "name": "Duration",
+            "value": "3.0s",
+          },
+          {
+            "name": "Accounts",
+            "value": "0 synced, 2 failed, 0 skipped",
+          },
+          {
+            "name": "❌ Failed Accounts",
+            "value": "• Checking: Bank API returned an unexpectedly long error message that should be truncated...
+• Savings",
+          },
+        ],
+        "timestamp": "2026-01-15T10:00:00.000Z",
+        "title": "❌ Sync Failed",
+      },
+    ],
+  },
+  "generic": {
+    "accounts": {
+      "failed": 2,
+      "skipped": 0,
+      "synced": 0,
+    },
+    "durationMs": 3000,
+    "event": "sync",
+    "failedAccounts": [
+      {
+        "error": "Bank API returned an unexpectedly long error message that should be truncated at eighty characters for display",
+        "name": "Checking",
+      },
+      {
+        "name": "Savings",
+      },
+    ],
+    "message": "Sync Failed",
+    "server": "Main Server",
+    "skippedAccounts": [],
+    "status": "failure",
+    "succeededAccounts": [],
+    "timestamp": "2026-01-15T10:00:00.000Z",
+  },
+  "html": "
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: #dc3545; color: white; padding: 15px; border-radius: 5px 5px 0 0; }
+    .content { background: #f8f9fa; padding: 20px; border: 1px solid #dee2e6; }
+    .field { margin: 10px 0; }
+    .label { font-weight: bold; color: #495057; }
+    .value { color: #212529; }
+    .account-list { list-style: none; padding-left: 0; }
+    .account-item { padding: 5px 0; }
+    .error-detail { color: #6c757d; font-size: 0.9em; margin-left: 20px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>❌ Sync Failed</h2>
+    </div>
+    <div class="content">
+      <div class="field">
+        <span class="label">Server:</span>
+        <span class="value">Main Server</span>
+      </div>
+      <div class="field">
+        <span class="label">Duration:</span>
+        <span class="value">3.0s</span>
+      </div>
+      <div class="field">
+        <span class="label">Accounts:</span>
+        <span class="value">0 synced, 2 failed, 0 skipped</span>
+      </div>
+      <div class="field">
+        <span class="label">❌ Failed Accounts:</span>
+        <ul class="account-list"><li class="account-item">• Checking<div class="error-detail">Bank API returned an unexpectedly long error message that should be truncated at eighty characters for display</div></li><li class="account-item">• Savings</li></ul>
+      </div>
+    </div>
+  </div>
+</body>
+</html>",
+  "ntfy": {
+    "level": "failure",
+    "message": "❌ Sync Failed
+
+Server: Main Server
+Duration: 3.0s
+
+Accounts: 0 synced, 2 failed, 0 skipped
+
+❌ Failed:
+  • Checking
+    Bank API returned an unexpectedly long error message that should be truncated...
+  • Savings
+",
+    "tags": [
+      "x",
+    ],
+    "title": "Sync Failed: Main Server",
+  },
+  "slack": {
+    "blocks": [
+      {
+        "text": {
+          "text": "❌ Sync Failed",
+          "type": "plain_text",
+        },
+        "type": "header",
+      },
+      {
+        "fields": [
+          {
+            "text": "*Server:*
+Main Server",
+            "type": "mrkdwn",
+          },
+          {
+            "text": "*Duration:*
+3.0s",
+            "type": "mrkdwn",
+          },
+        ],
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*Accounts:* 0 synced, 2 failed, 0 skipped",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*❌ Failed:*
+• Checking: Bank API returned an unexpectedly long error message that should be truncated...
+• Savings",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+    ],
+    "text": "*❌ Sync Failed*",
+  },
+  "text": "❌ Sync Failed
+
+Server: Main Server
+Duration: 3.0s
+
+Accounts: 0 synced, 2 failed, 0 skipped
+
+❌ Failed:
+  • Checking
+    Bank API returned an unexpectedly long error message that should be truncated...
+  • Savings
+",
+}
+`;
+
+exports[`notification payload baseline (#257) formatSyncNotification success with no issues 1`] = `
+{
+  "discord": {
+    "embeds": [
+      {
+        "color": 5025616,
+        "fields": [
+          {
+            "inline": true,
+            "name": "Server",
+            "value": "Main Server",
+          },
+          {
+            "inline": true,
+            "name": "Duration",
+            "value": "4.2s",
+          },
+          {
+            "name": "Accounts",
+            "value": "3 synced, 0 failed, 0 skipped",
+          },
+          {
+            "name": "✅ Synced Accounts",
+            "value": "• Checking
+• Savings
+• Credit Card",
+          },
+        ],
+        "timestamp": "2026-01-15T10:00:00.000Z",
+        "title": "✅ Sync Successful",
+      },
+    ],
+  },
+  "generic": {
+    "accounts": {
+      "failed": 0,
+      "skipped": 0,
+      "synced": 3,
+    },
+    "durationMs": 4200,
+    "event": "sync",
+    "failedAccounts": [],
+    "message": "Sync Successful",
+    "server": "Main Server",
+    "skippedAccounts": [],
+    "status": "success",
+    "succeededAccounts": [
+      "Checking",
+      "Savings",
+      "Credit Card",
+    ],
+    "timestamp": "2026-01-15T10:00:00.000Z",
+  },
+  "html": "
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: #28a745; color: white; padding: 15px; border-radius: 5px 5px 0 0; }
+    .content { background: #f8f9fa; padding: 20px; border: 1px solid #dee2e6; }
+    .field { margin: 10px 0; }
+    .label { font-weight: bold; color: #495057; }
+    .value { color: #212529; }
+    .account-list { list-style: none; padding-left: 0; }
+    .account-item { padding: 5px 0; }
+    .error-detail { color: #6c757d; font-size: 0.9em; margin-left: 20px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>✅ Sync Successful</h2>
+    </div>
+    <div class="content">
+      <div class="field">
+        <span class="label">Server:</span>
+        <span class="value">Main Server</span>
+      </div>
+      <div class="field">
+        <span class="label">Duration:</span>
+        <span class="value">4.2s</span>
+      </div>
+      <div class="field">
+        <span class="label">Accounts:</span>
+        <span class="value">3 synced, 0 failed, 0 skipped</span>
+      </div>
+      <div class="field">
+        <span class="label">✅ Synced Accounts:</span>
+        <ul class="account-list"><li class="account-item">• Checking</li><li class="account-item">• Savings</li><li class="account-item">• Credit Card</li></ul>
+      </div>
+    </div>
+  </div>
+</body>
+</html>",
+  "ntfy": {
+    "level": "success",
+    "message": "✅ Sync Successful
+
+Server: Main Server
+Duration: 4.2s
+
+Accounts: 3 synced, 0 failed, 0 skipped
+
+✅ Synced:
+  • Checking
+  • Savings
+  • Credit Card
+",
+    "tags": [
+      "white_check_mark",
+    ],
+    "title": "Sync Successful: Main Server",
+  },
+  "slack": {
+    "blocks": [
+      {
+        "text": {
+          "text": "✅ Sync Successful",
+          "type": "plain_text",
+        },
+        "type": "header",
+      },
+      {
+        "fields": [
+          {
+            "text": "*Server:*
+Main Server",
+            "type": "mrkdwn",
+          },
+          {
+            "text": "*Duration:*
+4.2s",
+            "type": "mrkdwn",
+          },
+        ],
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*Accounts:* 3 synced, 0 failed, 0 skipped",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*✅ Synced:*
+• Checking
+• Savings
+• Credit Card",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+    ],
+    "text": "*✅ Sync Successful*",
+  },
+  "text": "✅ Sync Successful
+
+Server: Main Server
+Duration: 4.2s
+
+Accounts: 3 synced, 0 failed, 0 skipped
+
+✅ Synced:
+  • Checking
+  • Savings
+  • Credit Card
+",
+}
+`;
+
+exports[`notification payload baseline (#257) formatSyncNotification success with partial issues (some accounts failed) 1`] = `
+{
+  "discord": {
+    "embeds": [
+      {
+        "color": 15844367,
+        "fields": [
+          {
+            "inline": true,
+            "name": "Server",
+            "value": "Main Server",
+          },
+          {
+            "inline": true,
+            "name": "Duration",
+            "value": "850ms",
+          },
+          {
+            "name": "Accounts",
+            "value": "2 synced, 1 failed, 1 skipped",
+          },
+          {
+            "name": "✅ Synced Accounts",
+            "value": "• Checking
+• Savings",
+          },
+          {
+            "name": "❌ Failed Accounts",
+            "value": "• Credit Card: Connection timed out while fetching transactions",
+          },
+          {
+            "name": "⏭️ Skipped (not bank-linked / closed)",
+            "value": "• Closed Account (not bank-linked)",
+          },
+        ],
+        "timestamp": "2026-01-15T10:00:00.000Z",
+        "title": "⚠️ Sync Completed with Issues",
+      },
+    ],
+  },
+  "generic": {
+    "accounts": {
+      "failed": 1,
+      "skipped": 1,
+      "synced": 2,
+    },
+    "durationMs": 850,
+    "event": "sync",
+    "failedAccounts": [
+      {
+        "error": "Connection timed out while fetching transactions",
+        "name": "Credit Card",
+      },
+    ],
+    "message": "Sync Completed with Issues",
+    "server": "Main Server",
+    "skippedAccounts": [
+      {
+        "name": "Closed Account",
+        "reason": "not bank-linked",
+      },
+    ],
+    "status": "partial",
+    "succeededAccounts": [
+      "Checking",
+      "Savings",
+    ],
+    "timestamp": "2026-01-15T10:00:00.000Z",
+  },
+  "html": "
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: #ffc107; color: white; padding: 15px; border-radius: 5px 5px 0 0; }
+    .content { background: #f8f9fa; padding: 20px; border: 1px solid #dee2e6; }
+    .field { margin: 10px 0; }
+    .label { font-weight: bold; color: #495057; }
+    .value { color: #212529; }
+    .account-list { list-style: none; padding-left: 0; }
+    .account-item { padding: 5px 0; }
+    .error-detail { color: #6c757d; font-size: 0.9em; margin-left: 20px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>⚠️ Sync Completed with Issues</h2>
+    </div>
+    <div class="content">
+      <div class="field">
+        <span class="label">Server:</span>
+        <span class="value">Main Server</span>
+      </div>
+      <div class="field">
+        <span class="label">Duration:</span>
+        <span class="value">850ms</span>
+      </div>
+      <div class="field">
+        <span class="label">Accounts:</span>
+        <span class="value">2 synced, 1 failed, 1 skipped</span>
+      </div>
+      <div class="field">
+        <span class="label">✅ Synced Accounts:</span>
+        <ul class="account-list"><li class="account-item">• Checking</li><li class="account-item">• Savings</li></ul>
+      </div>
+      <div class="field">
+        <span class="label">❌ Failed Accounts:</span>
+        <ul class="account-list"><li class="account-item">• Credit Card<div class="error-detail">Connection timed out while fetching transactions</div></li></ul>
+      </div>
+      <div class="field">
+        <span class="label">⏭️ Skipped (not bank-linked / closed):</span>
+        <ul class="account-list"><li class="account-item">• Closed Account (not bank-linked)</li></ul>
+      </div>
+    </div>
+  </div>
+</body>
+</html>",
+  "ntfy": {
+    "level": "failure",
+    "message": "⚠️ Sync Completed with Issues
+
+Server: Main Server
+Duration: 850ms
+
+Accounts: 2 synced, 1 failed, 1 skipped
+
+✅ Synced:
+  • Checking
+  • Savings
+
+❌ Failed:
+  • Credit Card
+    Connection timed out while fetching transactions
+
+⏭️ Skipped (not bank-linked / closed): 1
+  • Closed Account (not bank-linked)
+",
+    "tags": [
+      "warning",
+    ],
+    "title": "Sync Completed with Issues: Main Server",
+  },
+  "slack": {
+    "blocks": [
+      {
+        "text": {
+          "text": "⚠️ Sync Completed with Issues",
+          "type": "plain_text",
+        },
+        "type": "header",
+      },
+      {
+        "fields": [
+          {
+            "text": "*Server:*
+Main Server",
+            "type": "mrkdwn",
+          },
+          {
+            "text": "*Duration:*
+850ms",
+            "type": "mrkdwn",
+          },
+        ],
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*Accounts:* 2 synced, 1 failed, 1 skipped",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*✅ Synced:*
+• Checking
+• Savings
+
+*❌ Failed:*
+• Credit Card: Connection timed out while fetching transactions
+
+*⏭️ Skipped (not bank-linked / closed):*
+• Closed Account (not bank-linked)",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+    ],
+    "text": "*⚠️ Sync Completed with Issues*",
+  },
+  "text": "⚠️ Sync Completed with Issues
+
+Server: Main Server
+Duration: 850ms
+
+Accounts: 2 synced, 1 failed, 1 skipped
+
+✅ Synced:
+  • Checking
+  • Savings
+
+❌ Failed:
+  • Credit Card
+    Connection timed out while fetching transactions
+
+⏭️ Skipped (not bank-linked / closed): 1
+  • Closed Account (not bank-linked)
+",
+}
+`;

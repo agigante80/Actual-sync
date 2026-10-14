@@ -79,6 +79,30 @@ The WebSocket log stream carries log metadata (server names, account names, sync
 
 Credentials are compared in constant time (SHA-256 digests with `crypto.timingSafeEqual`), and the basic-auth username and password are both always compared.
 
+### HTTP security headers (#243)
+
+[`helmet`](https://helmetjs.github.io/) is mounted first in the Express stack, before the rate limiter and the body parser, so every response carries these headers, including `401`s and parse errors:
+
+| Header | Value |
+|--------|-------|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'` |
+| `X-Frame-Options` | `DENY` (clickjacking protection for the state-changing dashboard POSTs) |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `no-referrer` |
+| `X-Powered-By` | removed |
+
+Notes:
+
+- `script-src` is `'self'` with no `'unsafe-inline'` and no `'unsafe-eval'`: injected markup cannot run script. This is why the dashboard script lives in `src/services/dashboard.js` and not inline.
+- `style-src` allows `'unsafe-inline'` because the dashboard uses many `style="..."` attributes. That permits inline styling only, not script.
+- `connect-src 'self'` covers `fetch()` and the same-origin `/ws/logs` WebSocket.
+- `upgrade-insecure-requests` is deliberately not sent: the service is usually plain HTTP on a LAN and that directive would make the browser rewrite its own sub-requests to HTTPS and break the page.
+- **TLS and HSTS remain the reverse proxy's responsibility.** `Strict-Transport-Security` is off by default and opt-in with `healthCheck.hsts` ([CONFIG.md](CONFIG.md#healthcheck-optional)). These headers are not a transport story: they do not encrypt anything.
+
+### Dashboard assets
+
+The dashboard loads no external scripts. Chart.js is declared in `package.json`, so Dependabot, `npm audit` and Trivy cover it like every other dependency, and it is served from the application at the single fixed route `/vendor/chart.umd.min.js` (no directory is exposed). Opening the dashboard contacts no third party, so nothing about the operator's address or use of the tool leaves the host. (#244)
+
 ### Transport Encryption
 
 **Policy**: All external communication MUST use HTTPS/TLS
@@ -605,7 +629,7 @@ npm audit --audit-level=high
 
 **Runs**: After Docker test build completes
 
-**Supply chain**: the scanner's own GitHub Action is pinned to a commit SHA, not a branch, so a compromised upstream branch cannot run code in CI. No workflow may reference a branch; a test enforces both rules. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
+**Supply chain** (#249): every GitHub Action in every workflow is pinned to a full commit SHA with a version comment, so a repointed tag or compromised upstream branch cannot run new code in CI, where Docker Hub, GitHub App and Codecov credentials are in scope. `scripts/check-action-pins.sh` fails CI on any unpinned reference, and Dependabot's `github-actions` entry keeps the pins current. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
 
 **Location**: `security-scan` job in CI/CD workflow
 
@@ -1021,16 +1045,7 @@ For complete CI/CD documentation including security scanning setup, see:
 
 ### Reporting Vulnerabilities
 
-If you discover a security vulnerability:
-
-1. **Do NOT** create a public GitHub issue
-2. Email project maintainer directly (configure in your project)
-3. Provide detailed description and reproduction steps
-4. Allow reasonable time for fix before public disclosure
-
-### Security Response Team
-
-[Configure your security contact information here]
+The reporting policy lives in one place: **[SECURITY.md](../SECURITY.md)** at the repository root (supported versions, the private channel, what to include and what to leave out, response targets, and coordinated disclosure). Report privately through GitHub's [Report a vulnerability](https://github.com/agigante80/Actual-sync/security/advisories/new) form, never as a public issue or pull request.
 
 ---
 
