@@ -268,6 +268,30 @@ describe('Origin check on the existing POST routes (#259)', () => {
       expect(ctx.history.getHistory({ limit: 10 })).toHaveLength(0);
     });
 
+    test('an unknown server is 404 server_not_found and writes no audit row (#259)', async () => {
+      const ctx = await makeService();
+      const res = await post(ctx.svc, 'reset-history', { server: 'Ghost' });
+      expect(res.status).toBe(404);
+      expect(res.json).toEqual({ error: 'server_not_found' });
+      expect(ctx.history.getConfigAudit({ limit: 10 })).toEqual([]);
+    });
+
+    test('an orphaned server (not configured, still has history) can be reset', async () => {
+      const ctx = await makeService();
+      seedHistory(ctx.history, 'Retired');
+      const res = await post(ctx.svc, 'reset-history', { server: 'Retired' });
+      expect(res.status).toBe(200);
+      expect(ctx.history.getConfigAudit({ limit: 1 })[0].action).toBe('history_reset');
+    });
+
+    test('a server name over 200 characters is 400 before anything is stored (#259)', async () => {
+      const ctx = await makeService();
+      const res = await post(ctx.svc, 'reset-history', { server: 'x'.repeat(201) });
+      expect(res.status).toBe(400);
+      expect(res.json.error).toBe('server_name_too_long');
+      expect(ctx.history.getConfigAudit({ limit: 10 })).toEqual([]);
+    });
+
     test('the history_reset audit row carries req.ip, which honours trustProxy', async () => {
       const ctx = await makeService({ service: { trustProxy: 1 } });
       seedHistory(ctx.history, 'Main');

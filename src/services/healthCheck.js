@@ -907,6 +907,19 @@ class HealthCheckService {
         const { server } = req.body;
         
         if (server && server !== 'all') {
+          if (typeof server !== 'string' || server.length > 200) {
+            return res.status(400).json({ error: 'server_name_too_long' });
+          }
+          // Only a configured server, or an orphan that still has history rows
+          // (the orphaned-servers cleanup), can be reset. Anything else would
+          // write a history_reset audit row for a name that never existed.
+          const configured = this.getServers ? (this.getServers() || []).map(sv => sv.name) : null;
+          const known = configured === null ||
+            configured.includes(server) ||
+            this.syncHistory.getAllServerNames().some(h => h.server_name === server);
+          if (!known) {
+            return res.status(404).json({ error: 'server_not_found' });
+          }
           // Reset history for specific server
           await this.syncHistory.resetServerHistory(server, { remoteAddr: req.ip });
           

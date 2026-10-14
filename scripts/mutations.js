@@ -2640,5 +2640,21 @@ module.exports = [
         anchor: "if (res.headersSent) return next(err);\n      return res.status(500)",
         mutant: "return next(err);\n      return res.status(500)",
         tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-unknown-server", ticket: '#259',
+        desc: "resetting an unknown server answers 200 and writes an audit row again",
+        file: "src/services/healthCheck.js",
+        anchor: "if (!known) {",
+        mutant: "if (false) {",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-server-name-uncapped", ticket: '#259',
+        desc: "the reset-history server name length cap is removed",
+        file: "src/services/healthCheck.js",
+        anchor: "server.length > 200",
+        mutant: "server.length > 2000000",
+        tests: "dashboardWriteSecurity"
     }
 ];
