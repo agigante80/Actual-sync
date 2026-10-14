@@ -1051,7 +1051,9 @@ function templatesFor(event, rule) {
   const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
   if (event.closedBy) {
     const custom = templates.resolved;
-    const literals = [...custom.matchAll(/\bclosed_by\s+["']([^"']*)["']/g)].map((m) => m[1]);
+    // Both argument orders: `eq` is symmetric, so `(eq "completed" closed_by)` is the same branch.
+    const literals = [...custom.matchAll(/\bclosed_by\s+["']([^"']*)["']|["']([^"']*)["']\s+closed_by\b/g)]
+      .map((m) => m[1] ?? m[2]);
     const handled = /\bclosed_by\b/.test(custom) && (literals.length === 0 || literals.includes(event.closedBy));
     if (!handled) templates.resolved = DEFAULT_TEMPLATES.resolved;
   }

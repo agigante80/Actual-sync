@@ -136,8 +136,7 @@ thread closes instead of staying open forever:
   recurring schedule is unaffected.
 - A custom `resolved` template that never mentions `closed_by` is not used for this case: the built-in
   "marked completed in Actual" text is sent instead, so an older template cannot claim a payment
-  arrived. A template that mentions `closed_by` is used as written. A normal payment `resolved` always
-  uses your template.
+  arrived. A template that compares `closed_by` to quoted values (for example `(eq closed_by "completed")`, in either order) gets the built-in text for any value it does not name; a template that only tests `{{#if closed_by}}` or prints it is used as written. A normal payment `resolved` always uses your template.
 
 ## Lifecycle of a deleted schedule (#356)
 
@@ -156,8 +155,7 @@ per open occurrence and destination:
   (a transient empty read must not close every open alert), so nothing is closed until a later sync sees
   a non-empty list. An empty list is never trusted, so if the budget's last schedule is deleted the alert
   stays open until a later sync reads a non-empty list.
-- A custom `resolved` template must handle each `closed_by` value it wants to customise (it must name
-  `"deleted"` here, `"completed"` for completed schedules); otherwise the built-in text is used for that case.
+- A custom `resolved` template that never mentions `closed_by` gets the built-in text here. A template that compares `closed_by` to quoted values (for example `(eq closed_by "completed")`, in either order) gets the built-in text for any value it does not name; a template that only tests `{{#if closed_by}}` or prints it is used as written.
 - A rule bound to the deleted schedule by exact name now matches nothing, so it also sends one
   `ruleUnmatched` per destination (not one per sync).
 

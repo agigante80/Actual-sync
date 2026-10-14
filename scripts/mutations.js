@@ -1835,7 +1835,7 @@ module.exports = [
         desc: "a mismatched block error reports line 1 again",
         file: "src/lib/templateRenderer.js",
         anchor: " || / - (\\d+):\\d+/.exec(err.message);",
-        mutant: "      && /./.test(templates.resolved);",
+        mutant: ";",
         tests: "templateRenderer"
     },
     {
@@ -2987,6 +2987,14 @@ module.exports = [
         file: 'src/lib/scheduleAlertDelivery.js',
         anchor: "      await history.recordScheduleAlert({ ...key, event: 'ruleMatched', delivery: 'inferred' });",
         mutant: "      void key;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-reversed-eq-order-ignored', ticket: '#356',
+        desc: 'a template written as (eq "completed" closed_by) is honoured for a deleted schedule and claims a payment arrived',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "|[\"']([^\"']*)[\"']\\s+closed_by\\b/g)]",
+        mutant: "/g)]",
         tests: 'scheduleAlert'
     },
     {

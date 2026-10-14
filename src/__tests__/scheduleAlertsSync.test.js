@@ -1182,6 +1182,18 @@ describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356
     expect(texts().join('\n')).not.toMatch(/arrived/);
   });
 
+  test('the same template with eq arguments reversed also gets the built-in text for a deleted schedule', async () => {
+    const srv = { scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'],
+      templates: { resolved: '{{#if (eq "completed" closed_by)}}{{name}} completed.{{else}}{{name}}: {{received_amount}} arrived {{received_date}}.{{/if}}' }
+    }] } };
+    await run(apiFor(), '2026-01-10T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z', srv);
+    expect(closed()).toHaveLength(1);
+    expect(texts().join('\n')).not.toMatch(/arrived/);
+    expect(texts().join('\n')).toMatch(/removed in Actual/);
+  });
+
   test('ruleUnmatched re-arms when the rule only matches a schedule that throws on evaluation (cannotCheck, no evaluation row)', async () => {
     const srv = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'], graceDays: 5 }] } };
     const daily = makeFakeApi({
