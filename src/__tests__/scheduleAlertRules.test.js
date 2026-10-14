@@ -9,6 +9,7 @@ const {
   slugify,
   deriveRuleId,
   getRules,
+  mergeRules,
   checkUniqueIds,
   expandRules,
   ruleState,
@@ -305,5 +306,55 @@ describe('expandRules: completed one-off schedules (#326)', () => {
     ]);
     const recurring = [{ id: 's1', name: 'Rent', completed: true, date: { start: '2026-01-05', frequency: 'monthly' } }];
     expect(expandRules(rules, recurring)).toEqual([]);
+  });
+});
+
+describe('mergeRules (#262)', () => {
+  const block = {
+    graceDays: undefined,
+    staleAfterDays: 5,
+    dateFormat: 'YYYY-MM-DD',
+    templates: { missing: 'block {{name}}' },
+    alerts: [{ id: 'rent', schedule: 'Rent', graceDays: 6 }, { schedulePrefix: 'Gym' }]
+  };
+  const row = (definition, updatedAt = '2026-10-01T00:00:00.000Z') => ({ alertId: definition.id, definition, updatedAt });
+
+  it('keeps config rules first, tagged config, with the raw definition', () => {
+    const merged = mergeRules(getRules(block), [], block);
+    expect(merged.map((r) => [r.id, r.source, r.superseded])).toEqual([['rent', 'config', false], ['gym', 'config', false]]);
+    expect(merged[0].definition).toBe(block.alerts[0]);
+    expect(merged[0].updatedAt).toBeNull();
+  });
+
+  it('normalizes a dashboard rule with the block defaults and keeps its raw definition and updatedAt', () => {
+    const def = { id: 'water', schedule: 'Water', templates: { wrongAmount: 'mine' } };
+    const [, , water] = mergeRules(getRules(block), [row(def, '2026-10-02T00:00:00.000Z')], block);
+    expect(water).toMatchObject({
+      id: 'water', source: 'dashboard', superseded: false, graceDays: 3, earlyDays: 2,
+      staleAfterDays: 5, dateFormat: 'YYYY-MM-DD', enabled: true, updatedAt: '2026-10-02T00:00:00.000Z'
+    });
+    expect(water.templates).toEqual({ missing: 'block {{name}}', wrongAmount: 'mine' });
+    expect(water.definition).toBe(def);
+  });
+
+  it('marks a dashboard rule superseded when a config rule has the same id, comparing derived ids', () => {
+    const merged = mergeRules(getRules(block), [row({ id: 'rent', schedule: 'Other' }), row({ id: 'gym', schedulePrefix: 'G' })], block);
+    expect(merged.filter((r) => r.source === 'dashboard').map((r) => [r.id, r.superseded])).toEqual([['rent', true], ['gym', true]]);
+  });
+
+  it('works with no block and no rows', () => {
+    expect(mergeRules([], [], null)).toEqual([]);
+    const merged = mergeRules([], [row({ id: 'a', schedule: 'A' })], null);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].graceDays).toBe(3);
+  });
+
+  it('round trip: a rule stored through JSON merges identically to the same rule in config', () => {
+    const def = { id: 'water', schedule: 'Water', graceDays: 4, channels: ['slack'] };
+    const stored = JSON.parse(JSON.stringify(def));
+    const fromDash = mergeRules([], [row(stored)], block)[0];
+    const fromConfig = getRules({ ...block, alerts: [def] })[0];
+    const { source, superseded, definition, updatedAt, ...rest } = fromDash;
+    expect(rest).toEqual(fromConfig);
   });
 });

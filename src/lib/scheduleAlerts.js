@@ -802,4 +802,4 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
   return { events, evaluations, warnings, skipDecisions, completedSchedules };
 }
 
-module.exports = { evaluate, skipKey, MAX_LOOKBACK_DAYS, MAX_OCCURRENCES, LINKED_EARLY_WINDOW_DAYS };
+module.exports = { evaluate, skipKey, MAX_LOOKBACK_DAYS, MAX_OCCURRENCES, LINKED_EARLY_WINDOW_DAYS, CADENCE_DATE_FORMAT };

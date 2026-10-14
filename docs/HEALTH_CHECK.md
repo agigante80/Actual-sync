@@ -160,15 +160,21 @@ match the code, not as an integration surface:
 | GET  | `/api/dashboard/payment-overrides` | Every stored payment alert override (switch and mute), with an `orphaned` flag |
 | PUT  | `/api/dashboard/payments/:server/:alertId/state` | Switch an alert on or off, or mute or unmute it (needs config writes) |
 | DELETE | `/api/dashboard/payments/:server/:alertId/state` | Reset an alert's override, including one whose alert or server no longer exists (needs config writes) |
+| GET  | `/api/dashboard/payment-schedules/:server` | The stored Actual schedule snapshot (for the rule editor's picker) and the editor `defaults` |
+| GET  | `/api/dashboard/payment-rules/:server` | Config and dashboard payment rules of a server, with `source`, `superseded` and `invalid` |
+| POST | `/api/dashboard/payment-rules/:server` | Create a dashboard payment rule (needs config writes) |
+| PUT  | `/api/dashboard/payment-rules/:server/:alertId` | Replace a dashboard payment rule (needs config writes) |
+| DELETE | `/api/dashboard/payment-rules/:server/:alertId` | Delete a dashboard payment rule (needs config writes) |
+| POST | `/api/dashboard/payment-preview/:server` | Render a rule's message, optionally send it as a test (needs config writes) |
 | GET  | `/api/dashboard/notifications` | Failure-alert rate-limit usage + recent sync outcomes per server |
-| GET  | `/api/dashboard/capabilities` | `{configWrites, reason}`: whether dashboard config writes are enabled (`reason` is `disabled`, `auth-none` or null) |
+| GET  | `/api/dashboard/capabilities` | `{configWrites, reason, channels}`: whether dashboard config writes are enabled (`reason` is `disabled`, `auth-none` or null) and which channels (`telegram`, `email`, `slack`, `discord`, `webhook`, `ntfy`) currently have a destination |
 | GET  | `/api/dashboard/config-audit` | Configuration change audit trail, newest first (`?limit=N`, 1 to 200, default 50; otherwise 400 `invalid_limit`). 503 `Sync history not available` without history, 500 `Failed to retrieve configuration changes` on a read error |
 | POST | `/api/dashboard/sync` | Trigger a manual sync |
 | POST | `/api/dashboard/dismiss-error` | Clear a server's last error |
 | POST | `/api/dashboard/reset-history` | Reset stored sync history. 404 `server_not_found` for a name that is neither configured nor present in any history table, 400 `invalid_server` for a non-string name, 400 `server_name_too_long` above 200 characters |
 | POST | `/api/dashboard/test-notification` | Send a test notification (`email`, `discord`, `slack`, `telegram`, `ntfy`, `generic`) |
 
-All four POSTs run the dashboard auth first and then an Origin check: a cross-origin browser request is refused with 403 `{"error":"origin_rejected"}`. Configuration-changing routes additionally return 403 `config_writes_disabled` unless `dashboard.allowConfigWrites` is true and auth is not `none`, 415 `invalid_content_type` for a non-JSON body, 413 `payload_too_large` above 16 KB and 400 `invalid_json` for a malformed body. Any other unreadable body (for example a corrupt gzip body) is 400 `invalid_body`, a 4xx raised by a route keeps its status with `request_error`, and an unexpected server error is 500 `internal_error`; none shows a stack trace.
+Every POST, PUT and DELETE runs the dashboard auth first and then an Origin check: a cross-origin browser request is refused with 403 `{"error":"origin_rejected"}`. Configuration-changing routes additionally return 403 `config_writes_disabled` unless `dashboard.allowConfigWrites` is true and auth is not `none`, 415 `invalid_content_type` for a non-JSON body, 413 `payload_too_large` above 16 KB and 400 `invalid_json` for a malformed body. Any other unreadable body (for example a corrupt gzip body) is 400 `invalid_body`, a 4xx raised by a route keeps its status with `request_error`, and an unexpected server error is 500 `internal_error`; none shows a stack trace.
 
 `GET /api/dashboard/payments` serves the snapshot of the last missing-payment evaluation
 (#258) that a sync persists after evaluating (#260), so a dashboard can list every watched schedule without
@@ -207,7 +213,7 @@ auth when `scheduleAlerts` is used (it exposes schedule, payee and account names
 - `lastAlertAt` is the latest delivered alert (`delivery = 'sent'`, resolved notices included)
   from the `schedule_alerts` ledger, computed at request time; `null` when none was sent or the
   last one is older than the ledger retention.
-- `source` is always `"config"` until rule editing (#262) lands.
+- `source` is `"config"` for a rule from `config.json` and `"dashboard"` for a rule created in the dashboard (see [Payment rules](#payment-rules-262)).
 - `ruleState` is `{ enabled, mutedUntil, reason, lockedByConfig, muteEndDue }`, computed per request from the
   stored override (#261) and the rule: `enabled` is `false` when the rule has `enabled: false` in
   the config (`lockedByConfig: true`) or the operator switched it off; `mutedUntil` is a
@@ -281,6 +287,70 @@ that is no longer configured (an orphan) can still be deleted; with no override 
 ordered by server and alert id. An orphaned override (its server or alert is no longer in the
 configuration) is ignored by delivery and by `ruleState`, and the Settings tab lists it for deletion.
 This is also the export of everything stored about overrides.
+
+#### Payment rules (#262)
+
+Rules can also be created in the dashboard and are stored in the sync-history database (table
+`payment_alert_rule`); `config.json` is never written. The editor itself is #268; these routes are its
+API. A server needs a `scheduleAlerts` block (an empty `{ "alerts": [] }` is enough) before it accepts
+dashboard rules. Config rules win: a dashboard rule whose id equals a config rule's id is
+`superseded`, kept but not evaluated. `GET` routes need dashboard auth only; `POST`, `PUT` and
+`DELETE` also need the Origin check and config writes, like the alert state route.
+
+- `GET /api/dashboard/payment-schedules/:server` answers
+  `{ configured, capturedAt, schedules: [{ id, name, cadenceText, amount, amountMin, amountMax, amountOp, account, payee, nextDate, completed }], defaults }`.
+  The schedules are captured by the sync's alert step (`capturedAt` is `null` before the first
+  capture, so a new install needs a sync first). `account` is `null` for a deleted account.
+  `defaults` is always present: `{ graceDays: 3, earlyDays: 2, templates, blockTemplates, variables }`,
+  read from the same constants the validator uses; `variables` maps each of the six events to the
+  variable list a template may use.
+- `GET /api/dashboard/payment-rules/:server` answers
+  `{ configured, rules: [{ id, source, superseded, invalid, errors, definition, updatedAt }] }`.
+  `definition` is exactly one `scheduleAlerts.alerts[]` entry, so it can be copied into `config.json`.
+  `invalid` and `errors` use the validator mode the sync uses, so the list and the sync agree on which
+  rules run. A server without a block answers `configured: false` with its stored rows (dormant).
+- `POST` takes one rule (`id` required, `enabled` not allowed: use the alert switch) and answers
+  `201 { rule }`. `PUT .../:alertId` replaces it (`200 { rule }`); a body identical to the stored rule is a
+  no-op with no audit row. `DELETE` answers `200 { deleted: true }`; it also removes the rule's alert
+  override, its held-back `muted` rows and its payment status rows, unless a config rule of the same id
+  exists (then only the dashboard row goes). At most 200 dashboard rules per server.
+- `POST /api/dashboard/payment-preview/:server` takes `{ rule, event, send? }` (`event` is `missing`,
+  `wrongAmount`, `resolved`, `cannotCheck`, `ruleUnmatched` or `muteEnded`) and answers
+  `{ text, sampleKeys, sent, results }`. Schedule fields come from the stored snapshot; `sampleKeys` lists
+  the variables filled with stand-ins. With `send: true` one test message goes to each destination;
+  nothing is written to the alert ledger or the payment status. `results[]` is
+  `{ channel, target, ok, error? }`, where `target` is the webhook name or an opaque destination key (never
+  a URL) and `error` is `send_failed`, `send_threw`, `timeout` or `channel_unavailable`. At most 5 test
+  sends per minute per process.
+- Writes are audited as `payment_alert_rule_create`, `payment_alert_rule_update` and
+  `payment_alert_rule_delete` (target the alert id, `changes` as `{ field: [before, after] }`), in the same
+  transaction as the write. The definition values are recorded, so do not put secrets in a rule.
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `invalid_rule` + `details: [{path, message}]` | the rule fails the schema, or `id` is missing, or `enabled` is present |
+| 400 | `invalid_template` + `template`, `token`, `line`, `reason` | a template does not compile |
+| 400 | `no_configured_destination` | the rule's channels resolve to no destination (create, replace, preview) |
+| 400 | `id_mismatch` | PUT body `id` differs from `:alertId` |
+| 400 | `invalid_event`, `invalid_body` | preview: unknown event, or a missing or mistyped `rule`, `event` or `send` |
+| 400 | `invalid_json`, `invalid_body_encoding` | the shared body parser |
+| 401 | | no or bad credentials |
+| 403 | `origin_rejected`, `config_writes_disabled` | the Origin or config-writes gate |
+| 404 | `server_not_found` | unknown server (checked first on every route) |
+| 404 | `rule_not_found` | an id that is not a valid alert id, or is neither a dashboard nor a config rule of that server |
+| 409 | `alerts_not_configured` | create, replace or preview on a server without a `scheduleAlerts` block |
+| 409 | `id_in_config` | create with the id of a config rule (wins over `duplicate_id`) |
+| 409 | `duplicate_id` | create with the id of a stored dashboard rule |
+| 409 | `managed_in_config` | replace a config rule, or delete a config id that has no dashboard row |
+| 409 | `too_many_rules` | create beyond 200 dashboard rules |
+| 413, 415 | `payload_too_large`, `invalid_content_type` | a body over 16 KB, or not `application/json` (a DELETE needs no body) |
+| 429 | `test_send_rate_limited` | the 6th test send in a minute |
+| 500 | `Failed to retrieve payment rules` (reads), `Failed to save payment rule` (writes), `Failed to preview payment rule` | an unexpected error; the text is fixed and the cause is only logged |
+| 502 | `send_failed` + `results` | every destination refused the test message |
+| 503 | `Sync history not available` | sync history is disabled |
+
+Create checks run in this order: server, block, validation (400), `id_in_config`, `duplicate_id`,
+`too_many_rules`.
 
 `GET /api/dashboard/notifications` exposes rate-limit headroom and recent sync outcomes per
 server. Rate limiting is otherwise invisible: a server at zero remaining is having its failure

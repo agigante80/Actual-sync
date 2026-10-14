@@ -280,6 +280,44 @@ class SyncHistoryService {
       )
     `;
 
+    // Latest schedule list Actual returned, one row per schedule, replaced
+    // wholesale on each successful evaluation (#262). `account` / `payee` hold
+    // NAMES. `amount` is integer cents; an `isbetween` range keeps `amount`
+    // NULL and stores the range in amount_min / amount_max. It feeds the rule
+    // editor's schedule picker and the preview, so it needs no live Actual.
+    const createActualScheduleSnapshotTable = `
+      CREATE TABLE IF NOT EXISTS actual_schedule_snapshot (
+        server TEXT NOT NULL,
+        schedule_id TEXT NOT NULL,
+        name TEXT,
+        cadence_text TEXT,
+        amount INTEGER,
+        amount_min INTEGER,
+        amount_max INTEGER,
+        amount_op TEXT,
+        account TEXT,
+        payee TEXT,
+        next_date TEXT,
+        completed INTEGER NOT NULL DEFAULT 0,
+        captured_at TEXT NOT NULL,
+        PRIMARY KEY (server, schedule_id)
+      )
+    `;
+
+    // Alert rules created in the dashboard (#262). The definition is one
+    // `scheduleAlerts.alerts[]` entry as JSON. Never cleared by a history reset:
+    // rules are configuration, not history.
+    const createPaymentAlertRuleTable = `
+      CREATE TABLE IF NOT EXISTS payment_alert_rule (
+        server TEXT NOT NULL,
+        alert_id TEXT NOT NULL,
+        definition_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (server, alert_id)
+      )
+    `;
+
     const createIndexes = [
       'CREATE INDEX IF NOT EXISTS idx_timestamp ON sync_history(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_server_name ON sync_history(server_name)',
@@ -298,6 +336,8 @@ class SyncHistoryService {
     this.db.exec(createPaymentAlertRunTable);
     this.db.exec(createConfigAuditTable);
     this.db.exec(createPaymentAlertOverrideTable);
+    this.db.exec(createActualScheduleSnapshotTable);
+    this.db.exec(createPaymentAlertRuleTable);
     this.logger.debug('Created sync_history, account_metadata, schedule_alerts and payment snapshot tables');
 
     createIndexes.forEach(idx => {
@@ -1051,11 +1091,16 @@ class SyncHistoryService {
   getAllServerNames() {
     try {
       const stmt = this.db.prepare(`
-        SELECT 
-          server_name,
-          COUNT(*) as sync_count,
-          MAX(timestamp) as last_sync
-        FROM sync_history
+        SELECT server_name, SUM(n) as sync_count, MAX(last_sync) as last_sync
+        FROM (
+          SELECT server_name, COUNT(*) as n, MAX(timestamp) as last_sync
+          FROM sync_history
+          GROUP BY server_name
+          -- #262 round 2 L1: a server with dashboard rules but no sync rows
+          -- must still be listed, or its rules can never be erased.
+          UNION ALL
+          SELECT DISTINCT server, 0, NULL FROM payment_alert_rule
+        )
         GROUP BY server_name
         ORDER BY server_name
       `);
@@ -1209,7 +1254,9 @@ class SyncHistoryService {
           OR EXISTS (SELECT 1 FROM schedule_alerts WHERE server = @s)
           OR EXISTS (SELECT 1 FROM payment_alert_status WHERE server = @s)
           OR EXISTS (SELECT 1 FROM payment_alert_run WHERE server = @s)
-          OR EXISTS (SELECT 1 FROM payment_alert_override WHERE server = @s) AS known
+          OR EXISTS (SELECT 1 FROM payment_alert_override WHERE server = @s)
+          OR EXISTS (SELECT 1 FROM actual_schedule_snapshot WHERE server = @s)
+          OR EXISTS (SELECT 1 FROM payment_alert_rule WHERE server = @s) AS known
     `).get({ s: serverName });
     return row.known === 1;
   }
@@ -1217,9 +1264,11 @@ class SyncHistoryService {
   /**
    * Reset sync history for a specific server
    * @param {string} serverName - Name of the server
-   * @param {{remoteAddr?: string}} [options] - recorded on the history_reset audit row (#259)
+   * @param {{remoteAddr?: string, purgeRules?: boolean}} [options] - remoteAddr is
+   *   recorded on the history_reset audit row (#259); purgeRules also deletes
+   *   the server's dashboard rules (#262), for a server no longer in the config
    */
-  async resetServerHistory(serverName, { remoteAddr } = {}) {
+  async resetServerHistory(serverName, { remoteAddr, purgeRules = false } = {}) {
     try {
       // Clear sync history, the dashboard account snapshot and the schedule
       // alert ledger atomically, so a reset never leaves orphaned account
@@ -1231,6 +1280,12 @@ class SyncHistoryService {
       const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ?');
       const delOverrides = this.db.prepare('DELETE FROM payment_alert_override WHERE server = ?');
       const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');
+      const delScheduleSnapshot = this.db.prepare('DELETE FROM actual_schedule_snapshot WHERE server = ?');
+      // payment_alert_rule is deliberately NOT deleted either (#262): rules are
+      // configuration, so a history reset keeps them. The exception is a
+      // server removed from the config (purgeRules): there is no other way to
+      // erase its rules, since the rule routes only accept configured servers.
+      const delRules = this.db.prepare('DELETE FROM payment_alert_rule WHERE server = ?');
       // config_audit is deliberately NOT deleted (#259): a reset must not erase
       // the record of earlier configuration changes. It appends one
       // history_reset row, in this transaction, with the deleted counts.
@@ -1242,8 +1297,10 @@ class SyncHistoryService {
           schedule_alerts: delScheduleAlerts.run(s).changes,
           payment_alert_status: delPaymentItems.run(s).changes,
           payment_alert_run: delPaymentRun.run(s).changes,
-          payment_alert_override: delOverrides.run(s).changes
+          payment_alert_override: delOverrides.run(s).changes,
+          actual_schedule_snapshot: delScheduleSnapshot.run(s).changes
         };
+        if (purgeRules) deleted.payment_alert_rule = delRules.run(s).changes;
         this.insertConfigAudit({
           server: s, remoteAddr, action: 'history_reset', target: null, changes: { deleted }
         });
@@ -1280,6 +1337,7 @@ class SyncHistoryService {
       const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status');
       const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');
       const delOverrides = this.db.prepare('DELETE FROM payment_alert_override');
+      const delScheduleSnapshot = this.db.prepare('DELETE FROM actual_schedule_snapshot');
       // config_audit is kept and gets one history_reset row (see resetServerHistory).
       const reset = this.db.transaction(() => {
         const r = delHistory.run();
@@ -1289,7 +1347,8 @@ class SyncHistoryService {
           schedule_alerts: delScheduleAlerts.run().changes,
           payment_alert_status: delPaymentItems.run().changes,
           payment_alert_run: delPaymentRun.run().changes,
-          payment_alert_override: delOverrides.run().changes
+          payment_alert_override: delOverrides.run().changes,
+          actual_schedule_snapshot: delScheduleSnapshot.run().changes
         };
         this.insertConfigAudit({
           server: null, remoteAddr, action: 'history_reset', target: null, changes: { deleted }
@@ -1530,6 +1589,136 @@ class SyncHistoryService {
     });
     run();
     return expired;
+  }
+
+  /**
+   * Replace a server's schedule snapshot in one transaction (#262).
+   * @param {string} server
+   * @param {Array<Object>} schedules - `{id,name,cadenceText,amount,amountMin,amountMax,amountOp,account,payee,nextDate,completed}`
+   * @param {Date|string} capturedAt
+   * @returns {number} rows stored
+   */
+  replaceScheduleSnapshot(server, schedules, capturedAt) {
+    const at = capturedAt instanceof Date ? capturedAt.toISOString() : String(capturedAt || this.now().toISOString());
+    const del = this.db.prepare('DELETE FROM actual_schedule_snapshot WHERE server = ?');
+    const ins = this.db.prepare(`
+      INSERT OR REPLACE INTO actual_schedule_snapshot (
+        server, schedule_id, name, cadence_text, amount, amount_min, amount_max,
+        amount_op, account, payee, next_date, completed, captured_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.db.transaction(() => {
+      del.run(server);
+      for (const s of schedules) {
+        ins.run(
+          server, s.id, s.name ?? null, s.cadenceText ?? null, s.amount ?? null,
+          s.amountMin ?? null, s.amountMax ?? null, s.amountOp ?? null,
+          s.account ?? null, s.payee ?? null, s.nextDate ?? null, s.completed ? 1 : 0, at
+        );
+      }
+    })();
+    return schedules.length;
+  }
+
+  /** Drop a server's schedule snapshot (its scheduleAlerts block is gone). */
+  deleteScheduleSnapshot(server) {
+    this.db.prepare('DELETE FROM actual_schedule_snapshot WHERE server = ?').run(server);
+  }
+
+  /**
+   * @param {string} server
+   * @returns {{capturedAt: ?string, schedules: Array<Object>}} `capturedAt` is
+   *   null before the first capture. Schedules are ordered by name, then id.
+   */
+  getScheduleSnapshot(server) {
+    const rows = this.db.prepare(
+      'SELECT * FROM actual_schedule_snapshot WHERE server = ? ORDER BY name, schedule_id'
+    ).all(server);
+    return {
+      capturedAt: rows.length ? rows[0].captured_at : null,
+      schedules: rows.map(r => ({
+        id: r.schedule_id,
+        name: r.name,
+        cadenceText: r.cadence_text,
+        amount: r.amount,
+        amountMin: r.amount_min,
+        amountMax: r.amount_max,
+        amountOp: r.amount_op,
+        account: r.account,
+        payee: r.payee,
+        nextDate: r.next_date,
+        completed: r.completed === 1
+      }))
+    };
+  }
+
+  _ruleFromRow(row) {
+    if (!row) return null;
+    return {
+      server: row.server,
+      alertId: row.alert_id,
+      definition: JSON.parse(row.definition_json),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  /** Dashboard rules of a server, ordered by alert id. */
+  listRules(server) {
+    return this.db.prepare(
+      'SELECT * FROM payment_alert_rule WHERE server = ? ORDER BY alert_id'
+    ).all(server).map(r => this._ruleFromRow(r));
+  }
+
+  getRule(server, alertId) {
+    return this._ruleFromRow(this.db.prepare(
+      'SELECT * FROM payment_alert_rule WHERE server = ? AND alert_id = ?'
+    ).get(server, alertId));
+  }
+
+  countRules(server) {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM payment_alert_rule WHERE server = ?').get(server).n;
+  }
+
+  insertRule(server, alertId, definition) {
+    const at = this.now().toISOString();
+    this.db.prepare(`
+      INSERT INTO payment_alert_rule (server, alert_id, definition_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(server, alertId, JSON.stringify(definition), at, at);
+    return this.getRule(server, alertId);
+  }
+
+  updateRule(server, alertId, definition) {
+    this.db.prepare(
+      'UPDATE payment_alert_rule SET definition_json = ?, updated_at = ? WHERE server = ? AND alert_id = ?'
+    ).run(JSON.stringify(definition), this.now().toISOString(), server, alertId);
+    return this.getRule(server, alertId);
+  }
+
+  /** @returns {boolean} true when a row was removed */
+  deleteRule(server, alertId) {
+    return this.db.prepare(
+      'DELETE FROM payment_alert_rule WHERE server = ? AND alert_id = ?'
+    ).run(server, alertId).changes > 0;
+  }
+
+  /** Delete one alert's evaluation rows (rule removed in the dashboard). @returns {number} */
+  deletePaymentStatusForAlert(server, alertId) {
+    return this.db.prepare(
+      'DELETE FROM payment_alert_status WHERE server = ? AND alert_id = ?'
+    ).run(server, alertId).changes;
+  }
+
+  /**
+   * Run `fn` in one synchronous transaction. Used by the rule routes so the
+   * cap check, the write and the audit row commit or roll back together.
+   * @template T
+   * @param {() => T} fn - must not be async
+   * @returns {T}
+   */
+  runInTransaction(fn) {
+    return this.db.transaction(fn)();
   }
 
   /**

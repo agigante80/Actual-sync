@@ -205,6 +205,12 @@ message-template variables.
 }
 ```
 
+`alerts` may be empty. An empty block only switches the feature on for the server, and the rules are then added from the dashboard (see [SCHEDULE_ALERTS.md](SCHEDULE_ALERTS.md#rules-from-the-dashboard)):
+
+```json
+"scheduleAlerts": { "alerts": [] }
+```
+
 - **`enabled`** (default `true`): `false` switches the alert off for good. It is still evaluated and shown in the Payments tab with a "Disabled in config" badge, but sends nothing, and the dashboard cannot switch it on or mute it. The dashboard's own on/off switch and mute (see [DASHBOARD.md](DASHBOARD.md#turning-alerts-off-and-muting)) are stored separately, never written to this file, and lose to this setting.
 - **`graceDays`** (default `3`): days after the occurrence date before it counts as overdue.
 - **`earlyDays`** (default `2`, 0-31): days before the occurrence date a matching transaction still counts as on time. `graceDays + earlyDays` must stay below the schedule's shortest interval between occurrences, otherwise the rule is skipped with a `cannotCheck` (reason `interval-violation`) and a warning.
