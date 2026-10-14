@@ -2918,16 +2918,16 @@ module.exports = [
         id: "261-early-unmute-keeps-muted-rows", ticket: '#261',
         desc: "an early unmute leaves the held-back rows in place",
         file: "src/services/healthCheck.js",
-        anchor: "        // latest 'muted' row would suppress the alert for good).\n        this.syncHistory.deleteMutedRows(",
-        mutant: "        // latest 'muted' row would suppress the alert for good).\n        void (",
+        anchor: "dropMutedRows: Boolean(before && before.mutedUntil && next.mutedUntil === null),",
+        mutant: "dropMutedRows: false,",
         tests: "paymentOverrides"
     },
     {
         id: "261-noop-put-audited", ticket: '#261',
         desc: "a PUT that changes nothing is still written to the audit trail",
-        file: "src/services/healthCheck.js",
-        anchor: "if (Object.keys(changes).length > 0) {\n        this.syncHistory.recordConfigChange({\n          server: serverName, remoteAddr: req.ip, action: 'payment_alert_state'",
-        mutant: "if (true) {\n        this.syncHistory.recordConfigChange({\n          server: serverName, remoteAddr: req.ip, action: 'payment_alert_state'",
+        file: "src/services/syncHistory.js",
+        anchor: "if (changes && Object.keys(changes).length > 0) {",
+        mutant: "if (true) {",
         tests: "paymentOverrides"
     },
     {
@@ -2942,8 +2942,8 @@ module.exports = [
         id: "261-delete-keeps-muted-rows", ticket: '#261',
         desc: "DELETE of a muted override leaves its muted rows behind",
         file: "src/services/healthCheck.js",
-        anchor: "      if (before.mutedUntil) {\n        this.syncHistory.deleteMutedRows({ server: serverName, alertId, since: before.mutedFrom || undefined });\n      }\n      this.syncHistory.deleteOverride(",
-        mutant: "      this.syncHistory.deleteOverride(",
+        anchor: "dropMutedRows: Boolean(before.mutedUntil),",
+        mutant: "dropMutedRows: false,",
         tests: "paymentOverrides"
     },
     {
