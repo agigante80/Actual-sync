@@ -24,6 +24,7 @@ unconfirmable instead of missing.
 - [Variables](#variables)
 - [Timezone](#timezone)
 - [Payment snapshot and the dashboard API](#payment-snapshot-and-the-dashboard-api)
+- [Rules from the dashboard](#rules-from-the-dashboard)
 - [Design notes and known limitations](#design-notes-and-known-limitations)
 
 ## How it works
@@ -383,7 +384,37 @@ skips not) of the `schedule_alerts` ledger, read at request time. The ledger is 
 `scheduleAlerts` block deletes the server's rows on the next sync; the history reset (one server
 or all) deletes them. Rows of a server removed from the config entirely are erased only by a
 reset: once its `sync_history` is purged it drops off the dashboard's orphan list, but
-`POST /api/dashboard/reset-history` with the typed server name still erases them.
+`POST /api/dashboard/reset-history` with the typed server name still erases them. The same
+holds for the schedule snapshot described below.
+
+## Rules from the dashboard
+
+A server with a `scheduleAlerts` block can also have rules created in the dashboard (the editor is
+#268; the API is in [HEALTH_CHECK.md](HEALTH_CHECK.md#payment-rules-262)). An empty block
+(`"scheduleAlerts": { "alerts": [] }`) is enough to opt a server in.
+
+- **Same engine.** A dashboard rule is one `alerts[]` entry stored as JSON, validated by the same
+  validator as `config.json` and evaluated by the same code with the same block settings (templates,
+  digest, `staleAfterDays`, `dateFormat`, `locale`). The same rule gives the same messages.
+- **Precedence.** A rule in `config.json` wins over a dashboard rule with the same id: the dashboard
+  rule is shown as superseded, is not evaluated, and becomes active again if the config rule is removed.
+  A dashboard rule cannot carry `enabled`; the on/off switch and the mute are the
+  [alert state](#switching-alerts-off-and-muting), which works the same for both kinds.
+- **Export.** Each rule's `definition` is a complete `alerts[]` entry. Copy it into `config.json` to make
+  it a config rule, then delete the dashboard copy.
+- **Needs a sync first.** The schedule picker reads a snapshot of Actual's schedules (name, cadence,
+  amount, account, payee, next date, completed) that each sync saves in its alert step, with no extra call
+  to Actual. Until a sync has run on a server, the picker is empty and the preview uses sample values.
+- **Preview and test send.** A preview renders one event for a rule with the stored schedule data and
+  stand-ins for what only a real occurrence has. A test send delivers it to each configured destination
+  and writes no alert history, so it never suppresses or triggers a real alert (5 per minute).
+- **A stored rule that stops validating** (for example after an upgrade tightens the schema) is
+  skipped with one warning per sync and shown as invalid in the list; the run does not fail.
+- **Reading the rules fails** (a database error): the run records `evaluation_failed` and keeps the
+  previous snapshot, rather than quietly evaluating config rules only.
+- **Erasure.** The history reset deletes the schedule snapshot but never the rules, which are
+  configuration; delete them with the rule `DELETE` route. Rows of a removed server linger until deleted
+  (a known limit). Rule values appear in the configuration audit trail.
 
 ## Design notes and known limitations
 
@@ -424,9 +455,6 @@ reset: once its `sync_history` is purged it drops off the dashboard's orphan lis
   or schedule alerts was enabled afterwards) looks identical to a real miss and is reported `missing`
   (or `cannotCheck`), which the operator can dismiss. Hiding a genuine miss would be worse than that
   occasional false `missing`. Skip rows live in the same ledger and are purged with it.
-- **Rule enable/mute state and dashboard-managed rules are out of scope for this release.** Every
-  rule from `config.json` is always enabled and never muted; a future release can add real
-  enable/mute state and dashboard-created rules without changing the evaluation or delivery engine.
 - **A new, renamed or rotated webhook destination gets its currently-open alerts re-sent once, but
   not their `resolved` message (#295 review round 2, M8; #297 F3, F6).** The ledger key for a
   webhook-style destination is its configured `name` (if any) plus a short hash of its URL - never

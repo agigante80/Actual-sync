@@ -1086,6 +1086,10 @@ A variable that does not apply to the current event type is always present as `n
 
 Every date in this feature - an occurrence date, a deadline, "today", account staleness - is computed in one timezone: the top-level `timezone` config key (see [CONFIG.md](docs/CONFIG.md#timezone-optional)), falling back to the process timezone (`TZ`, else the system zone), and to `UTC` when that is blank or not a valid IANA name. All servers share it.
 
+### Rules from the dashboard
+
+Besides `config.json`, a server with a `scheduleAlerts` block (an empty `"alerts": []` is enough) can have rules created in the dashboard. They are stored in the sync-history database, validated and evaluated exactly like config rules, and a rule in `config.json` wins over a dashboard rule with the same id. The editor screen is tracked in [#268](https://github.com/agigante80/Actual-sync/issues/268); the API is in [docs/HEALTH_CHECK.md](docs/HEALTH_CHECK.md#payment-rules-262). Editing needs `dashboard.allowConfigWrites: true` and dashboard auth, and a sync must have run once so the schedule picker has data.
+
 See **[docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md)** for the full configuration reference, the algorithm's edge cases, and message-template overrides.
 
 ---

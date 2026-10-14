@@ -97,6 +97,14 @@ The dashboard's alert switch and mute are stored in the sync-history SQLite data
 - It is cleared when the summary has been sent, on an early unmute, and at the latest 7 days after the mute's end date even if no summary could be sent. A history reset deletes every override and held-back record. `DELETE /api/dashboard/payments/:server/:alertId/state` removes one, and `GET /api/dashboard/payment-overrides` exports all of them.
 - Changes use the same gates as other configuration writes (auth, Origin check, `allowConfigWrites`).
 
+### Schedule snapshot and dashboard rules (#262)
+
+- **Schedule snapshot.** Each sync copies the names, cadence text, amounts, account names, payee names and next dates of Actual's schedules into the sync-history database (table `actual_schedule_snapshot`) so the rule editor can offer a picker without reaching Actual. It is not encrypted at rest. Enable dashboard auth when `scheduleAlerts` is used: `GET /api/dashboard/payment-schedules/:server` serves it.
+- **Dashboard rules** are stored in `payment_alert_rule` as the JSON of one `scheduleAlerts.alerts[]` entry (schedule name or prefix, thresholds, channels, templates). Do not put secrets in a rule or a template.
+- **Audit rows carry the definition.** Creating, replacing or deleting a rule writes a configuration audit row with the field values (`payment_alert_rule_create|update|delete`), in the same transaction as the change. Only the mute reason of a deleted rule's override is redacted.
+- **Test sends** go to your configured channels and write nothing to the alert history. The response shows a webhook's name or an opaque destination key, never a URL, and failures as fixed codes, never exception text. Test sends are limited to 5 per minute.
+- **Erasure.** A history reset (one server or all) deletes the schedule snapshot but not the rules, which are configuration; delete a rule with `DELETE /api/dashboard/payment-rules/:server/:alertId`. Rules and snapshot rows of a server that was removed from the config entirely stay until deleted or reset by the typed server name; audit rows are purged after `retentionDays`.
+
 ### HTTP security headers (#243)
 
 [`helmet`](https://helmetjs.github.io/) is mounted first in the Express stack, before the rate limiter and the body parser, so every response carries these headers, including `401`s and parse errors:

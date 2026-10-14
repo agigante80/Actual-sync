@@ -1,5 +1,14 @@
 # Configuration Migration Guide
 
+## Upgrading to the payment rule editor API release (#262)
+
+- **Two new tables, no action needed.** The sync-history database gains `actual_schedule_snapshot` (the Actual schedules captured by each sync) and `payment_alert_rule` (rules created in the dashboard), created on first start. A downgrade ignores them.
+- **New routes.** `GET /api/dashboard/payment-schedules/:server`, `GET`, `POST`, `PUT` and `DELETE /api/dashboard/payment-rules/:server[/:alertId]` and `POST /api/dashboard/payment-preview/:server`; the writes need `dashboard.allowConfigWrites: true` and dashboard auth other than `none`. See [HEALTH_CHECK.md](HEALTH_CHECK.md#payment-rules-262).
+- **`GET /api/dashboard/capabilities` gains `channels`**, the channels that currently have a destination. A client that compares the whole body must accept the new key.
+- **`GET /api/dashboard/payments` `source`** is now `"dashboard"` for a dashboard rule (it was always `"config"`).
+- **Empty `alerts` is allowed.** The schema no longer requires `scheduleAlerts.alerts` to have an item, so `"scheduleAlerts": { "alerts": [] }` opts a server in to dashboard rules.
+- **Reset semantics.** A history reset (one server or all) deletes the schedule snapshot but keeps dashboard rules, which are configuration. Delete a rule with `DELETE /api/dashboard/payment-rules/:server/:alertId`.
+
 ## Upgrading to the alert controls release (#261)
 
 - **New table, no action needed.** The sync-history database gains `payment_alert_override`, created on first start. It holds the dashboard's alert switch and mute (with the mute reason, up to 200 characters). A downgrade ignores it.

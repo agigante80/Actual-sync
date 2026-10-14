@@ -475,3 +475,42 @@ describe('GET /api/dashboard/capabilities channels (#262)', () => {
     expect((await call('GET', '/api/dashboard/capabilities')).json.channels).toEqual([]);
   });
 });
+
+describe('route table in docs/HEALTH_CHECK.md (#262)', () => {
+  const PATH_PREFIXES = ['/api/dashboard/payment-schedules', '/api/dashboard/payment-rules', '/api/dashboard/payment-preview'];
+
+  function documentedRoutes() {
+    const doc = fs.readFileSync(require('path').join(__dirname, '../../docs/HEALTH_CHECK.md'), 'utf8');
+    return doc.split('\n')
+      .map((line) => /^\|\s*(GET|POST|PUT|DELETE)\s*\|\s*`([^`]+)`\s*\|/.exec(line))
+      .filter((m) => m && PATH_PREFIXES.some((p) => m[2].startsWith(p)))
+      .map((m) => `${m[1]} ${m[2]}`)
+      .sort();
+  }
+
+  function mountedRoutes(svc) {
+    const found = [];
+    const visit = (stack) => {
+      for (const layer of stack) {
+        if (layer.route) {
+          for (const method of Object.keys(layer.route.methods)) {
+            if (PATH_PREFIXES.some((p) => layer.route.path.startsWith(p))) {
+              found.push(`${method.toUpperCase()} ${layer.route.path}`);
+            }
+          }
+        } else if (layer.handle && Array.isArray(layer.handle.stack)) {
+          visit(layer.handle.stack);
+        }
+      }
+    };
+    visit(svc.app.router.stack);
+    return found.sort();
+  }
+
+  test('the six documented routes are exactly the routes mounted, including the nested config router', async () => {
+    await h.boot();
+    const documented = documentedRoutes();
+    expect(documented).toHaveLength(6);
+    expect(mountedRoutes(h.state.svc)).toEqual(documented);
+  });
+});
