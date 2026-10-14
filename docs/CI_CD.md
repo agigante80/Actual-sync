@@ -417,6 +417,20 @@ throttle), all against fixture states under
 - Manual review recommended
 - Automatic fixes suggested when available
 
+### OpenSSF Scorecard
+
+`.github/workflows/scorecard.yml` runs [OpenSSF Scorecard](https://github.com/ossf/scorecard) every Monday 03:30 UTC and on manual dispatch (`gh workflow run scorecard.yml`), and uploads SARIF to the Security tab (code scanning, category `scorecard`) beside CodeQL and Trivy (#255). It measures; it fixes nothing. Its value is that a regression, such as someone adding a tag-pinned action, shows up without anyone having to remember the rule.
+
+The first Scorecard run on `main` sets the baseline score; Scorecard analyses the default branch, so no earlier run is meaningful.
+
+- **Permissions**: top level `contents: read`; the single job adds `security-events: write` (SARIF upload) and `actions: read`. No `id-token`.
+- **`publish_results: false`, deliberately.** `true` publishes the score to the OpenSSF public dataset and enables a public badge. That is the maintainer's decision, not a default. To opt in, set it to `true` and add `id-token: write` to the job.
+- **Baseline**: not recorded by this PR, because it needs a first run on GitHub. After merge, run the workflow once and note the score and failing checks on #255, then again once the rest of the hardening batch lands to confirm the number moved.
+
+**Checks the project cares about** (act on a drop): `Pinned-Dependencies`, `Token-Permissions`, `Dangerous-Workflow`, `Security-Policy`, `Vulnerabilities`, `Dependency-Update-Tool`, `SAST`, `Signed-Releases`, `Binary-Artifacts`, `Branch-Protection` (within what a single maintainer can enable), `Packaging`.
+
+**Checks deliberately out of scope** (a low score is accepted, do not chase it): `Contributors` (wants contributors from several organisations), `Code-Review` (a single maintainer cannot have a second approver on every PR), `CII-Best-Practices` (a badge programme this project has not applied to), `Fuzzing` (no fuzz targets worth maintaining for a sync service), `Maintained` and `CI-Tests` heuristics where they simply reflect repository age or PR volume.
+
 ### Pinning third-party actions
 
 A `uses:` line that points at a tag or branch runs whatever that ref holds at the moment the job starts, with the job's token and secrets. Tags are mutable: in March 2025 `tj-actions/changed-files` had its tags repointed to a credential-dumping commit, and every workflow tracking it ran the payload. So (#249):
