@@ -169,4 +169,4 @@ updates:
   # base image would open PRs for new `node` major versions, and the Node
   # version is a deliberate choice shared with CI (NODE_VERSION) and the
   # engines field, so it needs an `ignore` policy decided first. Tracked as its
-  # own ticket rather than bundled here.
+  # own ticket rather than bundled here: #362.
