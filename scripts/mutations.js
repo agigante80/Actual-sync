@@ -2477,8 +2477,8 @@ module.exports = [
         id: '332-digest-record-failure-rejects-batch', ticket: '#332',
         desc: "a failing ledger write after a successful digest send rejects deliver() again and stops the remaining channels",
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {",
-        mutant: "        throw error;\n        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {",
+        anchor: "      } catch (error) {\n        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {",
+        mutant: "      } catch (error) {\n        throw error;\n        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {",
         tests: 'scheduleAlertDelivery'
     },
     {
@@ -2493,8 +2493,8 @@ module.exports = [
         id: '332-digest-write-failure-stops-channel-items', ticket: '#332',
         desc: "a ledger write failure in digest mode stops recording the remaining items on the same channel",
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n      }",
-        mutant: "          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n        break;\n      }",
+        anchor: "the row may be resent next sync', {\n          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n      }",
+        mutant: "the row may be resent next sync', {\n          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n        break;\n      }",
         tests: 'scheduleAlertDelivery'
     },
     {

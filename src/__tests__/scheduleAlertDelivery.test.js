@@ -934,14 +934,18 @@ describe('deliver: digest guards each destination like immediate mode (#332)', (
       { ...SALARY, channels: ['slack'] }
     ]);
     const realRecord = history.recordScheduleAlert.bind(history);
+    // Fail the FIRST write whichever item the digest orders first, so the
+    // test cannot pass vacuously when the failing item happens to be last.
+    let first = null;
     history.recordScheduleAlert = async (row) => {
-      if (row.alertId === 'rent') throw new Error('SQLITE_BUSY');
+      if (first === null) { first = row.alertId; throw new Error('SQLITE_BUSY'); }
       return realRecord(row);
     };
     const result = await run();
     expect(sender.calls).toHaveLength(1);
     expect(result).toEqual({ sent: 1, skipped: 1 });
-    expect(history.rows.map((r) => r.alertId)).toEqual(['salary']);
+    expect(history.rows).toHaveLength(1);
+    expect(history.rows[0].alertId).not.toBe(first);
     expect(warnings.filter((w) => /ledger write failed/i.test(w.message))).toHaveLength(1);
   });
 
