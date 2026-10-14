@@ -1835,7 +1835,7 @@ module.exports = [
         desc: "a mismatched block error reports line 1 again",
         file: "src/lib/templateRenderer.js",
         anchor: " || / - (\\d+):\\d+/.exec(err.message);",
-        mutant: ";",
+        mutant: "      && /./.test(templates.resolved);",
         tests: "templateRenderer"
     },
     {
@@ -2880,16 +2880,16 @@ module.exports = [
         id: '326-completed-custom-template-used', ticket: '#326',
         desc: 'a custom resolved template without closed_by is used for a completed one-off, claiming a payment arrived',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
-        mutant: "if (false && event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
+        anchor: "    if (!handled) templates.resolved = DEFAULT_TEMPLATES.resolved;",
+        mutant: "    if (false && !handled) templates.resolved = DEFAULT_TEMPLATES.resolved;",
         tests: 'scheduleAlert'
     },
     {
         id: '326-payment-resolved-loses-custom-template', ticket: '#326',
         desc: 'the built-in resolved replaces every custom template without closed_by, including ordinary payments',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
-        mutant: "if (!/\\bclosed_by\\b/.test(templates.resolved))",
+        anchor: "  if (event.closedBy) {",
+        mutant: "  if (true) {",
         tests: 'scheduleAlert'
     },
     {
@@ -2961,8 +2961,8 @@ module.exports = [
         id: '356-deleted-custom-template-used', ticket: '#356',
         desc: "a custom resolved without closed_by is used for a deleted schedule, claiming a payment arrived",
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
-        mutant: "if (event.closedBy === 'completed' && !/\\bclosed_by\\b/.test(templates.resolved))",
+        anchor: "const handled = /\\bclosed_by\\b/.test(custom) && (literals.length === 0 || literals.includes(event.closedBy));",
+        mutant: "const handled = /\\bclosed_by\\b/.test(custom);",
         tests: 'scheduleAlert'
     },
     {
@@ -2987,6 +2987,14 @@ module.exports = [
         file: 'src/lib/scheduleAlertDelivery.js',
         anchor: "      await history.recordScheduleAlert({ ...key, event: 'ruleMatched', delivery: 'inferred' });",
         mutant: "      void key;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-matched-from-evaluations-only', ticket: '#356',
+        desc: "a rule is only counted as matched when it has an evaluation, so a cannotCheck-only rule never re-arms ruleUnmatched",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: ".filter((id) => !unmatchedIds.has(id))",
+        mutant: ".filter((id) => !unmatchedIds.has(id) && (evaluations || []).some((e) => e.alertId === id))",
         tests: 'scheduleAlert'
     }
 ];

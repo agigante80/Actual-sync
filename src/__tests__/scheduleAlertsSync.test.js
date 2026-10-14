@@ -1117,7 +1117,7 @@ describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356
 
     await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
     expect(closed()).toHaveLength(1);
-    expect(closed()[0]).toMatch(/Rent: removed in Actual\. Alert closed\./);
+    expect(closed()[0]).toMatch(/Rent \(5 Jan 2026\): removed in Actual\. Alert closed\./);
     expect(closed()[0]).not.toMatch(/arrived/);
 
     await run(apiFor({ deleted: true, lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
@@ -1169,6 +1169,31 @@ describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356
     await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z', srv);
     expect(closed()).toHaveLength(1);
     expect(texts().join('\n')).not.toMatch(/arrived/);
+  });
+
+  test('a #326-style template handling only "completed" gets the built-in text for a deleted schedule', async () => {
+    const srv = { scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'],
+      templates: { resolved: '{{#if (eq closed_by "completed")}}{{name}} completed.{{else}}{{name}}: {{received_amount}} arrived {{received_date}}.{{/if}}' }
+    }] } };
+    await run(apiFor(), '2026-01-10T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z', srv);
+    expect(closed()).toHaveLength(1);
+    expect(texts().join('\n')).not.toMatch(/arrived/);
+  });
+
+  test('ruleUnmatched re-arms when the rule only matches a schedule that yields cannotCheck', async () => {
+    const srv = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'], graceDays: 5 }] } };
+    const daily = makeFakeApi({
+      schedules: [rentSchedule({ date: { frequency: 'daily', start: '2026-01-01', endMode: 'never', interval: 1, patterns: [] } }), other()],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z', srv);
+    expect(unmatched()).toHaveLength(1);
+    await run(daily, '2026-01-11T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true }), '2026-01-12T00:00:00.000Z', srv);
+    expect(unmatched()).toHaveLength(2);
   });
 
   test('ruleUnmatched is sent once while unmatched, then silent', async () => {

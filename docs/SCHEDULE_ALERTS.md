@@ -145,7 +145,7 @@ A schedule deleted in Actual vanishes from the schedule list, so it is never eva
 an open `missing` in the ledger (including its reminders), the alert thread is closed with one `resolved`
 per open occurrence and destination:
 
-- The `resolved` uses the built-in "removed in Actual. Alert closed." wording (`closed_by` is `deleted`).
+- The `resolved` uses the built-in "<name> (<expected date>): removed in Actual. Alert closed." wording (`closed_by` is `deleted`).
   It is built from the ledger alone: the schedule is gone, so `name` is the rule's exact `schedule` name
   (the rule's `id` for a `schedulePrefix` rule), and payee, account and amounts are empty.
 - Only a `missing` whose occurrence date is inside the 90-day look-back window is closed, and only for
@@ -154,9 +154,10 @@ per open occurrence and destination:
 - Deletion is only inferred when Actual's schedule list was read successfully and is not empty. If the read
   fails the whole alert evaluation is skipped for that sync, and an empty list is treated as unreliable
   (a transient empty read must not close every open alert), so nothing is closed until a later sync sees
-  a non-empty list. The close is not lost; it is retried every sync.
-- A custom `resolved` template that never mentions `closed_by` is replaced by the built-in text for this
-  case, as for completed schedules.
+  a non-empty list. An empty list is never trusted, so if the budget's last schedule is deleted the alert
+  stays open until a later sync reads a non-empty list.
+- A custom `resolved` template must handle each `closed_by` value it wants to customise (it must name
+  `"deleted"` here, `"completed"` for completed schedules); otherwise the built-in text is used for that case.
 - A rule bound to the deleted schedule by exact name now matches nothing, so it also sends one
   `ruleUnmatched` per destination (not one per sync).
 

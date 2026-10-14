@@ -148,7 +148,7 @@ const DEFAULT_TEMPLATES = {
   // completed in Actual instead of a payment arriving; the other branch is the
   // original text, unchanged. #356: "deleted" is the schedule removed from Actual.
   resolved: '{{#if (eq closed_by "completed")}}✅ {{name}}: marked completed in Actual. Alert closed.'
-    + '{{else if (eq closed_by "deleted")}}✅ {{name}}: removed in Actual. Alert closed.{{else}}'
+    + '{{else if (eq closed_by "deleted")}}✅ {{name}} ({{expected_date}}): removed in Actual. Alert closed.{{else}}'
     + '✅ {{name}}: {{received_amount}} arrived {{received_date}}, {{#if (eq days_overdue 0)}}on time'
     + '{{else}}{{days_overdue}} day(s) after the deadline{{/if}}. Alert closed.{{/if}}',
   // One wording per `reason` (#296): only stale / not-synced are about the bank
@@ -1039,11 +1039,22 @@ async function markRulesMatched(matchedAlertIds, history, server, now, logger) {
  * "arrived ," with empty amount and date for a completed one-off, falsely
  * saying money arrived. So when the event is closed by completion and the
  * custom `resolved` never mentions `closed_by`, the built-in `resolved` is
- * used for that event. #356: the same holds for `closedBy: 'deleted'`. A template that mentions it is honoured as written.
+ * used for that event. #356: the same holds for `closedBy: 'deleted'`.
+ * A custom `resolved` is honoured only when it mentions `closed_by` and, if
+ * it compares `closed_by` to quoted literals, one of them is this event's
+ * value: a #326-style template that branches on `(eq closed_by "completed")`
+ * and sends the payment text otherwise would render "arrived ." for a deleted
+ * schedule, so it gets the built-in text for the value it does not handle. A
+ * bare `{{#if closed_by}}` has no literals and is honoured as written.
  */
 function templatesFor(event, rule) {
   const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
-  if (event.closedBy && !/\bclosed_by\b/.test(templates.resolved)) templates.resolved = DEFAULT_TEMPLATES.resolved;
+  if (event.closedBy) {
+    const custom = templates.resolved;
+    const literals = [...custom.matchAll(/\bclosed_by\s+["']([^"']*)["']/g)].map((m) => m[1]);
+    const handled = /\bclosed_by\b/.test(custom) && (literals.length === 0 || literals.includes(event.closedBy));
+    if (!handled) templates.resolved = DEFAULT_TEMPLATES.resolved;
+  }
   return templates;
 }
 
@@ -1092,8 +1103,13 @@ async function deliver(events, { evaluations, completedSchedules, existingSchedu
   let skipped = 0;
 
   const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log, { completedSchedules, existingScheduleIds, rules, now, timezone });
+  // #356 L2: a rule matched this sync unless it produced a `ruleUnmatched`
+  // event. Deriving it from evaluations missed rules whose schedule only
+  // yields cannotCheck or is a completed recurring one, leaving the
+  // ruleUnmatched re-arm marker unwritten.
+  const unmatchedIds = new Set((events || []).filter((e) => e.event === 'ruleUnmatched').map((e) => e.alertId));
   await markRulesMatched(
-    new Set([...(evaluations || []).map((e) => e.alertId), ...(completedSchedules || []).map((c) => c.alertId)]),
+    new Set((rules || []).map((r) => r.id).filter((id) => !unmatchedIds.has(id))),
     history, server, now, log
   );
   const allEvents = [...(events || []), ...resolvedEvents];
