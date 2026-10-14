@@ -36,15 +36,15 @@ if (!hasChrome) {
 const run = hasChrome ? it : it.skip;
 
 describe('e2e harness guard (#289)', () => {
-  run('withFixture rejects specs that reach the network, with and without a CSP', () => {
+  run('withFixture rejects specs that reach the network, with and without a CSP, and lets data: URLs through', () => {
     const res = spawnSync(
       process.execPath,
       ['--experimental-vm-modules', path.join(ROOT, 'node_modules', '.bin', 'jest'),
         '--config', 'jest.e2e.config.js', '--runInBand', '--forceExit',
-        'tests/e2e/csp.e2e.js', '-t', 'withFixture rejects'],
+        'tests/e2e/csp.e2e.js', '-t', 'withFixture (rejects|accepts)'],
       { cwd: ROOT, encoding: 'utf8', timeout: 110000 }
     );
-    expect(res.stderr + res.stdout).toMatch(/4 passed/);
+    expect(res.stderr + res.stdout).toMatch(/5 passed/);
     expect(res.status).toBe(0);
   }, 120000);
 });

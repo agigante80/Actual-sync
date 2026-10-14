@@ -58,6 +58,9 @@ async function renderScreenshot(browser, entry) {
 
   try {
     await page.setViewport({ width: 1920, height: 1080 });
+    // A state behind basic auth (the writing Payments states, #261) needs its test credentials.
+    const auth = fixture.state.auth;
+    if (auth && auth.type === 'basic') await page.authenticate({ username: auth.username, password: auth.password });
     await page.goto(`${fixture.url}/dashboard`, { waitUntil: 'networkidle0' });
 
     if (entry.tab && entry.tab !== 'overview') {

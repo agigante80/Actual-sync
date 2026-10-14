@@ -139,7 +139,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate) applied to failures
 - ✅ **Rate Limiting** - Failure-notification spam prevention with configurable intervals
 - ✅ **Missing-Payment Alerts** - Compares Actual's own schedules against posted transactions per server and notifies when an expected payment is late, missing, wrong-amount, or cannot be checked (stale bank connection); see [Missing-Payment Alerts](#-missing-payment-alerts)
-- ✅ **Payments Tab** - Read-only dashboard view of every watched schedule: state, expected amount, next due date, deadline, the last 6 occurrences and the last alert sent; works without a connection to Actual; see [Payments tab](#payments-tab)
+- ✅ **Payments Tab** - Dashboard view of every watched schedule, with an on/off switch and mute-until per alert: state, expected amount, next due date, deadline, the last 6 occurrences and the last alert sent; works without a connection to Actual; see [Payments tab](#payments-tab)
 
 ### 🛡️ Reliability & Security
 
@@ -688,6 +688,22 @@ The **Payments** tab lists every schedule watched by [Missing-Payment Alerts](#-
 | Skipped (grey, dashed) | skipped in Actual | no |
 
 See [docs/DASHBOARD.md](docs/DASHBOARD.md#payments-tab) for dates, refresh and failure messages.
+
+##### Turning alerts off and muting
+
+The last column of the tab switches an alert off or on and mutes it until a date, without editing `config.json` or restarting. It needs `healthCheck.dashboard.allowConfigWrites: true` and dashboard auth other than `none` (otherwise the controls are shown disabled, with a tooltip saying why).
+
+![Payments tab with one alert muted](docs/screenshots/dashboard-payments-muted.png)
+
+The pill always shows what Actual says; a separate badge beside it shows "Muted until <date>" or "Disabled in config". A mute needs a **reason**. The alert keeps being evaluated while muted, and when the mute ends each destination gets **one summary message** if anything was held back (nothing if not). Unmuting early sends no summary.
+
+**Pause the alert while a parking spot is vacant.** Click **Mute...** on the parking row, pick the date the spot is let again, and write "vacant until 1 March". Nothing is sent for that alert until the end of that day. If the rent was missed meanwhile, you then get one message such as:
+
+> 🔔 Rent - Parking: mute ended (1 Jan 2026 to 1 Mar 2026, "vacant until 1 March"). 1 event(s) while muted: missing for 5 Feb 2026;
+
+**Stop an alert permanently.** There are two ways. Put `"enabled": false` on the alert in `config.json` (see the `gym` alert in `config/config.example.json`): it stays visible in the tab with a "Disabled in config" badge, and the dashboard cannot switch it on. Or use the switch on the row: it is stored by the dashboard, can be flipped back at any time, and the config setting wins over it.
+
+The reason is stored in the sync-history database, shown in the dashboard as text, and **included in the summary message**, so it goes to your notification channels. Remove `{{reason}}` from the `muteEnded` template if you do not want that. See [docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md#switching-alerts-off-and-muting) for the exact rules and [docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md) for how the reason is stored and cleared.
 
 ---
 

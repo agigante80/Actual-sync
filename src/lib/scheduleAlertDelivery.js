@@ -52,6 +52,7 @@
 const moment = require('moment-timezone');
 const crypto = require('crypto');
 const { compileTemplateSet } = require('./templateRenderer');
+const { muteEndsAt } = require('./scheduleAlertRules');
 const { MAX_LOOKBACK_DAYS } = require('./scheduleAlerts');
 const { DISCORD_CONTENT_MAX, SLACK_TEXT_MAX, TELEGRAM_TEXT_MAX, escapeTelegramHtml, escapeSlack } = require('./channelEscape');
 
@@ -128,7 +129,9 @@ const VARIABLES = [
   'days_overdue', 'received_amount', 'received_date', 'difference',
   'last_sync', 'reason', 'budget', 'alert_id',
   'closed_by', 'expected_amount_raw', 'expected_date_raw', 'deadline_raw', 'days_overdue_raw',
-  'received_amount_raw', 'received_date_raw', 'difference_raw', 'last_sync_raw'
+  'received_amount_raw', 'received_date_raw', 'difference_raw', 'last_sync_raw',
+  // #261: only the muteEnded template fills these; they are null elsewhere.
+  'muted_from', 'muted_until', 'events_count', 'events'
 ];
 
 /**
@@ -158,7 +161,10 @@ const DEFAULT_TEMPLATES = {
     + '{{else if (eq reason "error")}}⏸️ Cannot check {{name}}: the check failed with an error. See the service log.'
     + '{{else}}⏸️ Cannot check {{name}}: {{account}} {{#if last_sync}}has not synced since {{last_sync}}{{else}}has never synced{{/if}} (deadline {{deadline}}). '
     + 'Check the bank connection.{{/if}}',
-  ruleUnmatched: '❓ Payment alert "{{alert_id}}" matches no schedule in {{budget}}. Check the schedule name in Actual.'
+  ruleUnmatched: '❓ Payment alert "{{alert_id}}" matches no schedule in {{budget}}. Check the schedule name in Actual.',
+  // #261: the one summary sent when a mute ends and something happened during it.
+  muteEnded: '🔔 {{name}}: mute ended ({{muted_from}} to {{muted_until}}, "{{reason}}"). '
+    + '{{events_count}} event(s) while muted: {{#each events as |e|}}{{e.event}} for {{e.expected_date}}; {{/each}}'
 };
 
 /**
@@ -262,7 +268,11 @@ function buildContext(event, evaluation, rule, { server, timezone }) {
     reason: event.reason || null,
     closed_by: event.closedBy || null,
     budget: server,
-    alert_id: event.alertId
+    alert_id: event.alertId,
+    muted_from: null,
+    muted_until: null,
+    events_count: null,
+    events: null
   };
 }
 
@@ -375,9 +385,10 @@ async function destinationDueState(event, rule, destinationKey, history, server,
   // per-destination (`channel: destinationKey`), unlike `deriveResolvedEvents`'s
   // own coarse existence check, which only asks "does ANY channel need this".
   if (event.event === 'resolved') {
+    // #261: only a `sent` missing row means "was told"; a `muted` one was held back.
     const missingRow = await history.findLatestScheduleAlert({
       server, alertId: event.alertId, scheduleId: event.scheduleId,
-      occurrenceDate: event.occurrence, event: 'missing', channel: destinationKey
+      occurrenceDate: event.occurrence, event: 'missing', channel: destinationKey, delivery: 'sent'
     });
     if (!missingRow) return { due: false, lastSentAt: null }; // this destination was never told it was missing
     const resolvedRow = await history.findLatestScheduleAlert({
@@ -396,6 +407,9 @@ async function destinationDueState(event, rule, destinationKey, history, server,
     occurrenceDate: event.occurrence, event: event.event, channel: destinationKey
   });
   if (!latest) return { due: true, lastSentAt: null };
+  // #261: held back by a mute. The mute-end summary covers it; a reminder
+  // here would send an individual message while the summary is pending.
+  if (latest.delivery === 'muted') return { due: false, lastSentAt: null };
   if (event.event === 'ruleUnmatched') {
     // #356: no reminder interval. The rule matching again (a `ruleMatched`
     // marker newer than this destination's row) re-arms it.
@@ -979,7 +993,8 @@ async function deriveResolvedEvents(evaluations, history, server, logger, { comp
       let missingRow;
       try {
         missingRow = await history.findLatestScheduleAlert({
-          server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId, occurrenceDate: occ.date, event: 'missing'
+          server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId, occurrenceDate: occ.date, event: 'missing',
+          delivery: 'sent' // #261: a muted missing row does not mean anybody was told
         });
       } catch (error) {
         logger.warn('Schedule alert ledger lookup failed; resolved check withheld until the next sync', {
@@ -1074,6 +1089,211 @@ async function mayRecord(event, rule, sender, history, server, now, timezone) {
   return due.length > 0;
 }
 
+
+/**
+ * Normalise what `ruleState(alertId)` returns (#261). `deliver` accepts the
+ * minimal `{ enabled, mutedUntil }` shape: `muted` and `muteEndDue` are then
+ * derived here, with the mute lasting through the whole `mutedUntil` day in
+ * `timezone`.
+ */
+function effectiveState(raw, now, timezone) {
+  const state = raw || {};
+  const mutedUntil = state.mutedUntil || null;
+  const muted = typeof state.muted === 'boolean'
+    ? state.muted
+    : mutedUntil !== null && moment.tz(now, timezone).valueOf() < muteEndsAt(mutedUntil, timezone).getTime();
+  const muteEndDue = typeof state.muteEndDue === 'boolean' ? state.muteEndDue : mutedUntil !== null && !muted;
+  return { ...state, enabled: state.enabled !== false, mutedUntil, muted, muteEndDue };
+}
+
+/**
+ * Remember an event a mute held back (#261): one `muted` row per destination
+ * that has nothing for the key yet (check, then insert; `deliver` runs one at
+ * a time per server). A `resolved` is remembered only for a destination that
+ * was told (holds a `sent` missing row) and has no resolved row yet. Reminders
+ * write nothing: the destination already has a row for the key.
+ */
+async function recordMutedEvent(event, rule, sender, history, server, log) {
+  for (const destination of destinationsForRule(rule, sender)) {
+    try {
+      const key = {
+        server, alertId: event.alertId, scheduleId: event.scheduleId,
+        occurrenceDate: event.occurrence, channel: destination.key
+      };
+      if (event.event === 'resolved') {
+        if (!(await history.findLatestScheduleAlert({ ...key, event: 'missing', delivery: 'sent' }))) continue;
+      }
+      if (await history.findLatestScheduleAlert({ ...key, event: event.event })) continue;
+      await history.recordScheduleAlert({ ...key, event: event.event, delivery: 'muted' });
+    } catch (error) {
+      log.warn('Schedule alert muted row could not be written; will retry next sync', {
+        server, alertId: event.alertId, event: event.event, channel: destination.channel, error: error.message
+      });
+    }
+  }
+}
+
+/**
+ * A muted `missing` that was never sent is dropped once the occurrence is
+ * received or late (#261): the destination was never told, so there is nothing
+ * to resolve and nothing to summarise.
+ */
+function dropPaidMutedRows({ evaluations, rulesById, stateOf, history, sender, server, log }) {
+  if (typeof history.deleteMutedRow !== 'function') return;
+  for (const evaluation of evaluations) {
+    const rule = rulesById.get(evaluation.alertId);
+    const state = rule && stateOf(rule.id);
+    if (!state || !state.enabled || !(state.muted || state.muteEndDue)) continue;
+    for (const occ of evaluation.occurrences || []) {
+      if (occ.state !== 'received' && occ.state !== 'late') continue;
+      for (const destination of destinationsForRule(rule, sender)) {
+        try {
+          history.deleteMutedRow({
+            server, alertId: evaluation.alertId, scheduleId: evaluation.scheduleId,
+            occurrenceDate: occ.date, event: 'missing', channel: destination.key
+          });
+        } catch (error) {
+          log.warn('Schedule alert muted row could not be dropped', { server, alertId: evaluation.alertId, error: error.message });
+        }
+      }
+    }
+  }
+}
+
+/** The muteEnded render context for one destination (#261). */
+function buildMuteEndedContext({ rule, override, keyRows, evaluations, server, timezone }) {
+  const dateFormat = rule.dateFormat || 'D MMM YYYY';
+  const context = Object.fromEntries(VARIABLES.map((name) => [name, null]));
+  const single = evaluations.length === 1 ? evaluations[0] : null;
+  const deadlineOf = (row) => {
+    for (const evaluation of evaluations) {
+      if (evaluation.scheduleId !== row.scheduleId) continue;
+      const occ = (evaluation.occurrences || []).find((o) => o.date === row.occurrenceDate);
+      if (occ) return occ.deadline || null;
+    }
+    return null;
+  };
+  const events = [...keyRows].sort((a, b) =>
+    String(a.occurrenceDate).localeCompare(String(b.occurrenceDate)) || a.event.localeCompare(b.event))
+    .map((row) => ({
+      event: row.event,
+      expected_date: formatDate(row.occurrenceDate, dateFormat, timezone),
+      deadline: formatDate(deadlineOf(row), dateFormat, timezone)
+    }));
+  return Object.assign(context, {
+    name: rule.schedule || rule.schedulePrefix || rule.id,
+    payee: single ? single.payee : null,
+    account: single ? single.account : null,
+    cadence: single ? single.cadenceText : null,
+    budget: server,
+    alert_id: rule.id,
+    muted_from: formatDate(override.mutedFrom, dateFormat, timezone),
+    muted_until: formatDate(override.mutedUntil, dateFormat, timezone),
+    reason: override.reason || null,
+    events_count: events.length,
+    events
+  });
+}
+
+/**
+ * The mute-end phase for one rule (#261): after the end of the `mutedUntil`
+ * day, send each destination one `muteEnded` message when something was held
+ * back for it, record it, write `sent` rows for the covered keys, and clear
+ * the mute once every destination that needed a summary has one.
+ */
+async function summarizeMute({ rule, override, evaluations, history, sender, server, timezone, log, deadline }) {
+  const alertId = rule.id;
+  const clear = () => history.setOverride({ server, alertId, enabled: override.enabled });
+  const destinations = destinationsForRule(rule, sender);
+  if (destinations.length === 0) {
+    log.warn('Mute ended but the rule has no usable destination; mute cleared without a summary', { server, alertId });
+    history.deleteMutedRows({ server, alertId });
+    clear();
+    return;
+  }
+  // No upper bound on purpose: rows are only written while muted, and a row
+  // recorded just after the mute day ends (evaluation started before midnight)
+  // must still be summarized, or it stays the latest row and blocks the alert.
+  const mutedRows = history.listMutedRows({ server, alertId, since: override.mutedFrom || undefined });
+  const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+  let complete = true;
+
+  for (const destination of destinations) {
+    const keys = new Map();
+    for (const row of mutedRows) {
+      if (row.channel === destination.key) keys.set(`${row.scheduleId}|${row.occurrenceDate}|${row.event}`, row);
+    }
+    if (keys.size === 0) continue;
+    const summaryKey = {
+      server, alertId, scheduleId: null, occurrenceDate: override.mutedUntil, channel: destination.key
+    };
+    if (await history.findLatestScheduleAlert({ ...summaryKey, event: 'muteEnded' })) continue; // already told
+    if (deadline != null && Date.now() >= deadline) {
+      log.warn('Schedule alert delivery budget exhausted; mute summary deferred to next sync', {
+        server, alertId, channel: destination.channel
+      });
+      complete = false;
+      break;
+    }
+    let ok = false;
+    try {
+      const modes = CHANNEL_TO_MODES[destination.channel] || [];
+      const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
+      const context = buildMuteEndedContext({ rule, override, keyRows: [...keys.values()], evaluations, server, timezone });
+      const outputs = buildChannelOutput(renderer, 'muteEnded', context, destination.channel, destination.target, context.name);
+      ok = await sendOnce(sender, outputs, { server, alertId, event: 'muteEnded', occurrence: override.mutedUntil, logger: log });
+    } catch (error) {
+      log.warn('Mute summary render failed; will retry next sync', { server, alertId, channel: destination.channel, error: error.message });
+    }
+    if (!ok) { complete = false; continue; }
+    try {
+      await history.recordScheduleAlert({ ...summaryKey, event: 'muteEnded', delivery: 'sent' });
+      for (const row of keys.values()) {
+        await history.recordScheduleAlert({
+          server, alertId, scheduleId: row.scheduleId, occurrenceDate: row.occurrenceDate,
+          event: row.event, delivery: 'sent', channel: destination.key
+        });
+      }
+    } catch (error) {
+      log.warn('Mute summary ledger write failed after a successful send; it may be resent next sync', {
+        server, alertId, channel: destination.channel, error: error.message
+      });
+      complete = false;
+    }
+  }
+  if (complete) clear();
+}
+
+/**
+ * The mute-end phase over every rule (#261). Runs first in `deliver`, before
+ * the eligibility loop and the digest early return. A rule that is switched
+ * off or locked by config defers its summary (the 7-day expiry still wins).
+ */
+async function runMuteEndPhase({ rules, evaluations, stateOf, history, sender, server, timezone, log, now, deadline }) {
+  if (typeof history.getOverride !== 'function' || typeof history.listMutedRows !== 'function') return;
+  try {
+    if (typeof history.expireStaleMutes === 'function') {
+      history.expireStaleMutes({ server, timezone, now: moment.tz(now, timezone).toDate() });
+    }
+  } catch (error) {
+    log.warn('Stale mute expiry failed', { server, error: error.message });
+  }
+  for (const rule of rules) {
+    const state = stateOf(rule.id);
+    if (!state.muteEndDue || !state.enabled) continue;
+    try {
+      const override = history.getOverride(server, rule.id); // fresh: the expiry above may have cleared it
+      if (!override || !override.mutedUntil) continue;
+      await summarizeMute({
+        rule, override, evaluations: evaluations.filter((e) => e.alertId === rule.id),
+        history, sender, server, timezone, log, deadline
+      });
+    } catch (error) {
+      log.warn('Mute summary failed; will retry next sync', { server, alertId: rule.id, error: error.message });
+    }
+  }
+}
+
 /**
  * Deliver a batch of events (and the `resolved` events derived from
  * `evaluations` + the ledger).
@@ -1081,7 +1301,7 @@ async function mayRecord(event, rule, sender, history, server, now, timezone) {
  * @param {Object[]} events - `evaluate()`'s `events[]`
  * @param {Object} opts
  * @param {Object[]} opts.evaluations - `evaluate()`'s `evaluations[]`
- * @param {(alertId:string) => {enabled:boolean, mutedUntil:?string}} opts.ruleState
+ * @param {(alertId:string) => {enabled:boolean, mutedUntil:?string, muted?:boolean, muteEndDue?:boolean}} opts.ruleState
  * @param {Object} opts.history - the `schedule_alerts` ledger (see `syncHistory.js`)
  * @param {{sendTemplated:Function, config?:Object}} opts.sender - `notificationService`'s public entry point
  * @param {Date|string} opts.now
@@ -1103,6 +1323,19 @@ async function deliver(events, { evaluations, completedSchedules, existingSchedu
   const rulesById = new Map((rules || []).map((r) => [r.id, r]));
   let sent = 0;
   let skipped = 0;
+
+  const states = new Map();
+  const stateOf = (alertId) => {
+    if (!states.has(alertId)) states.set(alertId, effectiveState(ruleState(alertId), now, timezone));
+    return states.get(alertId);
+  };
+
+  // #261: drop held-back missing rows that were paid, then send any due mute
+  // summaries. Both run before resolved events are derived (a summary turns
+  // the covered missing rows into `sent`, so a later resolved reaches the
+  // destinations that were told) and before the digest early return.
+  dropPaidMutedRows({ evaluations: evaluations || [], rulesById, stateOf, history, sender, server, log });
+  await runMuteEndPhase({ rules: rules || [], evaluations: evaluations || [], stateOf, history, sender, server, timezone, log, now, deadline });
 
   const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log, { completedSchedules, existingScheduleIds, rules, now, timezone });
   // #356 L2: a rule matched this sync unless it produced a `ruleUnmatched`
@@ -1127,9 +1360,15 @@ async function deliver(events, { evaluations, completedSchedules, existingSchedu
     const rule = rulesById.get(event.alertId);
     if (!rule) { skipped += 1; continue; }
 
-    const state = ruleState(event.alertId) || { enabled: true, mutedUntil: null };
+    const state = stateOf(event.alertId);
+    // Disabled (config or switch): no message and no ledger row.
     if (!state.enabled) { skipped += 1; continue; }
-    if (state.mutedUntil && moment(now).isBefore(moment(state.mutedUntil))) { skipped += 1; continue; }
+    // Muted: no message; remember it per destination for the summary.
+    if (state.muted) {
+      await recordMutedEvent(event, rule, sender, history, server, log);
+      skipped += 1;
+      continue;
+    }
 
     // #295 review, M2: a rule resolving to zero usable destinations at all
     // (not just "nothing due right now") gets one WARN and no ledger row,

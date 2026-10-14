@@ -13,6 +13,8 @@
  */
 'use strict';
 
+const moment = require('moment-timezone');
+
 const DEFAULT_GRACE_DAYS = 3;
 const DEFAULT_EARLY_DAYS = 2;
 const DEFAULT_STALE_AFTER_DAYS = 3;
@@ -73,7 +75,10 @@ function normalizeRule(alert, block) {
     staleAfterDays: block.staleAfterDays != null ? block.staleAfterDays : DEFAULT_STALE_AFTER_DAYS,
     dateFormat: block.dateFormat || 'D MMM YYYY',
     locale: block.locale || 'en',
-    digest: block.digest === true
+    digest: block.digest === true,
+    // #261: `enabled: false` in config switches the rule off for good; the
+    // dashboard cannot turn it back on (see ruleState).
+    enabled: alert.enabled !== false
   };
 }
 
@@ -183,8 +188,51 @@ function expandRules(rules, schedules) {
   return bindings;
 }
 
+/**
+ * The instant a mute ends: the start of the calendar day after `mutedUntil`
+ * in `timezone` (a mute lasts through the whole `mutedUntil` day). (#261)
+ *
+ * @param {string} mutedUntil - `YYYY-MM-DD`
+ * @param {string} timezone - IANA name
+ * @returns {Date}
+ */
+function muteEndsAt(mutedUntil, timezone) {
+  return moment.tz(mutedUntil, 'YYYY-MM-DD', timezone || 'UTC').add(1, 'day').startOf('day').toDate();
+}
+
+/**
+ * The effective state of one rule (#261). Precedence: config `enabled: false`
+ * wins over a dashboard override, which wins over the default (enabled, not
+ * muted). `mutedUntil`, `mutedFrom` and `reason` keep being returned after the
+ * mute has ended until the summary is sent or expires (`muteEndDue`).
+ *
+ * @param {Object} args
+ * @param {{enabled?: boolean}} args.rule - a normalized rule
+ * @param {?{enabled: boolean, mutedFrom: ?string, mutedUntil: ?string, reason: ?string}} args.override
+ * @param {Date} args.now
+ * @param {string} args.timezone
+ * @returns {{enabled: boolean, muted: boolean, mutedFrom: ?string, mutedUntil: ?string, reason: ?string, lockedByConfig: boolean, muteEndDue: boolean}}
+ */
+function ruleState({ rule, override, now, timezone }) {
+  const lockedByConfig = rule && rule.enabled === false;
+  const o = override || {};
+  const mutedUntil = o.mutedUntil || null;
+  const muted = mutedUntil !== null && now.getTime() < muteEndsAt(mutedUntil, timezone).getTime();
+  return {
+    enabled: !lockedByConfig && o.enabled !== false,
+    muted,
+    mutedFrom: mutedUntil ? (o.mutedFrom || null) : null,
+    mutedUntil,
+    reason: mutedUntil ? (o.reason || null) : null,
+    lockedByConfig: Boolean(lockedByConfig),
+    muteEndDue: mutedUntil !== null && !muted
+  };
+}
+
 module.exports = {
   slugify,
+  ruleState,
+  muteEndsAt,
   deriveRuleId,
   getRules,
   checkUniqueIds,

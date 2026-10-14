@@ -16,6 +16,7 @@ unconfirmable instead of missing.
 - [Enabling it](#enabling-it)
 - [Configuration reference](#configuration-reference)
 - [Event types](#event-types)
+- [Switching alerts off and muting](#switching-alerts-off-and-muting)
 - [De-duplication and reminders](#de-duplication-and-reminders)
 - [Digest mode](#digest-mode)
 - [Startup validation](#startup-validation)
@@ -106,6 +107,7 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 | `amountTolerancePct` | number, 0-100 | derived | How far a posted amount may differ from the schedule's expected amount and still be on time. The sign must match for an unlinked transaction, in both the on-time and the late window: an outgoing refund of the same size is not the incoming payment and is never reported as a wrong amount or a late payment. A transaction Actual itself linked to the schedule is always trusted. A schedule with amount `0` accepts any sign (a non-zero payment is then a wrong amount). A range amount ("between") accepts the sign of either bound, so a range spanning zero or with a zero bound accepts anything. Defaults to Actual's own schedule amount mode: `0` for an exact amount, `7.5` for "approximately". |
 | `remindEveryDays` | integer, 1-30 | off | Repeat an unresolved `missing` alert every N days instead of sending it once. |
 | `channels` | array of `telegram`\|`email`\|`slack`\|`discord`\|`webhook`\|`ntfy` | every configured channel | Which notification channels this rule uses. A channel with no usable destination configured is silently skipped. |
+| `enabled` | boolean | `true` | `false` switches the alert off permanently: it is still evaluated and shown in the Payments tab, but sends nothing, and the dashboard cannot switch it on. See [Switching alerts off and muting](#switching-alerts-off-and-muting). |
 | `templates` | object | - | Per-rule template overrides. Takes priority over the block-level `templates`. |
 
 ## Event types
@@ -170,6 +172,52 @@ budget still loading, a partial download) would otherwise read as "every schedul
   unmatched stays deduped. The next sync that reads a non-empty list evaluates normally.
 - Trade-off: if you really delete every schedule, open alerts stay open and no `ruleUnmatched` is sent
   until a schedule exists again.
+
+## Switching alerts off and muting
+
+Besides `enabled: false` in the config file, an operator can switch an alert off, or mute it until a
+date with a reason, from the dashboard (see [DASHBOARD.md](DASHBOARD.md#turning-alerts-off-and-muting)).
+These are runtime overrides stored in the sync-history database; the config file is never rewritten.
+Evaluation is unchanged: every rule is still evaluated and the Payments tab and its snapshot keep
+showing the real state. Only delivery changes.
+
+**Precedence:** `enabled: false` in the config wins, then the dashboard override, then the default
+(on, not muted). A config-disabled alert cannot be switched on or muted from the dashboard (its old
+mute can still be cleared). An override whose alert or server is no longer configured is ignored.
+
+| Rule state | What delivery does with an event | Ledger row |
+|---|---|---|
+| on, not muted | sends it | `sent` |
+| muted | sends nothing, for all five event kinds | `muted`, one per destination and event |
+| off (config or switch) | sends nothing | none |
+
+Switching an alert back on delivers what is still open at the next sync. A `muted` row stops the
+same event repeating at that destination (reminders write nothing during a mute), and a
+`resolved` notice goes only to destinations that were actually told about the `missing` event.
+
+**Mute lifecycle.** A mute lasts until the end of its `mutedUntil` day in the configured
+[timezone](#timezone), up to 365 days ahead. Extending it keeps its original start.
+- *Early unmute* deletes the alert's held-back `muted` rows and sends no summary.
+- *Mute end:* on the first sync after that day, each destination that had at least one event held
+  back gets **one** `muteEnded` message (a separate message even in digest mode); a destination with
+  nothing held back gets nothing. Events that resolved themselves during the mute (a `missing`
+  occurrence that was then paid) are dropped silently and not counted. The covered events are then
+  recorded as sent, so a still-open `missing` is not sent a second time, and the mute fields and
+  reason are cleared once every destination has its summary. A failed send is retried on the next
+  sync, only for the failed destinations. Meanwhile new events are delivered normally, and the tab
+  shows "Mute ended, summary pending".
+- *Deferred:* if the alert is switched off or config-disabled when the mute ends, the summary waits.
+- *Expiry:* 7 days after the end day (counted from the end of that day) the reason and the held-back
+  rows are deleted and the mute is cleared even if no summary was sent, so a failing destination
+  cannot keep them forever. This runs for every override of the server on each sync and at startup.
+- *Retention:* the ledger purge skips `muted` rows of an alert whose mute is still set.
+
+Delivery runs one at a time (inside the sync queue), but the dashboard writes are not queued behind
+a sync: a change that lands while a delivery run is in progress takes effect on the
+next run, and an early unmute at that moment can leave a few held-back rows or one extra summary.
+
+**Prefix rules.** A `schedulePrefix` rule has one override for the whole rule (keyed by server and
+alert id), not one per matched schedule.
 
 ## De-duplication and reminders
 
@@ -279,8 +327,8 @@ mid-sync (#295 review, H6/M2):
 
 Message wording uses the same [Handlebars](https://handlebarsjs.com/) template engine as the rest
 of Actual-sync's notifications (see [NOTIFICATIONS.md](./NOTIFICATIONS.md), "Message templates").
-Override any of the five built-in messages (`missing`, `wrongAmount`, `resolved`, `cannotCheck`,
-`ruleUnmatched`) under `scheduleAlerts.templates` (block-wide) or `alerts[].templates` (per rule):
+Override any of the six built-in messages (`missing`, `wrongAmount`, `resolved`, `cannotCheck`,
+`ruleUnmatched`, and `muteEnded`, the one summary sent when a [mute](#switching-alerts-off-and-muting) ends) under `scheduleAlerts.templates` (block-wide) or `alerts[].templates` (per rule):
 
 ```json
 "scheduleAlerts": {
@@ -324,8 +372,11 @@ template that wants to format it differently.
 | `received_date` / `received_date_raw` | The date the matching transaction posted |
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
-| `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events) |
+| `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events; for `muteEnded`, the reason given for the mute) |
 | `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual, `deleted` when the schedule was removed in Actual (empty otherwise) |
+| `muted_from` / `muted_until` | `muteEnded` only: the start and the end date of the mute, in `dateFormat` |
+| `events_count` | `muteEnded` only: how many distinct events were held back |
+| `events` | `muteEnded` only: the held-back events, each with `event`, `expected_date` and `deadline` (use `{{#each events as \|e\|}}{{e.event}}{{/each}}`) |
 | `budget` | The server name |
 | `alert_id` | The rule's `id` |
 

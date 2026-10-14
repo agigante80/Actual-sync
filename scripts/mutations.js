@@ -2766,8 +2766,8 @@ module.exports = [
         id: '296-redelivery-after-restart', ticket: '#296',
         desc: 'a sent missing alert is considered due again (no de-duplication across syncs and restarts)',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "  if (!latest) return { due: true, lastSentAt: null };\n  if (event.event === 'ruleUnmatched')",
-        mutant: "  if (!latest || true) return { due: true, lastSentAt: null };\n  if (event.event === 'ruleUnmatched')",
+        anchor: "  if (!latest) return { due: true, lastSentAt: null };\n  // #261: held back by a mute.",
+        mutant: "  if (!latest || true) return { due: true, lastSentAt: null };\n  // #261: held back by a mute.",
         tests: 'scheduleAlertsSync'
     },
     {
@@ -2842,6 +2842,190 @@ module.exports = [
         mutant: "          sentAny = true;\n        } catch (error) {\n          sentAny = true;",
         tests: 'scheduleAlertDelivery'
     },
+    {
+        id: "261-summary-bounded-by-mute-end", ticket: '#261',
+        desc: "the mute summary only covers rows recorded before the end of the mute day",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "const mutedRows = history.listMutedRows({ server, alertId, since: override.mutedFrom || undefined });",
+        mutant: "const mutedRows = history.listMutedRows({ server, alertId, since: override.mutedFrom || undefined, until: muteEndsAt(override.mutedUntil, timezone) });",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-reason-only-unvalidated", ticket: '#261',
+        desc: "a reason-only PUT skips the trim, required and length check",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof body.reason === 'string' && !('mutedUntil' in body) && before && before.mutedUntil) {",
+        mutant: "if (false) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-reason-checked-unmuted", ticket: '#261',
+        desc: "a reason-only check also rejects a request on an alert that is not muted",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof body.reason === 'string' && !('mutedUntil' in body) && before && before.mutedUntil) {",
+        mutant: "if (typeof body.reason === 'string' && body.mutedUntil !== null) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-noop-change-logged", ticket: '#261',
+        desc: "a no-op override change still logs 'Configuration change recorded'",
+        file: "src/services/syncHistory.js",
+        anchor: "if (audited) this.logger.info('Configuration change recorded'",
+        mutant: "if (true) this.logger.info('Configuration change recorded'",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-override-change-not-atomic", ticket: '#261',
+        desc: "the override change and its audit row run outside one transaction",
+        file: "src/services/syncHistory.js",
+        anchor: "    const apply = this.db.transaction(() => {\n      if (dropMutedRows)",
+        mutant: "    const apply = ((fn) => fn)(() => {\n      if (dropMutedRows)",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-mute-ends-end-of-day", ticket: '#261',
+        desc: "a mute ends at the start of the mutedUntil day instead of the end of it",
+        file: "src/lib/scheduleAlertRules.js",
+        anchor: ".add(1, 'day').startOf('day')",
+        mutant: ".add(0, 'day').startOf('day')",
+        tests: "scheduleAlertRules"
+    },
+    {
+        id: "261-config-lock-ignored", ticket: '#261',
+        desc: "a config-locked alert still counts as enabled",
+        file: "src/lib/scheduleAlertRules.js",
+        anchor: "enabled: !lockedByConfig && o.enabled !== false",
+        mutant: "enabled: o.enabled !== false",
+        tests: "scheduleAlertRules"
+    },
+    {
+        id: "261-mute-never-active", ticket: '#261',
+        desc: "a mute whose end is in the future is not reported as muted",
+        file: "src/lib/scheduleAlertRules.js",
+        anchor: "now.getTime() < muteEndsAt(mutedUntil, timezone).getTime()",
+        mutant: "now.getTime() > muteEndsAt(mutedUntil, timezone).getTime()",
+        tests: "scheduleAlertRules"
+    },
+    {
+        id: "261-mute-days-unbounded", ticket: '#261',
+        desc: "a mute date beyond 365 days is accepted",
+        file: "src/services/healthCheck.js",
+        anchor: "if (days < 0 || days > 365) return bad",
+        mutant: "if (days < 0) return bad",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-mute-reason-optional", ticket: '#261',
+        desc: "a mute without a reason is accepted",
+        file: "src/services/healthCheck.js",
+        anchor: "if (reason === '') return 'reason_required';",
+        mutant: "",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-mute-extension-resets-start", ticket: '#261',
+        desc: "extending a mute moves its start to now",
+        file: "src/services/healthCheck.js",
+        anchor: "before && before.mutedUntil && before.mutedFrom ? before.mutedFrom : now.toISOString()",
+        mutant: "now.toISOString()",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-early-unmute-keeps-muted-rows", ticket: '#261',
+        desc: "an early unmute leaves the held-back rows in place",
+        file: "src/services/healthCheck.js",
+        anchor: "dropMutedRows: Boolean(before && before.mutedUntil && next.mutedUntil === null),",
+        mutant: "dropMutedRows: false,",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-noop-put-audited", ticket: '#261',
+        desc: "a PUT that changes nothing is still written to the audit trail",
+        file: "src/services/syncHistory.js",
+        anchor: "const audited = Boolean(changes && Object.keys(changes).length > 0);",
+        mutant: "const audited = true;",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-delete-missing-override-ok", ticket: '#261',
+        desc: "DELETE of an unknown override answers 200 instead of 404",
+        file: "src/services/healthCheck.js",
+        anchor: "if (!before) return res.status(404).json({ error: 'override_not_found' });",
+        mutant: "",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-delete-keeps-muted-rows", ticket: '#261',
+        desc: "DELETE of a muted override leaves its muted rows behind",
+        file: "src/services/healthCheck.js",
+        anchor: "dropMutedRows: Boolean(before.mutedUntil),",
+        mutant: "dropMutedRows: false,",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-orphaned-always-false", ticket: '#261',
+        desc: "an override of a removed alert is not flagged orphaned",
+        file: "src/services/healthCheck.js",
+        anchor: "orphaned: !(known.has(o.server) && known.get(o.server).has(o.alertId))",
+        mutant: "orphaned: false",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-default-override-kept", ticket: '#261',
+        desc: "a default-state override (on, not muted) is stored instead of deleted",
+        file: "src/services/syncHistory.js",
+        anchor: "if (enabled !== false && !mutedUntil) {",
+        mutant: "if (false) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-cleanup-purges-muted-rows", ticket: '#261',
+        desc: "the retention cleanup purges the muted rows of an active mute",
+        file: "src/services/syncHistory.js",
+        anchor: "AND o.muted_until IS NOT NULL))",
+        mutant: "AND 1 = 0))",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-expiry-immediate", ticket: '#261',
+        desc: "a stale mute expires with no 7 day grace after its end",
+        file: "src/services/syncHistory.js",
+        anchor: ".tz(timezone).add(7, 'days')",
+        mutant: ".tz(timezone).add(0, 'days')",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-muted-row-counts-as-told", ticket: '#261',
+        desc: "a muted ledger row suppresses the destination like a sent one (no summary, no resend)",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "if (latest.delivery === 'muted') return { due: false, lastSentAt: null };",
+        mutant: "",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-summary-resent-every-sync", ticket: '#261',
+        desc: "the mute-end summary ignores its own ledger row and is sent again",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "event: 'muteEnded' })) continue; // already told",
+        mutant: "event: 'muteEnded' })) void 0; // already told",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-summary-not-recorded", ticket: '#261',
+        desc: "the mute-end summary is not written to the ledger after sending",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "await history.recordScheduleAlert({ ...summaryKey, event: 'muteEnded', delivery: 'sent' });",
+        mutant: "",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-summary-failure-clears-mute", ticket: '#261',
+        desc: "a failed summary send still clears the mute",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "if (!ok) { complete = false; continue; }",
+        mutant: "if (!ok) { continue; }",
+        tests: "scheduleAlertDelivery"
+    },
 
     // ---- #289: now() seam at per-call sites, port read-back ----------------------
     {
@@ -2850,6 +3034,14 @@ module.exports = [
         file: 'tests/e2e/fixtures/browser.js',
         anchor: "    if (page.__externalRequests.length) {\n      throw new Error(",
         mutant: "    if (false && page.__externalRequests.length) {\n      throw new Error(",
+        tests: 'e2eHarnessGuard'
+    },
+    {
+        id: '261-e2e-data-url-counted-external', ticket: '#261',
+        desc: "withFixture counts a data: URL as an external request and fails a page that used the date picker",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "url.startsWith(baseUrl)) || url.startsWith('data:')) {",
+        mutant: "url.startsWith(baseUrl)) || false) {",
         tests: 'e2eHarnessGuard'
     },
     {

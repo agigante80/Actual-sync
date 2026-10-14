@@ -66,11 +66,11 @@ Served at `GET /api/dashboard/accounts` (subject to the dashboard's auth setting
 
 ## Payments tab
 
-The **Payments** tab shows what the [missing-payment alerts](SCHEDULE_ALERTS.md) concluded for every watched schedule. It is read-only (toggling, muting and editing are separate features) and, like the account list, it renders **without a connection to Actual**: it reads the snapshot each sync saves, through `GET /api/dashboard/payments`. It is therefore as fresh as the last sync, and the "as of" line says when that was.
+The **Payments** tab shows what the [missing-payment alerts](SCHEDULE_ALERTS.md) concluded for every watched schedule. The states are always the real evaluation result; the [controls](#turning-alerts-off-and-muting) change only whether notifications are sent. Like the account list, the tab renders **without a connection to Actual**: it reads the snapshot each sync saves, through `GET /api/dashboard/payments`. It is therefore as fresh as the last sync, and the "as of" line says when that was.
 
 ![Payments tab, a server with alerts not configured](screenshots/dashboard-payments-empty.png)
 
-**Columns.** State, Name, Cadence (Actual's own wording), Account, expected Amount, Next due, Deadline, Last alert (the last alert actually sent) and Source. The button before a name opens the last 6 occurrences, each with its state, received date and amount, and "(+3d)" for a late one. Below 768 px rows become cards and Account, Last alert and Source move into that expanded view.
+**Columns.** State, Name, Cadence (Actual's own wording), Account, expected Amount, Next due, Deadline, Last alert (the last alert actually sent), Source and Control (see below). The button before a name opens the last 6 occurrences, each with its state, received date and amount, and "(+3d)" for a late one. Below 768 px rows become cards and Account, Last alert and Source move into that expanded view.
 
 **States.** The pill text is always shown, so colour is never the only signal.
 
@@ -99,6 +99,21 @@ Rows are sorted attention first, then late, upcoming, received, skipped; within 
 - *Could not refresh payments (HTTP 503)* or *(network error)*, in a red banner above the table: any failed refresh keeps the last good rows and the next good refresh clears the banner.
 
 ![Payments tab](screenshots/dashboard-payments.png)
+
+### Turning alerts off and muting
+
+The last column, **Control**, switches an alert off or on and mutes it until a date. Changes apply from the next sync, with no restart, and are stored in the sync-history database (the configuration file is never rewritten). They need `healthCheck.dashboard.allowConfigWrites: true` and dashboard auth other than `none`; see [CONFIG.md](CONFIG.md).
+
+![Payments tab with one alert muted](screenshots/dashboard-payments-muted.png)
+
+- **The switch** (On or Off, a real switch for assistive technology) turns the alert's notifications off or on. Switching off sends nothing and writes no record; switching on delivers what is still open at the next sync.
+- **Mute...** opens a form under the row: pick the date the mute ends and give a **reason** (required, up to 200 characters), then Mute (Enter saves, Esc cancels). The alert is still evaluated while muted and the tab keeps showing the real state; nothing is sent until the end of that day, and then **one summary message** per destination lists what happened during the mute. **Unmute** ends a mute early and sends no summary.
+- **The badge** beside the state pill, never in place of it, reads "Muted until <date>" (the reason is in its tooltip), "Mute ended, summary pending" until the summary has gone out, or "Disabled in config" for an alert with `enabled: false` in `config.json`. A config-disabled alert has no switch and cannot be muted or switched on here; only an old mute can still be cleared.
+- **A rule that matches several schedules** (`schedulePrefix`) has one switch and one mute for the whole rule. They sit on the first visible row of that rule, with "Applies to N schedules"; the other rows show only the badge.
+- **Read-only dashboards.** When changes are not allowed the controls are shown but disabled, with a tooltip naming the setting to change ("Changes from the dashboard are off. Set healthCheck.dashboard.allowConfigWrites to true." or "Changes from the dashboard need dashboard authentication (basic or token).").
+- **Errors** (a refused or failed request) put the switch back to its stored state and are announced in a message above the table, which a refresh does not erase. An open mute form keeps what you typed through filters, search and refreshes, and closes if its alert leaves the snapshot.
+
+The Settings tab has an **Orphaned alert overrides** card listing overrides whose alert or server is no longer in the configuration (for example after renaming an alert id), each with a Delete button. They have no effect on delivery; delete them to clear the stored reason.
 
 Enable dashboard auth when `scheduleAlerts` is used: with the default `auth.type: none` this tab and its data are open to anyone who can reach the port.
 

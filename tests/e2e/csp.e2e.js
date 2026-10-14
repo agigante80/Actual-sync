@@ -101,6 +101,14 @@ describe('dashboard under its Content-Security-Policy (#243)', () => {
     })).rejects.toThrow(/CSP violation[\s\S]*cdn\.example\.com/);
   });
 
+  // A data: URL never reaches the network (Chrome loads its own date-picker
+  // icon as one), so the guard must not count it as external. (#261)
+  test('withFixture accepts a data: URL as local, not external', async () => {
+    await withFixture('healthy', async ({ page }) => {
+      await page.evaluate(() => fetch('data:text/plain,ok').then((r) => r.text()));
+    });
+  });
+
   test('the detector works: an injected inline script is blocked and reported', async () => {
     await withFixture('healthy', async ({ page, fixture }) => {
       await page.goto(`${fixture.url}/dashboard`, { waitUntil: 'networkidle0' });

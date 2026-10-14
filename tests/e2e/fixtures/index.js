@@ -122,6 +122,15 @@ function seeder(clock, hc, history) {
     configChange(change, minutesAgo = 0) {
       at(minutesAgo, () => history.recordConfigChange(change));
     },
+    /**
+     * A stored alert override (#261), written the way the state route writes it.
+     * @param {{ server: string, alertId: string, enabled?: boolean, mutedFrom?: string,
+     *   mutedUntil?: string, reason?: string }} override
+     * @param {number} [minutesAgo=0]
+     */
+    override(override, minutesAgo = 0) {
+      at(minutesAgo, () => history.setOverride(override));
+    },
     /** A delivered alert in the ledger, which the route joins as "Last alert". */
     scheduleAlert(alert, minutesAgo = 0) {
       at(minutesAgo, () => {
@@ -193,6 +202,8 @@ async function startFixtureServer(stateName, overrides = {}) {
       allowedOrigins: state.allowedOrigins
     },
     getServers: () => servers,
+    // Mute dates are read in this zone; the browser is emulated in UTC too. (#261)
+    getTimezone: () => 'UTC',
     getCronSchedules: () => (state.schedules || []).map(s => ({
       ...s,
       nextInvocation: new Date(FIXTURE_NOW + (s.nextInMinutes ?? 60) * MINUTE).toISOString()

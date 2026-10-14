@@ -1,5 +1,12 @@
 # Configuration Migration Guide
 
+## Upgrading to the alert controls release (#261)
+
+- **New table, no action needed.** The sync-history database gains `payment_alert_override`, created on first start. It holds the dashboard's alert switch and mute (with the mute reason, up to 200 characters). A downgrade ignores it.
+- **New optional config key** `scheduleAlerts.alerts[].enabled` (default `true`; `false` switches that alert off permanently) and a new template key `scheduleAlerts.templates.muteEnded`. Nothing changes unless you use them.
+- **Dashboard controls need writes.** The switch and the mute form work only with `dashboard.allowConfigWrites: true` and dashboard auth other than `none`; otherwise they are shown disabled.
+- **Mute-end message.** After a mute ends, each destination receives one summary message if anything was held back; a mute with nothing to report ends silently.
+
 ## Upgrading to the Origin check release (#259)
 
 - **Cross-origin browser POSTs are refused.** `sync`, `dismiss-error`, `reset-history` and `test-notification` now return 403 `origin_rejected` when a browser sends an `Origin` or `Referer` that is not same-origin and not in `dashboard.allowedOrigins`. curl, scripts and Home Assistant (no browser headers) are unaffected.
