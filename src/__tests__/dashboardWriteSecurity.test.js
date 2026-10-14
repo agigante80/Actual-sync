@@ -378,7 +378,7 @@ describe('route enumeration guard (#259)', () => {
     expect(findUnguardedRoutes(svc)).toEqual([]);
   });
 
-  test('the walk sees the four existing POST routes (so an empty result means something)', async () => {
+  test('the walk sees the known POST routes (so an empty result means something)', async () => {
     const { svc } = await makeService({ start: false });
     const posts = [];
     const visit = (stack) => stack.forEach(l => {
@@ -388,6 +388,8 @@ describe('route enumeration guard (#259)', () => {
     visit(svc.app.router.stack);
     expect(posts.sort()).toEqual([
       '/api/dashboard/dismiss-error',
+      '/api/dashboard/payment-preview/:server',
+      '/api/dashboard/payment-rules/:server',
       '/api/dashboard/reset-history',
       '/api/dashboard/sync',
       '/api/dashboard/test-notification'
@@ -650,19 +652,19 @@ describe('GET /api/dashboard/capabilities (#259)', () => {
     const { svc } = await makeService();
     const res = await get(svc);
     expect(res.status).toBe(200);
-    expect(res.json).toEqual({ configWrites: false, reason: 'disabled' });
+    expect(res.json).toEqual({ configWrites: false, reason: 'disabled', channels: ['discord'] });
   });
 
   test('reports auth-none for writes enabled with auth none', async () => {
     const { svc } = await makeService({ dashboard: { allowConfigWrites: true } });
-    expect((await get(svc)).json).toEqual({ configWrites: false, reason: 'auth-none' });
+    expect((await get(svc)).json).toEqual({ configWrites: false, reason: 'auth-none', channels: ['discord'] });
   });
 
   test('reports writes on with allowConfigWrites and basic auth', async () => {
     const { svc } = await makeService({ dashboard: { allowConfigWrites: true, auth: BASIC } });
     const res = await get(svc, { Authorization: basicHeader() });
     expect(res.status).toBe(200);
-    expect(res.text).toBe('{"configWrites":true,"reason":null}');
+    expect(res.text).toBe('{"configWrites":true,"reason":null,"channels":["discord"]}');
   });
 
   test('401 without credentials and with a wrong password', async () => {

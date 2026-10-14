@@ -14,7 +14,8 @@ const { MessageFormatter } = require('../lib/messageFormatter');
 const { resolveVersion } = require('../lib/version');
 const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
 const moment = require('moment-timezone');
-const { getRules, ruleState } = require('../lib/scheduleAlertRules');
+const { ruleState } = require('../lib/scheduleAlertRules');
+const { registerPaymentRuleRoutes, activeRules, configuredChannels } = require('./paymentRuleRoutes');
 const { resolveTimezone } = require('../lib/timezone');
 
 // 16 KB JSON parser for configuration writes (#259), used by configWrite().
@@ -416,7 +417,13 @@ class HealthCheckService {
     const servers = this.getServers ? (this.getServers() || []) : [];
     const server = servers.find((s) => s.name === serverName);
     if (!server) return bad('server_not_found', 404);
-    const rule = getRules(server.scheduleAlerts).find((r) => r.id === alertId);
+    let rule;
+    try {
+      rule = activeRules(this, server).find((r) => r.id === alertId);
+    } catch (error) {
+      this.logger.error('Failed to update payment alert state', { error: error.message });
+      return res.status(500).json({ error: 'Failed to update payment alert state' });
+    }
     if (!rule) return bad('alert_not_found', 404);
     const unmuteOnly = body.mutedUntil === null && !('enabled' in body);
     if (rule.enabled === false && !unmuteOnly) return bad('disabled_in_config', 409);
@@ -1485,7 +1492,7 @@ This test verifies that notifications are configured correctly and can reach the
           if (!server.scheduleAlerts) {
             return { server: server.name, configured: false, lastRun: null, items: [] };
           }
-          const rulesById = new Map(getRules(server.scheduleAlerts).map((r) => [r.id, r]));
+          const rulesById = new Map(activeRules(this, server).map((r) => [r.id, r]));
           const overrides = new Map(this.syncHistory.listOverrides(server.name).map((o) => [o.alertId, o]));
           const { items, run } = this.syncHistory.getPaymentSnapshot(server.name);
           const lastSent = this.syncHistory.getLastSentAlerts(server.name);
@@ -1496,8 +1503,7 @@ This test verifies that notifications are configured correctly and can reach the
             items: items.map((item) => ({
               ...item,
               lastAlertAt: lastSent.get(JSON.stringify([item.alertId, item.scheduleId])) || null,
-              // Constant until #262 lands.
-              source: 'config',
+              source: rulesById.has(item.alertId) ? rulesById.get(item.alertId).source : 'config',
               ruleState: this.publicRuleState(rulesById.get(item.alertId), overrides.get(item.alertId), now, timezone),
               occurrences: item.occurrences.map((o) => ({
                 ...o,
@@ -1524,11 +1530,12 @@ This test verifies that notifications are configured correctly and can reach the
     this.configRouter.delete('/api/dashboard/payments/:server/:alertId/state', ...this.configWrite(), (req, res) => {
       this.deletePaymentAlertState(req, res);
     });
+    registerPaymentRuleRoutes(this);
     this.app.get('/api/dashboard/payment-overrides', this.dashboardAuth(), (req, res) => {
       if (!this.syncHistory) return res.status(503).json({ error: 'Sync history not available' });
       try {
         const servers = this.getServers ? (this.getServers() || []) : [];
-        const known = new Map(servers.map((srv) => [srv.name, new Set(getRules(srv.scheduleAlerts).map((r) => r.id))]));
+        const known = new Map(servers.map((srv) => [srv.name, new Set(activeRules(this, srv).map((r) => r.id))]));
         const overrides = this.syncHistory.listOverrides().map((o) => ({
           server: o.server,
           alertId: o.alertId,
@@ -1571,7 +1578,7 @@ This test verifies that notifications are configured correctly and can reach the
     // and, when not, why. (#259)
     this.app.get('/api/dashboard/capabilities', this.dashboardAuth(), (req, res) => {
       const reason = this.configWritesReason();
-      res.json({ configWrites: reason === null, reason });
+      res.json({ configWrites: reason === null, reason, channels: configuredChannels(this) });
     });
 
     // Configuration change audit, newest first. (#259)
