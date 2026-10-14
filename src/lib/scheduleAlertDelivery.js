@@ -1525,5 +1525,5 @@ async function previewRule({ eventName, context, rule, sender, send = false, sen
 
 module.exports = {
   deliver, DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS, CHANNEL_TO_MODES,
-  resolveChannels, destinationKey, destinationsForRule, buildPreviewContext, previewRule, PREVIEW_EVENTS
+  resolveChannels, destinationKey, buildPreviewContext, previewRule, PREVIEW_EVENTS
 };

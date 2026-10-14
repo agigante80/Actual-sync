@@ -1616,8 +1616,8 @@ module.exports = [
         // rule's own resolved modes; retargeted to the call itself, which is
         // unaffected by which channel list it is passed (#258 review round 2).
         file: 'src/lib/configLoader.js',
-        anchor: '                    compileTemplateSet({ templates, variables: VARIABLES, channels: modes });',
-        mutant: '                    void 0;',
+        anchor: "                if (result.code === 'invalid_template') {",
+        mutant: '                if (false) {',
         tests: 'configLoader'
     },
     {
@@ -1635,7 +1635,7 @@ module.exports = [
         // local (reused for the per-rule template modes too); retargeted to
         // that same guard, now read from ruleChannels (#258 review round 2).
         file: 'src/lib/configLoader.js',
-        anchor: '                if (rule.channels && rule.channels.length && ruleChannels.length === 0) {',
+        anchor: "                if (result.code === 'no_configured_destination') {",
         mutant: '                if (false) {',
         tests: 'configLoader'
     },
@@ -1815,10 +1815,10 @@ module.exports = [
     {
         id: '258-r2-m7-startup-template-check-ignores-rule-channels', ticket: '#258',
         desc: 'startup template validation goes back to compiling every rule against every channel mode, so a Telegram-only literal-markup restriction rejects a valid template for a rule that can only ever reach slack/email',
-        file: 'src/lib/configLoader.js',
-        anchor: '                const ruleChannels = resolveChannels(rule, sender);',
-        mutant: "                const ruleChannels = ['telegram', 'email', 'slack', 'discord', 'webhook', 'ntfy'];",
-        tests: 'configLoader.test'
+        file: 'src/lib/scheduleAlertValidation.js',
+        anchor: "  const channels = schemaOnly ? (rule.channels && rule.channels.length ? rule.channels : ALL_CHANNELS) : resolved;",
+        mutant: "  const channels = ALL_CHANNELS;",
+        tests: 'scheduleAlertValidation'
     },
 
     // ---- #294: template low findings -----------------------------------------
@@ -2541,8 +2541,8 @@ module.exports = [
         id: "259-reset-server-deletes-audit", ticket: '#259',
         desc: "a per-server history reset erases the configuration audit",
         file: "src/services/syncHistory.js",
-        anchor: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');\n      // config_audit is deliberately",
-        mutant: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');\n      this.db.prepare('DELETE FROM config_audit').run();\n      // config_audit is deliberately",
+        anchor: "      // config_audit is deliberately NOT deleted (#259)",
+        mutant: "      this.db.prepare('DELETE FROM config_audit').run();\n      // config_audit is deliberately NOT deleted (#259)",
         tests: "syncHistory"
     },
     {
@@ -3213,5 +3213,181 @@ module.exports = [
         anchor: ".subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
         mutant: ".subtract(MAX_LOOKBACK_DAYS - 1, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
         tests: 'scheduleAlert'
+    },
+    {
+        id: "262-reset-server-deletes-rules", ticket: '#262',
+        desc: "a per-server history reset also deletes the dashboard payment rules",
+        file: "src/services/syncHistory.js",
+        anchor: "      // payment_alert_rule is deliberately NOT deleted either (#262)",
+        mutant: "      this.db.prepare('DELETE FROM payment_alert_rule WHERE server = ?').run(server);\n      // payment_alert_rule is deliberately NOT deleted either (#262)",
+        tests: "syncHistory"
+    },
+    {
+        id: "262-config-wins-on-id-clash", ticket: '#262',
+        desc: "a dashboard rule whose id equals a config rule is no longer marked superseded",
+        file: "src/lib/scheduleAlertRules.js",
+        anchor: "superseded: configIds.has(rule.id),",
+        mutant: "superseded: false,",
+        tests: "scheduleAlertRules"
+    },
+    {
+        id: "262-sync-listrules-untagged", ticket: '#262',
+        desc: "a failed rule read is swallowed so the previous snapshot would not be kept",
+        file: "src/lib/scheduleAlertsStep.js",
+        anchor: "    const merged = mergeRules(configRules, syncHistory.listRules(serverName), block);",
+        mutant: "    let rows = [];\n    try { rows = syncHistory.listRules(serverName); } catch (e) { rows = []; }\n    const merged = mergeRules(configRules, rows, block);",
+        tests: "scheduleAlertsSync"
+    },
+    {
+        id: "262-sync-schemaonly-skipped", ticket: '#262',
+        desc: "an invalid stored dashboard rule is no longer excluded from the sync",
+        file: "src/lib/scheduleAlertsStep.js",
+        anchor: "        if (result.valid) active.push(rule); else excluded.push(rule.id);",
+        mutant: "        active.push(rule);",
+        tests: "scheduleAlertsSync"
+    },
+    {
+        id: "262-post-id-in-config-unchecked", ticket: '#262',
+        desc: "POST no longer rejects an id that a config rule owns",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "if (getRules(block).some((rule) => rule.id === id)) return res.status(409).json({ error: 'id_in_config' });",
+        mutant: "",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-post-duplicate-unchecked", ticket: '#262',
+        desc: "POST no longer rejects a duplicate dashboard id",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "if (svc.syncHistory.getRule(server.name, id)) return { error: 'duplicate_id' };",
+        mutant: "",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-post-cap-off-by-one", ticket: '#262',
+        desc: "the 200 rule cap lets a 201st rule in",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "countRules(server.name) >= MAX_DASHBOARD_RULES",
+        mutant: "countRules(server.name) > MAX_DASHBOARD_RULES",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-put-noop-always-writes", ticket: '#262',
+        desc: "an unchanged PUT writes an update and an audit row",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "if (canonical(stored.definition) !== canonical(definition)) {",
+        mutant: "if (true) {",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-put-managed-in-config-unchecked", ticket: '#262',
+        desc: "PUT no longer refuses an id that a config rule owns",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "if (getRules(block).some((rule) => rule.id === alertId)) return res.status(409).json({ error: 'managed_in_config' });",
+        mutant: "",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-preview-rate-limit-off", ticket: '#262',
+        desc: "the test-send rate limit never triggers",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "if (sendTimes.length >= TEST_SEND_LIMIT) return",
+        mutant: "if (false) return",
+        tests: "paymentPreviewRoute"
+    },
+    {
+        id: "262-preview-window-never-slides", ticket: '#262',
+        desc: "old test sends never leave the rate limit window",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "while (sendTimes.length && now - sendTimes[0] >= TEST_SEND_WINDOW_MS) sendTimes.shift();",
+        mutant: "",
+        tests: "paymentPreviewRoute"
+    },
+    {
+        id: "262-preview-timeout-code", ticket: '#262',
+        desc: "a send that hangs is reported as send_threw instead of timeout",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "error: error && error.previewTimeout ? 'timeout' : 'send_threw'",
+        mutant: "error: 'send_threw'",
+        tests: "paymentPreviewRoute"
+    },
+    {
+        id: "262-delete-keeps-override", ticket: '#262',
+        desc: "deleting a dashboard rule leaves its override behind",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "            svc.syncHistory.deleteOverride(server.name, alertId);\n",
+        mutant: "",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-delete-keeps-muted-rows", ticket: '#262',
+        desc: "deleting a muted dashboard rule leaves its muted ledger rows",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "if (override.mutedUntil) {",
+        mutant: "if (false) {",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-delete-keeps-status", ticket: '#262',
+        desc: "deleting a dashboard rule leaves its status rows",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "          svc.syncHistory.deletePaymentStatusForAlert(server.name, alertId);\n",
+        mutant: "",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-delete-superseded-cascades", ticket: '#262',
+        desc: "deleting a superseded row also wipes the config rule's override and status",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "        if (!inConfig) {\n          // The config rule",
+        mutant: "        if (true) {\n          // The config rule",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-delete-audit-outside-tx", ticket: '#262',
+        desc: "the delete is no longer wrapped in one transaction",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "      svc.syncHistory.runInTransaction(() => {\n        const changes = diffDefinitions(stored.definition, null);",
+        mutant: "      ((fn) => fn())(() => {\n        const changes = diffDefinitions(stored.definition, null);",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-alertid-guard-constructor", ticket: '#262',
+        desc: "constructor is accepted as an alert id",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "ALERT_ID_PATTERN.test(id) && id !== '__proto__' && id !== 'constructor'",
+        mutant: "ALERT_ID_PATTERN.test(id)",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-active-rules-ignores-merge", ticket: '#262',
+        desc: "the payment routes consult only config rules",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "return mergeRules(getRules(block), rows, block).filter((rule) => !rule.superseded);",
+        mutant: "return getRules(block).map((r) => ({ ...r, source: 'config', superseded: false }));",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-no-block-no-rules", ticket: '#262',
+        desc: "a server with no scheduleAlerts block still lists stored rules as active",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "  if (!block) return [];\n  const rows",
+        mutant: "  if (!block) return mergeRules([], svc.syncHistory.listRules(server.name), {});\n  const rows",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-preview-compiles-once-skipped", ticket: '#262',
+        desc: "previewRule no longer compiles the templates so a bad template would not surface",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "  const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });\n  const text = channels.length ?",
+        mutant: "  const renderer = { render: () => 'x' };\n  const text = channels.length ?",
+        tests: "paymentPreviewRoute"
+    },
+    {
+        id: "262-null-result-channel-unavailable", ticket: '#262',
+        desc: "a null channel result is reported as ok",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "  if (result == null) return 'channel_unavailable';",
+        mutant: "  if (result == null) return null;",
+        tests: "paymentPreviewRoute"
     }
 ];
