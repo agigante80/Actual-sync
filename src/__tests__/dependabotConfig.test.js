@@ -60,7 +60,7 @@ describe('dependabot docker base image (#362)', () => {
     });
 
     it('pins every base image by digest so there is something to bump', () => {
-        const froms = dockerfile.split('\n').filter(l => /^FROM\s/.test(l));
+        const froms = dockerfile.split('\n').filter(l => /^\s*FROM\s/i.test(l));
         expect(froms.length).toBeGreaterThan(0);
         for (const line of froms) expect(line).toMatch(/node:22-alpine@sha256:[0-9a-f]{64}(\s|$)/);
     });

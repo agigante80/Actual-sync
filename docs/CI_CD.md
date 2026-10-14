@@ -1314,7 +1314,7 @@ nvm use 20
 npm test
 
 # Run tests in Docker (same as CI)
-docker run --rm -v $(pwd):/app -w /app node:20-alpine npm test
+docker run --rm -v $(pwd):/app -w /app node:22-alpine npm test
 
 # Check for hardcoded paths
 grep -r "$(pwd)" src/
