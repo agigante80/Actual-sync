@@ -3488,16 +3488,16 @@ module.exports = [
         id: '356-deleted-never-inferred', ticket: '#356',
         desc: "a schedule missing from Actual's list is not detected, so its open missing never closes",
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "        if (existingScheduleIds.has(row.scheduleId)) continue;",
-        mutant: "        if (true) continue;",
+        anchor: "        if (existingScheduleIds.has(row.scheduleId)) {",
+        mutant: "        if (true) continue;\n        if (existingScheduleIds.has(row.scheduleId)) {",
         tests: 'scheduleAlert'
     },
     {
         id: '356-existing-schedule-closed', ticket: '#356',
         desc: "a schedule still present in Actual is closed as deleted too",
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "        if (existingScheduleIds.has(row.scheduleId)) continue;",
-        mutant: "        if (false) continue;",
+        anchor: "        if (existingScheduleIds.has(row.scheduleId)) {",
+        mutant: "        if (false) {",
         tests: 'scheduleAlert'
     },
     {
@@ -3570,6 +3570,80 @@ module.exports = [
         file: 'src/lib/scheduleAlertDelivery.js',
         anchor: ".filter((id) => !unmatchedIds.has(id))",
         mutant: ".filter((id) => !unmatchedIds.has(id) && (evaluations || []).some((e) => e.alertId === id))",
+        tests: 'scheduleAlert'
+    },
+
+    // ---- #373: a retargeted rule closes the old schedule's open missing ------
+    {
+        id: '373-retarget-never-closed', ticket: '#373',
+        desc: "a schedule that still exists but is no longer named by the rule is never closed",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          if (!matched || matched.has(row.scheduleId)) continue;",
+        mutant: "          continue;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '373-still-matched-closed', ticket: '#373',
+        desc: "a schedule the rule still names is closed as rule_changed too",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          if (!matched || matched.has(row.scheduleId)) continue;",
+        mutant: "          if (!matched) continue;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '373-no-matched-map-guard', ticket: '#373',
+        desc: "without a matched-schedule map every existing schedule is closed as rule_changed",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          if (!matched || matched.has(row.scheduleId)) continue;",
+        mutant: "          if (matched && matched.has(row.scheduleId)) continue;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '373-deleted-labelled-rule-changed', ticket: '#373',
+        desc: "a deleted schedule is reported as rule_changed instead of deleted",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        let closedBy = 'deleted';",
+        mutant: "        let closedBy = 'rule_changed';",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '373-rule-changed-wording-lost', ticket: '#373',
+        desc: "the rule_changed branch is dropped from the built-in resolved, so a retarget is reported as a payment",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{else if (eq closed_by \"rule_changed\")}}",
+        mutant: "{{else if (eq closed_by \"never\")}}",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '373-rule-changed-name-from-rule', ticket: '#373',
+        desc: "the retarget close names the rule's new target instead of the schedule that was closed",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          scheduleName = (scheduleNameById && scheduleNameById.get(row.scheduleId)) || null;",
+        mutant: "          scheduleName = rule.schedule || null;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '373-matched-ignores-prefix', ticket: '#373',
+        desc: "the matched set ignores schedulePrefix, so a prefix rule's schedules are closed as rule_changed",
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: "  if (rule.schedulePrefix) {\n    return (schedules || [])",
+        mutant: "  if (false) {\n    return (schedules || [])",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '373-matched-map-not-passed', ticket: '#373',
+        desc: "the sync step does not hand the matched map to delivery, so a retarget is never closed",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "        matchedScheduleIds,\n        scheduleNameById,\n        ruleState",
+        mutant: "        scheduleNameById,\n        ruleState",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '373-custom-template-used-for-retarget', ticket: '#373',
+        desc: "a custom resolved without closed_by is used for a retarget close, claiming a payment arrived",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "const handled = /\\bclosed_by\\b/.test(custom) && (literals.length === 0 || literals.includes(event.closedBy));",
+        mutant: "const handled = /\\bclosed_by\\b/.test(custom);",
         tests: 'scheduleAlert'
     },
 
