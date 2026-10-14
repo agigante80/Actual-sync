@@ -57,7 +57,11 @@ function validateReport(report) {
     if (!isObj(report)) return ['npm audit returned no report'];
     if (report.error) {
         const e = report.error;
-        return [`npm audit failed: ${(isObj(e) && (e.code || e.summary)) || JSON.stringify(e)}`];
+        // npm puts the readable reason of a registry outage in the top-level
+        // `message` and leaves `error.summary` empty, so read that first.
+        const why = (typeof report.message === 'string' && report.message)
+            || (isObj(e) && (e.code || e.summary)) || JSON.stringify(e);
+        return [`npm audit failed: ${why}`];
     }
     if (report.auditReportVersion !== 2) return ['unsupported npm audit report version (expected 2)'];
     if (!isObj(report.vulnerabilities)) return ['npm audit report has no vulnerabilities object'];

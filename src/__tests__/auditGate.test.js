@@ -28,8 +28,15 @@ describe('auditGate fails closed on a missing report', () => {
     const today = '2026-06-01';
 
     test('an npm audit error report fails', () => {
-        const r = evaluate({ error: { code: 'ENOTFOUND', summary: 'request failed' } }, none, { today });
-        expect(r.errors).toHaveLength(1);
+        // A v2 report with vulnerabilities, so only the `error` check can fail it.
+        const r = evaluate({ auditReportVersion: 2, vulnerabilities: {}, error: { code: 'ENOTFOUND' } }, none, { today });
+        expect(r.errors).toEqual(['npm audit failed: ENOTFOUND']);
+    });
+
+    test('a registry outage reports npm\'s top-level message', () => {
+        const r = evaluate({ message: 'request to https://registry.npmjs.org failed, reason: connect ECONNREFUSED',
+            error: { summary: '', detail: '' } }, none, { today });
+        expect(r.errors).toEqual([expect.stringContaining('ECONNREFUSED')]);
     });
 
     test('a report without vulnerabilities fails', () => {
@@ -51,7 +58,7 @@ describe('auditGate fails closed on a missing report', () => {
         const run = (input) => spawnSync(process.execPath, [
             path.join(__dirname, '..', '..', 'scripts', 'auditGate.js'), '--allowlist', file, '--stdin',
         ], { input, encoding: 'utf8' });
-        expect(run('{"error":{"code":"ENOTFOUND"}}').status).toBe(1);
+        expect(run('{"auditReportVersion":2,"vulnerabilities":{},"error":{"code":"ENOTFOUND"}}').status).toBe(1);
         expect(run('').status).toBe(1);
         expect(run('{"auditReportVersion":2,"vulnerabilities":{}}').status).toBe(0);
         fs.rmSync(dir, { recursive: true });
