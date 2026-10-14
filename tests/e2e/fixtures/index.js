@@ -94,6 +94,35 @@ function seeder(clock, hc, history) {
     },
     serverVersion(serverName, info) {
       hc.updateServerVersion(serverName, info);
+    },
+    /**
+     * A successful #258 evaluation, stored the way the sync step stores it
+     * (replacePaymentSnapshot always writes ok = 1). (#341)
+     * @param {string} serverName
+     * @param {Object[]} evaluations - evaluate().evaluations shape
+     * @param {Object} [runInfo] - e.g. { erroredPairs }
+     * @param {number} [minutesAgo=0] - the evaluation time
+     */
+    payments(serverName, evaluations, runInfo = {}, minutesAgo = 0) {
+      at(minutesAgo, () => history.replacePaymentSnapshot(serverName, evaluations, runInfo));
+    },
+    /**
+     * A failed evaluation: only the run row changes, so call it after
+     * payments() to keep the previous rows, or alone for a failed first run.
+     */
+    paymentRunFailure(serverName, errorCode, minutesAgo = 0) {
+      at(minutesAgo, () => history.recordPaymentRunFailure(serverName, errorCode));
+    },
+    /** A delivered alert in the ledger, which the route joins as "Last alert". */
+    scheduleAlert(alert, minutesAgo = 0) {
+      at(minutesAgo, () => {
+        // The insert runs synchronously inside the async method.
+        history.recordScheduleAlert({
+          event: 'missing',
+          delivery: 'sent',
+          ...alert
+        }).catch(() => {});
+      });
     }
   };
 }
@@ -137,6 +166,7 @@ async function startFixtureServer(stateName, overrides = {}) {
     sendEmail: async (msg) => { sentNotifications.push({ channel: 'email', msg }); }
   };
 
+  let seed = null;
   const hc = new HealthCheckService({
     port: 0,
     host: '127.0.0.1',
@@ -153,7 +183,11 @@ async function startFixtureServer(stateName, overrides = {}) {
       ...s,
       nextInvocation: new Date(FIXTURE_NOW + (s.nextInMinutes ?? 60) * MINUTE).toISOString()
     })),
-    syncBank: async (server) => { calls.syncBank.push(server.name); },
+    syncBank: async (server) => {
+      calls.syncBank.push(server.name);
+      // A state can write rows when "Sync now" runs, as a real sync would. (#341)
+      if (state.onSync) state.onSync(seed, server.name);
+    },
     ...overrides
   });
 
@@ -161,7 +195,8 @@ async function startFixtureServer(stateName, overrides = {}) {
 
   // startTime is stamped in the constructor, so uptime is FIXTURE_NOW - that.
   clock.t = FIXTURE_NOW;
-  if (state.seed) state.seed(seeder(clock, hc, history));
+  seed = seeder(clock, hc, history);
+  if (state.seed) state.seed(seed);
 
   await hc.start();
   const url = `http://127.0.0.1:${hc.port}`;

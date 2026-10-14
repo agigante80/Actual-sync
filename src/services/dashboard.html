@@ -389,6 +389,53 @@
         .acct-badge.manual   { background: #334155; color: #cbd5e1; }
         .acct-badge.closed   { background: #422006; color: #fca5a5; }
         .acct-toggle { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #94a3b8; cursor: pointer; user-select: none; }
+        /* Payments tab (#341) */
+        .pay-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 15px; }
+        .pay-controls select, .pay-controls input { padding: 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; }
+        .pay-label { display: flex; align-items: center; gap: 6px; color: #94a3b8; font-size: 0.9rem; }
+        .pay-filter { display: flex; gap: 4px; }
+        .pay-filter button { background: #334155; color: #cbd5e1; padding: 6px 12px; }
+        .pay-filter button[aria-pressed="true"] { background: #3b82f6; color: white; }
+        .pay-summary { margin-left: auto; color: #94a3b8; font-size: 0.9rem; }
+        .pay-group { margin-bottom: 24px; }
+        .pay-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+        .pay-group-title { font-size: 1.1rem; }
+        .pay-asof { color: #94a3b8; font-size: 0.85rem; flex: 1; }
+        .pay-note { color: #94a3b8; font-size: 0.9rem; margin-bottom: 8px; }
+        .pay-failure { color: #fca5a5; font-size: 0.85rem; margin-bottom: 8px; }
+        .pay-sync-error { color: #fca5a5; font-size: 0.85rem; flex-basis: 100%; }
+        .pay-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        .pay-table th { background: #0f172a; padding: 10px; text-align: left; color: #60a5fa; font-weight: 600; }
+        .pay-table td { padding: 10px; border-bottom: 1px solid #334155; vertical-align: top; }
+        .pay-table td.pay-num { text-align: right; white-space: nowrap; }
+        .pay-table td.pay-empty { text-align: center; color: #94a3b8; }
+        .pay-expand { background: transparent; color: #e2e8f0; padding: 2px 6px; margin-right: 6px; }
+        .pay-expand:hover { background: #334155; }
+        .pay-pill { display: inline-block; font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; border: 1px solid transparent; }
+        .pay-pill.pay-upcoming { background: transparent; border-color: #64748b; color: #cbd5e1; }
+        .pay-pill.pay-received { background: #064e3b; color: #6ee7b7; }
+        .pay-pill.pay-late, .pay-pill.pay-wrongAmount { background: #78350f; color: #fcd34d; }
+        .pay-pill.pay-missing { background: #7f1d1d; color: #fca5a5; }
+        .pay-pill.pay-cannotCheck { background: #334155; color: #cbd5e1; }
+        .pay-pill.pay-skipped { background: #1e293b; border: 1px dashed #94a3b8; color: #cbd5e1; }
+        .pay-pill.pay-unknown { background: #334155; color: #cbd5e1; }
+        .pay-strip-cell { background: #0f172a; }
+        .pay-occ { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 0; margin: 0; color: #cbd5e1; font-size: 0.85rem; }
+        .pay-details { display: none; margin: 0 0 8px; color: #cbd5e1; font-size: 0.85rem; }
+        .pay-details div { display: flex; gap: 8px; }
+        .pay-details dt { color: #94a3b8; }
+        .pay-details dd { margin: 0; }
+        @media (max-width: 768px) {
+            .pay-table thead { display: none; }
+            .pay-table, .pay-table tbody { display: block; }
+            .pay-table tr.pay-row { display: block; border: 1px solid #334155; border-radius: 6px; margin-bottom: 6px; padding: 4px 0; }
+            .pay-table tr.pay-row td { display: flex; justify-content: space-between; gap: 12px; border-bottom: none; padding: 4px 10px; text-align: right; }
+            .pay-table tr.pay-row td::before { content: attr(data-label); color: #94a3b8; text-align: left; }
+            .pay-table tr.pay-row td.pay-extra { display: none; }
+            .pay-table tr.pay-strip-row:not([hidden]) { display: block; }
+            .pay-table tr.pay-strip-row td { display: block; }
+            .pay-details { display: block; }
+        }
     </style>
 </head>
 <body>
@@ -410,6 +457,7 @@
             <button class="tab active" data-action="switchTab" data-arg="overview">📊 Overview</button>
             <button class="tab" data-action="switchTab" data-arg="analytics">📈 Analytics</button>
             <button class="tab" data-action="switchTab" data-arg="history">🗂️ History</button>
+            <button class="tab" data-action="switchTab" data-arg="payments">💸 Payments</button>
             <button class="tab" data-action="switchTab" data-arg="settings">⚙️ Settings</button>
         </div>
 
@@ -563,6 +611,29 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+        </div>
+
+        <!-- Payments Tab (#341) -->
+        <div id="payments-tab" class="tab-content">
+            <div class="card">
+                <h2>Payments</h2>
+                <div class="pay-controls">
+                    <label class="pay-label">Server
+                        <select id="payments-server" data-change="onPaymentsServerChange">
+                            <option value="">All</option>
+                        </select>
+                    </label>
+                    <div class="pay-filter" role="group" aria-label="State filter">
+                        <button type="button" data-action="setPaymentStateFilter" data-arg="all" aria-pressed="true">All</button>
+                        <button type="button" data-action="setPaymentStateFilter" data-arg="attention" aria-pressed="false">Needs attention</button>
+                        <button type="button" data-action="setPaymentStateFilter" data-arg="ok" aria-pressed="false">OK</button>
+                    </div>
+                    <input type="search" id="payments-search" data-input="onPaymentsSearch" placeholder="Search schedules" aria-label="Search schedules">
+                    <span id="payments-summary" class="pay-summary"></span>
+                </div>
+                <div id="payments-error" class="error-message" role="alert" hidden></div>
+                <div id="payments-content"><div class="loading">Loading payments...</div></div>
             </div>
         </div>
 

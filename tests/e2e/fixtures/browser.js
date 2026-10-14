@@ -98,9 +98,31 @@ async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
   await page.evaluateOnNewDocument(fakeTimersInjectionScript(now));
 
   const externalRequests = [];
+  // Per-page request overrides (#341). openPage registers the ONE request
+  // handler that resolves every request, so a spec that adds its own handler
+  // and calls respond() or abort() throws "Request is already handled". A spec
+  // registers an override here instead; this handler asks the first matching
+  // override to resolve the request (respond, abort or continue), and falls
+  // through to the normal handling when none matches. Overrides are checked in
+  // registration order.
+  const overrides = [];
+  page.overrideRoute = (urlSubstring, handler) => {
+    const entry = { urlSubstring, handler };
+    overrides.push(entry);
+    return () => {
+      const i = overrides.indexOf(entry);
+      if (i !== -1) overrides.splice(i, 1);
+    };
+  };
   await page.setRequestInterception(true);
   page.on('request', (req) => {
     const url = req.url();
+
+    const override = overrides.find((o) => url.includes(o.urlSubstring));
+    if (override) {
+      Promise.resolve(override.handler(req)).catch(() => {});
+      return;
+    }
 
     // Chrome requests /favicon.ico for the tab on every top-level navigation,
     // regardless of what the navigated URL actually serves. Left alone, this
