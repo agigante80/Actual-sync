@@ -117,8 +117,29 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 | `missing` | No matching transaction by the deadline, and the account is synced past it. | Repeats every `remindEveryDays`, if set. |
 | `wrongAmount` | A matching transaction posted in-window, but its amount is outside tolerance. | One-time; not repeated. |
 | `cannotCheck` | The account's last sync is stale (`reason: "stale"`), not yet past the deadline (`reason: "not-synced"`), the rule's own window configuration is unsound (`reason: "interval-violation"`, see below), or the rule threw while being evaluated (`reason: "error"`). | Never a false `missing`. An account that was never bank-synced (no `last_sync` yet) always gives `cannotCheck` (`reason: "stale"`) until its first sync. The built-in message has its own wording per reason; only `stale` and `not-synced` mention the bank connection. |
-| `resolved` | A payment previously reported `missing` later posts, on time or late. | Closes out the alert; no manual dismissal needed. |
+| `resolved` | A payment previously reported `missing` later posts, on time or late. | Closes out the alert; no manual dismissal needed. Also sent when a one-off schedule with an open `missing` is marked completed in Actual (see below). |
 | `ruleUnmatched` | A rule's `schedule`/`schedulePrefix` matches no schedule in Actual (renamed, deleted, or a typo). | Repeats once per day while unmatched (a fixed interval, independent of the rule's own `remindEveryDays`). |
+
+## Lifecycle of a completed one-off schedule (#326)
+
+Actual drops a schedule marked completed out of the active set, and a completed schedule is never
+evaluated for new alerts. A completed **one-off** schedule (a single date, not a recurrence) that has
+an open `missing` (including its reminders) in the ledger still gets one `resolved`, so the alert
+thread closes instead of staying open forever:
+
+- The `resolved` uses the built-in "marked completed in Actual" wording (`closed_by` is `completed`),
+  whether or not a matching transaction exists. Completing a schedule is the signal; no payment is
+  looked for.
+- Only a `missing` whose occurrence date is inside the 90-day look-back window is closed. An older one
+  stays as it is.
+- After it is delivered nothing more is sent for that occurrence, unless the schedule is uncompleted (or a
+  payment unlinked) and a new `missing` is recorded for it; then the reminders restart and the next close
+  is delivered again. A completed one-off that never had a `missing` sends nothing, and a completed
+  recurring schedule is unaffected.
+- A custom `resolved` template that never mentions `closed_by` is not used for this case: the built-in
+  "marked completed in Actual" text is sent instead, so an older template cannot claim a payment
+  arrived. A template that mentions `closed_by` is used as written. A normal payment `resolved` always
+  uses your template.
 
 ## Switching alerts off and muting
 
@@ -315,6 +336,7 @@ template that wants to format it differently.
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
 | `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events; for `muteEnded`, the reason given for the mute) |
+| `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual (empty otherwise) |
 | `muted_from` / `muted_until` | `muteEnded` only: the start and the end date of the mute, in `dateFormat` |
 | `events_count` | `muteEnded` only: how many distinct events were held back |
 | `events` | `muteEnded` only: the held-back events, each with `event`, `expected_date` and `deadline` (use `{{#each events as \|e\|}}{{e.event}}{{/each}}`) |

@@ -841,3 +841,204 @@ describe('scheduleAlertsSync: Telegram requests across syncs and restarts (#296)
     expect(requests).toHaveLength(2);
   });
 });
+
+// #326: a one-off schedule that raised `missing` and is then marked completed
+// in Actual drops out of the active set; it must still get one `resolved`.
+describe('scheduleAlertsSync: completed one-off schedule closes its open missing (#326)', () => {
+  let fake;
+  let requests;
+  let baseUrl;
+  let dbDir;
+  let history;
+
+  beforeEach((done) => {
+    requests = [];
+    fake = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        requests.push({ url: req.url, body: JSON.parse(body || '{}') });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    fake.listen(0, '127.0.0.1', () => {
+      baseUrl = `http://127.0.0.1:${fake.address().port}`;
+      dbDir = createTempDir();
+      history = new SyncHistoryService({ dbPath: path.join(dbDir, 'sync-history.db'), loggerConfig: { level: 'ERROR' } });
+      done();
+    });
+  });
+
+  afterEach((done) => {
+    history.close();
+    cleanupTempDir(dbDir);
+    fake.close(done);
+  });
+
+  const notifier = () => new NotificationService(
+    { telegram: { enabled: true, botToken: 'TOKEN', chatId: '42' } },
+    { level: 'ERROR' },
+    { telegramApiBaseUrl: baseUrl }
+  );
+  const block = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'] }] } };
+  const apiFor = ({ completed = false, transactions = [], lastSync = '2026-01-09' } = {}) => makeFakeApi({
+    schedules: [rentSchedule(completed ? { completed: true } : {})],
+    payees: [{ id: 'pay1', name: 'Landlord' }],
+    accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs(lastSync) }],
+    transactions
+  });
+  const run = (api, now) => runScheduleAlertsStep({
+    api, server: block, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+    notificationService: notifier(), logger: quietLogger, now: new Date(now)
+  });
+
+  test('missing sent, then completed with no transaction: resolved once with completed wording, then silence', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+
+    const second = await run(apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+    expect(second.sent).toBe(1);
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.text).toMatch(/Rent/);
+    expect(requests[1].body.text).toMatch(/marked completed in Actual/);
+    expect(requests[1].body.text).not.toMatch(/arrived/);
+
+    await run(apiFor({ completed: true, lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+    await run(apiFor({ completed: true, lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
+    expect(requests).toHaveLength(2);
+  });
+
+  test('completed with a matching transaction: resolved with the completed wording (pinned), once', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }];
+    await run(apiFor({ completed: true, transactions: paid, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.text).toMatch(/marked completed in Actual/);
+    await run(apiFor({ completed: true, transactions: paid, lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+    expect(requests).toHaveLength(2);
+  });
+
+  test('completed one-off that never raised a missing sends nothing', async () => {
+    const result = await run(apiFor({ completed: true }), '2026-01-10T00:00:00.000Z');
+    expect(result.sent).toBe(0);
+    expect(requests).toHaveLength(0);
+  });
+
+  test('completed one-off whose missing is older than the look-back window sends nothing', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+    // occurrence 2026-01-05 is MAX_LOOKBACK_DAYS + 1 days before this run
+    const later = moment.utc('2026-01-05').add(MAX_LOOKBACK_DAYS + 1, 'days').format('YYYY-MM-DD');
+    await run(apiFor({ completed: true, lastSync: later }), `${later}T00:00:00.000Z`);
+    expect(requests).toHaveLength(1);
+  });
+
+  test('completed one-off whose missing is exactly MAX_LOOKBACK_DAYS old is still resolved', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+    const edge = moment.utc('2026-01-05').add(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');
+    await run(apiFor({ completed: true, lastSync: edge }), `${edge}T00:00:00.000Z`);
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.text).toMatch(/marked completed in Actual/);
+  });
+
+  test('a completed recurring schedule with an open missing is not touched', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const api = makeFakeApi({
+      schedules: [rentSchedule({ completed: true, date: { start: '2026-01-05', frequency: 'monthly' } })],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(api, '2026-01-11T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+  });
+
+  describe('custom resolved templates (review M1)', () => {
+    const withTemplate = (resolved) => ({ scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'], templates: { resolved }
+    }] } });
+    const runWith = (srv, api, now) => runScheduleAlertsStep({
+      api, server: srv, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+      notificationService: notifier(), logger: quietLogger, now: new Date(now)
+    });
+    const legacy = '{{name}}: {{received_amount}} arrived {{received_date}}, {{days_overdue}} day(s) late';
+
+    test('a custom resolved without closed_by gets the built-in completed text for a completed one-off', async () => {
+      const srv = withTemplate(legacy);
+      await runWith(srv, apiFor(), '2026-01-10T00:00:00.000Z');
+      await runWith(srv, apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].body.text).toMatch(/marked completed in Actual/);
+      expect(requests[1].body.text).not.toMatch(/arrived/);
+    });
+
+    test('a custom resolved that uses closed_by is honoured for a completed one-off', async () => {
+      const srv = withTemplate('{{#if closed_by}}CUSTOM-DONE {{name}}{{else}}CUSTOM-PAID{{/if}}');
+      await runWith(srv, apiFor(), '2026-01-10T00:00:00.000Z');
+      await runWith(srv, apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests[1].body.text).toMatch(/CUSTOM-DONE Rent/);
+    });
+
+    test('a normal payment resolved still uses the custom template', async () => {
+      // A sentinel only the custom template produces: the built-in payment
+      // text also says "arrived", so matching on it cannot tell them apart.
+      const srv = withTemplate('CUSTOM-PAID {{name}} {{received_date}}');
+      await runWith(srv, apiFor(), '2026-01-10T00:00:00.000Z');
+      const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }];
+      await runWith(srv, apiFor({ transactions: paid, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].body.text).toMatch(/^CUSTOM-PAID Rent 10 Jan 2026$/);
+      expect(requests[1].body.text).not.toMatch(/Alert closed/);
+    });
+  });
+
+  describe('resolved is final only until a later missing (review M2)', () => {
+    const remind = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'], remindEveryDays: 1 }] } };
+    // The ledger stamps rows with the wall clock, so fake only Date and move it
+    // together with `now`; reminder spacing is measured against recorded_at.
+    beforeEach(() => {
+      jest.useFakeTimers({
+        doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate',
+          'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout']
+      });
+    });
+    afterEach(() => { jest.useRealTimers(); });
+    const runR = (api, now) => {
+      jest.setSystemTime(new Date(now));
+      return runScheduleAlertsStep({
+      api, server: remind, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+      notificationService: notifier(), logger: quietLogger, now: new Date(now)
+      });
+    };
+    const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }];
+
+    test('completed, resolved, uncompleted: reminders restart and the next payment closes it again', async () => {
+      await runR(apiFor({ lastSync: '2026-01-10' }), '2026-01-10T00:00:00.000Z');
+      expect(requests).toHaveLength(1);
+      await runR(apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].body.text).toMatch(/marked completed/);
+      await runR(apiFor({ lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+      await runR(apiFor({ lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
+      expect(requests).toHaveLength(4);
+      expect(requests[3].body.text).not.toMatch(/arrived|marked completed/);
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-13' }), '2026-01-14T00:00:00.000Z');
+      expect(requests).toHaveLength(5);
+      expect(requests[4].body.text).toMatch(/arrived/);
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-14' }), '2026-01-15T00:00:00.000Z');
+      expect(requests).toHaveLength(5);
+    });
+
+    test('payment resolved, transaction unlinked, then relinked: resolved is delivered again', async () => {
+      await runR(apiFor({ lastSync: '2026-01-10' }), '2026-01-10T00:00:00.000Z');
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      await runR(apiFor({ lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+      expect(requests).toHaveLength(3);
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
+      expect(requests).toHaveLength(4);
+      expect(requests[3].body.text).toMatch(/arrived/);
+    });
+  });
+});

@@ -163,6 +163,17 @@ function expandRules(rules, schedules) {
     }
     const matches = rawMatches.filter(isActive);
 
+    // #326: a COMPLETED ONE-OFF schedule (`date` is a plain date string, not a
+    // recurrence object) is still bound, flagged `completedOneOff`, so the
+    // caller can close an open `missing` for it with a `resolved`. It is never
+    // evaluated for new alerts (evaluate() only reports it back); a completed
+    // recurring schedule stays excluded exactly as before.
+    for (const s of rawMatches) {
+      if (!isActive(s) && typeof s.date === 'string') {
+        bindings.push({ ...rule, scheduleId: s.id, scheduleName: s.name, schedule: s, unmatched: false, completedOneOff: true });
+      }
+    }
+
     if (matches.length === 0) {
       if (rawMatches.length === 0) {
         bindings.push({ ...rule, scheduleId: null, scheduleName: null, schedule: null, unmatched: true });

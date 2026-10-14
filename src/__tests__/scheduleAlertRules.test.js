@@ -295,3 +295,15 @@ describe('ruleState (#261)', () => {
     expect(muteEndsAt('2026-10-25', 'Europe/Madrid').toISOString()).toBe('2026-10-25T23:00:00.000Z');
   });
 });
+
+describe('expandRules: completed one-off schedules (#326)', () => {
+  test('a completed one-off is bound with completedOneOff, a completed recurring one is not', () => {
+    const rules = [{ id: 'rent', schedule: 'Rent' }];
+    const oneOff = [{ id: 's1', name: 'Rent', completed: true, date: '2026-01-05' }];
+    expect(expandRules(rules, oneOff)).toEqual([
+      expect.objectContaining({ scheduleId: 's1', completedOneOff: true, unmatched: false })
+    ]);
+    const recurring = [{ id: 's1', name: 'Rent', completed: true, date: { start: '2026-01-05', frequency: 'monthly' } }];
+    expect(expandRules(rules, recurring)).toEqual([]);
+  });
+});

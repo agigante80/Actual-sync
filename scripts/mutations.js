@@ -1782,8 +1782,8 @@ module.exports = [
         id: '258-r2-m5-resolved-resent-after-already-resolved-here', ticket: '#258',
         desc: 'a resolved event goes back to being resendable to a destination that already has its own resolved row recorded, resending indefinitely instead of once per destination',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: 'due: !resolvedRow,',
-        mutant: 'due: true,',
+        anchor: 'due: !resolvedRow ||',
+        mutant: 'due: true ||',
         tests: 'scheduleAlertDelivery'
     },
     {
@@ -2774,7 +2774,7 @@ module.exports = [
         id: '296-resolved-sent-every-sync', ticket: '#296',
         desc: 'a resolved alert is not de-duplicated, so it repeats on every later sync',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "    return { due: !resolvedRow, lastSentAt: null };",
+        anchor: "    return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };",
         mutant: "    return { due: true, lastSentAt: null };",
         tests: 'scheduleAlertsSync'
     },
@@ -2985,5 +2985,78 @@ module.exports = [
         anchor: "if (!ok) { complete = false; continue; }",
         mutant: "if (!ok) { continue; }",
         tests: "scheduleAlertDelivery"
+    },
+    // ---- #326: completed one-off schedule closes its open missing ---------
+    {
+        id: '326-completed-oneoff-not-bound', ticket: '#326',
+        desc: 'a completed one-off schedule is no longer bound, so its open missing is never resolved',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: "if (!isActive(s) && typeof s.date === 'string') {",
+        mutant: "if (false && !isActive(s) && typeof s.date === 'string') {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-recurring-bound', ticket: '#326',
+        desc: 'a completed recurring schedule is bound too, so it would also be resolved on completion',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: "if (!isActive(s) && typeof s.date === 'string') {",
+        mutant: "if (!isActive(s)) {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-lookback-ignored', ticket: '#326',
+        desc: 'the look-back window is not applied, so a missing older than it is still resolved',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: ".subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
+        mutant: ".subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');\n    sinceDate = '0000-01-01';\n    for (const schedule of completedSchedules)",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-wording-lost', ticket: '#326',
+        desc: 'closed_by is not put in the render context, so the resolved text claims a payment arrived',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "closed_by: event.closedBy || null,",
+        mutant: "closed_by: null,",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-custom-template-used', ticket: '#326',
+        desc: 'a custom resolved template without closed_by is used for a completed one-off, claiming a payment arrived',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
+        mutant: "if (false && event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-payment-resolved-loses-custom-template', ticket: '#326',
+        desc: 'the built-in resolved replaces every custom template without closed_by, including ordinary payments',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
+        mutant: "if (!/\\bclosed_by\\b/.test(templates.resolved))",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-resolved-repeats', ticket: '#326',
+        desc: 'the per-destination already-resolved check is skipped, so resolved repeats every sync',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };",
+        mutant: "return { due: true, lastSentAt: null };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-resolved-final-after-later-missing', ticket: '#326',
+        desc: 'any resolved row is final, so a completed-then-uncompleted (or unlinked-then-relinked) schedule never closes again',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };",
+        mutant: "return { due: !resolvedRow, lastSentAt: null };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-lookback-off-by-one', ticket: '#326',
+        desc: 'the look-back cutoff is one day short, so a missing exactly MAX_LOOKBACK_DAYS old is no longer resolved',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: ".subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
+        mutant: ".subtract(MAX_LOOKBACK_DAYS - 1, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
+        tests: 'scheduleAlert'
     }
 ];
