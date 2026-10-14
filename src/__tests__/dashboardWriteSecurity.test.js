@@ -808,4 +808,25 @@ describe('unmapped body-parser errors and the final error handler (#259)', () =>
     expect(res.text).not.toContain('kaboom');
     expect(logged.length).toBeGreaterThan(0);
   });
+
+  test('a 4xx error passed by a configRouter route keeps its status, not invalid_body', async () => {
+    const ctx = await makeService();
+    ctx.svc.configRouter.get('/__conflict', (req, res, next) => {
+      next(Object.assign(new Error('conflict'), { status: 409 }));
+    });
+    const res = await request(ctx.svc, { path: '/__conflict' });
+    expect(res.status).toBe(409);
+    expect(res.json).toEqual({ error: 'request_error' });
+    expect(res.text).not.toContain('invalid_body');
+  });
+
+  test('a 4xx error carrying statusCode (not status) keeps its status', async () => {
+    const ctx = await makeService();
+    ctx.svc.configRouter.get('/__gone', (req, res, next) => {
+      next(Object.assign(new Error('gone'), { statusCode: 404 }));
+    });
+    const res = await request(ctx.svc, { path: '/__gone' });
+    expect(res.status).toBe(404);
+    expect(res.json).toEqual({ error: 'request_error' });
+  });
 });

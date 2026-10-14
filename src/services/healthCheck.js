@@ -15,7 +15,13 @@ const { resolveVersion } = require('../lib/version');
 const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
 
 // 16 KB JSON parser for configuration writes (#259), used by configWrite().
-const configJson = express.json({ limit: '16kb' });
+// markParser tags an error with fromBodyParser so jsonBodyErrors can tell a
+// body-parser failure from a 4xx raised by a route. A corrupt gzip body arrives
+// as createError(400, zlibErr) with no `type`, so only a marker works. (#259)
+const markParser = (parser) => (req, res, next) =>
+  parser(req, res, (e) => next(e && Object.assign(e, { fromBodyParser: true })));
+
+const configJson = markParser(express.json({ limit: '16kb' }));
 
 /**
  * Four-argument error middleware that answers body-parser failures as JSON
@@ -34,9 +40,10 @@ function jsonBodyErrors(err, req, res, next) {
   }
   // Any other 4xx body-parser failure (a corrupt gzip body, an aborted
   // request, a bad Content-Length) gets a JSON body, never Express's HTML page
-  // with a stack trace. Anything else goes on to the final error handler.
+  // with a stack trace. Only errors marked by markParser qualify: a 4xx that a
+  // route passed to next(err) keeps its own status via the final handler.
   const status = err && (err.status || err.statusCode);
-  if (status >= 400 && status < 500 && !res.headersSent) {
+  if (err && err.fromBodyParser && status >= 400 && status < 500 && !res.headersSent) {
     return res.status(status).json({ error: 'invalid_body' });
   }
   return next(err);
@@ -201,7 +208,7 @@ class HealthCheckService {
 
     // Parse JSON bodies. jsonBodyErrors keeps a malformed body on the four
     // existing POSTs a JSON answer instead of Express's HTML page (#259).
-    this.app.use(express.json());
+    this.app.use(markParser(express.json()));
     this.app.use(jsonBodyErrors);
     
     this.setupRoutes();
@@ -1457,6 +1464,11 @@ This test verifies that notifications are configured correctly and can reach the
         method: req.method
       });
       if (res.headersSent) return next(err);
+      // A 4xx from a route or middleware keeps its status; never a stack. (#259)
+      const status = err && (err.status || err.statusCode);
+      if (status >= 400 && status < 500) {
+        return res.status(status).json({ error: 'request_error' });
+      }
       return res.status(500).json({ error: 'internal_error' });
     });
   }

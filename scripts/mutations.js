@@ -2656,5 +2656,21 @@ module.exports = [
         anchor: "server.length > 200",
         mutant: "server.length > 2000000",
         tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-body-error-unmarked", ticket: '#259',
+        desc: "any 4xx is relabelled invalid_body, hiding a route's own 409/404",
+        file: "src/services/healthCheck.js",
+        anchor: "if (err && err.fromBodyParser && status >= 400",
+        mutant: "if (err && status >= 400",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-final-handler-4xx-500", ticket: '#259',
+        desc: "the final error handler answers a route's 4xx as 500",
+        file: "src/services/healthCheck.js",
+        anchor: "if (status >= 400 && status < 500) {\n        return res.status(status).json({ error: 'request_error' });",
+        mutant: "if (false) {\n        return res.status(status).json({ error: 'request_error' });",
+        tests: "dashboardWriteSecurity"
     }
 ];
