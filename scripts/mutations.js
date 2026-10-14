@@ -2486,15 +2486,15 @@ module.exports = [
         id: '296-refund-sign-ignored', ticket: '#296',
         desc: 'an unlinked opposite-sign refund is accepted by the wrong-amount fallback and the late pass',
         file: 'src/lib/scheduleAlerts.js',
-        anchor: "        .filter((c) => c.match.linked || signOk(c.tx))",
-        mutant: "        .filter((c) => c.match.linked || signOk(c.tx) || true)",
+        anchor: "        .filter((c) => c.match.linked || signCompatible(c.tx.amount, schedule.amount))",
+        mutant: "        .filter((c) => c.match.linked || signCompatible(c.tx.amount, schedule.amount) || true)",
         tests: 'scheduleAlerts.test'
     },
     {
         id: '296-tolerance-sign-ignored', ticket: '#296',
         desc: 'amountWithinTolerance ignores the sign, so a sibling schedule of opposite sign hijacks the payment',
         file: 'src/lib/scheduleAlerts.js',
-        anchor: "  if (Math.sign(amount) !== Math.sign(expected)) return false;",
+        anchor: "  if (!signCompatible(amount, expected)) return false;",
         mutant: "  if (false) return false;",
         tests: 'scheduleAlerts.test'
     },
