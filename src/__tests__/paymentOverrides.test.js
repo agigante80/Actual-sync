@@ -4,6 +4,8 @@
  * resets and (further down) the PUT / DELETE / GET routes.
  */
 const path = require('path');
+const http = require('http');
+const { HealthCheckService } = require('../services/healthCheck');
 const { SyncHistoryService } = require('../services/syncHistory');
 const { createTempDir, cleanupTempDir } = require('./helpers/testHelpers');
 
@@ -326,5 +328,317 @@ describe('deliverScheduleAlerts reads the overrides (#261)', () => {
     syncHistory.setOverride({ server: 'Main', alertId: 'old', enabled: false });
     await deliver(evaluated());
     expect(notificationService.calls).toHaveLength(1);
+  });
+});
+
+describe('payment alert state routes (#261)', () => {
+  const NOW = new Date('2026-10-01T08:00:00.000Z');
+  const BASIC = { type: 'basic', username: 'op', password: 'hunter2' };
+  const basicHeader = (pw = 'hunter2') => `Basic ${Buffer.from(`op:${pw}`).toString('base64')}`;
+  const STATE = (server, id) => `/api/dashboard/payments/${server}/${id}/state`;
+  const SERVERS = [{
+    name: 'Main',
+    scheduleAlerts: { alerts: [
+      { id: 'parking-a', schedule: 'Rent - Parking A' },
+      { id: 'legacy', schedule: 'Legacy', enabled: false }
+    ] }
+  }];
+
+  let dbDir;
+  let history;
+  let svc;
+
+  async function boot({ dashboard = {}, servers = SERVERS } = {}) {
+    dbDir = createTempDir();
+    history = new SyncHistoryService({
+      dbPath: path.join(dbDir, 'h.db'), loggerConfig: { level: 'ERROR' }, now: () => new Date(NOW)
+    });
+    svc = new HealthCheckService({
+      port: 0, host: '127.0.0.1', loggerConfig: { level: 'ERROR' }, now: () => new Date(NOW),
+      getTimezone: () => 'UTC',
+      syncHistory: history, getServers: () => servers,
+      dashboardConfig: { enabled: true, allowConfigWrites: true, auth: BASIC, ...dashboard }
+    });
+    svc.logger = { debug() {}, info() {}, warn() {}, error() {} };
+    await svc.start();
+  }
+
+  afterEach(async () => {
+    if (svc) { try { await svc.stop(); } catch { /* not started */ } }
+    svc = null;
+    if (history && history.db) history.close();
+    if (dbDir) cleanupTempDir(dbDir);
+    dbDir = null;
+  });
+
+  function call(method, reqPath, { body, headers = {}, auth = basicHeader() } = {}) {
+    const hasBody = body !== undefined;
+    const payload = hasBody ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined;
+    return new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: '127.0.0.1', port: svc.port, path: reqPath, method,
+        headers: Object.fromEntries(Object.entries({
+          Connection: 'close',
+          ...(auth ? { Authorization: auth } : {}),
+          ...(hasBody ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
+          ...headers
+        }).filter(([, v]) => v !== undefined))
+      }, (res) => {
+        let text = '';
+        res.on('data', (c) => { text += c; });
+        res.on('end', () => {
+          let json;
+          try { json = JSON.parse(text); } catch { /* not JSON */ }
+          resolve({ status: res.statusCode, text, json });
+        });
+      });
+      req.on('error', reject);
+      if (hasBody) req.write(payload);
+      req.end();
+    });
+  }
+  const put = (id, body, opts = {}) => call('PUT', STATE('Main', id), { body, ...opts });
+  const audit = () => history.getConfigAudit().filter((a) => a.action === 'payment_alert_state');
+
+  describe('PUT', () => {
+    test('mutes with a reason, merges, audits with the reason redacted', async () => {
+      await boot();
+      const res = await put('parking-a', { mutedUntil: '2026-12-01', reason: 'vacant' });
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual({ ruleState: { enabled: true, mutedUntil: '2026-12-01', reason: 'vacant', lockedByConfig: false } });
+      expect(history.getOverride('Main', 'parking-a')).toMatchObject({ mutedFrom: NOW.toISOString(), mutedUntil: '2026-12-01' });
+      const rows = audit();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].target).toBe('parking-a');
+      expect(Object.keys(rows[0].changes).sort()).toEqual(['mutedUntil', 'reason']);
+      expect(JSON.stringify(rows[0])).not.toContain('vacant');
+    });
+
+    test('switching off keeps an existing mute (merge)', async () => {
+      await boot();
+      await put('parking-a', { mutedUntil: '2026-12-01', reason: 'vacant' });
+      const res = await put('parking-a', { enabled: false });
+      expect(res.json.ruleState).toMatchObject({ enabled: false, mutedUntil: '2026-12-01', reason: 'vacant' });
+    });
+
+    test('an extension keeps the original mutedFrom', async () => {
+      await boot();
+      await put('parking-a', { mutedUntil: '2026-12-01', reason: 'vacant' });
+      history.db.prepare("UPDATE payment_alert_override SET muted_from = '2026-09-15T00:00:00.000Z'").run();
+      await put('parking-a', { mutedUntil: '2027-01-01', reason: 'still vacant' });
+      expect(history.getOverride('Main', 'parking-a')).toMatchObject({ mutedFrom: '2026-09-15T00:00:00.000Z', mutedUntil: '2027-01-01', reason: 'still vacant' });
+    });
+
+    test('early unmute deletes the override and the held-back rows, with no summary', async () => {
+      await boot();
+      await put('parking-a', { mutedUntil: '2026-12-01', reason: 'vacant' });
+      history.recordScheduleAlert({
+        server: 'Main', alertId: 'parking-a', scheduleId: 's1', occurrenceDate: '2026-10-05',
+        event: 'missing', channel: 'telegram', delivery: 'muted'
+      });
+      const res = await put('parking-a', { mutedUntil: null });
+      expect(res.status).toBe(200);
+      expect(res.json.ruleState).toMatchObject({ enabled: true, mutedUntil: null, reason: null });
+      expect(history.getOverride('Main', 'parking-a')).toBeNull();
+      expect(history.listMutedRows({ server: 'Main', alertId: 'parking-a' })).toEqual([]);
+    });
+
+    test('enabled:true with no override is a no-op: nothing stored, nothing audited', async () => {
+      await boot();
+      const res = await put('parking-a', { enabled: true });
+      expect(res.status).toBe(200);
+      expect(history.listOverrides()).toEqual([]);
+      expect(audit()).toEqual([]);
+    });
+
+    test('mutedUntil:null with a reason ignores the reason', async () => {
+      await boot();
+      const res = await put('parking-a', { mutedUntil: null, reason: 'x' });
+      expect(res.status).toBe(200);
+      expect(history.listOverrides()).toEqual([]);
+    });
+
+    test('a config-disabled alert can be unmuted but not enabled or muted', async () => {
+      await boot();
+      history.setOverride({ server: 'Main', alertId: 'legacy', mutedFrom: NOW.toISOString(), mutedUntil: '2026-12-01', reason: 'r' });
+      const unmute = await put('legacy', { mutedUntil: null });
+      expect(unmute.status).toBe(200);
+      expect(unmute.json.ruleState.lockedByConfig).toBe(true);
+      const before = audit().length;
+      const enable = await put('legacy', { enabled: true });
+      expect(enable.status).toBe(409);
+      expect(enable.json).toEqual({ error: 'disabled_in_config' });
+      expect((await put('legacy', { mutedUntil: '2026-12-01', reason: 'x' })).status).toBe(409);
+      expect(audit()).toHaveLength(before);
+    });
+
+    // A top-level JSON string never reaches the handler: the #259 parser is
+    // strict and answers invalid_json (the issue text said invalid_body).
+    test('a top-level JSON string is refused by the strict #259 parser', async () => {
+      await boot();
+      const res = await put('parking-a', '"x"');
+      expect(res.status).toBe(400);
+      expect(res.json).toEqual({ error: 'invalid_json' });
+    });
+
+    test.each([
+      ['empty object', {}],
+      ['array', []],
+      ['unknown key', { foo: 1 }],
+      ['wrong enabled type', { enabled: 'yes' }]
+    ])('invalid_body: %s', async (_n, body) => {
+      await boot();
+      const res = await put('parking-a', body);
+      expect(res.status).toBe(400);
+      expect(res.json).toEqual({ error: 'invalid_body' });
+    });
+
+    test.each([
+      ['not a real date', { mutedUntil: '2026-02-30', reason: 'x' }],
+      ['yesterday', { mutedUntil: '2026-09-30', reason: 'x' }],
+      ['today + 366 days', { mutedUntil: '2027-10-02', reason: 'x' }],
+      ['bad format', { mutedUntil: '1/2/2026', reason: 'x' }]
+    ])('invalid_muted_until: %s', async (_n, body) => {
+      await boot();
+      const res = await put('parking-a', body);
+      expect(res.status).toBe(400);
+      expect(res.json).toEqual({ error: 'invalid_muted_until' });
+    });
+
+    test('today and today + 365 days are accepted', async () => {
+      await boot();
+      expect((await put('parking-a', { mutedUntil: '2026-10-01', reason: 'x' })).status).toBe(200);
+      expect((await put('parking-a', { mutedUntil: '2027-10-01', reason: 'x' })).status).toBe(200);
+    });
+
+    test('reason_required and invalid_reason', async () => {
+      await boot();
+      expect((await put('parking-a', { mutedUntil: '2026-12-01' })).json).toEqual({ error: 'reason_required' });
+      expect((await put('parking-a', { mutedUntil: '2026-12-01', reason: '   ' })).json).toEqual({ error: 'reason_required' });
+      const long = await put('parking-a', { mutedUntil: '2026-12-01', reason: 'x'.repeat(201) });
+      expect(long.status).toBe(400);
+      expect(long.json).toEqual({ error: 'invalid_reason' });
+      expect((await put('parking-a', { mutedUntil: '2026-12-01', reason: 'x'.repeat(200) })).status).toBe(200);
+    });
+
+    test('404 for an unknown server, an unknown alert and __proto__', async () => {
+      await boot();
+      const server = await call('PUT', STATE('Nope', 'parking-a'), { body: { enabled: false } });
+      expect(server.status).toBe(404);
+      expect(server.json).toEqual({ error: 'server_not_found' });
+      expect((await put('missing', { enabled: false })).json).toEqual({ error: 'alert_not_found' });
+      const proto = await put('__proto__', { enabled: false });
+      expect(proto.status).toBe(404);
+      expect(proto.json).toEqual({ error: 'alert_not_found' });
+    });
+
+    test('write gates: disabled, auth none, origin, auth, bad JSON, size, content type', async () => {
+      await boot({ dashboard: { allowConfigWrites: false } });
+      const off = await put('parking-a', { enabled: false });
+      expect(off.status).toBe(403);
+      expect(off.json).toEqual({ error: 'config_writes_disabled', reason: 'disabled' });
+      await svc.stop();
+      history.close();
+      cleanupTempDir(dbDir);
+
+      await boot({ dashboard: { auth: { type: 'none' } } });
+      const none = await put('parking-a', { enabled: false }, { auth: null });
+      expect(none.json).toEqual({ error: 'config_writes_disabled', reason: 'auth-none' });
+      await svc.stop();
+      history.close();
+      cleanupTempDir(dbDir);
+
+      await boot();
+      const evil = await put('parking-a', { enabled: false }, { headers: { Origin: 'https://evil.example' } });
+      expect(evil.json).toEqual({ error: 'origin_rejected' });
+      expect((await put('parking-a', { enabled: false }, { auth: null })).json).toEqual({ error: 'Authentication required' });
+      expect((await put('parking-a', { enabled: false }, { auth: basicHeader('bad') })).json).toEqual({ error: 'Invalid credentials' });
+      expect((await put('parking-a', '{"enabled":')).json).toEqual({ error: 'invalid_json' });
+      const big = await put('parking-a', JSON.stringify({ reason: 'x'.repeat(17000) }));
+      expect(big.status).toBe(413);
+      const text = await put('parking-a', '{"enabled":false}', { headers: { 'Content-Type': 'text/plain' } });
+      expect(text.status).toBe(415);
+      expect(history.listOverrides()).toEqual([]);
+      expect(audit()).toEqual([]);
+    });
+  });
+
+  describe('DELETE', () => {
+    const del = (id, opts = {}) => call('DELETE', STATE('Main', id), opts);
+
+    test('removes the override with no body, audits, and drops held-back rows', async () => {
+      await boot();
+      await put('parking-a', { enabled: false, mutedUntil: '2026-12-01', reason: 'vacant' });
+      history.recordScheduleAlert({
+        server: 'Main', alertId: 'parking-a', scheduleId: 's1', occurrenceDate: '2026-10-05',
+        event: 'missing', channel: 'telegram', delivery: 'muted'
+      });
+      const res = await del('parking-a');
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual({ deleted: true });
+      expect(history.getOverride('Main', 'parking-a')).toBeNull();
+      expect(history.listMutedRows({ server: 'Main', alertId: 'parking-a' })).toEqual([]);
+      expect(audit()).toHaveLength(2);
+      expect(JSON.stringify(audit())).not.toContain('vacant');
+    });
+
+    test('an orphaned override and a config-disabled alert can be deleted', async () => {
+      await boot();
+      history.setOverride({ server: 'Gone', alertId: 'old', enabled: false });
+      history.setOverride({ server: 'Main', alertId: 'legacy', enabled: false });
+      expect((await call('DELETE', STATE('Gone', 'old'))).json).toEqual({ deleted: true });
+      expect((await del('legacy')).status).toBe(200);
+    });
+
+    test('404 override_not_found when there is none', async () => {
+      await boot();
+      const res = await del('parking-a');
+      expect(res.status).toBe(404);
+      expect(res.json).toEqual({ error: 'override_not_found' });
+    });
+
+    test('gates leave the override in place', async () => {
+      await boot();
+      history.setOverride({ server: 'Main', alertId: 'parking-a', enabled: false });
+      expect((await del('parking-a', { auth: null })).json).toEqual({ error: 'Authentication required' });
+      expect((await del('parking-a', { headers: { Origin: 'https://evil.example' } })).json).toEqual({ error: 'origin_rejected' });
+      expect(history.getOverride('Main', 'parking-a')).not.toBeNull();
+      expect(audit()).toEqual([]);
+    });
+  });
+
+  describe('GET /api/dashboard/payment-overrides', () => {
+    test('lists overrides ordered, with orphaned flags', async () => {
+      await boot();
+      history.setOverride({ server: 'Main', alertId: 'parking-a', mutedFrom: '2026-10-20T08:00:00.000Z', mutedUntil: '2026-12-01', reason: 'vacant' });
+      history.setOverride({ server: 'Main', alertId: 'old', enabled: false });
+      const res = await call('GET', '/api/dashboard/payment-overrides');
+      expect(res.status).toBe(200);
+      expect(res.json.overrides.map((o) => [o.alertId, o.orphaned])).toEqual([['old', true], ['parking-a', false]]);
+      expect(res.json.overrides[1]).toEqual({
+        server: 'Main', alertId: 'parking-a', enabled: true, mutedFrom: '2026-10-20T08:00:00.000Z',
+        mutedUntil: '2026-12-01', reason: 'vacant', updatedAt: NOW.toISOString(), orphaned: false
+      });
+    });
+
+    test('empty and unauthenticated', async () => {
+      await boot();
+      expect((await call('GET', '/api/dashboard/payment-overrides')).json).toEqual({ overrides: [] });
+      expect((await call('GET', '/api/dashboard/payment-overrides', { auth: null })).status).toBe(401);
+    });
+  });
+
+  test('GET /payments reports the rule state with the override', async () => {
+    await boot();
+    history.replacePaymentSnapshot('Main', [
+      { alertId: 'parking-a', scheduleId: 's1', name: 'Rent', cadenceText: 'x', account: 'Main', payee: 'T', expectedAmount: 1, nextDate: '2026-11-05', deadline: '2026-10-11', state: 'missing', occurrences: [] },
+      { alertId: 'legacy', scheduleId: 's2', name: 'Old', cadenceText: 'x', account: 'Main', payee: 'T', expectedAmount: 1, nextDate: '2026-11-05', deadline: '2026-10-11', state: 'missing', occurrences: [] }
+    ]);
+    history.setOverride({ server: 'Main', alertId: 'parking-a', mutedFrom: NOW.toISOString(), mutedUntil: '2026-12-01', reason: 'vacant' });
+    const res = await call('GET', '/api/dashboard/payments?server=Main');
+    expect(res.status).toBe(200);
+    const byId = Object.fromEntries(res.json.servers[0].items.map((i) => [i.alertId, i.ruleState]));
+    expect(byId['parking-a']).toEqual({ enabled: true, mutedUntil: '2026-12-01', reason: 'vacant', lockedByConfig: false });
+    expect(byId.legacy).toEqual({ enabled: false, mutedUntil: null, reason: null, lockedByConfig: true });
   });
 });

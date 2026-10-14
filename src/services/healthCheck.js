@@ -13,6 +13,9 @@ const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 const { resolveVersion } = require('../lib/version');
 const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
+const moment = require('moment-timezone');
+const { getRules, ruleState } = require('../lib/scheduleAlertRules');
+const { resolveTimezone } = require('../lib/timezone');
 
 // 16 KB JSON parser for configuration writes (#259), used by configWrite().
 // markParser tags an error with fromBodyParser so jsonBodyErrors can tell a
@@ -125,6 +128,8 @@ class HealthCheckService {
     // timestamps and can drive many requests; production uses the defaults. (#263)
     this.now = options.now || (() => new Date());
     this.rateLimitMax = options.rateLimitMax ?? 60;
+    // The timezone mute dates are read in (#261); production passes resolveTimezone(config).
+    this.getTimezone = options.getTimezone || (() => resolveTimezone({}));
     this.host = options.host || '0.0.0.0';
     this.prometheusService = options.prometheusService;
     this.syncHistory = options.syncHistory;
@@ -368,6 +373,126 @@ class HealthCheckService {
       return res.status(403).json({ error: 'origin_rejected' });
     };
     return checkOrigin;
+  }
+
+  /** The rule state the dashboard shows and the PUT returns (#261). */
+  publicRuleState(rule, override, now, timezone) {
+    const st = ruleState({ rule, override: override || null, now, timezone });
+    return { enabled: st.enabled, mutedUntil: st.mutedUntil, reason: st.reason, lockedByConfig: st.lockedByConfig };
+  }
+
+  /**
+   * PUT /api/dashboard/payments/:server/:alertId/state (#261). Validation
+   * order: body shape, dates and reason, 404s, then 409. The given keys merge
+   * into the stored override.
+   */
+  putPaymentAlertState(req, res) {
+    const body = req.body;
+    const KEYS = ['enabled', 'mutedUntil', 'reason'];
+    const bad = (code, status = 400) => res.status(status).json({ error: code });
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) return bad('invalid_body');
+    const given = Object.keys(body);
+    if (given.length === 0 || given.some((k) => !KEYS.includes(k))) return bad('invalid_body');
+    if ('enabled' in body && typeof body.enabled !== 'boolean') return bad('invalid_body');
+    if ('mutedUntil' in body && body.mutedUntil !== null && typeof body.mutedUntil !== 'string') return bad('invalid_body');
+    if ('reason' in body && body.reason !== null && typeof body.reason !== 'string') return bad('invalid_body');
+
+    const timezone = this.getTimezone();
+    const now = this.now();
+    let reason;
+    if (typeof body.mutedUntil === 'string') {
+      const m = /^\d{4}-\d{2}-\d{2}$/.test(body.mutedUntil) ? moment.tz(body.mutedUntil, 'YYYY-MM-DD', true, timezone) : null;
+      if (!m || !m.isValid() || m.format('YYYY-MM-DD') !== body.mutedUntil) return bad('invalid_muted_until');
+      const today = moment.tz(now, timezone).startOf('day');
+      const days = Math.round(m.clone().startOf('day').diff(today, 'days', true));
+      if (days < 0 || days > 365) return bad('invalid_muted_until');
+      reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+      if (reason === '') return bad('reason_required');
+      if (reason.length > 200) return bad('invalid_reason');
+    }
+
+    const serverName = req.params.server;
+    const alertId = req.params.alertId;
+    const servers = this.getServers ? (this.getServers() || []) : [];
+    const server = servers.find((s) => s.name === serverName);
+    if (!server) return bad('server_not_found', 404);
+    const rule = getRules(server.scheduleAlerts).find((r) => r.id === alertId);
+    if (!rule) return bad('alert_not_found', 404);
+    const unmuteOnly = body.mutedUntil === null && !('enabled' in body);
+    if (rule.enabled === false && !unmuteOnly) return bad('disabled_in_config', 409);
+
+    try {
+      const before = this.syncHistory.getOverride(serverName, alertId);
+      const next = {
+        server: serverName,
+        alertId,
+        enabled: before ? before.enabled : true,
+        mutedFrom: before ? before.mutedFrom : null,
+        mutedUntil: before ? before.mutedUntil : null,
+        reason: before ? before.reason : null
+      };
+      if ('enabled' in body) next.enabled = body.enabled;
+      if (body.mutedUntil === null) {
+        next.mutedFrom = null; next.mutedUntil = null; next.reason = null;
+      } else if (typeof body.mutedUntil === 'string') {
+        // An extension keeps the original start so the summary covers the whole period.
+        next.mutedFrom = before && before.mutedUntil && before.mutedFrom ? before.mutedFrom : now.toISOString();
+        next.mutedUntil = body.mutedUntil;
+        next.reason = reason;
+      } else if ('reason' in body && next.mutedUntil && typeof body.reason === 'string' && body.reason.trim() !== '') {
+        next.reason = body.reason.trim().slice(0, 200);
+      }
+
+      if (before && before.mutedUntil && next.mutedUntil === null) {
+        // Early unmute: no summary, and the held-back rows go (otherwise the
+        // latest 'muted' row would suppress the alert for good).
+        this.syncHistory.deleteMutedRows({ server: serverName, alertId, since: before.mutedFrom || undefined });
+      }
+      const stored = this.syncHistory.setOverride(next);
+
+      const was = { enabled: before ? before.enabled : true, mutedUntil: before ? before.mutedUntil : null, reason: before ? before.reason : null };
+      const is = { enabled: stored ? stored.enabled : true, mutedUntil: stored ? stored.mutedUntil : null, reason: stored ? stored.reason : null };
+      const changes = {};
+      for (const field of Object.keys(was)) {
+        if (was[field] !== is[field]) changes[field] = [was[field], is[field]];
+      }
+      if (Object.keys(changes).length > 0) {
+        this.syncHistory.recordConfigChange({
+          server: serverName, remoteAddr: req.ip, action: 'payment_alert_state', target: alertId, changes
+        });
+      }
+      return res.json({ ruleState: this.publicRuleState(rule, stored, now, timezone) });
+    } catch (error) {
+      this.logger.error('Failed to update payment alert state', { error: error.message });
+      return res.status(500).json({ error: 'Failed to update payment alert state' });
+    }
+  }
+
+  /** DELETE /api/dashboard/payments/:server/:alertId/state (#261): reset enabled and the mute. */
+  deletePaymentAlertState(req, res) {
+    const serverName = req.params.server;
+    const alertId = req.params.alertId;
+    try {
+      const before = this.syncHistory.getOverride(serverName, alertId);
+      if (!before) return res.status(404).json({ error: 'override_not_found' });
+      if (before.mutedUntil) {
+        this.syncHistory.deleteMutedRows({ server: serverName, alertId, since: before.mutedFrom || undefined });
+      }
+      this.syncHistory.deleteOverride(serverName, alertId);
+      const changes = {};
+      if (before.enabled !== true) changes.enabled = [before.enabled, true];
+      if (before.mutedUntil) {
+        changes.mutedUntil = [before.mutedUntil, null];
+        changes.reason = [before.reason, null];
+      }
+      this.syncHistory.recordConfigChange({
+        server: serverName, remoteAddr: req.ip, action: 'payment_alert_state', target: alertId, changes
+      });
+      return res.json({ deleted: true });
+    } catch (error) {
+      this.logger.error('Failed to delete payment alert override', { error: error.message });
+      return res.status(500).json({ error: 'Failed to delete payment alert override' });
+    }
   }
 
   /** Why configuration writes are unavailable, or null when they are allowed. */
@@ -1354,10 +1479,14 @@ This test verifies that notifications are configured correctly and can reach the
 
         const daysBetween = (from, to) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000);
 
+        const now = this.now();
+        const timezone = this.getTimezone();
         const result = servers.map((server) => {
           if (!server.scheduleAlerts) {
             return { server: server.name, configured: false, lastRun: null, items: [] };
           }
+          const rulesById = new Map(getRules(server.scheduleAlerts).map((r) => [r.id, r]));
+          const overrides = new Map(this.syncHistory.listOverrides(server.name).map((o) => [o.alertId, o]));
           const { items, run } = this.syncHistory.getPaymentSnapshot(server.name);
           const lastSent = this.syncHistory.getLastSentAlerts(server.name);
           return {
@@ -1367,9 +1496,9 @@ This test verifies that notifications are configured correctly and can reach the
             items: items.map((item) => ({
               ...item,
               lastAlertAt: lastSent.get(JSON.stringify([item.alertId, item.scheduleId])) || null,
-              // Constants until #262 (source) and #261 (rule state) land.
+              // Constant until #262 lands.
               source: 'config',
-              ruleState: { enabled: true, mutedUntil: null, reason: null },
+              ruleState: this.publicRuleState(rulesById.get(item.alertId), overrides.get(item.alertId), now, timezone),
               occurrences: item.occurrences.map((o) => ({
                 ...o,
                 daysLate: o.state === 'late' && o.receivedDate && o.deadline
@@ -1383,6 +1512,37 @@ This test verifies that notifications are configured correctly and can reach the
       } catch (error) {
         this.logger.error('Failed to get payments', { error: error.message });
         res.status(500).json({ error: 'Failed to retrieve payments' });
+      }
+    });
+
+    // Payment alert controls (#261). PUT and DELETE change configuration, so
+    // they sit on configRouter behind configWrite(); the GET export is a plain
+    // dashboard read.
+    this.configRouter.put('/api/dashboard/payments/:server/:alertId/state', ...this.configWrite(), (req, res) => {
+      this.putPaymentAlertState(req, res);
+    });
+    this.configRouter.delete('/api/dashboard/payments/:server/:alertId/state', ...this.configWrite(), (req, res) => {
+      this.deletePaymentAlertState(req, res);
+    });
+    this.app.get('/api/dashboard/payment-overrides', this.dashboardAuth(), (req, res) => {
+      if (!this.syncHistory) return res.status(503).json({ error: 'Sync history not available' });
+      try {
+        const servers = this.getServers ? (this.getServers() || []) : [];
+        const known = new Map(servers.map((srv) => [srv.name, new Set(getRules(srv.scheduleAlerts).map((r) => r.id))]));
+        const overrides = this.syncHistory.listOverrides().map((o) => ({
+          server: o.server,
+          alertId: o.alertId,
+          enabled: o.enabled,
+          mutedFrom: o.mutedFrom,
+          mutedUntil: o.mutedUntil,
+          reason: o.reason,
+          updatedAt: o.updatedAt,
+          orphaned: !(known.has(o.server) && known.get(o.server).has(o.alertId))
+        }));
+        res.json({ overrides });
+      } catch (error) {
+        this.logger.error('Failed to list payment overrides', { error: error.message });
+        res.status(500).json({ error: 'Failed to retrieve payment overrides' });
       }
     });
 
