@@ -272,6 +272,7 @@ module.exports = {
   deriveRuleId,
   getRules,
   mergeRules,
+  normalizeRule,
   checkUniqueIds,
   expandRules,
   DEFAULT_GRACE_DAYS,
