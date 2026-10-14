@@ -1062,6 +1062,7 @@ async function loadSettingsTab() {
         
         // Load orphaned servers (servers in history but not in config)
         await loadOrphanedServers(Object.keys(data.servers));
+        await loadOrphanedOverrides();
         
         // Load date format preference
         loadDateFormatPreference();
@@ -1136,6 +1137,71 @@ async function loadOrphanedServers(configuredServers) {
         console.error('Failed to load orphaned servers:', error);
         document.getElementById('orphaned-servers-list').innerHTML = '<div style="color: #ef4444;">Failed to load orphaned servers</div>';
     }
+}
+
+// Payment alert overrides whose server or alert is no longer configured (#261).
+// Built with DOM calls only: the alert id comes from stored data.
+async function loadOrphanedOverrides(errorText) {
+    const list = document.getElementById('orphaned-overrides-list');
+    if (!list) return;
+    const note = (text, className) => {
+        list.textContent = '';
+        const div = document.createElement('div');
+        div.className = className;
+        div.textContent = text;
+        list.appendChild(div);
+    };
+    try {
+        const [response] = await Promise.all([
+            fetch('/api/dashboard/payment-overrides', getFetchOptions()),
+            loadPaymentCapabilities()
+        ]);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const body = await response.json();
+        const orphans = (body.overrides || []).filter((o) => o.orphaned);
+        if (orphans.length === 0) {
+            note('No orphaned overrides', 'orphan-empty');
+        } else {
+            list.textContent = '';
+            const allowed = paymentWritesAllowed();
+            for (const o of orphans) {
+                const row = document.createElement('div');
+                row.className = 'orphan-row';
+                const label = document.createElement('div');
+                label.className = 'orphan-label';
+                label.textContent = `${o.server} / ${o.alertId}`;
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'danger orphan-delete';
+                btn.textContent = 'Delete';
+                btn.setAttribute('data-action', 'deleteOrphanedOverride');
+                btn.setAttribute('data-server', o.server);
+                btn.setAttribute('data-alert', o.alertId);
+                if (!allowed) {
+                    btn.setAttribute('aria-disabled', 'true');
+                    btn.title = paymentWritesTip();
+                }
+                row.appendChild(label);
+                row.appendChild(btn);
+                list.appendChild(row);
+            }
+            if (errorText) {
+                const err = document.createElement('div');
+                err.className = 'orphan-error';
+                err.textContent = errorText;
+                list.appendChild(err);
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load orphaned overrides:', error);
+        note('Failed to load orphaned overrides', 'orphan-error');
+    }
+}
+
+async function deleteOrphanedOverride(el) {
+    if (el.getAttribute('aria-disabled') === 'true') return;
+    const result = await paymentStateRequest(el.dataset.server, el.dataset.alert, 'DELETE');
+    await loadOrphanedOverrides(result.ok ? '' : paymentErrorText(result));
 }
 
 async function deleteOrphanedServerByIndex(index) {
@@ -1508,6 +1574,10 @@ let paymentsReads = 0;                // status reads of the shared loop since a
 const paymentsQueued = new Set();     // subset of paymentsSyncing whose POST succeeded
 let paymentsWatching = false;         // one shared status loop for every server in paymentsSyncing
 let paymentsNullStreak = 0;           // consecutive successful null runningSync reads of that loop
+let paymentsCaps = null;              // GET /api/dashboard/capabilities: { configWrites, reason } (#259), null until read
+const paymentMuteForms = new Map();   // open mute forms keyed by [server, alertId]: { until, reason, error, busy } (#261)
+let paymentsFocusRequest = '';        // data-focus key to focus after the next render
+let paymentControlMessage = '';       // last control error, written to #payments-control-status
 
 function paymentsTabActive() {
     const tab = document.getElementById('payments-tab');
@@ -1628,7 +1698,343 @@ function paymentRowKey(server, item) {
     return JSON.stringify([server, item.alertId, item.scheduleId]);
 }
 
+// ---- Alert controls (#261) -------------------------------------------------
+const PAYMENT_WRITES_TIPS = {
+    'disabled': 'Changes from the dashboard are off. Set healthCheck.dashboard.allowConfigWrites to true.',
+    'auth-none': 'Changes from the dashboard need dashboard authentication (basic or token).'
+};
+const PAYMENT_ERROR_TEXT = {
+    disabled_in_config: 'This alert is switched off in the configuration file, so it cannot be changed here.',
+    origin_rejected: 'The request was rejected by the origin check.',
+    server_not_found: 'That server is no longer configured.',
+    alert_not_found: 'That alert no longer exists.',
+    override_not_found: 'There was nothing to reset.',
+    invalid_body: 'The request was not understood.'
+};
+
+function paymentFormKey(server, alertId) {
+    return JSON.stringify([server, alertId]);
+}
+
+function paymentWritesAllowed() {
+    return !!(paymentsCaps && paymentsCaps.configWrites === true);
+}
+
+function paymentWritesTip() {
+    if (paymentWritesAllowed()) return '';
+    if (paymentsCaps && PAYMENT_WRITES_TIPS[paymentsCaps.reason]) return PAYMENT_WRITES_TIPS[paymentsCaps.reason];
+    return 'Could not read what the dashboard may change.';
+}
+
+function todayLocalYmd() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function paymentRuleState(item) {
+    return item.ruleState || { enabled: true, mutedUntil: null, reason: null, lockedByConfig: false };
+}
+
+function paymentAlertCount(group, alertId) {
+    return group.items.filter((i) => i.alertId === alertId).length;
+}
+
+function setPaymentControlMessage(text) {
+    paymentControlMessage = text || '';
+    const el = document.getElementById('payments-control-status');
+    if (el && el.textContent !== paymentControlMessage) el.textContent = paymentControlMessage;
+}
+
+// The separate badge beside the real pill. Never a .pay-pill, so the real state stays readable.
+function buildPaymentOverrideBadge(item) {
+    const st = paymentRuleState(item);
+    let text = '';
+    let extra = '';
+    if (st.lockedByConfig) {
+        text = 'Disabled in config';
+        extra = ' pay-override-config';
+    } else if (st.mutedUntil) {
+        if (st.mutedUntil < todayLocalYmd()) {
+            text = 'Mute ended, summary pending';
+            extra = ' pay-override-ended';
+        } else {
+            text = `Muted until ${formatCalendarDate(st.mutedUntil)}`;
+            extra = ' pay-override-muted';
+        }
+    }
+    if (!text) return null;
+    const badge = payEl('span', `pay-override${extra}`, text);
+    if (st.mutedUntil && st.reason) {
+        const reason = String(st.reason).slice(0, 120);
+        badge.title = reason;
+        badge.setAttribute('aria-label', `${text}. Reason: ${reason}`);
+    }
+    return badge;
+}
+
+function paymentControlButton(label, action, group, item, focusKind, className) {
+    const btn = payEl('button', className || 'pay-ctl', label);
+    btn.type = 'button';
+    btn.setAttribute('data-action', action);
+    btn.setAttribute('data-server', group.server);
+    btn.setAttribute('data-alert', item.alertId);
+    btn.setAttribute('data-focus', `${focusKind}:${paymentFormKey(group.server, item.alertId)}`);
+    if (!paymentWritesAllowed()) {
+        btn.setAttribute('aria-disabled', 'true');
+        btn.title = paymentWritesTip();
+    }
+    return btn;
+}
+
+function buildPaymentControl(group, item, showControls) {
+    const td = payCell('Control', null);
+    if (!showControls) return td;
+    const st = paymentRuleState(item);
+    const wrap = payEl('div', 'pay-control');
+    if (!st.lockedByConfig) {
+        const on = st.enabled !== false;
+        const sw = paymentControlButton(on ? 'On' : 'Off', 'togglePaymentAlert', group, item, 'sw', 'pay-ctl pay-switch');
+        sw.setAttribute('role', 'switch');
+        sw.setAttribute('aria-checked', on ? 'true' : 'false');
+        sw.setAttribute('aria-label', `${on ? 'On' : 'Off'} for ${item.alertId}`);
+        wrap.appendChild(sw);
+    }
+    if (st.mutedUntil) {
+        wrap.appendChild(paymentControlButton('Unmute', 'unmutePaymentAlert', group, item, 'unmute'));
+    } else if (!st.lockedByConfig) {
+        wrap.appendChild(paymentControlButton('Mute...', 'openPaymentMute', group, item, 'mute'));
+    }
+    const n = paymentAlertCount(group, item.alertId);
+    if (n > 1) wrap.appendChild(payEl('span', 'pay-applies', `Applies to ${n} schedules`));
+    td.appendChild(wrap);
+    return td;
+}
+
+function buildPaymentMuteRow(group, item) {
+    const key = paymentFormKey(group.server, item.alertId);
+    const state = paymentMuteForms.get(key);
+    const tr = payEl('tr', 'pay-mute-row');
+    const td = payEl('td', 'pay-mute-cell');
+    td.colSpan = 10;
+    const form = payEl('form', 'pay-mute-form');
+    form.setAttribute('data-form', 'paymentMute');
+    form.setAttribute('data-server', group.server);
+    form.setAttribute('data-alert', item.alertId);
+    form.noValidate = true;
+
+    const dateLabel = payEl('label', 'pay-label', `Mute "${paymentAlertCount(group, item.alertId) > 1 ? item.alertId : (item.name || item.alertId)}" until `);
+    const date = payEl('input', 'pay-mute-date');
+    date.type = 'date';
+    date.value = state.until;
+    date.setAttribute('data-input', 'onPaymentMuteField');
+    date.setAttribute('data-field', 'until');
+    date.setAttribute('data-server', group.server);
+    date.setAttribute('data-alert', item.alertId);
+    date.setAttribute('data-focus', `date:${key}`);
+    date.setAttribute('aria-label', 'Mute until');
+    dateLabel.appendChild(date);
+    form.appendChild(dateLabel);
+    if (state.error && state.error.field === 'until') form.appendChild(payEl('span', 'pay-field-error', state.error.message));
+
+    const reasonLabel = payEl('label', 'pay-label', 'Reason ');
+    const reason = payEl('input', 'pay-mute-reason');
+    reason.type = 'text';
+    reason.maxLength = 200;
+    reason.value = state.reason;
+    reason.setAttribute('data-input', 'onPaymentMuteField');
+    reason.setAttribute('data-field', 'reason');
+    reason.setAttribute('data-server', group.server);
+    reason.setAttribute('data-alert', item.alertId);
+    reason.setAttribute('data-focus', `reason:${key}`);
+    reason.setAttribute('aria-label', 'Reason');
+    reasonLabel.appendChild(reason);
+    form.appendChild(reasonLabel);
+    if (state.error && state.error.field === 'reason') form.appendChild(payEl('span', 'pay-field-error', state.error.message));
+
+    const save = payEl('button', '', 'Mute');
+    save.type = 'submit';
+    save.disabled = !!state.busy;
+    form.appendChild(save);
+    const cancel = payEl('button', 'pay-ctl', 'Cancel');
+    cancel.type = 'button';
+    cancel.setAttribute('data-action', 'cancelPaymentMute');
+    cancel.setAttribute('data-server', group.server);
+    cancel.setAttribute('data-alert', item.alertId);
+    form.appendChild(cancel);
+    if (state.error && !state.error.field) form.appendChild(payEl('span', 'pay-field-error', state.error.message));
+    form.appendChild(payEl('div', 'pay-mute-note', 'Alerts are still evaluated while muted; one summary is sent when the mute ends.'));
+    td.appendChild(form);
+    tr.appendChild(td);
+    return tr;
+}
+
+async function paymentStateRequest(server, alertId, method, body) {
+    const url = `/api/dashboard/payments/${encodeURIComponent(server)}/${encodeURIComponent(alertId)}/state`;
+    try {
+        const init = { method, credentials: 'include' };
+        if (body !== undefined) {
+            init.headers = { 'Content-Type': 'application/json' };
+            init.body = JSON.stringify(body);
+        }
+        const response = await fetch(url, init);
+        let json = null;
+        try { json = await response.json(); } catch (e) { json = null; }
+        return { ok: response.ok, status: response.status, json };
+    } catch (e) {
+        return { ok: false, status: 0, json: null };
+    }
+}
+
+function paymentErrorText(result) {
+    if (result.status === 0) return 'Could not reach the server (network error).';
+    const code = result.json && result.json.error;
+    if (code === 'config_writes_disabled') {
+        return PAYMENT_WRITES_TIPS[result.json.reason] || 'Changes from the dashboard are not allowed.';
+    }
+    if (result.status === 401) return 'Authentication is required.';
+    if (code && PAYMENT_ERROR_TEXT[code]) return PAYMENT_ERROR_TEXT[code];
+    return `Could not save the change (HTTP ${result.status}).`;
+}
+
+function applyPaymentRuleState(server, alertId, ruleState) {
+    for (const g of paymentsServers || []) {
+        if (g.server !== server) continue;
+        for (const i of g.items) if (i.alertId === alertId) i.ruleState = ruleState;
+    }
+}
+
+function paymentControlTarget(el) {
+    return { server: el.dataset.server, alertId: el.dataset.alert };
+}
+
+async function togglePaymentAlert(arg, el) {
+    if (el.getAttribute('aria-disabled') === 'true' || el.getAttribute('data-busy') === 'true') return;
+    const { server, alertId } = paymentControlTarget(el);
+    const turnOn = el.getAttribute('aria-checked') !== 'true';
+    // Flip at once; a failed request re-renders from the server state below.
+    el.setAttribute('data-busy', 'true');
+    el.setAttribute('aria-checked', turnOn ? 'true' : 'false');
+    el.textContent = turnOn ? 'On' : 'Off';
+    const result = await paymentStateRequest(server, alertId, 'PUT', { enabled: turnOn });
+    if (result.ok && result.json && result.json.ruleState) {
+        applyPaymentRuleState(server, alertId, result.json.ruleState);
+        setPaymentControlMessage('');
+    } else {
+        setPaymentControlMessage(`${alertId}: ${paymentErrorText(result)}`);
+    }
+    paymentsFocusRequest = `sw:${paymentFormKey(server, alertId)}`;
+    renderPayments();
+}
+
+function openPaymentMute(arg, el) {
+    if (el.getAttribute('aria-disabled') === 'true') return;
+    const { server, alertId } = paymentControlTarget(el);
+    const key = paymentFormKey(server, alertId);
+    if (!paymentMuteForms.has(key)) paymentMuteForms.set(key, { until: '', reason: '', error: null, busy: false });
+    paymentsFocusRequest = `date:${key}`;
+    renderPayments();
+}
+
+function cancelPaymentMute(arg, el) {
+    const { server, alertId } = paymentControlTarget(el);
+    const key = paymentFormKey(server, alertId);
+    paymentMuteForms.delete(key);
+    paymentsFocusRequest = `mute:${key}`;
+    renderPayments();
+}
+
+function onPaymentMuteField(arg, el) {
+    const state = paymentMuteForms.get(paymentFormKey(el.dataset.server, el.dataset.alert));
+    if (!state) return;
+    const field = el.dataset.field;
+    if (field === 'until' || field === 'reason') state[field] = el.value;
+    // Typing clears the message that named this field (no re-render: the field keeps focus).
+    if (state.error && state.error.field === field) state.error = null;
+}
+
+async function savePaymentMute(form) {
+    const { server, alertId } = paymentControlTarget(form);
+    const key = paymentFormKey(server, alertId);
+    const state = paymentMuteForms.get(key);
+    if (!state || state.busy) return;
+    if (!paymentWritesAllowed()) {
+        state.error = { field: '', message: paymentWritesTip() };
+        renderPayments();
+        return;
+    }
+    const reason = state.reason.trim();
+    if (state.until === '') state.error = { field: 'until', message: 'Pick the date the mute ends.' };
+    else if (reason === '') state.error = { field: 'reason', message: 'Reason is required' };
+    if (state.error) {
+        paymentsFocusRequest = `${state.error.field === 'until' ? 'date' : 'reason'}:${key}`;
+        setPaymentControlMessage(`${alertId}: ${state.error.message}`);
+        renderPayments();
+        return;
+    }
+    state.busy = true;
+    const result = await paymentStateRequest(server, alertId, 'PUT', { mutedUntil: state.until, reason });
+    state.busy = false;
+    if (result.ok && result.json && result.json.ruleState) {
+        paymentMuteForms.delete(key);
+        applyPaymentRuleState(server, alertId, result.json.ruleState);
+        setPaymentControlMessage('');
+        paymentsFocusRequest = `unmute:${key}`;
+    } else {
+        const code = result.json && result.json.error;
+        const field = code === 'invalid_muted_until' ? 'until' : (code === 'reason_required' || code === 'invalid_reason' ? 'reason' : '');
+        const message = code === 'invalid_muted_until' ? 'Pick a date from today up to one year ahead.'
+            : code === 'reason_required' ? 'Reason is required'
+                : code === 'invalid_reason' ? 'The reason can have at most 200 characters.'
+                    : paymentErrorText(result);
+        state.error = { field, message };
+        setPaymentControlMessage(`${alertId}: ${message}`);
+        paymentsFocusRequest = field ? `${field === 'until' ? 'date' : 'reason'}:${key}` : '';
+    }
+    renderPayments();
+}
+
+async function unmutePaymentAlert(arg, el) {
+    if (el.getAttribute('aria-disabled') === 'true') return;
+    const { server, alertId } = paymentControlTarget(el);
+    const result = await paymentStateRequest(server, alertId, 'PUT', { mutedUntil: null });
+    if (result.ok && result.json && result.json.ruleState) {
+        applyPaymentRuleState(server, alertId, result.json.ruleState);
+        setPaymentControlMessage('');
+        paymentsFocusRequest = `mute:${paymentFormKey(server, alertId)}`;
+    } else {
+        setPaymentControlMessage(`${alertId}: ${paymentErrorText(result)}`);
+    }
+    renderPayments();
+}
+
+// Drop the open form of an alert that is no longer in the snapshot (its
+// server's group is in the response but the alert is not).
+function prunePaymentForms() {
+    for (const key of [...paymentMuteForms.keys()]) {
+        const [server, alertId] = JSON.parse(key);
+        const group = (paymentsServers || []).find((g) => g.server === server);
+        if (group && !group.items.some((i) => i.alertId === alertId)) paymentMuteForms.delete(key);
+    }
+}
+
+async function loadPaymentCapabilities() {
+    try {
+        const response = await fetch('/api/dashboard/capabilities', getFetchOptions());
+        if (!response.ok) return;
+        const body = await response.json();
+        if (body && typeof body.configWrites === 'boolean') paymentsCaps = { configWrites: body.configWrites, reason: body.reason || null };
+    } catch (e) { /* keep the last known value; the controls stay disabled until it loads */ }
+}
+
+function restorePaymentsFocus(content, key) {
+    if (!key || typeof content.querySelectorAll !== 'function') return;
+    const node = Array.from(content.querySelectorAll('[data-focus]')).find((n) => n.dataset.focus === key);
+    if (node && typeof node.focus === 'function') node.focus();
+}
+
 function appendPaymentRows(tbody, group, items, groupIndex) {
+    const controlled = new Set();
     items.forEach((item, rowIndex) => {
         const key = paymentRowKey(group.server, item);
         const stripId = `pay-strip-${groupIndex}-${rowIndex}`;
@@ -1636,7 +2042,11 @@ function appendPaymentRows(tbody, group, items, groupIndex) {
 
         const tr = payEl('tr', 'pay-row');
         const stateTd = payCell('State', null);
-        stateTd.appendChild(payPill(item.state));
+        const stateWrap = payEl('div', 'pay-state');
+        stateWrap.appendChild(payPill(item.state));
+        const badge = buildPaymentOverrideBadge(item);
+        if (badge) stateWrap.appendChild(badge);
+        stateTd.appendChild(stateWrap);
         tr.appendChild(stateTd);
 
         const nameTd = payCell('Name', null);
@@ -1659,13 +2069,20 @@ function appendPaymentRows(tbody, group, items, groupIndex) {
         tr.appendChild(payCell('Deadline', formatCalendarDate(item.deadline)));
         tr.appendChild(payCell('Last alert', item.lastAlertAt ? formatTime(item.lastAlertAt) : '', 'pay-extra'));
         tr.appendChild(payCell('Source', item.source || '', 'pay-extra'));
+        // Rule level controls: once per alert id, on its first visible row.
+        const firstOfRule = !controlled.has(item.alertId);
+        controlled.add(item.alertId);
+        tr.appendChild(buildPaymentControl(group, item, firstOfRule));
         tbody.appendChild(tr);
+        if (firstOfRule && paymentMuteForms.has(paymentFormKey(group.server, item.alertId))) {
+            tbody.appendChild(buildPaymentMuteRow(group, item));
+        }
 
         const strip = payEl('tr', 'pay-strip-row');
         strip.id = stripId;
         strip.hidden = !open;
         const td = payEl('td', 'pay-strip-cell');
-        td.colSpan = 9;
+        td.colSpan = 10;
         // Below 768 px the Account, Last alert and Source cells are hidden;
         // this list is where they live then (hidden by CSS above that width).
         const details = payEl('dl', 'pay-details');
@@ -1686,7 +2103,7 @@ function appendPaymentRows(tbody, group, items, groupIndex) {
 function buildPaymentsTable(group, groupIndex) {
     const table = payEl('table', 'pay-table');
     const headRow = document.createElement('tr');
-    ['State', 'Name', 'Cadence', 'Account', 'Amount', 'Next due', 'Deadline', 'Last alert', 'Source']
+    ['State', 'Name', 'Cadence', 'Account', 'Amount', 'Next due', 'Deadline', 'Last alert', 'Source', 'Control']
         .forEach((h) => headRow.appendChild(payEl('th', '', h)));
     const thead = document.createElement('thead');
     thead.appendChild(headRow);
@@ -1698,7 +2115,7 @@ function buildPaymentsTable(group, groupIndex) {
     if (shown.length === 0) {
         const tr = document.createElement('tr');
         const td = payEl('td', 'pay-empty', group.items.length === 0 ? 'No watched schedules' : 'No matching schedules');
-        td.colSpan = 9;
+        td.colSpan = 10;
         tr.appendChild(td);
         tbody.appendChild(tr);
     } else {
@@ -1809,6 +2226,19 @@ function renderPayments() {
         btn.setAttribute('aria-pressed', btn.dataset.arg === paymentsStateFilter ? 'true' : 'false');
     });
 
+    const controlEl = document.getElementById('payments-control-status');
+    if (controlEl && controlEl.textContent !== paymentControlMessage) controlEl.textContent = paymentControlMessage;
+
+    // A render rebuilds every node, so remember what had focus (and the caret).
+    let focusKey = paymentsFocusRequest;
+    paymentsFocusRequest = '';
+    let caret = null;
+    const active = document.activeElement;
+    if (!focusKey && active && active.dataset && active.dataset.focus && typeof content.contains === 'function' && content.contains(active)) {
+        focusKey = active.dataset.focus;
+        if (typeof active.selectionStart === 'number') caret = [active.selectionStart, active.selectionEnd];
+    }
+
     content.textContent = '';
     if (!paymentsServers) {
         summary.textContent = '';
@@ -1830,6 +2260,10 @@ function renderPayments() {
     }
     summary.textContent = `${watched} watched · ${attention} need attention`;
     paymentsServers.forEach((group, i) => content.appendChild(buildPaymentsGroup(group, i)));
+    restorePaymentsFocus(content, focusKey);
+    if (caret && document.activeElement && typeof document.activeElement.setSelectionRange === 'function') {
+        try { document.activeElement.setSelectionRange(caret[0], caret[1]); } catch (e) { /* e.g. a date input */ }
+    }
 }
 
 // Any non-2xx or a network error is a load failure: keep the last good rows and
@@ -1844,6 +2278,8 @@ async function loadPaymentsTab(force) {
         const url = '/api/dashboard/payments' + (server ? `?server=${encodeURIComponent(server)}` : '');
         let message = '';
         let body = null;
+        // Capabilities only change with a restart: read once, retry while unknown.
+        const capsRead = paymentsCaps === null ? loadPaymentCapabilities() : Promise.resolve();
         try {
             const response = await fetch(url, getFetchOptions());
             if (!response.ok) message = `Could not refresh payments (HTTP ${response.status})`;
@@ -1851,9 +2287,11 @@ async function loadPaymentsTab(force) {
         } catch (e) {
             message = 'Could not refresh payments (network error)';
         }
+        await capsRead;
         if (seq !== paymentsRequestSeq) return; // a newer request owns the view
         if (body && Array.isArray(body.servers)) {
             paymentsServers = body.servers;
+            prunePaymentForms();
             paymentsLoadError = '';
             if (!server) paymentsServerNames = body.servers.map((g) => g.server);
         } else if (!message) {
@@ -1992,7 +2430,12 @@ const CLICK_ACTIONS = {
     reloadConfigAudit: () => loadConfigAudit(),
     togglePaymentRow: (arg, el) => togglePaymentRow(arg, el),
     setPaymentStateFilter: (arg) => setPaymentStateFilter(arg),
-    paymentsSyncNow: (arg) => paymentsSyncNow(arg)
+    paymentsSyncNow: (arg) => paymentsSyncNow(arg),
+    togglePaymentAlert: (arg, el) => togglePaymentAlert(arg, el),
+    openPaymentMute: (arg, el) => openPaymentMute(arg, el),
+    cancelPaymentMute: (arg, el) => cancelPaymentMute(arg, el),
+    unmutePaymentAlert: (arg, el) => unmutePaymentAlert(arg, el),
+    deleteOrphanedOverride: (arg, el) => deleteOrphanedOverride(el)
 };
 const CHANGE_ACTIONS = {
     renderAccounts: () => renderAccounts(),
@@ -2001,7 +2444,8 @@ const CHANGE_ACTIONS = {
     onPaymentsServerChange: () => onPaymentsServerChange()
 };
 const INPUT_ACTIONS = {
-    onPaymentsSearch: (arg, el) => onPaymentsSearch(arg, el)
+    onPaymentsSearch: (arg, el) => onPaymentsSearch(arg, el),
+    onPaymentMuteField: (arg, el) => onPaymentMuteField(arg, el)
 };
 
 document.addEventListener('click', (e) => {
@@ -2013,6 +2457,18 @@ document.addEventListener('change', (e) => {
     const el = e.target.closest && e.target.closest('[data-change]');
     const action = el && CHANGE_ACTIONS[el.dataset.change];
     if (action) action(undefined, el);
+});
+// The inline mute form: Enter (submit) saves, Esc cancels. (#261)
+document.addEventListener('submit', (e) => {
+    const form = e.target.closest && e.target.closest('[data-form="paymentMute"]');
+    if (!form) return;
+    e.preventDefault();
+    savePaymentMute(form);
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const form = e.target.closest && e.target.closest('[data-form="paymentMute"]');
+    if (form) cancelPaymentMute(undefined, form);
 });
 document.addEventListener('input', (e) => {
     const el = e.target.closest && e.target.closest('[data-input]');

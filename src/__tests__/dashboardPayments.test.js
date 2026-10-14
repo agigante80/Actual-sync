@@ -86,7 +86,7 @@ function makeEnv({ route, windowGlobals = {}, dateFormat = null } = {}) {
   };
   vm.createContext(ctx);
   vm.runInContext(`${block}
-this.api = { loadPaymentsTab, paymentsSyncNow, formatCalendarDate, formatPaymentAmount, setPaymentStateFilter };`, ctx);
+this.api = { loadPaymentsTab, paymentsSyncNow, formatCalendarDate, formatPaymentAmount, setPaymentStateFilter, togglePaymentAlert, openPaymentMute, savePaymentMute, onPaymentMuteField, unmutePaymentAlert };`, ctx);
   return { ctx, els, log, calls, timers, api: ctx.api, setActive: (v) => { active = v; } };
 }
 
@@ -102,7 +102,137 @@ const group = (over = {}) => ({ server: 'Main', configured: true, lastRun: run()
 const payments = (...groups) => ok({ servers: groups });
 
 const rowsOf = (env) => env.els['payments-content'].find((e) => e.tag === 'tr' && e.className === 'pay-row');
+// The capabilities read (#261) is not a payments fetch.
+const paymentCalls = (env) => env.calls.filter((c) => c.url.startsWith('/api/dashboard/payments'));
 const flush = (ms = 30) => new Promise((r) => setTimeout(r, ms));
+
+describe('Payments tab alert controls (#261)', () => {
+  const caps = (configWrites, reason = null) => ok({ configWrites, reason });
+  const state = (over = {}) => ({ enabled: true, mutedUntil: null, reason: null, lockedByConfig: false, ...over });
+  const envWith = (items, { writes = true, reason = null, extra = () => null } = {}) => makeEnv({
+    route: (url, opts) => extra(url, opts) || (url.includes('capabilities') ? caps(writes, reason) : payments(group({ items })))
+  });
+  const byClass = (env, cls) => env.els['payments-content'].find((e) => e.className.split(' ').includes(cls));
+  const btn = (env, action) => env.els['payments-content'].find((e) => e.tag === 'button' && e.attrs['data-action'] === action);
+
+  test('the switch is a role=switch button with aria-checked, and Mute... is offered', async () => {
+    const env = envWith([item({ alertId: 'a', ruleState: state() })]);
+    await env.api.loadPaymentsTab();
+    const [sw] = btn(env, 'togglePaymentAlert');
+    expect(sw.attrs.role).toBe('switch');
+    expect(sw.attrs['aria-checked']).toBe('true');
+    expect(sw.textContent).toBe('On');
+    expect(btn(env, 'openPaymentMute')).toHaveLength(1);
+  });
+
+  test('an off alert shows Off, with no override badge', async () => {
+    const env = envWith([item({ ruleState: state({ enabled: false }) })]);
+    await env.api.loadPaymentsTab();
+    expect(btn(env, 'togglePaymentAlert')[0].attrs['aria-checked']).toBe('false');
+    expect(byClass(env, 'pay-override')).toHaveLength(0);
+  });
+
+  test('a muted alert has the Muted until badge with the reason as title, set as text', async () => {
+    const reason = '<img src=x onerror=alert(1)>';
+    const env = envWith([item({ ruleState: state({ mutedUntil: '2099-03-01', reason }) })]);
+    await env.api.loadPaymentsTab();
+    const [badge] = byClass(env, 'pay-override');
+    expect(badge.textContent).toBe('Muted until 2099-03-01');
+    expect(badge.title).toBe(reason);
+    expect(env.log).toEqual([]);
+    expect(btn(env, 'unmutePaymentAlert')).toHaveLength(1);
+    expect(btn(env, 'openPaymentMute')).toHaveLength(0);
+    // the real pill is still the state
+    expect(env.els['payments-content'].find((e) => e.className.split(' ').includes('pay-pill'))[0].textContent).toBe('Missing');
+  });
+
+  test('a mute that has ended shows the summary-pending badge', async () => {
+    const env = envWith([item({ ruleState: state({ mutedUntil: '2000-01-01', reason: 'r' }) })]);
+    await env.api.loadPaymentsTab();
+    expect(byClass(env, 'pay-override')[0].textContent).toBe('Mute ended, summary pending');
+  });
+
+  test('a config-disabled alert has a Disabled in config badge and no switch', async () => {
+    const env = envWith([item({ ruleState: state({ enabled: false, lockedByConfig: true }) })]);
+    await env.api.loadPaymentsTab();
+    expect(byClass(env, 'pay-override')[0].textContent).toBe('Disabled in config');
+    expect(btn(env, 'togglePaymentAlert')).toHaveLength(0);
+  });
+
+  test('a prefix rule gets one control set with Applies to N schedules', async () => {
+    const env = envWith([item({ scheduleId: 's1', name: 'A' }), item({ scheduleId: 's2', name: 'B' }), item({ scheduleId: 's3', name: 'C' })]);
+    await env.api.loadPaymentsTab();
+    expect(btn(env, 'togglePaymentAlert')).toHaveLength(1);
+    expect(byClass(env, 'pay-applies')[0].textContent).toBe('Applies to 3 schedules');
+  });
+
+  test('writes off: controls are aria-disabled with the tooltip for the reason', async () => {
+    for (const [reason, tip] of [['disabled', 'Set healthCheck.dashboard.allowConfigWrites to true.'], ['auth-none', 'need dashboard authentication']]) {
+      const env = envWith([item()], { writes: false, reason });
+      await env.api.loadPaymentsTab();
+      const [sw] = btn(env, 'togglePaymentAlert');
+      expect(sw.attrs['aria-disabled']).toBe('true');
+      expect(sw.title).toContain(tip);
+      await env.api.togglePaymentAlert(undefined, sw);
+      expect(env.calls.filter((c) => c.method === 'PUT')).toHaveLength(0);
+    }
+  });
+
+  test('toggling sends one PUT {enabled:false} and renders the returned state', async () => {
+    const env = envWith([item({ ruleState: state() })], {
+      extra: (url, opts) => (opts.method === 'PUT' ? ok({ ruleState: state({ enabled: false }) }) : null)
+    });
+    await env.api.loadPaymentsTab();
+    const [sw] = btn(env, 'togglePaymentAlert');
+    await env.api.togglePaymentAlert(undefined, sw);
+    const puts = env.calls.filter((c) => c.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    expect(puts[0].url).toBe('/api/dashboard/payments/Main/a/state');
+    expect(JSON.parse(puts[0].body)).toEqual({ enabled: false });
+    expect(btn(env, 'togglePaymentAlert')[0].attrs['aria-checked']).toBe('false');
+  });
+
+  test('a failed toggle reverts and writes the message to the live region', async () => {
+    const env = envWith([item({ ruleState: state() })], {
+      extra: (url, opts) => (opts.method === 'PUT' ? { ok: false, status: 409, json: async () => ({ error: 'disabled_in_config' }) } : null)
+    });
+    await env.api.loadPaymentsTab();
+    env.els['payments-control-status'] = env.els['payments-control-status'] || null;
+    await env.api.togglePaymentAlert(undefined, btn(env, 'togglePaymentAlert')[0]);
+    expect(btn(env, 'togglePaymentAlert')[0].attrs['aria-checked']).toBe('true');
+  });
+
+  test('the mute form needs a reason: no request is sent', async () => {
+    const env = envWith([item({ ruleState: state() })]);
+    await env.api.loadPaymentsTab();
+    env.api.openPaymentMute(undefined, btn(env, 'openPaymentMute')[0]);
+    const form = env.els['payments-content'].find((e) => e.tag === 'form')[0];
+    const date = env.els['payments-content'].find((e) => e.className === 'pay-mute-date')[0];
+    date.value = '2099-03-01';
+    env.api.onPaymentMuteField(undefined, date);
+    await env.api.savePaymentMute(form);
+    expect(env.calls.filter((c) => c.method === 'PUT')).toHaveLength(0);
+    expect(env.els['payments-content'].find((e) => e.className === 'pay-field-error')[0].textContent).toBe('Reason is required');
+  });
+
+  test('a valid mute sends one PUT with the date and the trimmed reason', async () => {
+    const env = envWith([item({ ruleState: state() })], {
+      extra: (url, opts) => (opts.method === 'PUT' ? ok({ ruleState: state({ mutedUntil: '2099-03-01', reason: 'vacant' }) }) : null)
+    });
+    await env.api.loadPaymentsTab();
+    env.api.openPaymentMute(undefined, btn(env, 'openPaymentMute')[0]);
+    const find = (cls) => env.els['payments-content'].find((e) => e.className === cls)[0];
+    find('pay-mute-date').value = '2099-03-01';
+    env.api.onPaymentMuteField(undefined, find('pay-mute-date'));
+    find('pay-mute-reason').value = '  vacant ';
+    env.api.onPaymentMuteField(undefined, find('pay-mute-reason'));
+    await env.api.savePaymentMute(env.els['payments-content'].find((e) => e.tag === 'form')[0]);
+    const puts = env.calls.filter((c) => c.method === 'PUT');
+    expect(JSON.parse(puts[0].body)).toEqual({ mutedUntil: '2099-03-01', reason: 'vacant' });
+    expect(byClass(env, 'pay-override')[0].textContent).toBe('Muted until 2099-03-01');
+    expect(env.els['payments-content'].find((e) => e.tag === 'form')).toHaveLength(0);
+  });
+});
 
 describe('Payments tab client (#341)', () => {
   test('a page with no markup in the names: the source never writes innerHTML for the tab', () => {
@@ -496,15 +626,15 @@ describe('Payments tab client (#341)', () => {
       env.ctx.document.hidden = false;
       tick();
       await flush(5);
-      expect(env.calls).toHaveLength(1);
+      expect(paymentCalls(env)).toHaveLength(1);
     });
 
     test('an overlapping tick does not start a second fetch', async () => {
       let release;
-      const env = makeEnv({ route: () => new Promise((r) => { release = () => r(payments(group())); }) });
+      const env = makeEnv({ route: (url) => (url.includes('capabilities') ? ok({ configWrites: false, reason: 'disabled' }) : new Promise((r) => { release = () => r(payments(group())); })) });
       const first = env.api.loadPaymentsTab();
       env.api.loadPaymentsTab();
-      expect(env.calls).toHaveLength(1);
+      expect(paymentCalls(env)).toHaveLength(1);
       release();
       await first;
     });
