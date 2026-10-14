@@ -286,6 +286,8 @@ npm audit --audit-level=high
 - Renovate Bot
 - Snyk
 
+**Cooldown (#251)**: Dependabot version updates wait before proposing a new release: 5 days for npm patch and minor, 7 days for npm major, 5 days for GitHub Actions. Malicious package versions are usually detected and unpublished within hours to a couple of days, so a short wait skips most of them. It is a probabilistic control, not a guarantee. Security updates are exempt on purpose: they respond to a known advisory, where waiting only increases exposure. The policy and its rationale live in `.github/dependabot.yml`, and `src/__tests__/dependabotConfig.test.js` fails if a cooldown is added to the security entry.
+
 **Manual Process**:
 1. Review `npm audit` output
 2. Update vulnerable packages: `npm update`

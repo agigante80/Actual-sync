@@ -596,6 +596,8 @@ returns the tag, not the highest published version).
 | **Transitive** dependency (either kind) | nobody — **no PR is opened** | see below |
 | GitHub Actions versions | Dependabot, `github-actions` entry | PR to `development`, promoted manually |
 
+**Cooldown (#251).** Dependabot version updates are deliberately delayed: npm patch and minor wait 5 days after a release is published, npm major 7 days, GitHub Actions 5 days. A Dependabot PR that "has not appeared yet" for a fresh release is this, not a bug. To take a fix sooner, bump it by hand. Security updates are not delayed (the security entry has no cooldown). There is no `docker` ecosystem entry yet; see the decision comment at the end of `.github/dependabot.yml`.
+
 `dependabot.yml` carries a bare `dependency-name: "@actual-app/api"` ignore rule
 with **no** `update-types` filter, in **both** npm entries (entry 1's `ignore` does
 not carry over). Narrowing it back to patch/minor would make every major produce
