@@ -91,6 +91,8 @@ scripts/generateDashboardScreenshots.js
 scripts/generate-badges.js
 scripts/version-bump.js
 scripts/defaultBranchDrift.js
+# CI-only: wraps `npm audit` for the blocking gate (#250); no job inside the image.
+scripts/auditGate.js
 # CI-only: drives `gh` against a pull request. No gh binary, no App token and
 # no PR context inside the image (#217).
 scripts/retargetRetest.js

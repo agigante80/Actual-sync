@@ -1510,11 +1510,11 @@ module.exports = [
     },
     {
         id: '258-ruleUnmatched-reminder-uses-configured-interval', ticket: '#258',
-        desc: 'ruleUnmatched reminders stop using the fixed 1-day interval and instead honor (or skip, when unset) the rule\'s own remindEveryDays',
+        desc: 'ruleUnmatched is treated like a missing reminder again and honors the rule\'s own remindEveryDays (superseded by #356: it is sent once per destination)',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "  const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;",
-        mutant: '  const remindEveryDays = rule.remindEveryDays;',
-        tests: 'scheduleAlertDelivery'
+        anchor: "  if (event.event !== 'missing') return { due: false, lastSentAt: null }; // one row per destination, ever",
+        mutant: "  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return { due: false, lastSentAt: null };",
+        tests: 'scheduleAlert'
     },
     {
         id: '258-disabled-webhook-not-skipped', ticket: '#258',
@@ -2843,6 +2843,46 @@ module.exports = [
         tests: 'scheduleAlertDelivery'
     },
     {
+        id: "261-summary-bounded-by-mute-end", ticket: '#261',
+        desc: "the mute summary only covers rows recorded before the end of the mute day",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "const mutedRows = history.listMutedRows({ server, alertId, since: override.mutedFrom || undefined });",
+        mutant: "const mutedRows = history.listMutedRows({ server, alertId, since: override.mutedFrom || undefined, until: muteEndsAt(override.mutedUntil, timezone) });",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-reason-only-unvalidated", ticket: '#261',
+        desc: "a reason-only PUT skips the trim, required and length check",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof body.reason === 'string' && !('mutedUntil' in body) && before && before.mutedUntil) {",
+        mutant: "if (false) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-reason-checked-unmuted", ticket: '#261',
+        desc: "a reason-only check also rejects a request on an alert that is not muted",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof body.reason === 'string' && !('mutedUntil' in body) && before && before.mutedUntil) {",
+        mutant: "if (typeof body.reason === 'string' && body.mutedUntil !== null) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-noop-change-logged", ticket: '#261',
+        desc: "a no-op override change still logs 'Configuration change recorded'",
+        file: "src/services/syncHistory.js",
+        anchor: "if (audited) this.logger.info('Configuration change recorded'",
+        mutant: "if (true) this.logger.info('Configuration change recorded'",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-override-change-not-atomic", ticket: '#261',
+        desc: "the override change and its audit row run outside one transaction",
+        file: "src/services/syncHistory.js",
+        anchor: "    const apply = this.db.transaction(() => {\n      if (dropMutedRows)",
+        mutant: "    const apply = ((fn) => fn)(() => {\n      if (dropMutedRows)",
+        tests: "paymentOverrides"
+    },
+    {
         id: "261-mute-ends-end-of-day", ticket: '#261',
         desc: "a mute ends at the start of the mutedUntil day instead of the end of it",
         file: "src/lib/scheduleAlertRules.js",
@@ -2878,7 +2918,7 @@ module.exports = [
         id: "261-mute-reason-optional", ticket: '#261',
         desc: "a mute without a reason is accepted",
         file: "src/services/healthCheck.js",
-        anchor: "if (reason === '') return bad('reason_required');",
+        anchor: "if (reason === '') return 'reason_required';",
         mutant: "",
         tests: "paymentOverrides"
     },
@@ -2894,16 +2934,16 @@ module.exports = [
         id: "261-early-unmute-keeps-muted-rows", ticket: '#261',
         desc: "an early unmute leaves the held-back rows in place",
         file: "src/services/healthCheck.js",
-        anchor: "        // latest 'muted' row would suppress the alert for good).\n        this.syncHistory.deleteMutedRows(",
-        mutant: "        // latest 'muted' row would suppress the alert for good).\n        void (",
+        anchor: "dropMutedRows: Boolean(before && before.mutedUntil && next.mutedUntil === null),",
+        mutant: "dropMutedRows: false,",
         tests: "paymentOverrides"
     },
     {
         id: "261-noop-put-audited", ticket: '#261',
         desc: "a PUT that changes nothing is still written to the audit trail",
-        file: "src/services/healthCheck.js",
-        anchor: "if (Object.keys(changes).length > 0) {\n        this.syncHistory.recordConfigChange({\n          server: serverName, remoteAddr: req.ip, action: 'payment_alert_state'",
-        mutant: "if (true) {\n        this.syncHistory.recordConfigChange({\n          server: serverName, remoteAddr: req.ip, action: 'payment_alert_state'",
+        file: "src/services/syncHistory.js",
+        anchor: "const audited = Boolean(changes && Object.keys(changes).length > 0);",
+        mutant: "const audited = true;",
         tests: "paymentOverrides"
     },
     {
@@ -2918,8 +2958,8 @@ module.exports = [
         id: "261-delete-keeps-muted-rows", ticket: '#261',
         desc: "DELETE of a muted override leaves its muted rows behind",
         file: "src/services/healthCheck.js",
-        anchor: "      if (before.mutedUntil) {\n        this.syncHistory.deleteMutedRows({ server: serverName, alertId, since: before.mutedFrom || undefined });\n      }\n      this.syncHistory.deleteOverride(",
-        mutant: "      this.syncHistory.deleteOverride(",
+        anchor: "dropMutedRows: Boolean(before.mutedUntil),",
+        mutant: "dropMutedRows: false,",
         tests: "paymentOverrides"
     },
     {
@@ -3178,16 +3218,16 @@ module.exports = [
         id: '326-completed-custom-template-used', ticket: '#326',
         desc: 'a custom resolved template without closed_by is used for a completed one-off, claiming a payment arrived',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
-        mutant: "if (false && event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
+        anchor: "    if (!handled) templates.resolved = DEFAULT_TEMPLATES.resolved;",
+        mutant: "    if (false && !handled) templates.resolved = DEFAULT_TEMPLATES.resolved;",
         tests: 'scheduleAlert'
     },
     {
         id: '326-payment-resolved-loses-custom-template', ticket: '#326',
         desc: 'the built-in resolved replaces every custom template without closed_by, including ordinary payments',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
-        mutant: "if (!/\\bclosed_by\\b/.test(templates.resolved))",
+        anchor: "  if (event.closedBy) {",
+        mutant: "  if (true) {",
         tests: 'scheduleAlert'
     },
     {
@@ -3213,6 +3253,14 @@ module.exports = [
         anchor: ".subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
         mutant: ".subtract(MAX_LOOKBACK_DAYS - 1, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
         tests: 'scheduleAlert'
+    },
+    {
+        id: "262-skipped-sync-blanks-schedule-snapshot", ticket: '#262',
+        desc: "a sync skipped for an empty schedule list replaces the schedule snapshot with an empty one",
+        file: "src/lib/scheduleAlertsStep.js",
+        anchor: "} else if (!(outcome && outcome.failed) && evaluated && !evaluated.skipped) {",
+        mutant: "} else if (!(outcome && outcome.failed) && evaluated) {",
+        tests: "scheduleAlertsSync"
     },
     {
         id: "262-reset-server-deletes-rules", ticket: '#262',
@@ -3381,5 +3429,128 @@ module.exports = [
         anchor: "  if (result == null) return 'channel_unavailable';",
         mutant: "  if (result == null) return null;",
         tests: "scheduleAlertDelivery"
+    },
+    // ---- #356: deleted schedule closes its open missing; ruleUnmatched once ---
+    {
+        id: '356-deleted-never-inferred', ticket: '#356',
+        desc: "a schedule missing from Actual's list is not detected, so its open missing never closes",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        if (existingScheduleIds.has(row.scheduleId)) continue;",
+        mutant: "        if (true) continue;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-existing-schedule-closed', ticket: '#356',
+        desc: "a schedule still present in Actual is closed as deleted too",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        if (existingScheduleIds.has(row.scheduleId)) continue;",
+        mutant: "        if (false) continue;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-deleted-no-list-guard', ticket: '#356',
+        desc: "deletion is inferred even when the schedule list is unusable (null), risking a mass resolve",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  if (existingScheduleIds) {\n    const sinceDate",
+        mutant: "  if (true) {\n    existingScheduleIds = existingScheduleIds || new Set();\n    const sinceDate",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-empty-list-trusted', ticket: '#356',
+        desc: "an empty schedule list is trusted as everything deleted instead of ignored",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "Array.isArray(rawSchedules) && rawSchedules.length > 0",
+        mutant: "Array.isArray(rawSchedules)",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-deleted-wording-lost', ticket: '#356',
+        desc: "the deleted branch is dropped from the built-in resolved, so a deleted schedule is reported as a payment",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{else if (eq closed_by \"deleted\")}}",
+        mutant: "{{else if (eq closed_by \"never\")}}",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-deleted-custom-template-used', ticket: '#356',
+        desc: "a custom resolved without closed_by is used for a deleted schedule, claiming a payment arrived",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "const handled = /\\bclosed_by\\b/.test(custom) && (literals.length === 0 || literals.includes(event.closedBy));",
+        mutant: "const handled = /\\bclosed_by\\b/.test(custom);",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-ruleUnmatched-repeats', ticket: '#356',
+        desc: "ruleUnmatched is due again on every sync after it was sent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !!matchedRow && matchedRow.recordedAt > latest.recordedAt, lastSentAt: latest.recordedAt };",
+        mutant: "return { due: true, lastSentAt: latest.recordedAt };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-ruleUnmatched-never-rearms', ticket: '#356',
+        desc: "ruleUnmatched never fires again after the rule matched and later unmatched",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !!matchedRow && matchedRow.recordedAt > latest.recordedAt, lastSentAt: latest.recordedAt };",
+        mutant: "return { due: false, lastSentAt: latest.recordedAt };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-rematch-not-recorded', ticket: '#356',
+        desc: "a rule matching again leaves no ruleMatched marker, so a later unmatch stays silent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      await history.recordScheduleAlert({ ...key, event: 'ruleMatched', delivery: 'inferred' });",
+        mutant: "      void key;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-reversed-eq-order-ignored', ticket: '#356',
+        desc: 'a template written as (eq "completed" closed_by) is honoured for a deleted schedule and claims a payment arrived',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "|[\"']([^\"']*)[\"']\\s+closed_by\\b/g)]",
+        mutant: "/g)]",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-matched-from-evaluations-only', ticket: '#356',
+        desc: "a rule is only counted as matched when it has an evaluation, so a cannotCheck-only rule never re-arms ruleUnmatched",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: ".filter((id) => !unmatchedIds.has(id))",
+        mutant: ".filter((id) => !unmatchedIds.has(id) && (evaluations || []).some((e) => e.alertId === id))",
+        tests: 'scheduleAlert'
+    },
+
+    // ---- #359: an empty schedule list skips rule matching ------------------
+    {
+        id: '359-empty-list-evaluated', ticket: '#359',
+        desc: "an empty schedule list is evaluated, so every rule raises ruleUnmatched",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "if (!scheduleListReliable && scheduleAlertRules.length > 0) {",
+        mutant: "if (false) {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '359-skip-without-rules-warns', ticket: '#359',
+        desc: "the skip also fires (and warns) when no rule is configured",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "if (!scheduleListReliable && scheduleAlertRules.length > 0) {",
+        mutant: "if (!scheduleListReliable) {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '359-skipped-still-delivered', ticket: '#359',
+        desc: "a skipped sync still runs delivery, marking every rule matched and re-arming ruleUnmatched",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "if (evaluated.skipped) return { events: 0, sent: 0, skipped: 0 };",
+        mutant: "",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '359-skipped-snapshot-replaced', ticket: '#359',
+        desc: "a skipped sync replaces the dashboard snapshot with an empty one",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "} else if (evaluated && evaluated.skipped) {",
+        mutant: "} else if (evaluated && evaluated.skipped && false) {",
+        tests: 'scheduleAlert'
     }
 ];

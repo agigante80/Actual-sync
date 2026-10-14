@@ -405,7 +405,7 @@ describe('payment alert state routes (#261)', () => {
       await boot();
       const res = await put('parking-a', { mutedUntil: '2026-12-01', reason: 'vacant' });
       expect(res.status).toBe(200);
-      expect(res.json).toEqual({ ruleState: { enabled: true, mutedUntil: '2026-12-01', reason: 'vacant', lockedByConfig: false } });
+      expect(res.json).toEqual({ ruleState: { enabled: true, mutedUntil: '2026-12-01', reason: 'vacant', lockedByConfig: false, muteEndDue: false } });
       expect(history.getOverride('Main', 'parking-a')).toMatchObject({ mutedFrom: NOW.toISOString(), mutedUntil: '2026-12-01' });
       const rows = audit();
       expect(rows).toHaveLength(1);
@@ -443,12 +443,50 @@ describe('payment alert state routes (#261)', () => {
       expect(history.listMutedRows({ server: 'Main', alertId: 'parking-a' })).toEqual([]);
     });
 
+    test('a failing audit insert rolls the early unmute back and answers 500 (#261)', async () => {
+      await boot();
+      await put('parking-a', { mutedUntil: '2026-12-01', reason: 'vacant' });
+      history.recordScheduleAlert({
+        server: 'Main', alertId: 'parking-a', scheduleId: 's1', occurrenceDate: '2026-10-05',
+        event: 'missing', channel: 'telegram', delivery: 'muted'
+      });
+      const before = history.getOverride('Main', 'parking-a');
+      const auditBefore = audit().length;
+      const spy = jest.spyOn(history, 'insertConfigAudit').mockImplementation(() => { throw new Error('audit down'); });
+      const res = await put('parking-a', { mutedUntil: null });
+      spy.mockRestore();
+      expect(res.status).toBe(500);
+      expect(history.getOverride('Main', 'parking-a')).toEqual(before);
+      expect(history.listMutedRows({ server: 'Main', alertId: 'parking-a' })).toHaveLength(1);
+      expect(audit()).toHaveLength(auditBefore);
+    });
+
     test('enabled:true with no override is a no-op: nothing stored, nothing audited', async () => {
       await boot();
       const res = await put('parking-a', { enabled: true });
       expect(res.status).toBe(200);
       expect(history.listOverrides()).toEqual([]);
       expect(audit()).toEqual([]);
+    });
+
+    test('a no-op PUT logs no "Configuration change recorded" line (#261 round 2)', async () => {
+      await boot();
+      const info = jest.spyOn(history.logger, 'info');
+      await put('parking-a', { enabled: true });
+      expect(info.mock.calls.filter(([msg]) => msg === 'Configuration change recorded')).toHaveLength(0);
+      await put('parking-a', { enabled: false });
+      expect(info.mock.calls.filter(([msg]) => msg === 'Configuration change recorded')).toHaveLength(1);
+      info.mockRestore();
+    });
+
+    test('a reason on an alert that is not muted is ignored, not validated (#261 round 2)', async () => {
+      await boot();
+      const res = await put('parking-a', { enabled: false, reason: '' });
+      expect(res.status).toBe(200);
+      expect(history.getOverride('Main', 'parking-a').enabled).toBe(false);
+      expect(history.getOverride('Main', 'parking-a').reason).toBeNull();
+      expect((await put('parking-a', { reason: 'ok' })).status).toBe(200);
+      expect(history.getOverride('Main', 'parking-a').reason).toBeNull();
     });
 
     test('mutedUntil:null with a reason ignores the reason', async () => {
@@ -521,6 +559,19 @@ describe('payment alert state routes (#261)', () => {
       expect((await put('parking-a', { mutedUntil: '2026-12-01', reason: 'x'.repeat(200) })).status).toBe(200);
     });
 
+    test('a reason-only PUT on a muted alert is rejected when too long or blank, never cut (#261)', async () => {
+      await boot();
+      await put('parking-a', { mutedUntil: '2026-12-01', reason: 'vacant' });
+      const long = await put('parking-a', { reason: 'y'.repeat(300) });
+      expect(long.status).toBe(400);
+      expect(long.json).toEqual({ error: 'invalid_reason' });
+      expect((await put('parking-a', { reason: '   ' })).json).toEqual({ error: 'reason_required' });
+      expect(history.getOverride('Main', 'parking-a').reason).toBe('vacant');
+      const ok = await put('parking-a', { reason: '  new reason  ' });
+      expect(ok.status).toBe(200);
+      expect(history.getOverride('Main', 'parking-a').reason).toBe('new reason');
+    });
+
     test('404 for an unknown server, an unknown alert and __proto__', async () => {
       await boot();
       const server = await call('PUT', STATE('Nope', 'parking-a'), { body: { enabled: false } });
@@ -582,6 +633,22 @@ describe('payment alert state routes (#261)', () => {
       expect(JSON.stringify(audit())).not.toContain('vacant');
     });
 
+    test('a failing audit insert rolls the delete back and answers 500 (#261)', async () => {
+      await boot();
+      await put('parking-a', { enabled: false, mutedUntil: '2026-12-01', reason: 'vacant' });
+      history.recordScheduleAlert({
+        server: 'Main', alertId: 'parking-a', scheduleId: 's1', occurrenceDate: '2026-10-05',
+        event: 'missing', channel: 'telegram', delivery: 'muted'
+      });
+      const before = history.getOverride('Main', 'parking-a');
+      const spy = jest.spyOn(history, 'insertConfigAudit').mockImplementation(() => { throw new Error('audit down'); });
+      const res = await del('parking-a');
+      spy.mockRestore();
+      expect(res.status).toBe(500);
+      expect(history.getOverride('Main', 'parking-a')).toEqual(before);
+      expect(history.listMutedRows({ server: 'Main', alertId: 'parking-a' })).toHaveLength(1);
+    });
+
     test('an orphaned override and a config-disabled alert can be deleted', async () => {
       await boot();
       history.setOverride({ server: 'Gone', alertId: 'old', enabled: false });
@@ -638,7 +705,17 @@ describe('payment alert state routes (#261)', () => {
     const res = await call('GET', '/api/dashboard/payments?server=Main');
     expect(res.status).toBe(200);
     const byId = Object.fromEntries(res.json.servers[0].items.map((i) => [i.alertId, i.ruleState]));
-    expect(byId['parking-a']).toEqual({ enabled: true, mutedUntil: '2026-12-01', reason: 'vacant', lockedByConfig: false });
-    expect(byId.legacy).toEqual({ enabled: false, mutedUntil: null, reason: null, lockedByConfig: true });
+    expect(byId['parking-a']).toEqual({ enabled: true, mutedUntil: '2026-12-01', reason: 'vacant', lockedByConfig: false, muteEndDue: false });
+    expect(byId.legacy).toEqual({ enabled: false, mutedUntil: null, reason: null, lockedByConfig: true, muteEndDue: false });
+  });
+
+  test('GET /payments reports muteEndDue once the mute day is over in the server timezone (#261)', async () => {
+    await boot();
+    history.replacePaymentSnapshot('Main', [
+      { alertId: 'parking-a', scheduleId: 's1', name: 'Rent', cadenceText: 'x', account: 'Main', payee: 'T', expectedAmount: 1, nextDate: '2026-11-05', deadline: '2026-10-11', state: 'missing', occurrences: [] }
+    ]);
+    history.setOverride({ server: 'Main', alertId: 'parking-a', mutedFrom: '2026-09-01T00:00:00.000Z', mutedUntil: '2026-09-20', reason: 'vacant' });
+    const res = await call('GET', '/api/dashboard/payments?server=Main');
+    expect(res.json.servers[0].items[0].ruleState).toMatchObject({ mutedUntil: '2026-09-20', muteEndDue: true });
   });
 });

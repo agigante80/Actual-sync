@@ -153,7 +153,7 @@ Full documentation available at:
 
 ## Image Details
 
-- **Base Image**: node:20-alpine
+- **Base Image**: node:22-alpine (pinned by digest)
 - **Image Size**: 229MB
 - **User**: actualuser (UID 1001, non-root)
 - **Exposed Ports**: 3000 (health checks)

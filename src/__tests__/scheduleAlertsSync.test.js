@@ -778,6 +778,14 @@ describe('persistPaymentSnapshot and error codes (#260)', () => {
       expect(syncHistory.getScheduleSnapshot('Main')).toEqual(before);
     });
 
+    test('a sync skipped for an empty schedule list keeps the previous snapshot (#359)', async () => {
+      await syncOnce(configured, apiWith());
+      const before = syncHistory.getScheduleSnapshot('Main');
+      expect(before.schedules.length).toBeGreaterThan(0);
+      await syncOnce(configured, fakeApi({ schedules: [] }), new Date('2026-01-11T00:00:00.000Z'));
+      expect(syncHistory.getScheduleSnapshot('Main')).toEqual(before);
+    });
+
     test('removing the scheduleAlerts block deletes the snapshot', async () => {
       await syncOnce(configured, apiWith());
       await syncOnce({}, apiWith());
@@ -1125,6 +1133,270 @@ describe('scheduleAlertsSync: completed one-off schedule closes its open missing
       await runR(apiFor({ transactions: paid, lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
       expect(requests).toHaveLength(4);
       expect(requests[3].body.text).toMatch(/arrived/);
+    });
+  });
+});
+
+// #356: a schedule deleted in Actual while its `missing` is open is closed with
+// a `resolved` (closed_by "deleted"), and `ruleUnmatched` is sent once per
+// destination, not on every sync.
+describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356)', () => {
+  let fake;
+  let requests;
+  let baseUrl;
+  let dbDir;
+  let history;
+
+  beforeEach((done) => {
+    requests = [];
+    // The ledger stamps rows with the wall clock; fake only Date and move it
+    // together with `now` so ordering between syncs is deterministic.
+    jest.useFakeTimers({
+      doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate',
+        'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout']
+    });
+    fake = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        requests.push({ url: req.url, body: JSON.parse(body || '{}') });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    fake.listen(0, '127.0.0.1', () => {
+      baseUrl = `http://127.0.0.1:${fake.address().port}`;
+      dbDir = createTempDir();
+      history = new SyncHistoryService({ dbPath: path.join(dbDir, 'sync-history.db'), loggerConfig: { level: 'ERROR' } });
+      done();
+    });
+  });
+
+  afterEach((done) => {
+    jest.useRealTimers();
+    history.close();
+    cleanupTempDir(dbDir);
+    fake.close(done);
+  });
+
+  const notifier = () => new NotificationService(
+    { telegram: { enabled: true, botToken: 'TOKEN', chatId: '42' } },
+    { level: 'ERROR' },
+    { telegramApiBaseUrl: baseUrl }
+  );
+  const block = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'] }] } };
+  // `Rent` present or deleted; an unrelated schedule always remains, so the
+  // list is never empty.
+  const other = () => rentSchedule({ id: 's2', name: 'Gym', date: '2026-02-01' });
+  const apiFor = ({ deleted = false, lastSync = '2026-01-09', getSchedules } = {}) => makeFakeApi({
+    schedules: deleted ? [other()] : [rentSchedule(), other()],
+    payees: [{ id: 'pay1', name: 'Landlord' }],
+    accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs(lastSync) }],
+    getSchedules
+  });
+  const run = (api, now, srv = block) => {
+    jest.setSystemTime(new Date(now));
+    return runScheduleAlertsStep({
+      api, server: srv, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+      notificationService: notifier(), logger: quietLogger, now: new Date(now)
+    });
+  };
+  const texts = () => requests.map((r) => r.body.text);
+  const unmatched = () => texts().filter((t) => /matches no schedule/.test(t));
+  const closed = () => texts().filter((t) => /removed in Actual/.test(t));
+
+  test('deleted with an open missing: one resolved with deleted wording, no repeat', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+    expect(closed()).toHaveLength(1);
+    expect(closed()[0]).toMatch(/Rent \(5 Jan 2026\): removed in Actual\. Alert closed\./);
+    expect(closed()[0]).not.toMatch(/arrived/);
+
+    await run(apiFor({ deleted: true, lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+    await run(apiFor({ deleted: true, lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
+    expect(closed()).toHaveLength(1);
+  });
+
+  test('a fetch failure never closes anything, and the close is delivered once the fetch works again', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const failing = apiFor({ deleted: true, getSchedules: jest.fn().mockRejectedValue(new Error('boom')) });
+    await expect(run(failing, '2026-01-11T00:00:00.000Z')).rejects.toThrow('boom');
+    expect(closed()).toHaveLength(0);
+
+    await run(apiFor({ deleted: true, lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+    expect(closed()).toHaveLength(1);
+  });
+
+  test('an empty schedule list is not read as "everything was deleted"', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const empty = makeFakeApi({
+      schedules: [], payees: [], accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(empty, '2026-01-11T00:00:00.000Z');
+    expect(closed()).toHaveLength(0);
+  });
+
+  test('a schedule that is still there (renamed away from the rule) is not treated as deleted', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const renamed = makeFakeApi({
+      schedules: [rentSchedule({ name: 'Rent 2' }), other()],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(renamed, '2026-01-11T00:00:00.000Z');
+    expect(closed()).toHaveLength(0);
+  });
+
+  test('a deleted schedule that never raised a missing sends no close', async () => {
+    await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z');
+    expect(closed()).toHaveLength(0);
+  });
+
+  test('a custom resolved without closed_by gets the built-in deleted text', async () => {
+    const srv = { scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'],
+      templates: { resolved: '{{name}}: {{received_amount}} arrived {{received_date}}' }
+    }] } };
+    await run(apiFor(), '2026-01-10T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z', srv);
+    expect(closed()).toHaveLength(1);
+    expect(texts().join('\n')).not.toMatch(/arrived/);
+  });
+
+  test('a #326-style template handling only "completed" gets the built-in text for a deleted schedule', async () => {
+    const srv = { scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'],
+      templates: { resolved: '{{#if (eq closed_by "completed")}}{{name}} completed.{{else}}{{name}}: {{received_amount}} arrived {{received_date}}.{{/if}}' }
+    }] } };
+    await run(apiFor(), '2026-01-10T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z', srv);
+    expect(closed()).toHaveLength(1);
+    expect(texts().join('\n')).not.toMatch(/arrived/);
+  });
+
+  test('the same template with eq arguments reversed also gets the built-in text for a deleted schedule', async () => {
+    const srv = { scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'],
+      templates: { resolved: '{{#if (eq "completed" closed_by)}}{{name}} completed.{{else}}{{name}}: {{received_amount}} arrived {{received_date}}.{{/if}}' }
+    }] } };
+    await run(apiFor(), '2026-01-10T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z', srv);
+    expect(closed()).toHaveLength(1);
+    expect(texts().join('\n')).not.toMatch(/arrived/);
+    expect(texts().join('\n')).toMatch(/removed in Actual/);
+  });
+
+  test('ruleUnmatched re-arms when the rule only matches a schedule that throws on evaluation (cannotCheck, no evaluation row)', async () => {
+    const srv = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'], graceDays: 5 }] } };
+    const daily = makeFakeApi({
+      schedules: [rentSchedule({ date: { frequency: 'bogus', start: 'not-a-date', endMode: 'never', interval: 1, patterns: [] } }), other()],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z', srv);
+    expect(unmatched()).toHaveLength(1);
+    await run(daily, '2026-01-11T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true }), '2026-01-12T00:00:00.000Z', srv);
+    expect(unmatched()).toHaveLength(2);
+  });
+
+  test('ruleUnmatched is sent once while unmatched, then silent', async () => {
+    await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z');
+    await run(apiFor({ deleted: true }), '2026-01-11T00:00:00.000Z');
+    await run(apiFor({ deleted: true }), '2026-01-15T00:00:00.000Z');
+    expect(unmatched()).toHaveLength(1);
+  });
+
+  test('ruleUnmatched fires again after the rule matches and later unmatches again', async () => {
+    await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z');
+    expect(unmatched()).toHaveLength(1);
+    await run(apiFor({ deleted: true }), '2026-01-11T00:00:00.000Z');
+    expect(unmatched()).toHaveLength(1);
+
+    await run(apiFor(), '2026-01-12T00:00:00.000Z');
+    await run(apiFor({ deleted: true }), '2026-01-13T00:00:00.000Z');
+    expect(unmatched()).toHaveLength(2);
+    await run(apiFor({ deleted: true }), '2026-01-14T00:00:00.000Z');
+    expect(unmatched()).toHaveLength(2);
+  });
+  describe('an empty schedule list skips rule matching (#359)', () => {
+    const emptyApi = (lastSync = '2026-01-10') => makeFakeApi({
+      schedules: [], payees: [], accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs(lastSync) }]
+    });
+    const ledgerRows = () => history.db.prepare('SELECT event FROM schedule_alerts').all().map((r) => r.event);
+    const warnLogger = () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() });
+    const runLogged = (api, now, logger, srv = block) => {
+      jest.setSystemTime(new Date(now));
+      return runScheduleAlertsStep({
+        api, server: srv, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+        notificationService: notifier(), logger, now: new Date(now)
+      });
+    };
+
+    test('rules configured: nothing is sent or recorded, and one WARN says the evaluation was skipped', async () => {
+      const logger = warnLogger();
+      const result = await runLogged(emptyApi(), '2026-01-10T00:00:00.000Z', logger);
+      expect(result).toEqual({ events: 0, sent: 0, skipped: 0 });
+      expect(requests).toHaveLength(0);
+      expect(ledgerRows()).toEqual([]);
+      const warns = logger.warn.mock.calls.filter(([m]) => /empty schedule list/.test(m));
+      expect(warns).toHaveLength(1);
+      expect(warns[0][0]).toMatch(/evaluation skipped/);
+    });
+
+    test('a non-array schedule list is treated the same way', async () => {
+      const api = emptyApi();
+      api.getSchedules = jest.fn().mockResolvedValue(undefined);
+      const logger = warnLogger();
+      await runLogged(api, '2026-01-10T00:00:00.000Z', logger);
+      expect(requests).toHaveLength(0);
+      expect(ledgerRows()).toEqual([]);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+    });
+
+    test('an empty sync between two unmatched syncs writes no ruleMatched marker, so the earlier ruleUnmatched stays deduped', async () => {
+      await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z');
+      expect(unmatched()).toHaveLength(1);
+      const before = ledgerRows();
+
+      await runLogged(emptyApi(), '2026-01-11T00:00:00.000Z', warnLogger());
+      expect(ledgerRows()).toEqual(before);
+
+      await run(apiFor({ deleted: true }), '2026-01-12T00:00:00.000Z');
+      expect(unmatched()).toHaveLength(1);
+      expect(ledgerRows()).not.toContain('ruleMatched');
+    });
+
+    test('the next sync with a real list behaves normally after an empty one', async () => {
+      await runLogged(emptyApi(), '2026-01-10T00:00:00.000Z', warnLogger());
+      expect(requests).toHaveLength(0);
+      await run(apiFor({ deleted: true }), '2026-01-11T00:00:00.000Z');
+      expect(unmatched()).toHaveLength(1);
+    });
+
+    test('zero rules: an empty list is a no-op without a WARN', async () => {
+      const logger = warnLogger();
+      const result = await runLogged(emptyApi(), '2026-01-10T00:00:00.000Z', logger, { scheduleAlerts: { alerts: [] } });
+      expect(result).toEqual({ events: 0, sent: 0, skipped: 0 });
+      expect(requests).toHaveLength(0);
+      expect(ledgerRows()).toEqual([]);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    test('the dashboard snapshot from the last good sync is kept', async () => {
+      const server_ = { scheduleAlerts: block.scheduleAlerts };
+      const logger = warnLogger();
+      const good = await evaluateScheduleAlerts({ api: apiFor(), server: server_, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-10T00:00:00.000Z'), logger });
+      persistPaymentSnapshot(server_, good, { syncHistory: history, serverName: 'Main', outcome: {}, logger });
+      const snapshot = () => JSON.stringify(history.db.prepare('SELECT * FROM payment_alert_status').all());
+      const kept = snapshot();
+      expect(JSON.parse(kept).length).toBeGreaterThan(0);
+
+      const skipped = await evaluateScheduleAlerts({ api: emptyApi(), server: server_, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-11T00:00:00.000Z'), logger });
+      persistPaymentSnapshot(server_, skipped, { syncHistory: history, serverName: 'Main', outcome: {}, logger });
+      expect(snapshot()).toBe(kept);
     });
   });
 });

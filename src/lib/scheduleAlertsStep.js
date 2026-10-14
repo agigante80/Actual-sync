@@ -227,6 +227,24 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
         throw tagError(error, 'actual_read_failed');
     }
 
+    // #359: one notion of an unreliable schedule read, shared with the #356
+    // deletion inference below. An empty or non-array list while rules are
+    // configured would make `expandRules` report every rule as unmatched, so
+    // the whole evaluation is skipped for this sync: no events, no
+    // evaluations, no `ruleMatched` markers, no deletion closes. The skipped
+    // result is flagged so delivery and the dashboard snapshot leave their
+    // state untouched (it is not a failed run, so no error code is recorded).
+    const scheduleListReliable = Array.isArray(rawSchedules) && rawSchedules.length > 0;
+    if (!scheduleListReliable && scheduleAlertRules.length > 0) {
+        logger.warn('Actual returned an empty schedule list; schedule alert evaluation skipped for this sync', {
+            rules: scheduleAlertRules.length
+        });
+        return {
+            skipped: true, events: [], evaluations: [], warnings: [], skipDecisions: [], completedSchedules: [],
+            existingScheduleIds: null, scheduleAlertRules, timezone, serverName, now: alertNow
+        };
+    }
+
     const accountNameById = new Map(accountsForAlerts.map((a) => [a.id, a.name]));
     const payeeNameById = new Map((payees || []).map((p) => [p.id, p.name]));
     const hydratedSchedules = (rawSchedules || []).map((s) => ({
@@ -262,8 +280,17 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
         logger.warn(warning.message, { ruleId: warning.ruleId, scheduleId: warning.scheduleId });
     }
 
+    // #356: every schedule id Actual still has (completed and unbound ones
+    // too), so delivery can tell a deleted schedule from one that is merely
+    // not bound. An empty or non-array list is not trusted as "everything was
+    // deleted" (a transient empty read would otherwise close every open
+    // `missing`), so it is reported as null and no deletion is inferred.
+    const existingScheduleIds = scheduleListReliable
+        ? new Set(rawSchedules.map((s) => s.id))
+        : null;
+
     return {
-        events, evaluations, warnings, skipDecisions, completedSchedules, scheduleAlertRules,
+        events, evaluations, warnings, skipDecisions, completedSchedules, existingScheduleIds, scheduleAlertRules,
         hydratedSchedules, timezone, serverName, now: alertNow
     };
 }
@@ -288,7 +315,10 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
  * @returns {Promise<{events: number, sent: number, skipped: number}>}
  */
 async function deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger, deliverBudgetMs }) {
-    const { events, evaluations, skipDecisions, completedSchedules, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    const { events, evaluations, skipDecisions, completedSchedules, existingScheduleIds, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    // #359: nothing was evaluated, so there is nothing to deliver and
+    // `deliver()` must not run (it would mark every rule as matched).
+    if (evaluated.skipped) return { events: 0, sent: 0, skipped: 0 };
     // #297 F1: persist newly inferred skips FIRST and independently of the
     // delivery budget and of delivery itself: a failed write only means the
     // skip is inferred again next sync, it must never block the alerts.
@@ -308,6 +338,7 @@ async function deliverScheduleAlerts(evaluated, { syncHistory, notificationServi
     const deliverResult = await deliver(events, {
         evaluations,
         completedSchedules,
+        existingScheduleIds,
         ruleState: makeRuleStateLookup({ syncHistory, serverName, rules: scheduleAlertRules, now, timezone }),
         history: syncHistory,
         sender: notificationService,
@@ -464,6 +495,9 @@ function persistPaymentSnapshot(server, evaluated, { syncHistory, serverName, ou
             syncHistory.deletePaymentSnapshot(serverName);
         } else if (outcome && outcome.failed) {
             syncHistory.recordPaymentRunFailure(serverName, outcome.errorCode);
+        } else if (evaluated && evaluated.skipped) {
+            // #359: keep the last good snapshot; an empty read says nothing
+            // about the rules, and replacing it would blank the dashboard.
         } else if (evaluated) {
             const evaluations = evaluated.evaluations || [];
             const evaluatedPairs = new Set(evaluations.map((e) => JSON.stringify([e.alertId, e.scheduleId])));
@@ -489,11 +523,12 @@ function persistPaymentSnapshot(server, evaluated, { syncHistory, serverName, ou
 
     // #262: the schedule snapshot has its own try, so a failure here changes
     // neither the alert snapshot above nor the sync result. A failed
-    // evaluation keeps the previous snapshot.
+    // evaluation keeps the previous snapshot, and so does a #359 skipped one
+    // (an empty schedule read would otherwise blank the editor's list).
     try {
         if (!server.scheduleAlerts) {
             syncHistory.deleteScheduleSnapshot(serverName);
-        } else if (!(outcome && outcome.failed) && evaluated) {
+        } else if (!(outcome && outcome.failed) && evaluated && !evaluated.skipped) {
             syncHistory.replaceScheduleSnapshot(serverName, snapshotRows(evaluated.hydratedSchedules), evaluated.now);
         }
     } catch (error) {

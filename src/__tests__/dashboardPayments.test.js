@@ -108,7 +108,7 @@ const flush = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
 describe('Payments tab alert controls (#261)', () => {
   const caps = (configWrites, reason = null) => ok({ configWrites, reason });
-  const state = (over = {}) => ({ enabled: true, mutedUntil: null, reason: null, lockedByConfig: false, ...over });
+  const state = (over = {}) => ({ enabled: true, mutedUntil: null, reason: null, lockedByConfig: false, muteEndDue: false, ...over });
   const envWith = (items, { writes = true, reason = null, extra = () => null } = {}) => makeEnv({
     route: (url, opts) => extra(url, opts) || (url.includes('capabilities') ? caps(writes, reason) : payments(group({ items })))
   });
@@ -147,9 +147,18 @@ describe('Payments tab alert controls (#261)', () => {
   });
 
   test('a mute that has ended shows the summary-pending badge', async () => {
-    const env = envWith([item({ ruleState: state({ mutedUntil: '2000-01-01', reason: 'r' }) })]);
+    const env = envWith([item({ ruleState: state({ mutedUntil: '2000-01-01', reason: 'r', muteEndDue: true }) })]);
     await env.api.loadPaymentsTab();
     expect(byClass(env, 'pay-override')[0].textContent).toBe('Mute ended, summary pending');
+  });
+
+  test('the summary-pending badge follows the server muteEndDue, not the browser date (#261)', async () => {
+    const env = envWith([item({ ruleState: state({ mutedUntil: '2099-03-01', reason: 'r', muteEndDue: false }) })]);
+    await env.api.loadPaymentsTab();
+    expect(byClass(env, 'pay-override')[0].textContent).toBe('Muted until 2099-03-01');
+    const due = envWith([item({ ruleState: state({ mutedUntil: '2099-03-01', reason: 'r', muteEndDue: true }) })]);
+    await due.api.loadPaymentsTab();
+    expect(byClass(due, 'pay-override')[0].textContent).toBe('Mute ended, summary pending');
   });
 
   test('a config-disabled alert has a Disabled in config badge and no switch', async () => {

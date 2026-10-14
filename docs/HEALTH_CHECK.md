@@ -196,7 +196,7 @@ auth when `scheduleAlerts` is used (it exposes schedule, payee and account names
           "cadenceText": "Every month on the 5th", "account": "Main", "payee": "Tenant A",
           "expectedAmount": 6000, "nextDate": "2026-02-05", "deadline": "2026-01-11",
           "state": "missing", "lastAlertAt": "2026-01-12T08:01:00Z", "source": "config",
-          "ruleState": { "enabled": true, "mutedUntil": null, "reason": null, "lockedByConfig": false },
+          "ruleState": { "enabled": true, "mutedUntil": null, "reason": null, "lockedByConfig": false, "muteEndDue": false },
           "occurrences": [ { "date": "2026-01-05", "deadline": "2026-01-11", "state": "missing", "receivedDate": null, "receivedAmount": null, "daysLate": null } ]
         }
       ]
@@ -214,12 +214,14 @@ auth when `scheduleAlerts` is used (it exposes schedule, payee and account names
   from the `schedule_alerts` ledger, computed at request time; `null` when none was sent or the
   last one is older than the ledger retention.
 - `source` is `"config"` for a rule from `config.json` and `"dashboard"` for a rule created in the dashboard (see [Payment rules](#payment-rules-262)).
-- `ruleState` is `{ enabled, mutedUntil, reason, lockedByConfig }`, computed per request from the
+- `ruleState` is `{ enabled, mutedUntil, reason, lockedByConfig, muteEndDue }`, computed per request from the
   stored override (#261) and the rule: `enabled` is `false` when the rule has `enabled: false` in
   the config (`lockedByConfig: true`) or the operator switched it off; `mutedUntil` is a
   `YYYY-MM-DD` date (or `null`) and `reason` its reason. `mutedUntil` stays set, in the past, from the
-  end of the mute until the summary has been sent. Without an override it is
-  `{ "enabled": true, "mutedUntil": null, "reason": null, "lockedByConfig": false }`. The `state` of an
+  end of the mute until the summary has been sent. `muteEndDue` is `true` in that period (the mute day
+  is over in the server timezone); the dashboard uses it, not the browser date, for the "summary pending" badge.
+  Without an override it is
+  `{ "enabled": true, "mutedUntil": null, "reason": null, "lockedByConfig": false, "muteEndDue": false }`. The `state` of an
   item is always the real evaluation result: a switch or a mute never changes it.
 - `configured: false` (no `scheduleAlerts` block) gives `items: []` and `lastRun: null`; a
   configured server has `lastRun: null` before its first run. `lastRun.at` is the latest attempt,
@@ -251,7 +253,7 @@ the config-writes gate (see above), so it needs `dashboard.allowConfigWrites: tr
 |-----|------|
 | `enabled` | boolean |
 | `mutedUntil` | `YYYY-MM-DD` from today to today + 365 days (in the configured timezone), or `null` to unmute |
-| `reason` | string, 1 to 200 characters after trimming; required when `mutedUntil` is a date, ignored when it is `null` |
+| `reason` | string, 1 to 200 characters after trimming; required when `mutedUntil` is a date; given alone, checked the same way on a muted alert and ignored otherwise; ignored when `mutedUntil` is `null` |
 
 It merges the given keys into the stored override and answers `200 {"ruleState": {...}}` (the shape
 above). `{"enabled":true}` when nothing is stored is a no-op: nothing is stored and nothing is audited.
@@ -264,7 +266,7 @@ change that alters the stored state is written to the configuration audit trail 
 | 400 | `invalid_json`, `invalid_body_encoding` | a malformed body or an unsupported charset or content encoding (the shared body parser) |
 | 400 | `invalid_body` | not an object, no known key, an unknown key, or a wrong type |
 | 400 | `invalid_muted_until` | not a real date, in the past, or more than 365 days ahead |
-| 400 | `reason_required` | a mute date with a missing or blank reason |
+| 400 | `reason_required` | a mute date with a missing or blank reason, or a blank reason alone on a muted alert |
 | 400 | `invalid_reason` | a reason over 200 characters after trimming |
 | 401 | | no or bad credentials (the dashboard auth bodies) |
 | 403 | `origin_rejected`, `config_writes_disabled` | the Origin or config-writes gate |

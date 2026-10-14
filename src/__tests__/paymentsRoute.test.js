@@ -115,7 +115,7 @@ describe('GET /api/dashboard/payments (#260)', () => {
     ]);
     expect(Object.keys(item.occurrences[0]).sort()).toEqual(['date', 'daysLate', 'deadline', 'receivedAmount', 'receivedDate', 'state']);
     expect(item.source).toBe('config');
-    expect(item.ruleState).toEqual({ enabled: true, mutedUntil: null, reason: null, lockedByConfig: false });
+    expect(item.ruleState).toEqual({ enabled: true, mutedUntil: null, reason: null, lockedByConfig: false, muteEndDue: false });
     expect(main.lastRun).toMatchObject({ ok: true, errorCode: null, rulesErrored: 0 });
   });
 

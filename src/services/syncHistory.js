@@ -463,6 +463,33 @@ class SyncHistoryService {
   }
 
   /**
+   * Every `(scheduleId, occurrenceDate)` that has a `missing` row for one
+   * alert on or after `sinceDate` (#356). The caller (deriveResolvedEvents)
+   * compares the schedule ids with the ones Actual still has and closes the
+   * vanished ones with a `resolved`; the ledger is the only place a deleted
+   * schedule is still remembered.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @param {string} key.alertId
+   * @param {string} key.sinceDate - `YYYY-MM-DD`, inclusive lower bound on occurrence_date
+   * @returns {Promise<Array<{scheduleId:string, occurrenceDate:string}>>}
+   */
+  async listMissingScheduleAlertSchedules({ server, alertId, sinceDate }) {
+    try {
+      return this.db.prepare(`
+        SELECT DISTINCT schedule_id AS scheduleId, occurrence_date AS occurrenceDate FROM schedule_alerts
+        WHERE server = ? AND alert_id = ? AND event = 'missing'
+          AND schedule_id IS NOT NULL AND occurrence_date IS NOT NULL AND occurrence_date >= ?
+        ORDER BY schedule_id, occurrence_date
+      `).all(server, alertId, sinceDate);
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts missing schedules', { error: error.message, server, alertId });
+      throw error;
+    }
+  }
+
+  /**
    * Remembered skip decisions for one server (#297 F1): every `skipped` row,
    * as `{scheduleId, occurrenceDate}`. `evaluate()` takes these back in as
    * `skips` so an occurrence inferred as skipped stays skipped after a later
@@ -1478,6 +1505,39 @@ class SyncHistoryService {
     return since
       ? this.db.prepare("DELETE FROM schedule_alerts WHERE server = ? AND alert_id = ? AND delivery = 'muted' AND recorded_at >= ?").run(server, alertId, since).changes
       : this.db.prepare("DELETE FROM schedule_alerts WHERE server = ? AND alert_id = ? AND delivery = 'muted'").run(server, alertId).changes;
+  }
+
+  /**
+   * Apply one operator change to an override, its held-back muted rows and its
+   * audit row in a single transaction (#261), so a failing audit insert leaves
+   * nothing changed (same pattern as resetServerHistory).
+   * @param {Object} change
+   * @param {string} change.server
+   * @param {string} change.alertId
+   * @param {?Object} change.override - the override to store, or null to delete it
+   * @param {boolean} [change.dropMutedRows] - delete the alert's muted rows
+   * @param {string} [change.mutedSince] - limit that delete to rows since this time
+   * @param {string} [change.remoteAddr]
+   * @param {(stored: ?Object) => Object} change.auditChanges - the audit `changes`, from the stored override
+   * @returns {?Object} the stored override (null when deleted or normalised away)
+   */
+  applyOverrideChange({ server, alertId, override, dropMutedRows = false, mutedSince, remoteAddr, auditChanges }) {
+    const apply = this.db.transaction(() => {
+      if (dropMutedRows) this.deleteMutedRows({ server, alertId, since: mutedSince });
+      let stored = null;
+      if (override) stored = this.setOverride(override);
+      else this.deleteOverride(server, alertId);
+      const changes = auditChanges(stored);
+      const audited = Boolean(changes && Object.keys(changes).length > 0);
+      if (audited) {
+        this.insertConfigAudit({ server, remoteAddr, action: 'payment_alert_state', target: alertId, changes });
+      }
+      return { stored, audited };
+    });
+    const { stored, audited } = apply();
+    // Logged only when an audit row was written: a no-op change records nothing.
+    if (audited) this.logger.info('Configuration change recorded', { action: 'payment_alert_state', target: alertId });
+    return stored;
   }
 
   /** Delete the muted rows of one destination key. @returns {number} */

@@ -1,0 +1,32 @@
+name: Dependency Review
+
+# Pre-merge check (#250): compares the dependency graph of the PR against its
+# base and fails when the PR introduces a dependency with a known advisory at
+# or above `fail-on-severity`. It catches the case `npm audit` cannot: a package
+# added or bumped in THIS PR. The `npm audit` gate in ci-cd.yml covers the
+# whole tree after install.
+#
+# No checkout step: on pull_request events the action reads the dependency
+# graph through the GitHub API, so the job needs no repository code.
+#
+# Deliberately no `paths-ignore`: a lockfile-only or docs-adjacent PR must
+# still be checked, and the job is cheap.
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - development
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dependency review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
