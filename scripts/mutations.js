@@ -2075,6 +2075,71 @@ module.exports = [
         mutant: "if (false) filters.serverName = serverName;",
         tests: 'healthCheck.test'
     },
+    // ---- #337/#338: digest and immediate delivery starvation at the budget ---
+    {
+        id: '337-digest-channel-order-fixed', ticket: '#337',
+        desc: 'the digest visits channels in insertion order again, so a channel that eats the whole budget starves later channels every run',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    .sort((a, b) => (attempts.get(a[0]) || 0) - (attempts.get(b[0]) || 0));",
+        mutant: "    .sort(() => 0);",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '337-digest-attempt-not-stamped', ticket: '#337',
+        desc: 'a digest send that fails is no longer stamped as attempted, so the rotation never moves off the failing channel',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    attempts.set(channel, digestAttemptSeq);",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '338-immediate-order-fixed', ticket: '#338',
+        desc: 'immediate mode sends events in evaluation order again, so early daily reminders use the budget every run and starve the tail',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    if (x.since !== y.since) return x.since < y.since ? -1 : 1;",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '338-never-sent-not-first', ticket: '#338',
+        desc: 'a destination that never got the event no longer sorts ahead of ones that did',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "oldest = Math.min(oldest, state.lastSentAt == null ? -Infinity : Date.parse(state.lastSentAt));",
+        mutant: "oldest = Math.min(oldest, state.lastSentAt == null ? Infinity : Date.parse(state.lastSentAt));",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '337-immediate-destination-order-fixed', ticket: '#337',
+        desc: 'immediate mode visits destinations in configured order again, so a hanging first destination starves later ones every run',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      .sort((a, b) => (attempts.get(`dest|${a.key}`) || 0) - (attempts.get(`dest|${b.key}`) || 0));",
+        mutant: "      .sort(() => 0);",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '337-immediate-attempt-not-stamped', ticket: '#337',
+        desc: 'an immediate-mode destination send is no longer stamped as attempted, so the rotation never moves off a hanging destination',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      attempts.set(`dest|${destination.key}`, digestAttemptSeq);",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '337-immediate-attempt-tiebreak-removed', ticket: '#337',
+        desc: 'immediate mode no longer breaks ties by oldest attempt, so one hanging destination keeps the same alert first and the rest never start',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    if (x.attempt !== y.attempt) return x.attempt < y.attempt ? -1 : 1;",
+        mutant: "",
+        tests: 'scheduleAlertDelivery.test'
+    },
+    {
+        id: '338-immediate-order-reversed', ticket: '#338',
+        desc: 'immediate mode sends the most recently sent event first, so the same few reminders use the budget every day and the rest starve',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    if (x.since !== y.since) return x.since < y.since ? -1 : 1;",
+        mutant: "    if (x.since !== y.since) return x.since < y.since ? 1 : -1;",
+        tests: 'scheduleAlertDelivery.test'
+    },
     // ---- #169: the README claim that started #168 ---------------------------
     {
         id: '169-readme-failure-only', ticket: '#169',

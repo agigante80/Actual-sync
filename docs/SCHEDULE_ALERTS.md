@@ -165,6 +165,33 @@ This means digest lines are ordered by that rule, not by schedule, and the order
 sync to sync. The header count always matches what the message contains. A single
 event larger than the limit on its own is still sent, truncated with a trailing `…`.
 
+### Delivery budget and send order
+
+Delivery is bounded by a time budget (30 seconds per sync). A send already started is always
+finished; once the budget is spent, nothing new is started and the rest waits for the next sync.
+Order matters under that cutoff, so no mode lets the same alerts or the same channel use the whole budget on every run:
+
+- **Immediate mode** sends events whose due destination never received them first, then the ones
+  that have waited longest since their last send (the same rule digests use for items). A daily
+  reminder (`remindEveryDays: 1`) therefore cannot crowd out an alert further down the list. Alerts
+  are sent in that order, not in evaluation order, and the order can change from sync to sync.
+  Within one event, destinations are also visited in attempt order (the one attempted longest ago
+  first, never-attempted first), not configuration order, so a destination that hangs until the
+  budget runs out does not keep later destinations from ever getting a row. Events that tie on
+  last send are likewise ordered by the oldest attempt among their due destinations, so an event
+  that just hung moves behind the ones the budget has not reached yet.
+- **Digest mode** visits channels starting with the one attempted longest ago (never-attempted
+  first), not in configuration order. A channel that hangs or fails until the budget runs out is
+  stamped as attempted, so on the next sync the channels the budget never reached go first and still
+  receive the digest. This attempt order is kept in memory, so a restart goes back to the
+  configured order, and it only breaks ties: ledger rows still decide what is due.
+
+**Limitation: one-shot runs get no destination rotation.** The attempt order (digest channels and
+immediate-mode destinations) lives only in the running process. A one-shot run, such as `npm run
+sync` or `--force-run` started from host cron, starts fresh every time, so it always visits channels
+and destinations in configured order. If one channel can hang, put the most reliable channel first.
+The oldest-last-send ordering of events is unaffected, because it comes from the ledger.
+
 ## Startup validation
 
 Config loading fails fast on two classes of mistakes that would otherwise only surface at send time,
