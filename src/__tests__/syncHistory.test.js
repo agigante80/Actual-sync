@@ -975,6 +975,23 @@ describe('SyncHistoryService', () => {
       expect(changes.enabled).toEqual([true, false]);
     });
 
+    test('the real schema path notifications.email.auth.user/pass is redacted, nested and dotted (#259)', () => {
+      syncHistory.recordConfigChange({
+        action: 'x',
+        changes: {
+          email: [null, { auth: { user: 'real-user-1', pass: 'S3CRET', host: 'mail.example' } }],
+          'notifications.email.auth.pass': ['old-real-2', 'S3CRET-2'],
+          'notifications.email.auth.user': ['old-real-3', 'new-real-3'],
+          'notifications.email.user': 'real-user-4'
+        }
+      });
+      const [{ changes_json: json }] = storedChanges();
+      for (const secret of ['S3CRET', 'real-user-1', 'old-real-2', 'old-real-3', 'new-real-3', 'real-user-4']) {
+        expect(json).not.toContain(secret);
+      }
+      expect(JSON.parse(json).email[1].auth.host).toBe('mail.example');
+    });
+
     test('a plain user or url key outside an smtp or channel parent is kept', () => {
       syncHistory.recordConfigChange({
         action: 'x', changes: { user: ['a', 'b'], homepage: { url: 'https://example.com' } }

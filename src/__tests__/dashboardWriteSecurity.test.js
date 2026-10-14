@@ -732,16 +732,17 @@ describe('GET /api/dashboard/config-audit (#259)', () => {
         token: ['old-tok-1', 'new-tok-2'],
         discord: { webhookUrl: ['https://discord.com/api/webhooks/1/old-hook', 'https://discord.com/api/webhooks/1/new-hook'] },
         smtp: { auth: { user: ['mailer-old', 'mailer-new'], pass: ['smtp-old', 'smtp-new'] } },
+        email: [null, { auth: { user: 'real-user', pass: 'real-pass' } }],
         reason: ['', 'call Alice about the rent']
       }
     });
     const res = await get(svc);
     expect(res.status).toBe(200);
     for (const secret of ['old-pass-1', 'new-pass-2', 'old-tok-1', 'new-tok-2', 'old-hook', 'new-hook',
-      'mailer-old', 'mailer-new', 'smtp-old', 'smtp-new', 'Alice']) {
+      'mailer-old', 'mailer-new', 'smtp-old', 'smtp-new', 'real-user', 'real-pass', 'Alice']) {
       expect(res.text).not.toContain(secret);
     }
     const { changes } = res.json.entries[0];
-    expect(Object.keys(changes).sort()).toEqual(['discord', 'password', 'reason', 'smtp', 'token']);
+    expect(Object.keys(changes).sort()).toEqual(['discord', 'email', 'password', 'reason', 'smtp', 'token']);
   });
 });

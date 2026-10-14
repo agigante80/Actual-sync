@@ -29,7 +29,8 @@ const normalizeKey = (key) => String(key).toLowerCase().replace(/[_-]/g, '');
 
 /**
  * Should the value under `key` be hidden? `context` holds the ancestor key
- * names (dotted keys count as paths: `smtp.auth.user` is `user` under `smtp`).
+ * names (dotted keys count as paths: `notifications.email.auth.pass` is `pass` under
+ * `email` and `auth`). The real SMTP credentials live at notifications.email.auth.
  */
 function isSensitiveKey(key, context) {
   const segments = String(key).split('.');
@@ -37,7 +38,7 @@ function isSensitiveKey(key, context) {
   const full = normalizeKey(key);
   if (CONFIG_AUDIT_REDACT_SUBSTRINGS.some(sub => full.includes(sub))) return true;
   const ancestors = context.concat(segments.slice(0, -1)).map(normalizeKey);
-  if ((leaf === 'user' || leaf === 'pass') && ancestors.some(a => a.includes('smtp'))) return true;
+  if ((leaf === 'user' || leaf === 'pass') && ancestors.some(a => a.includes('smtp') || a.includes('email') || a === 'auth')) return true;
   if (leaf === 'url' && ancestors.some(a => NOTIFICATION_CHANNEL_NAMES.some(n => a.includes(n)))) return true;
   return false;
 }

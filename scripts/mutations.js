@@ -2616,5 +2616,13 @@ module.exports = [
         anchor: "if (!req.is('application/json')) {",
         mutant: "if (false) {",
         tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-redact-email-auth-parent", ticket: '#259',
+        desc: "audit redaction stops covering user/pass under the real notifications.email.auth path",
+        file: "src/services/syncHistory.js",
+        anchor: "a.includes('smtp') || a.includes('email') || a === 'auth'",
+        mutant: "a.includes('smtp')",
+        tests: "syncHistory"
     }
 ];
