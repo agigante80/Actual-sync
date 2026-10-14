@@ -83,6 +83,16 @@ describe('dashboard under its Content-Security-Policy (#243)', () => {
     })).rejects.toThrow(/CSP violation[\s\S]*cdn\.example\.com/);
   });
 
+  test('withFixture rejects a CSP violation that happened before a later navigation', async () => {
+    await expect(withFixture('healthy', async ({ page, fixture }) => {
+      await page.goto(`${fixture.url}/dashboard`, { waitUntil: 'networkidle0' });
+      await page.evaluate(() => fetch('https://cdn.example.com/x.js').catch(() => {}));
+      await page.waitForFunction(() => window.__cspViolations.length > 0);
+      // A new document drops window.__cspViolations; the Node-side list keeps it.
+      await page.goto(`${fixture.url}/dashboard`, { waitUntil: 'networkidle0' });
+    })).rejects.toThrow(/CSP violation[\s\S]*cdn\.example\.com/);
+  });
+
   test('the detector works: an injected inline script is blocked and reported', async () => {
     await withFixture('healthy', async ({ page, fixture }) => {
       await page.goto(`${fixture.url}/dashboard`, { waitUntil: 'networkidle0' });
@@ -101,6 +111,7 @@ describe('dashboard under its Content-Security-Policy (#243)', () => {
       // The violation was provoked on purpose; clear it so withFixture's
       // leftover-violation guard (#289) does not fail this test.
       await page.evaluate(() => { window.__cspViolations = []; });
+      page.__cspViolations.length = 0;
     });
   });
 });
