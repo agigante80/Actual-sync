@@ -1508,14 +1508,10 @@ module.exports = [
         mutant: 'due: true,',
         tests: 'scheduleAlertDelivery'
     },
-    {
-        id: '258-ruleUnmatched-reminder-uses-configured-interval', ticket: '#258',
-        desc: 'ruleUnmatched is treated like a missing reminder again and honors the rule\'s own remindEveryDays (superseded by #356: it is sent once per destination)',
-        file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "  if (event.event !== 'missing') return { due: false, lastSentAt: null }; // one row per destination, ever",
-        mutant: "  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return { due: false, lastSentAt: null };",
-        tests: 'scheduleAlert'
-    },
+    // '258-ruleUnmatched-reminder-uses-configured-interval' was removed: since
+    // #356, ruleUnmatched returns early in the dueness check, so a mutant on
+    // the reminder line below it is unreachable and always survives.
+    // '356-ruleUnmatched-repeats' guards that once-per-destination rule.
     {
         id: '258-disabled-webhook-not-skipped', ticket: '#258',
         desc: 'a generic webhook with enabled:false is sent to anyway, since the enabled check is dropped from resolveTargets',
