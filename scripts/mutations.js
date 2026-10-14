@@ -3321,7 +3321,7 @@ module.exports = [
         file: "src/services/syncHistory.js",
         anchor: "        if (purgeRules) deleted.payment_alert_rule = delRules.run(s).changes;",
         mutant: "        deleted.payment_alert_rule = delRules.run(s).changes;",
-        tests: "syncHistory"
+        tests: "paymentRulesRoute"
     },
     {
         id: "262-config-wins-on-id-clash", ticket: '#262',
