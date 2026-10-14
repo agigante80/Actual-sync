@@ -113,7 +113,7 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 |---|---|---|
 | `missing` | No matching transaction by the deadline, and the account is synced past it. | Repeats every `remindEveryDays`, if set. |
 | `wrongAmount` | A matching transaction posted in-window, but its amount is outside tolerance. | One-time; not repeated. |
-| `cannotCheck` | The account's last sync is stale (`reason: "stale"`), not yet past the deadline (`reason: "not-synced"`), or the rule's own window configuration is unsound (`reason: "interval-violation"`, see below). | Never a false `missing`. |
+| `cannotCheck` | The account's last sync is stale (`reason: "stale"`), not yet past the deadline (`reason: "not-synced"`), the rule's own window configuration is unsound (`reason: "interval-violation"`, see below), or the rule threw while being evaluated (`reason: "error"`). | Never a false `missing`. The built-in message has its own wording per reason; only `stale` and `not-synced` mention the bank connection. |
 | `resolved` | A payment previously reported `missing` later posts, on time or late. | Closes out the alert; no manual dismissal needed. |
 | `ruleUnmatched` | A rule's `schedule`/`schedulePrefix` matches no schedule in Actual (renamed, deleted, or a typo). | Repeats once per day while unmatched (a fixed interval, independent of the rule's own `remindEveryDays`). |
 
@@ -253,6 +253,7 @@ template that wants to format it differently.
 | `received_date` / `received_date_raw` | The date the matching transaction posted |
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
+| `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events) |
 | `budget` | The server name |
 | `alert_id` | The rule's `id` |
 

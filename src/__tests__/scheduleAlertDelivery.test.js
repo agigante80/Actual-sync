@@ -1045,3 +1045,39 @@ describe('deliver: delivery budget starvation (#337, #338)', () => {
     expect(Math.min(...perAlert.values())).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe('deliver: cannotCheck wording follows the reason (#296)', () => {
+  async function renderCannotCheck(reason, extra = {}) {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const event = {
+      event: 'cannotCheck', alertId: 'rent', scheduleId: 's1', occurrence: null, deadline: null, reason, ...extra
+    };
+    await deliver([event], {
+      evaluations: [rentEvaluation({ state: 'cannotCheck' })], ruleState: enabledState, history, sender,
+      now: '2026-01-10', server: 'Main', rules: rentRules(), timezone: 'UTC', logger: quietLogger
+    });
+    expect(sender.calls).toHaveLength(1);
+    return sender.calls[0].telegram.html;
+  }
+
+  test.each([['stale'], ['not-synced']])('reason %s keeps the bank-connection wording', async (reason) => {
+    const text = await renderCannotCheck(reason, { occurrence: '2026-01-05', deadline: '2026-01-08', lastSync: '2026-01-01' });
+    expect(text).toMatch(/Check the bank connection/);
+    expect(text).toMatch(/has not synced since/);
+  });
+
+  test('interval-violation does not blame the bank connection and points at the rule', async () => {
+    const text = await renderCannotCheck('interval-violation');
+    expect(text).not.toMatch(/bank connection|synced since/);
+    expect(text).toMatch(/Rent/);
+    expect(text).toMatch(/graceDays/);
+  });
+
+  test('error does not blame the bank connection and points at the log', async () => {
+    const text = await renderCannotCheck('error');
+    expect(text).not.toMatch(/bank connection|synced since/);
+    expect(text).toMatch(/Rent/);
+    expect(text).toMatch(/log/i);
+  });
+});

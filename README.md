@@ -982,10 +982,10 @@ Logged warning:
 
 > Rule "rent": graceDays (5) + earlyDays (3) >= the schedule's shortest interval between occurrences (7 days); the on-time and late windows of consecutive occurrences would overlap, so this rule was skipped.
 
-Sent alert (the shared `cannotCheck` template has no `occurrence`/`deadline` to fill in for this
-reason, so those two fields render blank - this is expected for `interval-violation`):
+Sent alert (the built-in `cannotCheck` template has its own wording per `reason`, so this one points
+at the rule, not at the bank connection):
 
-> ⏸️ Cannot check Rent - Apartment: Checking has not synced since  (deadline ). Check the bank connection.
+> ⏸️ Cannot check Rent - Apartment: the rule's graceDays plus earlyDays reach the schedule's interval between occurrences, so its windows would overlap. Shorten them in config.json.
 
 **10. Digest** - in the same sync, the Rent rule above is `missing` and a second rule, watching an
 income schedule **"Salary"** (recurrence Monthly on the 5th, expected +3200.00 into Checking from
@@ -1031,6 +1031,7 @@ Every template (built-in or an override under `templates`) can reference these; 
 | `received_date` / `received_date_raw` | The date the matching transaction posted |
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
+| `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events) |
 | `budget` | The server name |
 | `alert_id` | The rule's `id` |
 
