@@ -16,7 +16,7 @@ const isSet = (value) => typeof value === 'string' && value.length > 0;
  * Check an Authorization header against the dashboard auth config.
  * @param {Object} headers - request headers (only `authorization` is read)
  * @param {Object} authConfig - dashboard.auth
- * @returns {{ ok: boolean, reason?: 'missing'|'invalid'|'config', username?: string }}
+ * @returns {{ ok: boolean, reason?: 'missing'|'invalid'|'config' }}
  */
 function checkCredentials(headers, authConfig = {}) {
   const authType = authConfig.type || 'none';
@@ -35,7 +35,7 @@ function checkCredentials(headers, authConfig = {}) {
     // Both comparisons run every time, so a wrong username takes as long as a wrong password.
     const userOk = safeEqual(username, authConfig.username);
     const passOk = safeEqual(password, authConfig.password);
-    return userOk && passOk ? { ok: true } : { ok: false, reason: 'invalid', username };
+    return userOk && passOk ? { ok: true } : { ok: false, reason: 'invalid' };
   }
 
   if (authType === 'token') {

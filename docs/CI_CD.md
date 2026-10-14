@@ -241,14 +241,15 @@ curl http://localhost:3000/metrics
 2. Setup Node.js
 3. Install dependencies (Chromium download included, unlike the other jobs -
    see the Chromium note above)
-4. Run `npm run test:e2e`
+4. Run `npm run test:e2e` (job `timeout-minutes: 15`; `~/.cache/puppeteer` is cached by `package-lock.json` hash so Chrome is not re-downloaded each run)
 5. On failure, upload each failing spec's screenshot and console log from
    `tests/e2e/artifacts/` (kept 7 days)
 
-**Duration**: ~30 seconds
+**Duration**: about 90 seconds
 
 **What It Checks**: dashboard rendering, tab switching, manual sync, error
-dismissal, and the login rate limit, all against fixture states under
+dismissal, and the general 60/min rate limiter (not the login failure
+throttle), all against fixture states under
 `tests/e2e/fixtures/states/` rather than a live sync target.
 
 ---
@@ -430,15 +431,25 @@ dismissal, and the login rate limit, all against fixture states under
 
 ### Pinning third-party actions
 
-A `uses:` line that points at a branch (`@master`, `@main`) runs whatever that branch holds at the moment the job starts, with the job's token and secrets. In March 2025 `tj-actions/changed-files` had its tags repointed to a credential-dumping commit, and every workflow tracking it ran the payload. So:
+A `uses:` line that points at a tag or branch runs whatever that ref holds at the moment the job starts, with the job's token and secrets. Tags are mutable: in March 2025 `tj-actions/changed-files` had its tags repointed to a credential-dumping commit, and every workflow tracking it ran the payload. So (#249):
 
-- **Never reference a branch.** `src/__tests__/workflowPins.test.js` fails the test suite if a workflow `uses:` line ends in `@master`, `@main`, `@develop`, `@development` or `@HEAD`. It matches those names only, unquoted, so a quoted ref or another branch name is not caught yet (#249).
-- **The goal is that scanners and anything handed secrets are pinned to a full 40-character commit SHA**, with the version in a trailing comment so updates stay readable, for example `aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0`. Today only `trivy-action` is SHA-pinned, and the same test enforces it for that action alone. `docker/login-action` and `peter-evans/dockerhub-description` (both handed `DOCKERHUB_TOKEN`) and `github/codeql-action/*` are still on version tags; #249 tracks pinning every action.
-- Other actions still use version tags (`@v4`). Moving them to SHAs is tracked in #249.
+- **Every `uses:` in `.github/` is a full 40-character commit SHA with the version in a trailing comment**, for example `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1`. There are no exceptions; local actions (`./...`) are the only thing exempt.
+- **The guard**: `scripts/check-action-pins.sh` fails on any unpinned reference (printing `file:line`) and on a SHA without a `# vX.Y.Z` comment. The `Action pins` workflow (`action-pins.yml`) runs it, plus its contract test `scripts/test-action-pins.sh`, on every push and pull request. `src/__tests__/workflowPins.test.js` repeats the rule inside `npm test`.
+- **Dependabot keeps the pins current.** The `github-actions` entry in `.github/dependabot.yml` understands SHA pins with version comments and rewrites both. Expect one PR per action release (after the cooldown), which is the accepted cost of pinning: a security patch to an action now arrives through a merged Dependabot PR rather than on the next run.
+- `actions/checkout` is on one version (v7.0.1) everywhere; `leak-guard.yml` used to be on v4.
 
-To update a pinned action, look up the commit the new release tag points to (`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`, following an annotated tag to its commit) and replace both the SHA and the comment.
+**Adding or updating an action by hand**:
 
----
+```bash
+# 1. resolve the tag to a commit SHA
+gh api repos/OWNER/REPO/git/ref/tags/vX.Y.Z
+# 2. if .object.type is "tag" (annotated), follow it to the commit
+gh api repos/OWNER/REPO/git/tags/<sha-from-step-1>
+# 3. write: uses: OWNER/REPO@<40-hex commit sha> # vX.Y.Z
+bash scripts/check-action-pins.sh
+```
+
+Pin to the commit, not to the annotated tag object's own SHA (step 2 matters).
 
 ### Release (separate workflow)
 

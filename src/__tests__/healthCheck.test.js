@@ -329,6 +329,135 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('security headers (#243)', () => {
+    // Raw GET that keeps headers and the body as text.
+    const rawGet = (urlPath, headers = {}) => new Promise((resolve, reject) => {
+      http.get({ hostname: '127.0.0.1', port: testPort, path: urlPath, headers }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, text: data }));
+      }).on('error', reject);
+    });
+
+    const csp = (res) => res.headers['content-security-policy'] || '';
+    const directive = (res, name) => csp(res).split(';').map((d) => d.trim()).find((d) => d.startsWith(`${name} `));
+
+    test('a public route carries nosniff, referrer-policy, a CSP and no x-powered-by', async () => {
+      await healthCheck.start();
+      const res = await rawGet('/health');
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['referrer-policy']).toBeDefined();
+      expect(csp(res)).not.toBe('');
+      expect(res.headers['x-powered-by']).toBeUndefined();
+    });
+
+    test('an authenticated route carries the same headers, and denies framing', async () => {
+      const svc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'pw' } }
+      });
+      await svc.start();
+      const auth = Buffer.from('admin:pw').toString('base64');
+      const res = await rawGet('/dashboard', { Authorization: `Basic ${auth}` });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['x-frame-options']).toBe('DENY');
+      expect(csp(res)).toContain("frame-ancestors 'none'");
+      expect(res.headers['x-powered-by']).toBeUndefined();
+    });
+
+    test('headers are present on an error response too (a 401 is not exempt)', async () => {
+      const svc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'pw' } }
+      });
+      await svc.start();
+      const res = await rawGet('/dashboard');
+      expect(res.statusCode).toBe(401);
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(csp(res)).toContain("frame-ancestors 'none'");
+    });
+
+    test("script-src is 'self' only: no unsafe-inline, no unsafe-eval, no remote host", async () => {
+      await healthCheck.start();
+      const res = await rawGet('/health');
+      expect(directive(res, 'script-src')).toBe("script-src 'self'");
+      expect(directive(res, 'script-src-attr')).toBe("script-src-attr 'none'");
+      expect(csp(res)).not.toContain('unsafe-eval');
+    });
+
+    test('connect-src is same-origin so the /ws/logs stream is allowed and nothing else', async () => {
+      await healthCheck.start();
+      expect(directive(await rawGet('/health'), 'connect-src')).toBe("connect-src 'self'");
+    });
+
+    test('upgrade-insecure-requests is NOT sent: the service is plain HTTP on a LAN', async () => {
+      await healthCheck.start();
+      expect(csp(await rawGet('/health'))).not.toContain('upgrade-insecure-requests');
+    });
+
+    test('HSTS is off by default', async () => {
+      await healthCheck.start();
+      expect((await rawGet('/health')).headers['strict-transport-security']).toBeUndefined();
+    });
+
+    test('HSTS is sent with a max-age when enabled in config', async () => {
+      const svc = makeService({ port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' }, hsts: true });
+      await svc.start();
+      expect((await rawGet('/health')).headers['strict-transport-security']).toBe('max-age=15552000');
+    });
+
+    test('serves the dashboard script as javascript from one fixed route', async () => {
+      await healthCheck.start();
+      const res = await rawGet('/dashboard.js');
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toContain('javascript');
+      expect(res.text.length).toBeGreaterThan(0);
+    });
+
+    test('the dashboard script is not rate limited (it loads with every page view)', async () => {
+      const svc = makeService({ port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' }, rateLimitMax: 1 });
+      await svc.start();
+      await rawGet('/health');
+      expect((await rawGet('/dashboard.js')).statusCode).toBe(200);
+      expect((await rawGet('/vendor/chart.umd.min.js')).statusCode).toBe(200);
+    });
+  });
+
+  describe('vendored Chart.js (#244)', () => {
+    beforeEach(async () => {
+      await healthCheck.start();
+    });
+
+    test('serves chart.js from node_modules as javascript, cached', async () => {
+      const result = await httpGet(`http://127.0.0.1:${testPort}/vendor/chart.umd.min.js`);
+      expect(result.statusCode).toBe(200);
+      expect(result.headers['content-type']).toContain('javascript');
+      expect(result.headers['cache-control']).toContain('max-age');
+      expect(result.body.length).toBeGreaterThan(0);
+    });
+
+    test('an unknown path under /vendor is a 404, not a 500', async () => {
+      const result = await httpGet(`http://127.0.0.1:${testPort}/vendor/nope.js`);
+      expect(result.statusCode).toBe(404);
+    });
+
+    test('a traversal attempt cannot read package.json', async () => {
+      // http.get(url) collapses dot segments before sending, so a literal
+      // `../` would arrive as `/package.json` and never reach /vendor. Send
+      // the raw path with http.request, which does not normalise it.
+      const rawGet = (path) => new Promise((resolve, reject) => {
+        http.request({ hostname: '127.0.0.1', port: testPort, path }, (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode));
+        }).on('error', reject).end();
+      });
+      for (const p of ['/vendor/../../package.json', '/vendor/..%2f..%2fpackage.json']) {
+        expect(await rawGet(p)).toBe(404);
+      }
+    });
+  });
+
   describe('/health endpoint', () => {
     beforeEach(async () => {
       await healthCheck.start();
@@ -897,6 +1026,12 @@ describe('HealthCheckService', () => {
       });
       await hc.start();
       try {
+        // Auth none never counts a failure, so a passing run alone proves nothing.
+        // Seed the client over the limit: only a throttle that ignores auth none
+        // answers 429. (#286)
+        const key = require('express-rate-limit').ipKeyGenerator('127.0.0.1');
+        hc.authFailures.increment(key);
+        hc.authFailures.increment(key);
         for (let i = 0; i < 3; i++) {
           expect((await getWithAuth('/api/dashboard/status', 'Bearer anything')).statusCode).toBe(200);
         }
@@ -915,42 +1050,143 @@ describe('HealthCheckService', () => {
         const burst = await Promise.all(Array.from({ length: 12 }, () =>
           getWithAuth('/api/dashboard/status', 'Bearer correct-token')));
         expect(burst.map(r => r.statusCode)).toEqual(Array(12).fill(200));
-        expect((await hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1'))).totalHits).toBe(4);
+        expect(hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1')).totalHits).toBe(4);
       } finally {
         await hc.stop();
       }
     });
 
-    test('a correct request the client aborts is not counted', async () => {
+    test('a correct request the client aborts while the handler is pending is not counted', async () => {
       const hc = tokenService();
+      // A handler that stays pending until released, behind the same auth middleware,
+      // moved to the front of the router so no earlier route or catch-all answers it.
+      // The old destroy-on-connect test aborted before the server read the request.
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      let entered = 0;
+      let enteredResolve;
+      const allEntered = new Promise((r) => { enteredResolve = r; });
+      hc.app.get('/api/dashboard/slow-test', hc.dashboardAuth(), async (req, res) => {
+        if (++entered === 8) enteredResolve();
+        await gate;
+        if (!res.destroyed) res.json({ ok: true });
+      });
+      const stack = hc.app.router.stack;
+      stack.unshift(stack.pop());
       await hc.start();
       try {
-        await Promise.all(Array.from({ length: 8 }, () => new Promise((resolve) => {
+        const reqs = Array.from({ length: 8 }, () => {
           const req = http.get({
-            hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/status',
+            hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/slow-test',
             headers: { Authorization: 'Bearer correct-token' }
           });
-          req.on('error', resolve);
-          req.on('socket', (sock) => sock.on('connect', () => { req.destroy(); resolve(); }));
-        })));
+          req.on('error', () => {});
+          return req;
+        });
+        await allEntered;
+        reqs.forEach((req) => req.destroy());
+        await new Promise((r) => setTimeout(r, 50));
+        release();
+        await new Promise((r) => setTimeout(r, 50));
+        expect(hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1'))).toBeUndefined();
         expect((await getWithAuth('/api/dashboard/status', 'Bearer correct-token')).statusCode).toBe(200);
-        expect(await hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1'))).toBeUndefined();
       } finally {
+        release();
         await hc.stop();
       }
     });
 
     test('access comes back once the window ends', async () => {
-      const hc = tokenService({ authFailureLimit: 1, authFailureWindowMs: 300 });
+      // Mocked clock, long window: deterministic, and the lockout cannot end by
+      // the sweep timer or by two slow loopback round trips. (#286)
+      const realNow = Date.now();
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(realNow);
+      const hc = tokenService({ authFailureLimit: 1, authFailureWindowMs: 600000 });
       await hc.start();
       try {
         expect((await getWithAuth('/dashboard', 'Bearer wrong-token')).statusCode).toBe(401);
         expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(429);
-        await new Promise(r => setTimeout(r, 400));
+        nowSpy.mockReturnValue(realNow + 599999);
+        expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(429);
+        nowSpy.mockReturnValue(realNow + 600001);
         expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(200);
+      } finally {
+        nowSpy.mockRestore();
+        await hc.stop();
+      }
+    });
+
+    test('stop() clears the failure sweep timer, and a restart re-arms it (#286)', async () => {
+      const hc = tokenService();
+      expect(hc.authFailures.sweeper).not.toBeNull();
+      const timer = hc.authFailures.sweeper;
+      const clearSpy = jest.spyOn(global, 'clearInterval');
+      await hc.start();
+      await hc.stop();
+      // Nulling the field alone would leak the interval on every restart.
+      // Compare by identity: a Timeout object in a failure diff is ~20k lines.
+      expect(clearSpy.mock.calls.some(([t]) => t === timer)).toBe(true);
+      clearSpy.mockRestore();
+      expect(hc.authFailures.sweeper).toBeNull();
+      hc.authFailures.increment('k');
+      expect(hc.authFailures.sweeper).not.toBeNull();
+    });
+
+    test('a failed basic login never logs the username, which may be a pasted password (#286)', async () => {
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'test-password' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      const warn = jest.spyOn(hc.logger, 'warn').mockImplementation(() => {});
+      await hc.start();
+      try {
+        const header = 'Basic ' + Buffer.from('my-pasted-secret:x').toString('base64');
+        expect((await getWithAuth('/dashboard', header)).statusCode).toBe(401);
+        expect(JSON.stringify(warn.mock.calls)).not.toContain('my-pasted-secret');
+        expect(warn).toHaveBeenCalledWith('Dashboard authentication failed', expect.any(Object));
       } finally {
         await hc.stop();
       }
+    });
+
+    describe('X-Forwarded-For without trustProxy (#286)', () => {
+      const withXff = () => new Promise((resolve, reject) => {
+        http.get({
+          hostname: '127.0.0.1', port: testPort, path: '/health',
+          headers: { 'X-Forwarded-For': '203.0.113.7' }
+        }, (res) => { res.resume(); res.on('end', resolve); }).on('error', reject);
+      });
+      const misconfigWarns = (warn) =>
+        warn.mock.calls.filter(([msg]) => /X-Forwarded-For/.test(msg));
+
+      test('warns once, on the first request that carries the header', async () => {
+        const hc = tokenService();
+        const warn = jest.spyOn(hc.logger, 'warn').mockImplementation(() => {});
+        await hc.start();
+        try {
+          await getWithAuth('/health', 'Bearer x');
+          expect(misconfigWarns(warn)).toHaveLength(0);
+          await withXff();
+          await withXff();
+          expect(misconfigWarns(warn)).toHaveLength(1);
+        } finally {
+          await hc.stop();
+        }
+      });
+
+      test('does not warn when trustProxy is set', async () => {
+        const hc = tokenService({ trustProxy: 1 });
+        const warn = jest.spyOn(hc.logger, 'warn').mockImplementation(() => {});
+        await hc.start();
+        try {
+          await withXff();
+          expect(misconfigWarns(warn)).toHaveLength(0);
+        } finally {
+          await hc.stop();
+        }
+      });
     });
 
     test('behind a trusted proxy each client has its own budget', async () => {
@@ -976,6 +1212,42 @@ describe('HealthCheckService', () => {
       const hc = makeService({ port: testPort, loggerConfig: { level: 'ERROR' } });
       expect(hc.authFailureLimit).toBe(10);
       expect(hc.authFailureWindowMs).toBe(15 * 60 * 1000);
+    });
+  });
+
+  describe('Dashboard History API server filter (#288)', () => {
+    const historyService = (mockSyncHistory) => makeService({
+      port: testPort,
+      host: '127.0.0.1',
+      syncHistory: mockSyncHistory,
+      dashboardConfig: { enabled: true, auth: { type: 'none' } },
+      loggerConfig: { level: 'ERROR' }
+    });
+
+    test('passes serverName through to getHistory', async () => {
+      const mockSyncHistory = { getHistory: jest.fn().mockReturnValue([{ server_name: 'A' }]) };
+      const hc = historyService(mockSyncHistory);
+      await hc.start();
+
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/history?limit=25&serverName=A%20B`);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual([{ server_name: 'A' }]);
+      expect(mockSyncHistory.getHistory).toHaveBeenCalledWith({ limit: 25, serverName: 'A B' });
+      await hc.stop();
+    });
+
+    test('omits the filter when serverName is blank, absent or repeated', async () => {
+      const mockSyncHistory = { getHistory: jest.fn().mockReturnValue([]) };
+      const hc = historyService(mockSyncHistory);
+      await hc.start();
+
+      for (const qs of ['limit=5&serverName=', 'limit=5', 'limit=5&serverName=A&serverName=B']) {
+        mockSyncHistory.getHistory.mockClear();
+        const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/history?${qs}`);
+        expect(res.statusCode).toBe(200);
+        expect(mockSyncHistory.getHistory).toHaveBeenCalledWith({ limit: 5 });
+      }
+      await hc.stop();
     });
   });
 
@@ -1485,7 +1757,18 @@ describe('HealthCheckService', () => {
       expect(res.body.runningSync).toEqual(running);
     });
 
-    it('is null when nothing runs, or when the callback throws', async () => {
+    it('is null when nothing is running', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        getRunningSync: () => null
+      });
+      await hc.start();
+      const res = await httpGet(statusUrl());
+      expect(res.statusCode).toBe(200);
+      expect(res.body.runningSync).toBeNull();
+    });
+
+    it('is null when the callback throws', async () => {
       const hc = makeService({
         port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
         getRunningSync: () => { throw new Error('boom'); }
@@ -1972,6 +2255,100 @@ describe('HealthCheckService', () => {
       expect(d.open).toBe(true);
       b.ws.close();
       d.ws.close();
+    });
+
+    // ---- #280 hardening follow-ups ----
+    test('a ticket is spent by a handshake refused for its Origin (#280)', async () => {
+      await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      const ticket = await mintTicket();
+      expect(await tryConnect(`/ws/logs?ticket=${ticket}`, { origin: 'https://evil.example' }))
+        .toEqual({ open: false, status: 403 });
+      expect(await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin()))
+        .toEqual({ open: false, status: 401 });
+    });
+
+    test('a ticket is spent by a handshake refused for the connection cap (#280)', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'token', token: 't0k' } });
+      hc.maxWsConnectionsPerIp = 0;
+      const ticket = await mintTicket();
+      expect(await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin()))
+        .toEqual({ open: false, status: 429 });
+      hc.maxWsConnectionsPerIp = 10;
+      expect(await tryConnect(`/ws/logs?ticket=${ticket}`, sameOrigin()))
+        .toEqual({ open: false, status: 401 });
+    });
+
+    test('same-origin compares the port too (#280)', async () => {
+      await startWith({ enabled: true, auth: { type: 'none' } });
+      const result = await tryConnect('/ws/logs', { origin: `http://127.0.0.1:${testPort + 1}` });
+      expect(result).toEqual({ open: false, status: 403 });
+    });
+
+    test('Origin null (sandboxed iframe, file page) is refused (#280)', async () => {
+      await startWith({ enabled: true, auth: { type: 'none' } });
+      const result = await tryConnect('/ws/logs', { origin: 'null' });
+      expect(result).toEqual({ open: false, status: 403 });
+    });
+
+    test('the per-address cap counts the forwarded client when trustProxy is set (#280)', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', trustProxy: 1,
+        dashboardConfig: { enabled: true, auth: { type: 'none' } }, loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+      hc.maxWsConnectionsPerIp = 1;
+      const a = await tryConnect('/ws/logs', { 'x-forwarded-for': '1.2.3.4' });
+      expect(a.open).toBe(true);
+      expect(await tryConnect('/ws/logs', { 'x-forwarded-for': '1.2.3.4' })).toEqual({ open: false, status: 429 });
+      const other = await tryConnect('/ws/logs', { 'x-forwarded-for': '5.6.7.8' });
+      expect(other.open).toBe(true);
+      a.ws.close();
+      other.ws.close();
+    });
+
+    test('without trustProxy a forged X-Forwarded-For does not dodge the cap (#280)', async () => {
+      const hc = await startWith({ enabled: true, auth: { type: 'none' } });
+      hc.maxWsConnectionsPerIp = 1;
+      const a = await tryConnect('/ws/logs', { 'x-forwarded-for': '1.2.3.4' });
+      expect(a.open).toBe(true);
+      expect(await tryConnect('/ws/logs', { 'x-forwarded-for': '5.6.7.8' })).toEqual({ open: false, status: 429 });
+      a.ws.close();
+    });
+  });
+
+  describe('dashboard credential responses (#280)', () => {
+    function rawGet(path, headers = {}) {
+      return new Promise((resolve, reject) => {
+        http.get({ host: '127.0.0.1', port: testPort, path, headers }, (res) => {
+          let data = '';
+          res.on('data', (c) => { data += c; });
+          res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, body: data }));
+        }).on('error', reject);
+      });
+    }
+
+    test('basic auth: invalid credentials get 401, a WWW-Authenticate challenge and Invalid credentials', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'pw' } }
+      });
+      await hc.start();
+      const wrong = 'Basic ' + Buffer.from('admin:nope').toString('base64');
+      const res = await rawGet('/api/dashboard/status', { authorization: wrong });
+      expect(res.statusCode).toBe(401);
+      expect(res.headers['www-authenticate']).toBe('Basic realm="Dashboard"');
+      expect(JSON.parse(res.body)).toEqual({ error: 'Invalid credentials' });
+    });
+
+    test('token auth: a wrong token gets 401 with the Invalid token body', async () => {
+      const hc = makeService({
+        port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' },
+        dashboardConfig: { enabled: true, auth: { type: 'token', token: 'right' } }
+      });
+      await hc.start();
+      const res = await rawGet('/api/dashboard/status', { authorization: 'Bearer wrong' });
+      expect(res.statusCode).toBe(401);
+      expect(JSON.parse(res.body)).toEqual({ error: 'Invalid token' });
     });
   });
 });

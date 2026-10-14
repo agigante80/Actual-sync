@@ -14,15 +14,36 @@ The dashboard is a responsive single-page application that offers:
 - **🔐 Authentication** - Optional basic auth or token-based authentication
 - **🎨 Dark Theme** - Modern UI optimized for long monitoring sessions
 
+## Content-Security-Policy and customising the page
+
+Every response carries a strict Content-Security-Policy (details and the full header list in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md#http-security-headers-243)). The rules that matter if you edit the dashboard:
+
+- **No inline `<script>` and no inline event attributes** (`onclick="..."`, `onchange="..."`, `onerror="..."`). The browser silently refuses them. The page's code lives in `src/services/dashboard.js`, served at `/dashboard.js`. Wire a button with `data-action="name"` (and optional `data-arg="value"`) plus an entry in `CLICK_ACTIONS`, or `data-change="name"` plus an entry in `CHANGE_ACTIONS`; one delegated listener handles buttons added later by `innerHTML`.
+- Scripts may only come from this origin. Do not add a `<script src="https://...">`.
+- Inline `style="..."` attributes are allowed (`style-src 'unsafe-inline'`), because the page uses many of them.
+- Network calls may only go to this origin (`connect-src 'self'`), which includes the `/ws/logs` WebSocket.
+- The page cannot be shown inside an iframe (`frame-ancestors 'none'` and `X-Frame-Options: DENY`), which blocks clickjacking. A Home Assistant `panel_iframe` or a Homarr or Organizr iframe tile shows an empty frame; link to the dashboard so it opens in its own tab instead.
+- If the page is blank or a button does nothing after an edit, open the browser console: a blocked resource is reported as `Refused to ...`. The e2e suite (`tests/e2e/csp.e2e.js`) fails on any violation.
+
+## No external network dependencies
+
+The dashboard loads nothing from the internet. Chart.js is a regular npm dependency of the service and is served from the app itself at `/vendor/chart.umd.min.js`, the same way the logo is served at `/icon.png`. The page therefore renders fully, charts included, on an air-gapped host or with all outbound traffic blocked, and no third party is contacted when you open it.
+
 ## Live Logs authentication
 
 The Live Logs panel streams from `/ws/logs`, which is authenticated like the rest of the dashboard. Before each connect the page fetches a single-use, 30 second ticket from `/api/dashboard/ws-ticket` using the same credentials as every other dashboard request, then opens the stream with it. You do not configure anything for this.
 
-If the panel keeps showing "Disconnected from log stream. Reconnecting...", check the service log for `WebSocket handshake refused`:
+If the panel keeps showing "Disconnected from log stream. Reconnecting...", look at the service log and the browser's network tab:
 
-- **status 401**: the ticket request failed or the ticket expired; reload the page and sign in again.
-- **status 403, Origin not allowed**: the page was loaded from an origin that is not the host the browser connects to. Add that origin to `dashboard.allowedOrigins` (see [CONFIG.md](CONFIG.md)).
-- **status 429**: more than 10 log streams are open from one address (every browser tab holds one). Behind a reverse proxy all streams share the proxy's address.
+- **No `WebSocket handshake refused` line, and a failing `/api/dashboard/ws-ticket` request** (401, 429 or 5xx): the ticket request never reached the handshake, so nothing is logged for it. Look for `Dashboard authentication failed` or `Dashboard authentication throttled` instead, then reload the page and sign in again.
+- **`WebSocket handshake refused`, status 401**: the ticket was missing, already used or older than 30 seconds. A ticket is spent by any handshake attempt, including a refused one, so a retry always asks for a new one.
+- **status 403, Origin not allowed**: the `Origin` header does not match the `Host` header the service received. The usual cause is a reverse proxy that rewrites `Host`: nginx `proxy_set_header Host $host;` drops a non-default port (the browser says `example.com:8443`, the service sees `example.com`). Use `proxy_set_header Host $http_host;` so the original Host is passed through. Only if the page really is served from a different origin than the one the browser connects to, add that origin to `dashboard.allowedOrigins` (see [CONFIG.md](CONFIG.md)).
+- **status 429**: more than 10 log streams are open from one address (every browser tab holds one). Behind a reverse proxy, set `healthCheck.trustProxy` so the count is per real client instead of per proxy.
+- **A button returns 403 `origin_rejected`** (Sync now, Dismiss, Reset history, Test notification): the browser sent an `Origin` (or `Referer`) that does not match the `Host` the service received, and it is not in `dashboard.allowedOrigins`. The cause and the fix are the same as for the status 403 item above: pass the original Host through the proxy (`proxy_set_header Host $http_host;`) or add the page origin to `dashboard.allowedOrigins`. Requests without browser headers (curl, Home Assistant) are not affected.
+
+## DNS rebinding with `auth.type: none`
+
+The Origin check compares `Origin` with `Host`. A DNS rebinding attack makes both name the attacker's domain while it resolves to your service, so the check passes. With `dashboard.auth.type: none` that exposes the live log stream, every dashboard page and the four state-changing POSTs (`sync`, `dismiss-error`, `reset-history`, `test-notification`) to a web page open in a browser on the same network. There is no Host allowlist (it would need a new setting, and the maintainer has not chosen one). If the dashboard is reachable from browsers that visit untrusted sites, do not leave auth at `none`: use `basic` or `token`, which a rebinding page cannot supply, or bind to `127.0.0.1` behind a proxy that only forwards your own host name.
 
 ## Locked out after failed logins
 
@@ -43,6 +64,52 @@ Served at `GET /api/dashboard/accounts` (subject to the dashboard's auth setting
 ![Account syncability badges](screenshots/dashboard-accounts.png)
 
 
+## Payments tab
+
+The **Payments** tab shows what the [missing-payment alerts](SCHEDULE_ALERTS.md) concluded for every watched schedule. It is read-only (toggling, muting and editing are separate features) and, like the account list, it renders **without a connection to Actual**: it reads the snapshot each sync saves, through `GET /api/dashboard/payments`. It is therefore as fresh as the last sync, and the "as of" line says when that was.
+
+![Payments tab, a server with alerts not configured](screenshots/dashboard-payments-empty.png)
+
+**Columns.** State, Name, Cadence (Actual's own wording), Account, expected Amount, Next due, Deadline, Last alert (the last alert actually sent) and Source. The button before a name opens the last 6 occurrences, each with its state, received date and amount, and "(+3d)" for a late one. Below 768 px rows become cards and Account, Last alert and Source move into that expanded view.
+
+**States.** The pill text is always shown, so colour is never the only signal.
+
+| State | Pill | Needs attention |
+|---|---|---|
+| `upcoming` | outline | no |
+| `received` | green | no |
+| `late` | amber | no |
+| `missing` | red | yes |
+| `wrongAmount` | amber | yes |
+| `cannotCheck` | grey | yes |
+| `skipped` | grey, dashed outline | no |
+
+Rows are sorted attention first, then late, upcoming, received, skipped; within a group by deadline (none last), then name. The state buttons filter to **Needs attention** or **OK** (everything else, including skipped), and the search box matches name, payee, account and cadence. "N watched · M need attention" counts every schedule of the servers shown, whatever the filters.
+
+**Amounts and dates.** Amounts are plain decimals with no currency symbol (`60.00`, a range as `50.00 to 70.00`), as in the notifications. Next due, Deadline and occurrence dates are calendar dates: they are never shifted by your time zone and never shown as "Just now", and they follow the date format chosen in Settings (the `relative` format shows `YYYY-MM-DD` for them). Last alert and the "as of" and failure times are instants and follow the Settings format like the rest of the dashboard.
+
+**Several servers.** With "All" selected the rows are grouped per server, each group with its own heading, "as of" line and failure line. Every server with alerts configured has one **Sync now** button in its heading, which syncs that server only; a server without `scheduleAlerts` shows a note linking to the README instead. The server select shows a single group.
+
+**Refresh and Sync now.** The tab refreshes every 60 seconds while it is the active tab and the page is visible, and at once when you open it or return to the page. After **Sync now** it watches `/api/dashboard/status` and refreshes once no sync has been running on two consecutive reads (it gives up after 120 seconds). If starting the sync fails, the group heading says "Could not start sync (HTTP 429)" or "(network error)" and the next click retries.
+
+**When something is wrong.**
+- *No successful evaluation yet*: the very first run failed, so there are no rows, only this line and the failure line.
+- *last evaluation failed at ... (error code)*: the latest run failed; the rows of the last good run stay, and "as of" is that run's time. When some rules could not be evaluated, the line also says how many and that their last values are shown.
+- *Runs after the next sync*: alerts are configured but no run has happened yet.
+- *Could not refresh payments (HTTP 503)* or *(network error)*, in a red banner above the table: any failed refresh keeps the last good rows and the next good refresh clears the banner.
+
+![Payments tab](screenshots/dashboard-payments.png)
+
+Enable dashboard auth when `scheduleAlerts` is used: with the default `auth.type: none` this tab and its data are open to anyone who can reach the port.
+
 ## Behind a reverse proxy
 
-If nginx, Traefik or Caddy sits in front of the dashboard, set `healthCheck.trustProxy` (usually `1`, one proxy) so the per-client rate limit and the auth-failure log see the real client IP instead of the proxy's. Keep `dashboard.auth` enabled, and do not also publish the port directly. See [CONFIG.md](CONFIG.md#healthcheck-optional) for the accepted values and [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#1-security) for an nginx example.
+If nginx, Traefik or Caddy sits in front of the dashboard, set `healthCheck.trustProxy` (usually `1`, one proxy) so the per-client rate limit and the auth-failure log see the real client IP instead of the proxy's. Keep `dashboard.auth` enabled, and do not also publish the port directly. See [CONFIG.md](CONFIG.md#healthcheck-optional) for the accepted values and [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#1-security) for an nginx example, including the `/ws/logs` location.
+
+## Configuration changes
+
+The Settings tab lists the most recent configuration changes (newest first): when, which server, the action, the target, the client address and the changed fields. Secrets (passwords, tokens, API keys, webhook URLs, URLs with credentials) are shown as `[redacted]`. A history reset keeps this list and adds one `history_reset` entry. Entries are purged with the sync history after `retentionDays`. The same data is available at `GET /api/dashboard/config-audit?limit=N` (1 to 200, default 50).
+
+The dashboard never changes configuration unless `dashboard.allowConfigWrites` is `true` and auth is not `none`; see [CONFIG.md](CONFIG.md).
+
+![Configuration changes list on the Settings tab](screenshots/dashboard-settings-audit.png)

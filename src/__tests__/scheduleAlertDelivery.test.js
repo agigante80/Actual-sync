@@ -160,20 +160,43 @@ describe('deliver: de-duplication and reminders', () => {
     expect(sender.calls).toHaveLength(2);
   });
 
-  test('ruleUnmatched reminders use a fixed 1-day interval regardless of remindEveryDays', async () => {
+  test('ruleUnmatched is sent once per destination while unmatched, never as a reminder (#356)', async () => {
     const history = makeFakeHistory();
     const sender = makeFakeSender({ telegram: { enabled: true } });
     const unmatchedEvent = { event: 'ruleUnmatched', alertId: 'rent', scheduleId: null, occurrence: null, deadline: null };
     const args = {
       evaluations: [], ruleState: enabledState, history, sender,
-      server: 'Main', rules: rentRules(), timezone: 'UTC', logger: quietLogger
+      server: 'Main', rules: rentRules({ remindEveryDays: 1 }), timezone: 'UTC', logger: quietLogger
     };
 
     history.clock = '2026-01-10T00:00:00.000Z';
     await deliver([unmatchedEvent], { ...args, now: '2026-01-10T00:00:00.000Z' });
-    const nextDay = await deliver([unmatchedEvent], { ...args, now: '2026-01-11T00:00:00.000Z' });
+    const later = await deliver([unmatchedEvent], { ...args, now: '2026-02-10T00:00:00.000Z' });
 
-    expect(nextDay).toEqual({ sent: 1, skipped: 0 });
+    expect(later).toEqual({ sent: 0, skipped: 1 });
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  test('a rule matching again records one ruleMatched marker, which re-arms ruleUnmatched (#356)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const unmatchedEvent = { event: 'ruleUnmatched', alertId: 'rent', scheduleId: null, occurrence: null, deadline: null };
+    const args = {
+      ruleState: enabledState, history, sender, now: '2026-01-10T00:00:00.000Z',
+      server: 'Main', rules: rentRules(), timezone: 'UTC', logger: quietLogger
+    };
+
+    history.clock = '2026-01-10T00:00:00.000Z';
+    await deliver([unmatchedEvent], { ...args, evaluations: [] });
+    history.clock = '2026-01-11T00:00:00.000Z';
+    await deliver([], { ...args, evaluations: [rentEvaluation({ occurrences: [] })] });
+    await deliver([], { ...args, evaluations: [rentEvaluation({ occurrences: [] })] });
+    expect(history.rows.filter((r) => r.event === 'ruleMatched')).toHaveLength(1);
+
+    history.clock = '2026-01-12T00:00:00.000Z';
+    const again = await deliver([unmatchedEvent], { ...args, evaluations: [] });
+    expect(again).toEqual({ sent: 1, skipped: 0 });
+    expect(sender.calls).toHaveLength(2);
   });
 });
 
@@ -348,6 +371,144 @@ describe('deliver: digest', () => {
     expect(sender.calls[0].slack.text).toMatch(/Rent/);
     expect(sender.calls[0].slack.text).toMatch(/Salary/);
     expect(history.rows).toHaveLength(2);
+  });
+});
+
+describe('deliver: digest fits each capped channel (#294 review round 1, M1)', () => {
+  const MANY = 40;
+
+  function manyItems() {
+    const events = [];
+    const evaluations = [];
+    for (let i = 0; i < MANY; i++) {
+      const id = `a${i}`;
+      events.push(missingEvent({ alertId: id, scheduleId: `s${i}` }));
+      evaluations.push(rentEvaluation({ alertId: id, scheduleId: `s${i}`, name: `Schedule number ${i} with a longish name` }));
+    }
+    const rules = getRules({
+      digest: true,
+      alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['discord'] }))
+    });
+    return { events, evaluations, rules };
+  }
+
+  async function run(history, sender, now) {
+    const { events, evaluations, rules } = manyItems();
+    return deliver(events, {
+      evaluations, ruleState: enabledState, history, sender, now, server: 'Main', rules, timezone: 'UTC', logger: quietLogger
+    });
+  }
+
+  test('a 40-item Discord digest sends only the items that fit, records only those, and the next run sends the rest', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] } });
+
+    const first = await run(history, sender, '2026-01-10');
+    expect(sender.calls).toHaveLength(1);
+    const text1 = sender.calls[0].discord.text;
+    expect(text1.length).toBeLessThanOrEqual(2000);
+    expect(text1).not.toMatch(/\u2026$/);
+    expect(first.sent).toBeGreaterThan(0);
+    expect(first.sent).toBeLessThan(MANY);
+    expect(history.rows).toHaveLength(first.sent);
+    // The header count matches what is actually in the message.
+    expect(text1.split('\n')[0]).toContain(`${first.sent} payment alert(s)`);
+
+    let total = first.sent;
+    for (let i = 0; i < 10 && total < MANY; i++) {
+      const next = await run(history, sender, '2026-01-10');
+      expect(sender.calls[sender.calls.length - 1].discord.text.length).toBeLessThanOrEqual(2000);
+      total += next.sent;
+    }
+    expect(total).toBe(MANY);
+    expect(history.rows).toHaveLength(MANY);
+    expect(new Set(history.rows.map((r) => r.alertId)).size).toBe(MANY);
+  });
+
+  test('daily reminders do not starve the deferred tail: all 40 alerts reach the ledger within a bounded number of days (#294 review round 2, H1)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] } });
+    const { events, evaluations } = manyItems();
+    const rulesDaily = getRules({
+      digest: true,
+      alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['discord'], remindEveryDays: 1 }))
+    });
+
+    const MAX_DAYS = 6;
+    for (let day = 0; day < MAX_DAYS; day++) {
+      const instant = new Date(Date.UTC(2026, 0, 10 + day)).toISOString();
+      history.clock = instant;
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: instant, server: 'Main', rules: rulesDaily, timezone: 'UTC', logger: quietLogger
+      });
+      if (new Set(history.rows.map((r) => r.alertId)).size === MANY) break;
+    }
+    expect(new Set(history.rows.map((r) => r.alertId)).size).toBe(MANY);
+  });
+
+  test('once every alert has been sent, reminders rotate by oldest last send so every alert keeps getting reminded (#294 review round 3, L1)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] } });
+    const { events, evaluations } = manyItems();
+    const rulesDaily = getRules({
+      digest: true,
+      alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['discord'], remindEveryDays: 1 }))
+    });
+
+    // Past the point where everything was sent once, only the oldest-sent
+    // order lets the reminders reach every alert again.
+    for (let day = 0; day < 16; day++) {
+      const instant = new Date(Date.UTC(2026, 0, 10 + day)).toISOString();
+      history.clock = instant;
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: instant, server: 'Main', rules: rulesDaily, timezone: 'UTC', logger: quietLogger
+      });
+    }
+    const perAlert = new Map();
+    for (const r of history.rows) perAlert.set(r.alertId, (perAlert.get(r.alertId) || 0) + 1);
+    expect(perAlert.size).toBe(MANY);
+    expect(Math.min(...perAlert.values())).toBeGreaterThanOrEqual(3);
+  });
+
+  test('a 40-item Telegram digest also stays under 4096 in both html and plain, recording only what was sent', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const { events, evaluations } = manyItems();
+    const rules = getRules({ digest: true, alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['telegram'] })) });
+    const result = await deliver(events, {
+      evaluations, ruleState: enabledState, history, sender, now: '2026-01-10', server: 'Main', rules, timezone: 'UTC', logger: quietLogger
+    });
+    expect(result.sent).toBeGreaterThan(0);
+    expect(result.sent).toBeLessThan(MANY);
+    expect(sender.calls[0].telegram.html.length).toBeLessThanOrEqual(4096);
+    expect(sender.calls[0].telegram.plain.length).toBeLessThanOrEqual(4096);
+    expect(history.rows).toHaveLength(result.sent);
+  });
+
+  test('a digest that fits entirely is unchanged: one message, every item recorded', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { slack: [{ name: 's', url: 'https://slack/x', enabled: true }] } });
+    const { events, evaluations } = manyItems();
+    const rules = getRules({ digest: true, alerts: events.map((e) => ({ id: e.alertId, schedule: 'Rent', channels: ['slack'] })) });
+    const result = await deliver(events, {
+      evaluations, ruleState: enabledState, history, sender, now: '2026-01-10', server: 'Main', rules, timezone: 'UTC', logger: quietLogger
+    });
+    expect(result.sent).toBe(MANY); // Slack's cap is 40000, so 40 lines all fit
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  test('a single oversized item is still sent alone (truncation is only the safety net)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] } });
+    const rules = getRules({
+      digest: true,
+      alerts: [{ id: 'rent', schedule: 'Rent', channels: ['discord'], templates: { missing: 'x'.repeat(2500) } }]
+    });
+    const result = await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'Main', rules, timezone: 'UTC', logger: quietLogger
+    });
+    expect(result.sent).toBe(1);
+    expect(history.rows).toHaveLength(1);
   });
 });
 
@@ -527,6 +688,46 @@ describe('deliver: resolved retries per destination against the real ledger (#29
   });
 });
 
+describe('deliver: Telegram digest header escapes the server name (#294 review round 2, L)', () => {
+  test('a server name with & and < is escaped in the html header and left raw in the plain fallback', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'] }] });
+    await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'A&B <home>', rules, timezone: 'UTC', logger: quietLogger
+    });
+    const header = sender.calls[0].telegram.html.split('\n')[0];
+    expect(header).toContain('A&amp;B &lt;home&gt;');
+    expect(header).not.toContain('<home>');
+    expect(sender.calls[0].telegram.plain.split('\n')[0]).toContain('A&B <home>');
+  });
+
+  test('the email digest html header escapes the server name; the text body keeps it raw', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ email: { enabled: true } });
+    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['email'] }] });
+    await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'A&B <home>', rules, timezone: 'UTC', logger: quietLogger
+    });
+    const { html, text } = sender.calls[0].email;
+    expect(html).toContain('<p>Actual-sync: 1 payment alert(s) for A&amp;B &lt;home&gt;</p>');
+    expect(html).not.toContain('<home>');
+    expect(text.split('\n')[0]).toContain('A&B <home>');
+  });
+
+  test('the Slack digest header escapes the server name so <!channel> cannot ping (#294 review round 3, L2)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ webhooks: { slack: [{ name: 'a', url: 'https://slack/a', enabled: true }] } });
+    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['slack'] }] });
+    await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10', server: 'Main <!channel>', rules, timezone: 'UTC', logger: quietLogger
+    });
+    const out = JSON.stringify(sender.calls[0].slack);
+    expect(out).toContain('Main &lt;!channel&gt;');
+    expect(out).not.toContain('<!channel>');
+  });
+});
+
 describe('deliver: digest respects each rule\'s own channel restriction (#295 review, M1)', () => {
   test('each channel receives only the lines from rules that allow it, not the union of every rule\'s channels', async () => {
     const history = makeFakeHistory();
@@ -679,6 +880,163 @@ describe('deliver: a failing ledger lookup withholds only that event (#297 round
   });
 });
 
+describe('deliver: digest guards each destination like immediate mode (#332)', () => {
+  // A transient ledger error (for example SQLITE_BUSY) on one channel must
+  // withhold only that channel, never reject deliver() and starve the others.
+  const SALARY = { id: 'salary', schedule: 'Salary' };
+  function setup(server, alerts = [{ id: 'rent', schedule: 'Rent', channels: ['slack', 'discord'] }]) {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      webhooks: {
+        slack: [{ name: 'a', url: 'https://slack/a', enabled: true }],
+        discord: [{ name: 'd', url: 'https://discord/x', enabled: true }]
+      }
+    });
+    const warnings = [];
+    const logger = { warn: (message, meta) => warnings.push({ message, meta }) };
+    const rules = getRules({ digest: true, alerts });
+    const events = alerts.map((a) => missingEvent({ alertId: a.id, scheduleId: `s-${a.id}` }));
+    const evaluations = alerts.map((a) => rentEvaluation({ alertId: a.id, scheduleId: `s-${a.id}`, name: a.schedule }));
+    const run = () => deliver(events, {
+      evaluations, ruleState: enabledState, history, sender, server, rules,
+      timezone: 'UTC', logger, now: '2026-01-10'
+    });
+    return { history, sender, warnings, run };
+  }
+
+  test('isDestinationDue throwing for one channel withholds only that channel, with a WARN', async () => {
+    const { history, sender, warnings, run } = setup('guard-332-due');
+    const realFind = history.findLatestScheduleAlert.bind(history);
+    let armed = false;
+    let discordReads = 0;
+    history.findLatestScheduleAlert = async (key) => {
+      // A one-off error: the mayRecord pre-check (first discord read) succeeds,
+      // then the digest's own read of the discord destination (second) throws.
+      if (String(key.channel).startsWith('discord')) {
+        discordReads += 1;
+        if (discordReads === 2) { armed = true; throw new Error('SQLITE_BUSY'); }
+      }
+      return realFind(key);
+    };
+    const result = await run();
+    expect(armed).toBe(true);
+    expect(result).toEqual({ sent: 1, skipped: 0 });
+    expect(sender.calls).toHaveLength(1);
+    expect(sender.calls[0].slack).toBeDefined();
+    expect(history.rows.map((r) => r.channel.split(':')[0])).toEqual(['slack']);
+    const warn = warnings.find((w) => /ledger lookup failed/i.test(w.message));
+    expect(warn).toBeDefined();
+    expect(warn.meta).toMatchObject({ server: 'guard-332-due', channel: 'discord', error: 'SQLITE_BUSY' });
+  });
+
+  test('recordScheduleAlert throwing after a send does not stop the other channels, and WARNs that the row may be resent', async () => {
+    const { history, sender, warnings, run } = setup('guard-332-record', [
+      { id: 'rent', schedule: 'Rent', channels: ['slack'] },
+      { id: 'salary', schedule: 'Salary', channels: ['discord'] }
+    ]);
+    const realRecord = history.recordScheduleAlert.bind(history);
+    history.recordScheduleAlert = async (row) => {
+      if (String(row.channel).startsWith('slack')) throw new Error('SQLITE_BUSY');
+      return realRecord(row);
+    };
+    const result = await run();
+    expect(sender.calls).toHaveLength(2); // both channels were sent to
+    expect(result).toEqual({ sent: 1, skipped: 1 }); // the unrecorded slack item is not counted as sent
+    expect(history.rows.map((r) => r.channel.split(':')[0])).toEqual(['discord']);
+    const warn = warnings.find((w) => /ledger write failed/i.test(w.message));
+    expect(warn).toBeDefined();
+    expect(warn.message).toMatch(/resent next sync/i);
+    expect(warn.meta).toMatchObject({ server: 'guard-332-record', channel: 'slack', alertId: 'rent', error: 'SQLITE_BUSY' });
+  });
+
+  test('a write failing for one item keeps processing the remaining items on the SAME channel', async () => {
+    // Guards the loop: a `break` after the write-failure WARN would leave
+    // salary unrecorded although the digest already went out.
+    const { history, sender, warnings, run } = setup('guard-332-same-channel', [
+      { id: 'rent', schedule: 'Rent', channels: ['slack'] },
+      { ...SALARY, channels: ['slack'] }
+    ]);
+    const realRecord = history.recordScheduleAlert.bind(history);
+    // Fail the FIRST write whichever item the digest orders first, so the
+    // test cannot pass vacuously when the failing item happens to be last.
+    let first = null;
+    history.recordScheduleAlert = async (row) => {
+      if (first === null) { first = row.alertId; throw new Error('SQLITE_BUSY'); }
+      return realRecord(row);
+    };
+    const result = await run();
+    expect(sender.calls).toHaveLength(1);
+    expect(result).toEqual({ sent: 1, skipped: 1 });
+    expect(history.rows).toHaveLength(1);
+    expect(history.rows[0].alertId).not.toBe(first);
+    expect(warnings.filter((w) => /ledger write failed/i.test(w.message))).toHaveLength(1);
+  });
+
+  test('a read failing on a later item withholds the whole channel instead of sending a partial digest', async () => {
+    const { history, sender, run } = setup('guard-332-partial', [
+      { id: 'rent', schedule: 'Rent', channels: ['discord'] },
+      { ...SALARY, channels: ['discord'] }
+    ]);
+    const realFind = history.findLatestScheduleAlert.bind(history);
+    let discordReads = 0;
+    history.findLatestScheduleAlert = async (key) => {
+      // 2 mayRecord reads, then the digest reads item 1 (3rd) and item 2 (4th).
+      if (String(key.channel).startsWith('discord') && (discordReads += 1) === 4) throw new Error('SQLITE_BUSY');
+      return realFind(key);
+    };
+    const result = await run();
+    expect(discordReads).toBeGreaterThanOrEqual(4);
+    expect(sender.calls).toHaveLength(0);
+    expect(history.rows).toHaveLength(0);
+    expect(result).toEqual({ sent: 0, skipped: 2 });
+  });
+});
+
+describe('deliver: immediate mode survives a ledger write failure after a send (#332)', () => {
+  test('a failing write for one destination does not stop the others and the event still counts as sent', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      telegram: { enabled: true },
+      webhooks: {
+        slack: [{ name: 'a', url: 'https://slack/a', enabled: true }],
+        discord: [{ name: 'd', url: 'https://discord/x', enabled: true }]
+      }
+    });
+    const warnings = [];
+    const logger = { warn: (message, meta) => warnings.push({ message, meta }) };
+    const realRecord = history.recordScheduleAlert.bind(history);
+    history.recordScheduleAlert = async (row) => {
+      if (String(row.channel).startsWith('slack')) throw new Error('SQLITE_BUSY');
+      return realRecord(row);
+    };
+    const result = await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender,
+      now: '2026-01-10', server: 'imm-332',
+      rules: rentRules({ channels: ['telegram', 'slack', 'discord'] }),
+      timezone: 'UTC', logger
+    });
+    expect(sender.calls).toHaveLength(3);
+    expect(result).toEqual({ sent: 1, skipped: 0 });
+    expect(history.rows.map((r) => r.channel.split(':')[0]).sort()).toEqual(['discord', 'telegram']);
+    const warn = warnings.find((w) => /ledger write failed/i.test(w.message));
+    expect(warn).toBeDefined();
+    expect(warn.message).toMatch(/resent next sync/i);
+    expect(warn.meta).toMatchObject({ server: 'imm-332', channel: 'slack', alertId: 'rent', error: 'SQLITE_BUSY' });
+    expect(warnings.some((w) => /send threw/i.test(w.message))).toBe(false);
+  });
+
+  test('when every write fails the event is not counted as sent', async () => {
+    const history = makeFakeHistory();
+    history.recordScheduleAlert = async () => { throw new Error('SQLITE_BUSY'); };
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const result = await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender,
+      now: '2026-01-10', server: 'imm-332b', rules: rentRules(), timezone: 'UTC', logger: quietLogger
+    });
+    expect(result).toEqual({ sent: 0, skipped: 1 });
+  });
+});
+
 describe('destinationKey (#295 review round 2, M8)', () => {
   test('a named webhook target is keyed by its name plus a URL hash, never its URL', () => {
     const key = destinationKey('slack', { name: 'ops-alerts', url: 'https://hooks.example/services/T00/B00/secret' });
@@ -739,5 +1097,175 @@ describe('exported constants: DEFAULT_TEMPLATES / VARIABLES / ALL_CHANNELS', () 
     for (const raw of rawSuffixed) {
       expect(VARIABLES).toContain(raw.slice(0, -'_raw'.length));
     }
+  });
+});
+
+describe('deliver: delivery budget starvation (#337, #338)', () => {
+  // Virtual clock: `Date.now()` only moves when a fake send "takes time", so
+  // the budget cutoff is deterministic instead of depending on real timers.
+  let clock;
+  let nowSpy;
+  beforeEach(() => { clock = 1.8e12; nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => clock); });
+  afterEach(() => { nowSpy.mockRestore(); });
+  const sleep = async (ms) => { clock += ms; };
+
+  test('a first channel that hangs past the budget every run does not starve the second channel in a digest (#337)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      telegram: { enabled: true },
+      webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] }
+    });
+    sender.result = null;
+    const original = sender.sendTemplated.bind(sender);
+    sender.sendTemplated = async (outputs) => {
+      if (outputs.telegram) {
+        sender.calls.push(outputs);
+        await sleep(60); // hangs until the 40ms budget is gone
+        return { telegram: { success: false } };
+      }
+      return original(outputs);
+    };
+    const rules = rentRules({}, { digest: true });
+
+    let discordRun = 0;
+    for (let run = 1; run <= 3 && !discordRun; run += 1) {
+      await deliver([missingEvent()], {
+        evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, now: '2026-01-10',
+        server: 'starve-337', rules, timezone: 'UTC', logger: quietLogger, deadline: Date.now() + 40
+      });
+      if (history.rows.some((r) => String(r.channel).startsWith('discord'))) discordRun = run;
+    }
+    expect(discordRun).toBeGreaterThan(0);
+    expect(discordRun).toBeLessThanOrEqual(2);
+  });
+
+  test('slow sends with remindEveryDays: 1 still reach every event within a bounded number of days in immediate mode (#338)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const original = sender.sendTemplated.bind(sender);
+    sender.sendTemplated = async (outputs) => { await sleep(25); return original(outputs); };
+    const COUNT = 6;
+    const ids = Array.from({ length: COUNT }, (_, i) => `r${i}`);
+    const rules = getRules({ alerts: ids.map((id) => ({ id, schedule: 'Rent', remindEveryDays: 1 })) });
+    const events = ids.map((id) => missingEvent({ alertId: id }));
+    const evaluations = ids.map((id) => rentEvaluation({ alertId: id }));
+
+    let day = 0;
+    for (; day < 4; day += 1) {
+      const instant = new Date(Date.UTC(2026, 0, 10 + day)).toISOString();
+      history.clock = instant;
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: instant, server: 'imm-338',
+        rules, timezone: 'UTC', logger: quietLogger, deadline: Date.now() + 40
+      });
+      if (new Set(history.rows.map((r) => r.alertId)).size === COUNT) break;
+    }
+    expect(new Set(history.rows.map((r) => r.alertId)).size).toBe(COUNT);
+  });
+
+  test('a first destination that hangs past the budget every run does not starve the second destination in immediate mode (#337, M1)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      telegram: { enabled: true },
+      webhooks: { discord: [{ name: 'd', url: 'https://discord/x', enabled: true }] }
+    });
+    const original = sender.sendTemplated.bind(sender);
+    sender.sendTemplated = async (outputs) => {
+      if (outputs.telegram) {
+        sender.calls.push(outputs);
+        await sleep(60); // hangs until the 40ms budget is gone
+        return { telegram: { success: false } };
+      }
+      return original(outputs);
+    };
+    const ids = ['a1', 'a2', 'a3'];
+    const rules = getRules({ alerts: ids.map((id) => ({ id, schedule: 'Rent' })) });
+    const events = ids.map((id) => missingEvent({ alertId: id }));
+    const evaluations = ids.map((id) => rentEvaluation({ alertId: id }));
+
+    // Every alert, not just the first, must get a Discord row: from run 3 on
+    // each alert's only due destination is Telegram and nothing has a ledger
+    // row for it, so only the attempt tie-break moves the next alert up.
+    const withDiscord = () => new Set(
+      history.rows.filter((r) => String(r.channel).startsWith('discord')).map((r) => r.alertId)
+    );
+    for (let run = 1; run <= 4 && withDiscord().size < ids.length; run += 1) {
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: '2026-01-10',
+        server: 'starve-337-imm', rules, timezone: 'UTC', logger: quietLogger, deadline: Date.now() + 40
+      });
+    }
+    expect([...withDiscord()].sort()).toEqual(ids);
+  });
+
+  test('over many days, immediate-mode reminders rotate by oldest last send so every alert keeps getting reminded (#338, M2)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const original = sender.sendTemplated.bind(sender);
+    sender.sendTemplated = async (outputs) => { await sleep(25); return original(outputs); };
+    const COUNT = 6;
+    const ids = Array.from({ length: COUNT }, (_, i) => `r${i}`);
+    const rules = getRules({ alerts: ids.map((id) => ({ id, schedule: 'Rent', remindEveryDays: 1 })) });
+    const events = ids.map((id) => missingEvent({ alertId: id }));
+    const evaluations = ids.map((id) => rentEvaluation({ alertId: id }));
+
+    // Budget fits 2 sends a day. Past the first cycle, only the
+    // oldest-sent-first order keeps reaching every alert.
+    for (let day = 0; day < 12; day += 1) {
+      const instant = new Date(Date.UTC(2026, 0, 10 + day)).toISOString();
+      history.clock = instant;
+      await deliver(events, {
+        evaluations, ruleState: enabledState, history, sender, now: instant, server: 'imm-338-rot',
+        rules, timezone: 'UTC', logger: quietLogger, deadline: Date.now() + 40
+      });
+    }
+    const perAlert = new Map();
+    for (const r of history.rows) perAlert.set(r.alertId, (perAlert.get(r.alertId) || 0) + 1);
+    expect(perAlert.size).toBe(COUNT);
+    expect(Math.min(...perAlert.values())).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('deliver: cannotCheck wording follows the reason (#296)', () => {
+  async function renderCannotCheck(reason, extra = {}) {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const event = {
+      event: 'cannotCheck', alertId: 'rent', scheduleId: 's1', occurrence: null, deadline: null, reason, ...extra
+    };
+    await deliver([event], {
+      evaluations: [rentEvaluation({ state: 'cannotCheck' })], ruleState: enabledState, history, sender,
+      now: '2026-01-10', server: 'Main', rules: rentRules(), timezone: 'UTC', logger: quietLogger
+    });
+    expect(sender.calls).toHaveLength(1);
+    return sender.calls[0].telegram.html;
+  }
+
+  test.each([['stale'], ['not-synced']])('reason %s keeps the bank-connection wording', async (reason) => {
+    const text = await renderCannotCheck(reason, { occurrence: '2026-01-05', deadline: '2026-01-08', lastSync: '2026-01-01' });
+    expect(text).toMatch(/Check the bank connection/);
+    expect(text).toMatch(/has not synced since/);
+  });
+
+  test('stale with a last sync date renders it; without one it says never synced', async () => {
+    const withDate = await renderCannotCheck('not-synced', { occurrence: '2026-01-05', deadline: '2026-01-08', lastSync: '2026-01-01' });
+    expect(withDate).toMatch(/has not synced since 1 Jan 2026 \(deadline /);
+    const never = await renderCannotCheck('not-synced', { occurrence: '2026-01-05', deadline: '2026-01-08' });
+    expect(never).toMatch(/has never synced \(deadline /);
+    expect(never).not.toMatch(/synced since|\s{2}\(/);
+  });
+
+  test('interval-violation does not blame the bank connection and points at the rule', async () => {
+    const text = await renderCannotCheck('interval-violation');
+    expect(text).not.toMatch(/bank connection|synced since/);
+    expect(text).toMatch(/Rent/);
+    expect(text).toMatch(/graceDays/);
+  });
+
+  test('error does not blame the bank connection and points at the log', async () => {
+    const text = await renderCannotCheck('error');
+    expect(text).not.toMatch(/bank connection|synced since/);
+    expect(text).toMatch(/Rent/);
+    expect(text).toMatch(/log/i);
   });
 });

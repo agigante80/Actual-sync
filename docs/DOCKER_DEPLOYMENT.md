@@ -315,6 +315,10 @@ The container starts as root only to apply `PUID`/`PGID` and fix ownership of th
 writable volumes, then drops to a non-root user (see
 [Issue 1: Permission Denied](#issue-1-permission-denied--database-write-errors)).
 
+The dashboard needs no outbound access: its chart library (Chart.js) is a
+production dependency installed into the image, so the dashboard works with
+egress blocked.
+
 ## Production Tips
 
 ### 1. Security
@@ -338,6 +342,30 @@ volumes:
 
 ```json
 "healthCheck": { "port": 3000, "host": "0.0.0.0", "trustProxy": 1 }
+```
+
+A minimal nginx `server` block for the dashboard, including the live log stream (`/ws/logs` needs the HTTP/1.1 upgrade headers). Pass `Host` with `$http_host`: the dashboard refuses a WebSocket whose `Origin` does not equal the `Host` it receives, and `$host` drops a non-default port.
+
+```nginx
+server {
+    listen 80;
+    server_name actual-sync.example.com;
+
+    location / {
+        proxy_pass http://actual-sync:3000;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+    location /ws/logs {
+        proxy_pass http://actual-sync:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 1h;
+    }
+}
 ```
 
 nginx must forward the client address (`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`); Traefik does this by default. Do not publish port 3000 as well (no `ports:` entry for it): a client that reaches the port directly can send its own `X-Forwarded-For` and pick any IP it likes. A CIDR such as the Docker bridge range is not a safe workaround, because connections through a published port can arrive from the bridge gateway address, which that range trusts. If you need a narrower rule than a hop count, put the proxy on a dedicated network with a fixed address and trust only that exact IP.
@@ -442,6 +470,12 @@ Each budget on the same Actual Budget server needs a separate entry:
   ]
 }
 ```
+
+## Stopping the container
+
+On SIGTERM or SIGINT the service stops accepting new syncs (including the rest of a scheduled run that has not started yet), cancels the cron jobs and pending retries, and waits up to 8 seconds for the sync that is running to finish. If it is still running after that, the Actual session is closed and the service exits.
+
+Plain `docker stop` gives a container 10 seconds before SIGKILL, which is why the default wait is 8 seconds. A sync still running at the deadline is cut: the session is closed under it, and its changes may be incomplete until the next sync. If your bank syncs take longer, raise both together: set `stop_grace_period` (compose) or `--stop-timeout` (`docker run`) and set the `SHUTDOWN_WAIT_MS` environment variable about 2 seconds below it, for example `stop_grace_period: 60s` with `SHUTDOWN_WAIT_MS=58000`.
 
 ## Updating
 

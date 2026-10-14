@@ -10,6 +10,72 @@ const path = require('path');
 const fs = require('fs');
 const { createLogger } = require('../lib/logger');
 
+const REDACTED = '[redacted]';
+
+// Field denylist for config_audit.changes_json (#259): case-insensitive
+// SUBSTRING of the key name with `_` and `-` removed (so `api_key`, `X-Api-Key`
+// and `apiKey` all hit `apikey`), at every nesting level. `reason` is the
+// free-text mute reason of #261, which can name a person. Over-redaction is
+// deliberate: a false positive hides a harmless value, a false negative stores
+// a secret. Exported for the test.
+const CONFIG_AUDIT_REDACT_SUBSTRINGS = [
+  'password', 'passwd', 'secret', 'token', 'apikey', 'authorization', 'webhook', 'reason'
+];
+const CONFIG_AUDIT_MAX_BYTES = 8 * 1024;
+const NOTIFICATION_CHANNEL_NAMES = ['slack', 'discord', 'ntfy', 'webhook'];
+const URL_WITH_CREDENTIALS = /^[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]*@/i;
+
+const normalizeKey = (key) => String(key).toLowerCase().replace(/[_-]/g, '');
+
+/**
+ * Should the value under `key` be hidden? `context` holds the ancestor key
+ * names (dotted keys count as paths: `notifications.email.auth.pass` is `pass` under
+ * `email` and `auth`). The real SMTP credentials live at notifications.email.auth.
+ */
+function isSensitiveKey(key, context) {
+  const segments = String(key).split('.');
+  const leaf = normalizeKey(segments[segments.length - 1]);
+  const full = normalizeKey(key);
+  if (CONFIG_AUDIT_REDACT_SUBSTRINGS.some(sub => full.includes(sub))) return true;
+  const ancestors = context.concat(segments.slice(0, -1)).map(normalizeKey);
+  if ((leaf === 'user' || leaf === 'pass') && ancestors.some(a => a.includes('smtp') || a.includes('email') || a === 'auth')) return true;
+  if (leaf === 'url' && ancestors.some(a => NOTIFICATION_CHANNEL_NAMES.some(n => a.includes(n)))) return true;
+  return false;
+}
+
+function redactValue(value, context) {
+  if (typeof value === 'string') {
+    return URL_WITH_CREDENTIALS.test(value) ? REDACTED : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => redactValue(item, context));
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, inner] of Object.entries(value)) {
+      out[key] = isSensitiveKey(key, context)
+        ? REDACTED
+        : redactValue(inner, context.concat(key));
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * changes -> the changes_json text: redacted, then capped at 8 KB. Over the
+ * cap (or not serialisable) it becomes { _truncated: true, fields: [names] }.
+ */
+function serializeAuditChanges(changes) {
+  const source = changes && typeof changes === 'object' ? changes : {};
+  const fieldNames = () => Object.keys(source).slice(0, 50).map(name => name.slice(0, 64));
+  try {
+    const text = JSON.stringify(redactValue(source, []));
+    if (Buffer.byteLength(text) <= CONFIG_AUDIT_MAX_BYTES) return text;
+  } catch { /* fall through to the marker */ }
+  return JSON.stringify({ _truncated: true, fields: fieldNames() });
+}
+
 class SyncHistoryService {
   /**
    * @param {Object} options - Sync history service options
@@ -136,6 +202,64 @@ class SyncHistoryService {
       )
     `;
 
+    // Missing-payment alert snapshot (#260): what the #258 evaluation last
+    // said about every watched schedule, so the dashboard can show it without
+    // a connection to Actual. Replaced per server on every successful
+    // evaluation (replacePaymentSnapshot). `expected_amount` is integer cents
+    // (NULL for a range or an absent amount); an `isbetween` range is stored
+    // normalised in expected_min/expected_max. `occurrences_json` is the
+    // evaluation's occurrences[] unchanged. No last_alert_at: that is joined
+    // from the schedule_alerts ledger at request time (getLastSentAlerts).
+    const createPaymentAlertStatusTable = `
+      CREATE TABLE IF NOT EXISTS payment_alert_status (
+        server TEXT NOT NULL,
+        alert_id TEXT NOT NULL,
+        schedule_id TEXT NOT NULL,
+        name TEXT,
+        cadence_text TEXT,
+        account TEXT,
+        payee TEXT,
+        expected_amount INTEGER,
+        expected_min INTEGER,
+        expected_max INTEGER,
+        next_date TEXT,
+        deadline TEXT,
+        state TEXT NOT NULL,
+        occurrences_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (server, alert_id, schedule_id)
+      )
+    `;
+
+    // One row per server describing the latest evaluation attempt. `evaluated_at`
+    // is the latest attempt; `last_success_at` the latest success (kept when a
+    // later run fails, NULL until the first success). (#260)
+    const createPaymentAlertRunTable = `
+      CREATE TABLE IF NOT EXISTS payment_alert_run (
+        server TEXT PRIMARY KEY,
+        evaluated_at TEXT NOT NULL,
+        ok INTEGER NOT NULL,
+        error_code TEXT,
+        rules_errored INTEGER NOT NULL DEFAULT 0,
+        last_success_at TEXT
+      )
+    `;
+
+    // Configuration change audit (#259). Append-only: the history resets leave
+    // it alone and add a history_reset row; only cleanup() purges it, by age.
+    // changes_json is redacted and capped before it is stored.
+    const createConfigAuditTable = `
+      CREATE TABLE IF NOT EXISTS config_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        server TEXT,
+        remote_addr TEXT,
+        action TEXT NOT NULL,
+        target TEXT,
+        changes_json TEXT NOT NULL
+      )
+    `;
+
     const createIndexes = [
       'CREATE INDEX IF NOT EXISTS idx_timestamp ON sync_history(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_server_name ON sync_history(server_name)',
@@ -143,13 +267,17 @@ class SyncHistoryService {
       'CREATE INDEX IF NOT EXISTS idx_correlation_id ON sync_history(correlation_id)',
       'CREATE INDEX IF NOT EXISTS idx_account_meta_server ON account_metadata(server_name)',
       'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_lookup ON schedule_alerts(server, alert_id, schedule_id, occurrence_date, event)',
-      'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_recorded_at ON schedule_alerts(recorded_at)'
+      'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_recorded_at ON schedule_alerts(recorded_at)',
+      'CREATE INDEX IF NOT EXISTS idx_config_audit_at ON config_audit(at)'
     ];
 
     this.db.exec(createSyncHistoryTable);
     this.db.exec(createAccountMetadataTable);
     this.db.exec(createScheduleAlertsTable);
-    this.logger.debug('Created sync_history, account_metadata and schedule_alerts tables');
+    this.db.exec(createPaymentAlertStatusTable);
+    this.db.exec(createPaymentAlertRunTable);
+    this.db.exec(createConfigAuditTable);
+    this.logger.debug('Created sync_history, account_metadata, schedule_alerts and payment snapshot tables');
 
     createIndexes.forEach(idx => {
       this.db.exec(idx);
@@ -237,6 +365,60 @@ class SyncHistoryService {
       return row || null;
     } catch (error) {
       this.logger.error('Failed to read schedule_alerts ledger', { error: error.message, server, alertId, event });
+      throw error;
+    }
+  }
+
+  /**
+   * Occurrence dates that have a `missing` row for one schedule on or after
+   * `sinceDate` (#326). The caller (deriveResolvedEvents) closes them with a
+   * `resolved` when the schedule is marked completed; whether a destination
+   * already got that `resolved` is decided per destination later, as usual.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @param {string} key.alertId
+   * @param {string} key.scheduleId
+   * @param {string} key.sinceDate - `YYYY-MM-DD`, inclusive lower bound on occurrence_date
+   * @returns {Promise<string[]>}
+   */
+  async listMissingScheduleAlertOccurrences({ server, alertId, scheduleId, sinceDate }) {
+    try {
+      return this.db.prepare(`
+        SELECT DISTINCT occurrence_date AS occurrenceDate FROM schedule_alerts
+        WHERE server = ? AND alert_id = ? AND schedule_id = ? AND event = 'missing'
+          AND occurrence_date IS NOT NULL AND occurrence_date >= ?
+        ORDER BY occurrence_date
+      `).all(server, alertId, scheduleId, sinceDate).map((r) => r.occurrenceDate);
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts missing rows', { error: error.message, server, alertId });
+      throw error;
+    }
+  }
+
+  /**
+   * Every `(scheduleId, occurrenceDate)` that has a `missing` row for one
+   * alert on or after `sinceDate` (#356). The caller (deriveResolvedEvents)
+   * compares the schedule ids with the ones Actual still has and closes the
+   * vanished ones with a `resolved`; the ledger is the only place a deleted
+   * schedule is still remembered.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @param {string} key.alertId
+   * @param {string} key.sinceDate - `YYYY-MM-DD`, inclusive lower bound on occurrence_date
+   * @returns {Promise<Array<{scheduleId:string, occurrenceDate:string}>>}
+   */
+  async listMissingScheduleAlertSchedules({ server, alertId, sinceDate }) {
+    try {
+      return this.db.prepare(`
+        SELECT DISTINCT schedule_id AS scheduleId, occurrence_date AS occurrenceDate FROM schedule_alerts
+        WHERE server = ? AND alert_id = ? AND event = 'missing'
+          AND schedule_id IS NOT NULL AND occurrence_date IS NOT NULL AND occurrence_date >= ?
+        ORDER BY schedule_id, occurrence_date
+      `).all(server, alertId, sinceDate);
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts missing schedules', { error: error.message, server, alertId });
       throw error;
     }
   }
@@ -389,6 +571,185 @@ class SyncHistoryService {
         error: error.message,
         serverName
       });
+      throw error;
+    }
+  }
+
+  /**
+   * Replace a server's payment alert snapshot with the latest #258 evaluation,
+   * in ONE transaction (#260): upsert every evaluation, delete the server's
+   * rows whose (alertId, scheduleId) pair is in neither `evaluations` nor
+   * `runInfo.erroredPairs`, then upsert the run row as a success. Rows of
+   * disabled or muted rules are kept because #258 still evaluates them. A
+   * rule that threw (an errored pair) keeps its previous row. A successful
+   * run with zero evaluations replaces the set (all rows go, errored pairs
+   * excepted).
+   * @param {string} serverName
+   * @param {Array<Object>} evaluations - evaluate().evaluations
+   * @param {{erroredPairs?: Array<{alertId:string, scheduleId:string}>}} [runInfo]
+   * @returns {number} number of evaluations stored
+   */
+  replacePaymentSnapshot(serverName, evaluations = [], runInfo = {}) {
+    try {
+      const erroredPairs = runInfo.erroredPairs || [];
+      const pairKey = (alertId, scheduleId) => JSON.stringify([alertId, scheduleId]);
+      const keep = new Set(erroredPairs.map((p) => pairKey(p.alertId, p.scheduleId)));
+      for (const e of evaluations) keep.add(pairKey(e.alertId, e.scheduleId));
+      const now = this.now().toISOString();
+
+      const upsert = this.db.prepare(`
+        INSERT OR REPLACE INTO payment_alert_status (
+          server, alert_id, schedule_id, name, cadence_text, account, payee,
+          expected_amount, expected_min, expected_max, next_date, deadline,
+          state, occurrences_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const listPairs = this.db.prepare('SELECT alert_id, schedule_id FROM payment_alert_status WHERE server = ?');
+      const delRow = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ? AND alert_id = ? AND schedule_id = ?');
+      const upsertRun = this.db.prepare(`
+        INSERT INTO payment_alert_run (server, evaluated_at, ok, error_code, rules_errored, last_success_at)
+        VALUES (?, ?, 1, NULL, ?, ?)
+        ON CONFLICT(server) DO UPDATE SET
+          evaluated_at = excluded.evaluated_at, ok = 1, error_code = NULL,
+          rules_errored = excluded.rules_errored, last_success_at = excluded.last_success_at
+      `);
+
+      const replace = this.db.transaction(() => {
+        for (const e of evaluations) {
+          const amount = e.expectedAmount;
+          let cents = null;
+          let min = null;
+          let max = null;
+          if (typeof amount === 'number') {
+            cents = amount;
+          } else if (amount && typeof amount === 'object') {
+            min = Math.min(amount.num1, amount.num2);
+            max = Math.max(amount.num1, amount.num2);
+          }
+          upsert.run(
+            serverName, e.alertId, e.scheduleId, e.name ?? null, e.cadenceText ?? null,
+            e.account ?? null, e.payee ?? null, cents, min, max, e.nextDate ?? null,
+            e.deadline ?? null, e.state, JSON.stringify(e.occurrences || []), now
+          );
+        }
+        for (const row of listPairs.all(serverName)) {
+          if (!keep.has(pairKey(row.alert_id, row.schedule_id))) {
+            delRow.run(serverName, row.alert_id, row.schedule_id);
+          }
+        }
+        upsertRun.run(serverName, now, erroredPairs.length, now);
+      });
+      replace();
+      this.logger.debug('Payment snapshot persisted', { serverName, count: evaluations.length });
+      return evaluations.length;
+    } catch (error) {
+      this.logger.error('Failed to persist payment snapshot', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Record a failed evaluation (#260): upserts only the run row (ok = 0, the
+   * error code, evaluated_at). Item rows, rules_errored and last_success_at
+   * are untouched, so the dashboard keeps the last good snapshot.
+   * @param {string} serverName
+   * @param {string} errorCode - one of the closed list in scheduleAlertsStep
+   */
+  recordPaymentRunFailure(serverName, errorCode) {
+    try {
+      this.db.prepare(`
+        INSERT INTO payment_alert_run (server, evaluated_at, ok, error_code, rules_errored, last_success_at)
+        VALUES (?, ?, 0, ?, 0, NULL)
+        ON CONFLICT(server) DO UPDATE SET
+          evaluated_at = excluded.evaluated_at, ok = 0, error_code = excluded.error_code
+      `).run(serverName, this.now().toISOString(), errorCode);
+    } catch (error) {
+      this.logger.error('Failed to record payment run failure', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Delete both payment snapshot tables' rows for a server in one transaction
+   * (#260), used when the server's scheduleAlerts block is removed.
+   * @param {string} serverName
+   */
+  deletePaymentSnapshot(serverName) {
+    try {
+      const delItems = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ?');
+      const delRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');
+      this.db.transaction((s) => {
+        delItems.run(s);
+        delRun.run(s);
+      })(serverName);
+    } catch (error) {
+      this.logger.error('Failed to delete payment snapshot', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Read a server's stored payment snapshot (#260).
+   * @param {string} serverName
+   * @returns {{items: Array<Object>, run: Object|null}} `run` is null before
+   *   the first evaluation. `expectedAmount` is cents, null, or
+   *   `{num1, num2}` (min, max) for a range.
+   */
+  getPaymentSnapshot(serverName) {
+    try {
+      const rows = this.db.prepare(`
+        SELECT * FROM payment_alert_status WHERE server = ? ORDER BY alert_id, schedule_id
+      `).all(serverName);
+      const items = rows.map((r) => ({
+        alertId: r.alert_id,
+        scheduleId: r.schedule_id,
+        name: r.name,
+        cadenceText: r.cadence_text,
+        account: r.account,
+        payee: r.payee,
+        expectedAmount: r.expected_min != null
+          ? { num1: r.expected_min, num2: r.expected_max }
+          : r.expected_amount,
+        nextDate: r.next_date,
+        deadline: r.deadline,
+        state: r.state,
+        occurrences: JSON.parse(r.occurrences_json)
+      }));
+      const runRow = this.db.prepare('SELECT * FROM payment_alert_run WHERE server = ?').get(serverName);
+      const run = runRow ? {
+        at: runRow.evaluated_at,
+        ok: runRow.ok === 1,
+        errorCode: runRow.error_code,
+        lastSuccessAt: runRow.last_success_at,
+        rulesErrored: runRow.rules_errored
+      } : null;
+      return { items, run };
+    } catch (error) {
+      this.logger.error('Failed to read payment snapshot', { error: error.message, serverName });
+      throw error;
+    }
+  }
+
+  /**
+   * Latest DELIVERED alert per (alertId, scheduleId) for a server (#260),
+   * computed at request time from the schedule_alerts ledger because the
+   * snapshot is saved before the ledger is written for the same sync. Includes
+   * "resolved" notices; null once the last alert is older than the ledger
+   * retention. `inferred` rows (#297 skips) are not alerts.
+   * @param {string} serverName
+   * @returns {Map<string, string>} key is JSON `[alertId, scheduleId]`, value an ISO time
+   */
+  getLastSentAlerts(serverName) {
+    try {
+      const rows = this.db.prepare(`
+        SELECT alert_id, schedule_id, MAX(recorded_at) AS last_sent_at
+        FROM schedule_alerts
+        WHERE server = ? AND delivery = 'sent'
+        GROUP BY alert_id, schedule_id
+      `).all(serverName);
+      return new Map(rows.map((r) => [JSON.stringify([r.alert_id, r.schedule_id]), r.last_sent_at]));
+    } catch (error) {
+      this.logger.error('Failed to read last sent alerts', { error: error.message, serverName });
       throw error;
     }
   }
@@ -776,6 +1137,16 @@ class SyncHistoryService {
         });
       }
 
+      // config_audit (#259) is purged by age at retentionDays, like sync_history.
+      const auditResult = this.db.prepare('DELETE FROM config_audit WHERE at < ?')
+        .run(cutoffDate.toISOString());
+      if (auditResult.changes > 0) {
+        this.logger.info('Cleaned up old configuration audit rows', {
+          deletedRecords: auditResult.changes,
+          retentionDays: this.retentionDays
+        });
+      }
+
       // Vacuum database to reclaim space
       this.db.exec('VACUUM');
 
@@ -789,10 +1160,29 @@ class SyncHistoryService {
   }
 
   /**
+   * True when any table resetServerHistory clears has a row for this name.
+   * sync_history ages out after 90 days but the other tables do not, so a
+   * retired server can still be known without any history rows. (#259)
+   * @param {string} serverName
+   * @returns {boolean}
+   */
+  hasServerData(serverName) {
+    const row = this.db.prepare(`
+      SELECT EXISTS (SELECT 1 FROM sync_history WHERE server_name = @s)
+          OR EXISTS (SELECT 1 FROM account_metadata WHERE server_name = @s)
+          OR EXISTS (SELECT 1 FROM schedule_alerts WHERE server = @s)
+          OR EXISTS (SELECT 1 FROM payment_alert_status WHERE server = @s)
+          OR EXISTS (SELECT 1 FROM payment_alert_run WHERE server = @s) AS known
+    `).get({ s: serverName });
+    return row.known === 1;
+  }
+
+  /**
    * Reset sync history for a specific server
    * @param {string} serverName - Name of the server
+   * @param {{remoteAddr?: string}} [options] - recorded on the history_reset audit row (#259)
    */
-  async resetServerHistory(serverName) {
+  async resetServerHistory(serverName, { remoteAddr } = {}) {
     try {
       // Clear sync history, the dashboard account snapshot and the schedule
       // alert ledger atomically, so a reset never leaves orphaned account
@@ -801,10 +1191,23 @@ class SyncHistoryService {
       const delHistory = this.db.prepare('DELETE FROM sync_history WHERE server_name = ?');
       const delMeta = this.db.prepare('DELETE FROM account_metadata WHERE server_name = ?');
       const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts WHERE server = ?');
+      const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ?');
+      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');
+      // config_audit is deliberately NOT deleted (#259): a reset must not erase
+      // the record of earlier configuration changes. It appends one
+      // history_reset row, in this transaction, with the deleted counts.
       const reset = this.db.transaction((s) => {
         const r = delHistory.run(s);
-        delMeta.run(s);
-        delScheduleAlerts.run(s);
+        const deleted = {
+          sync_history: r.changes,
+          account_metadata: delMeta.run(s).changes,
+          schedule_alerts: delScheduleAlerts.run(s).changes,
+          payment_alert_status: delPaymentItems.run(s).changes,
+          payment_alert_run: delPaymentRun.run(s).changes
+        };
+        this.insertConfigAudit({
+          server: s, remoteAddr, action: 'history_reset', target: null, changes: { deleted }
+        });
         return r;
       });
       const result = reset(serverName);
@@ -826,18 +1229,30 @@ class SyncHistoryService {
 
   /**
    * Reset all sync history
+   * @param {{remoteAddr?: string}} [options] - recorded on the history_reset audit row (#259)
    */
-  async resetAllHistory() {
+  async resetAllHistory({ remoteAddr } = {}) {
     try {
       // Clear all sync history, all account snapshots and the whole schedule
       // alert ledger atomically. (#99, #258)
       const delHistory = this.db.prepare('DELETE FROM sync_history');
       const delMeta = this.db.prepare('DELETE FROM account_metadata');
       const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts');
+      const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status');
+      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');
+      // config_audit is kept and gets one history_reset row (see resetServerHistory).
       const reset = this.db.transaction(() => {
         const r = delHistory.run();
-        delMeta.run();
-        delScheduleAlerts.run();
+        const deleted = {
+          sync_history: r.changes,
+          account_metadata: delMeta.run().changes,
+          schedule_alerts: delScheduleAlerts.run().changes,
+          payment_alert_status: delPaymentItems.run().changes,
+          payment_alert_run: delPaymentRun.run().changes
+        };
+        this.insertConfigAudit({
+          server: null, remoteAddr, action: 'history_reset', target: null, changes: { deleted }
+        });
         return r;
       });
       const result = reset();
@@ -853,6 +1268,69 @@ class SyncHistoryService {
       });
       throw error;
     }
+  }
+
+  /**
+   * Insert one config_audit row (no logging). Redacts and caps `changes`.
+   * Used by recordConfigChange() and, inside their transactions, by the resets.
+   */
+  insertConfigAudit({ server, remoteAddr, action, target, changes }) {
+    return this.db.prepare(`
+      INSERT INTO config_audit (at, server, remote_addr, action, target, changes_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      this.now().toISOString(),
+      server ?? null,
+      remoteAddr ?? null,
+      action,
+      target ?? null,
+      serializeAuditChanges(changes)
+    );
+  }
+
+  /**
+   * Record one configuration change (#259). Called by the config routes after a
+   * successful write only. `changes` is { field: [before, after] } with changed
+   * fields only; secrets are redacted and the row is capped at 8 KB.
+   * Never logs values: INFO carries the action and target.
+   * @param {{server?: string, remoteAddr?: string, action: string, target?: string, changes?: Object}} entry
+   * @returns {number} the new row id
+   */
+  recordConfigChange({ server, remoteAddr, action, target, changes } = {}) {
+    if (typeof action !== 'string' || action === '') {
+      throw new Error('recordConfigChange requires an action');
+    }
+    const result = this.insertConfigAudit({ server, remoteAddr, action, target, changes });
+    this.logger.info('Configuration change recorded', { action, target: target ?? null });
+    return Number(result.lastInsertRowid);
+  }
+
+  /**
+   * Configuration changes, newest first. Throws on a database error.
+   * @param {{limit?: number}} [options]
+   * @returns {Array<{at: string, server: ?string, remote_addr: ?string, action: string, target: ?string, changes: Object}>}
+   */
+  getConfigAudit({ limit = 50 } = {}) {
+    const rows = this.db.prepare(`
+      SELECT at, server, remote_addr, action, target, changes_json
+      FROM config_audit
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(limit);
+    return rows.map(row => {
+      let changes = {};
+      try {
+        changes = JSON.parse(row.changes_json);
+      } catch { /* a corrupt row still lists, with no changes */ }
+      return {
+        at: row.at,
+        server: row.server,
+        remote_addr: row.remote_addr,
+        action: row.action,
+        target: row.target,
+        changes
+      };
+    });
   }
 
   /**
@@ -875,4 +1353,4 @@ class SyncHistoryService {
 
 }
 
-module.exports = { SyncHistoryService };
+module.exports = { SyncHistoryService, CONFIG_AUDIT_REDACT_SUBSTRINGS };

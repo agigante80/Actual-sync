@@ -67,6 +67,28 @@ const { deliver } = require('./scheduleAlertDelivery');
 // await: once it settles, nothing it started is still running.
 const DELIVER_BUDGET_MS = 30000;
 
+// #260: the closed list of error codes a failed evaluation may store and the
+// dashboard may serve. Allowlist, not pass-through: other errors carry their
+// own `code` (PHASE_TIMEOUT, ECONNRESET, ...) and the raw message stays in the
+// log, so anything not listed here maps to the fallback `evaluation_failed`.
+const PAYMENT_ERROR_CODES = ['rules_invalid', 'actual_read_failed', 'evaluation_failed'];
+
+/**
+ * Tag an error thrown by one stage of `evaluateScheduleAlerts` with `code`,
+ * unless it already carries a code of its own (that code is then judged by
+ * `paymentErrorCode`, so a PHASE_TIMEOUT or ECONNRESET falls back to
+ * `evaluation_failed`, as #260 specifies).
+ */
+function tagError(error, code) {
+    if (error && typeof error === 'object' && error.code === undefined) error.code = code;
+    return error;
+}
+
+function paymentErrorCode(error) {
+    const code = error && error.code;
+    return PAYMENT_ERROR_CODES.includes(code) ? code : 'evaluation_failed';
+}
+
 /**
  * #261 (rule enable/mute) is not implemented yet: every rule is enabled and
  * never muted, so `scheduleAlertDelivery.deliver` behaves as if that feature
@@ -91,7 +113,7 @@ function scheduleAlertRuleState() {
  * @param {string} args.serverName - server display name, recorded in the ledger key
  *   and used in message templates
  * @param {string} args.timezone - IANA timezone, e.g. "Europe/Madrid"
- *   (see resolveTimezone in src/syncService.js)
+ *   (see resolveTimezone in src/lib/timezone.js)
  * @param {Object} args.logger - server-scoped logger ({info, warn, ...})
  * @param {Date} [args.now] - injectable clock, defaults to `new Date()`
  * @param {Object} [args.syncHistory] - #297 F1: read-only use here, to load the
@@ -100,27 +122,13 @@ function scheduleAlertRuleState() {
  * @returns {Promise<Object>} the evaluated result to pass to `deliverScheduleAlerts`
  */
 async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, logger, syncHistory }) {
-    const scheduleAlertRules = getRules(server.scheduleAlerts);
+    let scheduleAlertRules;
+    try {
+        scheduleAlertRules = getRules(server.scheduleAlerts);
+    } catch (error) {
+        throw tagError(error, 'rules_invalid');
+    }
     const alertNow = now || new Date();
-
-    const rawSchedules = await api.getSchedules();
-
-    // Payee/account names for message templates: getSchedules()
-    // only returns ids (#258's "APIScheduleEntity shape" note).
-    const { data: payees } = await api.aqlQuery(api.q('payees').select(['id', 'name']));
-    // accounts is re-read here (rather than reusing an earlier bank-sync read)
-    // because that read does not select last_sync, needed to tell "missing"
-    // from "cannotCheck" (#271 item 10).
-    const { data: accountsForAlerts } = await api.aqlQuery(
-        api.q('accounts').filter({ tombstone: false }).select(['id', 'name', 'last_sync'])
-    );
-    const accountNameById = new Map(accountsForAlerts.map((a) => [a.id, a.name]));
-    const payeeNameById = new Map((payees || []).map((p) => [p.id, p.name]));
-    const hydratedSchedules = (rawSchedules || []).map((s) => ({
-        ...s,
-        accountName: s.account ? accountNameById.get(s.account) || null : null,
-        payeeName: s.payee ? payeeNameById.get(s.payee) || null : null
-    }));
 
     // #295 review, H3: the old fixed `MAX_LOOKBACK_DAYS` window took no
     // account of a rule's `earlyDays` (or the LINKED_EARLY_WINDOW_DAYS Actual
@@ -138,21 +146,70 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
     const lookbackStart = moment.tz(alertNow, timezone)
         .subtract(MAX_LOOKBACK_DAYS + maxEarlyDays, 'days')
         .format('YYYY-MM-DD');
-    const { data: alertTransactions } = await api.aqlQuery(
-        api.q('transactions')
-            .filter({ date: { $gte: lookbackStart }, tombstone: false })
-            // #295 review, M4: the default `splits: 'inline'` explodes a
-            // split parent transaction into its subtransactions, and only
-            // the parent row carries the `schedule` link - so a scheduled
-            // payment recorded as a split silently disappeared from
-            // evaluate()'s candidates. `splits: 'none'` keeps the split
-            // parent as a single row (schedule intact) and excludes the
-            // exploded child rows instead (verified against the vendored
-            // @actual-app/api query executor: 'none' filters
-            // `parent_id IS NULL`, i.e. top-level rows only).
-            .options({ splits: 'none' })
-            .select(['id', 'account', 'payee', 'amount', 'date', 'schedule'])
-    );
+
+    // #260: only the Actual reads are tagged `actual_read_failed`; anything
+    // else thrown below (evaluate() itself included) stays untagged and maps
+    // to the `evaluation_failed` fallback.
+    let rawSchedules;
+    let payees;
+    let accountsForAlerts;
+    let alertTransactions;
+    try {
+        rawSchedules = await api.getSchedules();
+
+        // Payee/account names for message templates: getSchedules()
+        // only returns ids (#258's "APIScheduleEntity shape" note).
+        ({ data: payees } = await api.aqlQuery(api.q('payees').select(['id', 'name'])));
+        // accounts is re-read here (rather than reusing an earlier bank-sync read)
+        // because that read does not select last_sync, needed to tell "missing"
+        // from "cannotCheck" (#271 item 10).
+        ({ data: accountsForAlerts } = await api.aqlQuery(
+            api.q('accounts').filter({ tombstone: false }).select(['id', 'name', 'last_sync'])
+        ));
+        ({ data: alertTransactions } = await api.aqlQuery(
+            api.q('transactions')
+                .filter({ date: { $gte: lookbackStart }, tombstone: false })
+                // #295 review, M4: the default `splits: 'inline'` explodes a
+                // split parent transaction into its subtransactions, and only
+                // the parent row carries the `schedule` link - so a scheduled
+                // payment recorded as a split silently disappeared from
+                // evaluate()'s candidates. `splits: 'none'` keeps the split
+                // parent as a single row (schedule intact) and excludes the
+                // exploded child rows instead (verified against the vendored
+                // @actual-app/api query executor: 'none' filters
+                // `parent_id IS NULL`, i.e. top-level rows only).
+                .options({ splits: 'none' })
+                .select(['id', 'account', 'payee', 'amount', 'date', 'schedule'])
+        ));
+    } catch (error) {
+        throw tagError(error, 'actual_read_failed');
+    }
+
+    // #359: one notion of an unreliable schedule read, shared with the #356
+    // deletion inference below. An empty or non-array list while rules are
+    // configured would make `expandRules` report every rule as unmatched, so
+    // the whole evaluation is skipped for this sync: no events, no
+    // evaluations, no `ruleMatched` markers, no deletion closes. The skipped
+    // result is flagged so delivery and the dashboard snapshot leave their
+    // state untouched (it is not a failed run, so no error code is recorded).
+    const scheduleListReliable = Array.isArray(rawSchedules) && rawSchedules.length > 0;
+    if (!scheduleListReliable && scheduleAlertRules.length > 0) {
+        logger.warn('Actual returned an empty schedule list; schedule alert evaluation skipped for this sync', {
+            rules: scheduleAlertRules.length
+        });
+        return {
+            skipped: true, events: [], evaluations: [], warnings: [], skipDecisions: [], completedSchedules: [],
+            existingScheduleIds: null, scheduleAlertRules, timezone, serverName, now: alertNow
+        };
+    }
+
+    const accountNameById = new Map(accountsForAlerts.map((a) => [a.id, a.name]));
+    const payeeNameById = new Map((payees || []).map((p) => [p.id, p.name]));
+    const hydratedSchedules = (rawSchedules || []).map((s) => ({
+        ...s,
+        accountName: s.account ? accountNameById.get(s.account) || null : null,
+        payeeName: s.payee ? payeeNameById.get(s.payee) || null : null
+    }));
 
     // #297 F1: skip decisions remembered from earlier syncs. A failure to read
     // them degrades to re-inferring from next_date (the pre-#297 behaviour)
@@ -167,7 +224,7 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
         }
     }
 
-    const { events, evaluations, warnings, skipDecisions } = evaluate({
+    const { events, evaluations, warnings, skipDecisions, completedSchedules } = evaluate({
         rules: scheduleAlertRules,
         schedules: hydratedSchedules,
         transactions: alertTransactions,
@@ -181,7 +238,16 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
         logger.warn(warning.message, { ruleId: warning.ruleId, scheduleId: warning.scheduleId });
     }
 
-    return { events, evaluations, skipDecisions, scheduleAlertRules, timezone, serverName, now: alertNow };
+    // #356: every schedule id Actual still has (completed and unbound ones
+    // too), so delivery can tell a deleted schedule from one that is merely
+    // not bound. An empty or non-array list is not trusted as "everything was
+    // deleted" (a transient empty read would otherwise close every open
+    // `missing`), so it is reported as null and no deletion is inferred.
+    const existingScheduleIds = scheduleListReliable
+        ? new Set(rawSchedules.map((s) => s.id))
+        : null;
+
+    return { events, evaluations, warnings, skipDecisions, completedSchedules, existingScheduleIds, scheduleAlertRules, timezone, serverName, now: alertNow };
 }
 
 /**
@@ -204,7 +270,10 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
  * @returns {Promise<{events: number, sent: number, skipped: number}>}
  */
 async function deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger, deliverBudgetMs }) {
-    const { events, evaluations, skipDecisions, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    const { events, evaluations, skipDecisions, completedSchedules, existingScheduleIds, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    // #359: nothing was evaluated, so there is nothing to deliver and
+    // `deliver()` must not run (it would mark every rule as matched).
+    if (evaluated.skipped) return { events: 0, sent: 0, skipped: 0 };
     // #297 F1: persist newly inferred skips FIRST and independently of the
     // delivery budget and of delivery itself: a failed write only means the
     // skip is inferred again next sync, it must never block the alerts.
@@ -223,6 +292,8 @@ async function deliverScheduleAlerts(evaluated, { syncHistory, notificationServi
     const deadline = Date.now() + (deliverBudgetMs != null ? deliverBudgetMs : DELIVER_BUDGET_MS);
     const deliverResult = await deliver(events, {
         evaluations,
+        completedSchedules,
+        existingScheduleIds,
         ruleState: scheduleAlertRuleState,
         history: syncHistory,
         sender: notificationService,
@@ -265,15 +336,22 @@ async function runScheduleAlertsStep({ api, server, serverName, timezone, syncHi
  *
  * @param {Object} server - this server's config block
  * @param {Object} deps - same shape as `evaluateScheduleAlerts`'s args, minus `server`
+ * @param {Object} [deps.outcome] - #260: filled in on failure
+ *   (`failed = true`, `errorCode` from the closed list) so the caller can
+ *   tell "failed" from "not configured", both of which return null
  * @returns {Promise<Object|null>} the evaluated result to pass to
  *   `maybeDeliverScheduleAlerts`, or null when there was nothing to evaluate
  *   (not configured, or evaluation itself failed - already logged here)
  */
-async function maybeRunScheduleAlerts(server, { api, serverName, timezone, now, logger, syncHistory }) {
+async function maybeRunScheduleAlerts(server, { api, serverName, timezone, now, logger, syncHistory, outcome }) {
     if (!server.scheduleAlerts) return null;
     try {
         return await evaluateScheduleAlerts({ api, server, serverName, timezone, now, logger, syncHistory });
     } catch (scheduleAlertError) {
+        if (outcome) {
+            outcome.failed = true;
+            outcome.errorCode = paymentErrorCode(scheduleAlertError);
+        }
         logger.warn('Schedule alerts evaluation failed; sync result is unaffected', {
             error: scheduleAlertError.message
         });
@@ -322,7 +400,56 @@ async function maybeDeliverScheduleAlerts(evaluated, { syncHistory, notification
     }
 }
 
+/**
+ * #260: persist the payment alert snapshot for the dashboard. Called by
+ * syncService.js right after `maybeRunScheduleAlerts`, while the sync result
+ * is still undecided; it can never change it (any throw is logged at WARN).
+ * A no-op without `syncHistory`.
+ *
+ * @param {Object} server - this server's config block
+ * @param {Object|null} evaluated - result of `maybeRunScheduleAlerts`
+ * @param {Object} deps
+ * @param {Object} [deps.syncHistory]
+ * @param {string} deps.serverName
+ * @param {Object} [deps.outcome] - the object passed to `maybeRunScheduleAlerts`
+ * @param {Object} [deps.logger]
+ */
+function persistPaymentSnapshot(server, evaluated, { syncHistory, serverName, outcome, logger }) {
+    if (!syncHistory) return;
+    try {
+        if (!server.scheduleAlerts) {
+            syncHistory.deletePaymentSnapshot(serverName);
+        } else if (outcome && outcome.failed) {
+            syncHistory.recordPaymentRunFailure(serverName, outcome.errorCode);
+        } else if (evaluated && evaluated.skipped) {
+            // #359: keep the last good snapshot; an empty read says nothing
+            // about the rules, and replacing it would blank the dashboard.
+        } else if (evaluated) {
+            const evaluations = evaluated.evaluations || [];
+            const evaluatedPairs = new Set(evaluations.map((e) => JSON.stringify([e.alertId, e.scheduleId])));
+            // A warning with no evaluation for the same pair means the rule
+            // threw inside evaluate(); its previous row is kept. An
+            // interval-violation rule warns AND evaluates (cannotCheck), so it
+            // is not errored.
+            const seen = new Set();
+            const erroredPairs = [];
+            for (const w of evaluated.warnings || []) {
+                const key = JSON.stringify([w.ruleId, w.scheduleId]);
+                if (evaluatedPairs.has(key) || seen.has(key)) continue;
+                seen.add(key);
+                erroredPairs.push({ alertId: w.ruleId, scheduleId: w.scheduleId });
+            }
+            syncHistory.replacePaymentSnapshot(serverName, evaluations, { erroredPairs });
+        }
+    } catch (error) {
+        if (logger && typeof logger.warn === 'function') {
+            logger.warn('Failed to persist payment alert snapshot; sync result is unaffected', { error: error.message });
+        }
+    }
+}
+
 module.exports = {
+    persistPaymentSnapshot,
     runScheduleAlertsStep,
     evaluateScheduleAlerts,
     maybeRunScheduleAlerts,

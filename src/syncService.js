@@ -15,24 +15,15 @@ const { enhanceActualApiError, explainBudgetNotOpen } = require('./lib/actualApi
 const { partitionSyncableAccounts, persistAccountMetadata } = require('./lib/accountFilter');
 const { fetchServerVersion, getClientVersion, describeCompatibility } = require('./lib/versionInfo');
 const { SyncQueue } = require('./lib/syncQueue');
-const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
-const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts } = require('./lib/scheduleAlertsStep');
+const { resolveTimezone, describeTimezoneFallback } = require('./lib/timezone');
+const { createShutdownGate, resolveShutdownWaitMs } = require('./lib/shutdownGate');
+const { createAutoRetry } = require('./lib/autoRetry');
+const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, prepareSession, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
+const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts, persistPaymentSnapshot } = require('./lib/scheduleAlertsStep');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
 const VERSION = resolveVersion();
-
-/**
- * IANA timezone every scheduleAlerts date/deadline/staleness calculation runs
- * in (#258). A future global `config.timezone` (#266, not yet landed) wins
- * once it exists; until then this falls back to the host's own zone, exactly
- * as `resolveTimezone` will once #266 adds the config key.
- * @param {Object} cfg - the loaded config object
- * @returns {string} an IANA timezone name, e.g. "Europe/Madrid"
- */
-function resolveTimezone(cfg) {
-    return (cfg && cfg.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone;
-}
 
 /**
  * Format next sync time in human-readable format
@@ -98,9 +89,10 @@ let scheduledJobsRef = []; // Variable to store scheduled jobs (populated during
 // session, so two syncs at once corrupt each other (#265). The logger is read
 // at call time because it is created inside the config block below.
 const syncQueue = new SyncQueue({ logger: { info: (message, context) => logger?.info(message, context) } });
+const shutdownGate = createShutdownGate({ queue: syncQueue });
 // Actual API calls that timed out but are still running (#272). They share the
 // one Actual session with every later sync, so the queue waits for them.
-const lateActualCalls = new LateCalls();
+const lateActualCalls = new LateCalls({ logger: { info: (message, context) => logger?.info(message, context) } });
 try {
     const configLoader = new ConfigLoader();
     config = configLoader.load();
@@ -115,6 +107,9 @@ try {
     logger.info('Configuration loaded successfully', { 
         serverCount: config.servers.length 
     });
+
+    const timezoneWarning = describeTimezoneFallback(config);
+    if (timezoneWarning) logger.warn(timezoneWarning);
     
     // Initialize sync history service
     syncHistory = new SyncHistoryService({
@@ -158,6 +153,7 @@ try {
                 botToken: config.notifications.telegram.botToken,
                 chatId: config.notifications.telegram.chatId || config.notifications.telegram.chatIds?.[0],
                 chatIds: config.notifications.telegram.chatIds,
+                timezone: resolveTimezone(config),
                 // Resolve the same way NotificationService.shouldNotifyChannel() does
                 // (per-channel -> global -> 'always'), so /notify reports the mode that
                 // actually gates dispatch rather than a second, divergent default (#169).
@@ -192,6 +188,7 @@ try {
         port: config.healthCheck?.port || 3000,
         host: config.healthCheck?.host || '0.0.0.0',
         trustProxy: config.healthCheck?.trustProxy,
+        hsts: config.healthCheck?.hsts === true,
         dashboardConfig: config.healthCheck?.dashboard || { enabled: true, auth: { type: 'none' } },
         prometheusService: prometheusService,
         syncHistory: syncHistory,
@@ -254,9 +251,6 @@ try {
 const servers = config.servers;
 const globalSyncConfig = config.sync;
 
-// Track active retry timers per server (to cancel on shutdown or manual sync)
-const activeRetryTimers = new Map();
-
 // Helper function to get sync config for a server (server-specific overrides global)
 function getSyncConfig(server) {
     return {
@@ -272,77 +266,14 @@ function getSyncConfig(server) {
     };
 }
 
-/**
- * Cancel any pending retry for a server
- * @param {string} serverName - Server name
- */
-function cancelPendingRetry(serverName) {
-    const timer = activeRetryTimers.get(serverName);
-    if (timer) {
-        clearTimeout(timer);
-        activeRetryTimers.delete(serverName);
-        logger.info('Cancelled pending retry', { server: serverName });
-        return true;
-    }
-    return false;
-}
-
-/**
- * Schedule automatic retry for failed sync
- * @param {Object} server - Server configuration
- * @param {number} attemptNumber - Current retry attempt number (1-based)
- * @param {number} maxAttempts - Maximum retry attempts
- * @param {number} delayMinutes - Delay in minutes before retry
- */
-function scheduleAutoRetry(server, attemptNumber, maxAttempts, delayMinutes) {
-    if (attemptNumber > maxAttempts) {
-        logger.info('Maximum auto-retry attempts reached', { 
-            server: server.name,
-            attempts: attemptNumber - 1
-        });
-        return;
-    }
-
-    // Cancel any existing retry timer for this server
-    cancelPendingRetry(server.name);
-
-    const delayMs = delayMinutes * 60 * 1000;
-    const retryTime = new Date(Date.now() + delayMs);
-
-    logger.info('Scheduling automatic retry', {
-        server: server.name,
-        attemptNumber,
-        maxAttempts,
-        delayMinutes,
-        retryTime: retryTime.toISOString()
-    });
-
-    const timer = setTimeout(async () => {
-        activeRetryTimers.delete(server.name);
-        logger.info('Executing automatic retry', {
-            server: server.name,
-            attemptNumber
-        });
-
-        try {
-            await syncBank(server, { isAutomated: true, retryAttempt: attemptNumber });
-        } catch (error) {
-            logger.error('Auto-retry failed', {
-                server: server.name,
-                attemptNumber,
-                error: error.message
-            });
-
-            // Schedule next retry if attempts remain
-            const syncConfig = getSyncConfig(server);
-            if (syncConfig.autoRetry.enabled && attemptNumber < syncConfig.autoRetry.maxAttempts) {
-                scheduleAutoRetry(server, attemptNumber + 1, syncConfig.autoRetry.maxAttempts, syncConfig.autoRetry.delayMinutes);
-            }
-        }
-    }, delayMs);
-
-    activeRetryTimers.set(server.name, timer);
-}
+// Automatic retry after a failed automated sync (#273); policy in lib/autoRetry.js.
+// syncBank is looked up lazily because it is declared below.
+const autoRetry = createAutoRetry({
+    syncBank: (server, options) => syncBank(server, options),
+    getSyncConfig,
+    logger
+});
+const cancelPendingRetry = (serverName) => autoRetry.cancel(serverName);
 
 /**
  * Sync one server, after any sync already queued or running (#265).
@@ -351,7 +282,7 @@ function scheduleAutoRetry(server, attemptNumber, maxAttempts, delayMinutes) {
  * already waiting or running is not queued twice: the caller gets that run.
  */
 function syncBank(server, options = {}) {
-    return syncQueue.run(server.name, () => runSyncBank(server, options));
+    return shutdownGate.run(server.name, () => runSyncBank(server, options));
 }
 
 async function runSyncBank(server, options = {}) {
@@ -373,6 +304,9 @@ async function runSyncBank(server, options = {}) {
     // session is still open; the write phase runs after the session is shut
     // down and after endTimer()/recordSync(), see the call after `finally` below.
     let scheduleAlertsEvaluated = null;
+    // What this run reports to its caller (#273). runSyncBank never rejects, so
+    // the auto-retry policy reads this status instead of waiting for an error.
+    let syncOutcome = 'failure';
     
     // Create server-specific logger with per-server log level if configured
     const serverLogger = server.logging ? logger.child({
@@ -441,12 +375,18 @@ async function runSyncBank(server, options = {}) {
 
         // A call from an earlier sync that timed out may still be running in the
         // shared session. Give it one more phase timeout; if it is still busy,
-        // fail this sync rather than mix two budgets. (#272)
-        if (!(await lateActualCalls.drain(phaseTimeoutMs))) {
-            // Refuse this one sync, then stop waiting: a call that never
-            // settles must not block every later sync until restart.
-            const abandoned = lateActualCalls.abandon();
-            serverLogger.error('Gave up waiting for Actual API calls that never finished; the next sync will proceed', { abandoned });
+        // fail this sync rather than mix two budgets. (#272, #284) No extra
+        // shutdown runs here (Actual's is a no-op before init); a budget a late
+        // call left open is closed by Actual's own close-budget step in
+        // download-budget / load-budget.
+        const prepared = await prepareSession({
+            lateCalls: lateActualCalls,
+            timeoutMs: phaseTimeoutMs
+        });
+        if (!prepared.ok) {
+            // Refuse this one sync, then stop waiting: a call that does not
+            // settle in time must not block every later sync until restart.
+            serverLogger.error('Gave up waiting for Actual API calls that did not finish in time; the next sync will proceed', { abandoned: prepared.abandoned });
             const busy = new Error(`An earlier Actual API call is still running after its timeout; skipped this sync so two budgets are not mixed in one session`);
             busy.code = 'ACTUAL_SESSION_BUSY';
             throw busy;
@@ -623,9 +563,13 @@ async function runSyncBank(server, options = {}) {
             }, serverLogger);
         }
             
+        let sessionStuckAfterLoop = false;
         if (accounts && accounts.length > 0) {
-            for (const account of accounts) {
+            for (const [accountIndex, account] of accounts.entries()) {
                 accountsProcessed++;
+                let sessionStuck = false;
+                let lateBankSync = null; // 'ok' / 'failed' once a timed-out runBankSync settles (#284)
+                let lateBankError = null; // what it failed with
                 const accountTimer = serverLogger.startTimer(`account-sync-${account.id}`);
                 serverLogger.info(`Starting bank sync for account`, { 
                     accountId: account.id,
@@ -638,9 +582,9 @@ async function runSyncBank(server, options = {}) {
                     });
                     
                     // Wrap runBankSync with timeout (60 seconds) to catch hung promises
-                    const result = await withTimeout(
-                        actual.runBankSync({ accountId: account.id }), 60000, 'runBankSync', lateActualCalls
-                    );
+                    const bankCall = Promise.resolve(actual.runBankSync({ accountId: account.id }));
+                    bankCall.then(() => { lateBankSync = 'ok'; }, (err) => { lateBankSync = 'failed'; lateBankError = err; });
+                    const result = await withTimeout(bankCall, 60000, 'runBankSync', lateActualCalls);
                     
                     // Add a small delay to allow any background operations to complete
                     // This works around a race condition in Actual API where runBankSync
@@ -660,9 +604,35 @@ async function runSyncBank(server, options = {}) {
                         durationMs: accountDuration
                     });
                 } catch (bankSyncError) { // catch bankSyncError
-                    const errorMsg = bankSyncError?.message || bankSyncError?.toString() || String(bankSyncError) || 'Unknown error';
+                    // A timed-out runBankSync is still running in the one shared
+                    // session. Give it a phase timeout to finish before the next
+                    // account starts; if it does not, stop the loop. (#284)
+                    let failure = bankSyncError;
+                    if (bankSyncError instanceof PhaseTimeoutError) {
+                        sessionStuck = !(await lateActualCalls.drain(phaseTimeoutMs));
+                        // It finished during the drain and worked: the account
+                        // is fine, so do not report it failed. (#284)
+                        if (!sessionStuck && lateBankSync === 'ok') {
+                            accountsSucceeded++;
+                            succeededAccounts.push(account.name);
+                            accountTimer();
+                            serverLogger.info('Bank sync finished after its timeout; counted as succeeded', {
+                                accountId: account.id,
+                                accountName: account.name
+                            });
+                            continue;
+                        }
+                        // It finished during the drain and failed: report and
+                        // classify its real error (so a late "No new
+                        // transactions" still gets the #98 rule below), not the
+                        // timeout. (#284)
+                        if (!sessionStuck && lateBankSync === 'failed' && lateBankError) {
+                            failure = lateBankError;
+                        }
+                    }
+                    const errorMsg = failure?.message || failure?.toString() || String(failure) || 'Unknown error';
 
-                    // "No new transactions" is a healthy outcome, not a failure —
+                    // "No new transactions" is a healthy outcome, not a failure -
                     // count it as a success so a quiet linked account isn't reported
                     // as failed. (#98)
                     if (errorMsg && /no new transactions|no transactions found|nothing to sync/i.test(errorMsg)) {
@@ -680,8 +650,8 @@ async function runSyncBank(server, options = {}) {
                         accountId: account.id,
                         accountName: account.name,
                         error: errorMsg,
-                        errorCode: bankSyncError?.code || 'UNKNOWN',
-                        errorStack: bankSyncError?.stack || 'No stack trace available'
+                        errorCode: failure?.code || 'UNKNOWN',
+                        errorStack: failure?.stack || 'No stack trace available'
                     });
                     accountsFailed++;
                     failedAccounts.push({
@@ -693,46 +663,79 @@ async function runSyncBank(server, options = {}) {
                         accountId: account.id,
                         accountName: account.name,
                         error: errorMsg,
-                        errorCode: bankSyncError?.code || 'UNKNOWN',
-                        errorStack: bankSyncError?.stack || 'No stack trace available'
+                        errorCode: failure?.code || 'UNKNOWN',
+                        errorStack: failure?.stack || 'No stack trace available'
                     });
+                }
+                if (sessionStuck) {
+                    for (const skipped of accounts.slice(accountIndex + 1)) {
+                        accountsProcessed++;
+                        accountsFailed++;
+                        failedAccounts.push({
+                            name: skipped.name,
+                            error: 'Skipped: an earlier bank sync is still running in the session'
+                        });
+                    }
+                    serverLogger.error('A timed-out bank sync is still running; skipped the remaining accounts', {
+                        skipped: accounts.length - accountIndex - 1
+                    });
+                    sessionStuckAfterLoop = true;
+                    break;
                 }
             }
         } else {
             serverLogger.warn('No accounts found to sync');
         }
 
-        serverLogger.info('Starting final file sync');
-        try {
-            await api.sync();
-            serverLogger.info('Final file sync completed');
-        } catch (syncError) {
-            throw enhanceActualApiError(syncError, {
-                phase: 'sync',
-                serverUrl: url,
-                syncId,
-                isEncrypted: isEncrypted
-            }, serverLogger);
-        }
+        // A bank sync still running in the session is not given a second
+        // explicit sync or the alert reads. The finally block's drain and
+        // api.shutdown() (which syncs, then closes the budget) can still run
+        // while it is in flight: that overlap is pre-existing and remains. (#284)
+        if (sessionStuckAfterLoop) {
+            serverLogger.warn('Skipping the final file sync and schedule alerts: a timed-out bank sync is still running');
+        } else {
+            serverLogger.info('Starting final file sync');
+            try {
+                await api.sync();
+                serverLogger.info('Final file sync completed');
+            } catch (syncError) {
+                throw enhanceActualApiError(syncError, {
+                    phase: 'sync',
+                    serverUrl: url,
+                    syncId,
+                    isEncrypted: isEncrypted
+                }, serverLogger);
+            }
 
-        // Missing-payment alerts (#258): evaluated once per sync, after the
-        // final file sync so schedules and transactions are current. Only the
-        // read side (getSchedules/queries/evaluate) runs here, while the
-        // Actual session is still open; the write side (render/send/record)
-        // is run after this try/catch/finally block, once the session is
-        // closed and the sync's own durationMs is already recorded (#295
-        // review, M3 - see the call site after this function's `finally`).
-        // This is best-effort throughout: any failure is logged and never
-        // changes the sync's own result (syncStatus, syncHistory.recordSync).
-        // The step itself lives in ./lib/scheduleAlertsStep so it can be
-        // exercised directly in scheduleAlertsSync.test.js.
-        scheduleAlertsEvaluated = await maybeRunScheduleAlerts(server, {
-            api,
-            serverName: name,
-            timezone: resolveTimezone(config),
-            logger: serverLogger,
-            syncHistory
-        });
+            // Missing-payment alerts (#258): evaluated once per sync, after the
+            // final file sync so schedules and transactions are current. Only the
+            // read side (getSchedules/queries/evaluate) runs here, while the
+            // Actual session is still open; the write side (render/send/record)
+            // is run after this try/catch/finally block, once the session is
+            // closed and the sync's own durationMs is already recorded (#295
+            // review, M3 - see the call site after this function's `finally`).
+            // This is best-effort throughout: any failure is logged and never
+            // changes the sync's own result (syncStatus, syncHistory.recordSync).
+            // The step itself lives in ./lib/scheduleAlertsStep so it can be
+            // exercised directly in scheduleAlertsSync.test.js.
+            const paymentOutcome = {};
+            scheduleAlertsEvaluated = await maybeRunScheduleAlerts(server, {
+                api,
+                serverName: name,
+                timezone: resolveTimezone(config),
+                logger: serverLogger,
+                syncHistory,
+                outcome: paymentOutcome
+            });
+            // Payment snapshot for the dashboard (#260): synchronous, best-effort,
+            // never changes the sync result (see persistPaymentSnapshot).
+            persistPaymentSnapshot(server, scheduleAlertsEvaluated, {
+                syncHistory,
+                serverName: name,
+                outcome: paymentOutcome,
+                logger: serverLogger
+            });
+        }
 
         // Calculate sync duration and log performance
         let durationMs = endTimer({ 
@@ -748,6 +751,7 @@ async function runSyncBank(server, options = {}) {
         // Determine sync status based on account results
         const syncStatus = accountsFailed > 0 && accountsSucceeded === 0 ? 'failure' : 
                           accountsFailed > 0 ? 'partial' : 'success';
+        syncOutcome = syncStatus;
         const errorMessage = accountsFailed > 0 ? 
             `${accountsFailed} account(s) failed to sync: ${failedAccounts.map(a => a.error).join('; ')}` : 
             null;
@@ -847,6 +851,7 @@ async function runSyncBank(server, options = {}) {
         }
         
     } catch (error) {
+        syncOutcome = 'failure';
         let durationMs = endTimer({ error: error.message || String(error) });
         
         // Fallback to manual calculation if performance tracking is disabled
@@ -1030,6 +1035,8 @@ async function runSyncBank(server, options = {}) {
         notificationService,
         logger: serverLogger
     });
+
+    return { status: syncOutcome };
 }
 
 async function syncAllBanks() {
@@ -1090,29 +1097,14 @@ async function run() {
                 servers: serversWithSchedule.map(s => s.name) 
             });
             
-            const job = schedule.scheduleJob(scheduleStr, async () => {
+            const job = schedule.scheduleJob({ rule: scheduleStr, tz: resolveTimezone(config) }, async () => {
                 logger.info('Scheduled sync starting', { 
                     schedule: scheduleStr,
                     servers: serversWithSchedule.map(s => s.name)
                 });
                 for (const server of serversWithSchedule) {
-                    try {
-                        // Cancel any pending manual retry for this server
-                        cancelPendingRetry(server.name);
-                        
-                        await syncBank(server, { isAutomated: true, retryAttempt: 0 });
-                    } catch (error) {
-                        logger.error('Scheduled sync failed', {
-                            server: server.name,
-                            error: error.message
-                        });
-
-                        // Schedule automatic retry if enabled
-                        const syncConfig = getSyncConfig(server);
-                        if (syncConfig.autoRetry.enabled && syncConfig.autoRetry.maxAttempts > 0) {
-                            scheduleAutoRetry(server, 1, syncConfig.autoRetry.maxAttempts, syncConfig.autoRetry.delayMinutes);
-                        }
-                    }
+                    // Failure handling and the retry live in autoRetry.runAutomated (#273).
+                    await autoRetry.runAutomated(server);
                 }
                 logger.info('Scheduled sync completed', { schedule: scheduleStr });
             });
@@ -1125,9 +1117,9 @@ async function run() {
         scheduledJobsRef.length = 0; // Clear the array
         scheduledJobsRef.push(...scheduledJobs); // Add all scheduled jobs
 
-        const now = moment().tz('Europe/Madrid');
+        const now = moment().tz(resolveTimezone(config));
         logger.info('Sync service initialized', {
-            timezone: 'Europe/Madrid',
+            timezone: resolveTimezone(config),
             currentTime: now.format(),
             scheduleCount: scheduledJobs.length,
             schedules: scheduledJobs.map(sj => ({
@@ -1164,8 +1156,10 @@ async function run() {
                     `  • ${sj.servers.map(s => s.name).join(', ')}\n    ${cronstrue.toString(sj.schedule)} (${sj.schedule})`
                 ).join('\n');
                 const nextSync = scheduledJobs[0]?.job.nextInvocation();
-                const nextSyncStr = nextSync ? nextSync.toLocaleString('en-US', { 
-                    timeZone: 'Europe/Madrid',
+                // node-schedule hands back a CronDate whose toLocaleString ignores its
+                // options, so convert to a real Date first (#266).
+                const nextSyncStr = nextSync ? (nextSync.toDate ? nextSync.toDate() : nextSync).toLocaleString('en-US', { 
+                    timeZone: resolveTimezone(config),
                     dateStyle: 'short',
                     timeStyle: 'short'
                 }) : 'N/A';
@@ -1195,38 +1189,46 @@ async function run() {
     }
 }
 
-// Graceful shutdown handler
-process.on('SIGTERM', async () => {
-    logger.info('SIGTERM received, shutting down gracefully...');
-    try {
-        logger.info('Cancelling all pending auto-retries');
-        for (const serverName of activeRetryTimers.keys()) {
-            cancelPendingRetry(serverName);
-        }
-        
-        if (telegramBot) {
-            telegramBot.stop();
-        }
-        await healthCheck.stop();
-        syncHistory.close();
-        process.exit(0);
-    } catch (error) {
-        logger.error('Error during shutdown', { error: error.message });
-        process.exit(1);
-    }
-});
+// Graceful shutdown (#273). A sync in flight holds the process-wide Actual
+// session; exiting under it leaves a half-written budget in dataDir. The gate
+// refuses new syncs, then we wait for the running one, but only for
+// SHUTDOWN_WAIT_MS: a hung sync must not make the container ignore SIGTERM.
+//
+// Default 8000 ms, overridable with the SHUTDOWN_WAIT_MS env var (see
+// resolveShutdownWaitMs). A sync cut at the deadline is not "finished
+// cleanly": the fallback closes the session under it, so an operator with a
+// longer stop_grace_period should raise the wait to match.
+const SHUTDOWN_WAIT_MS = resolveShutdownWaitMs();
+let shuttingDown = false;
 
-process.on('SIGINT', async () => {
-    logger.info('SIGINT received, shutting down gracefully...');
+async function gracefulShutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(`${signal} received, shutting down gracefully...`);
     try {
         logger.info('Cancelling all pending auto-retries');
-        for (const serverName of activeRetryTimers.keys()) {
-            cancelPendingRetry(serverName);
-        }
-        
+        autoRetry.cancelAll();
+
         if (telegramBot) {
             telegramBot.stop();
         }
+
+        // Refuse syncs that would start after the signal (a serial cron loop,
+        // a dashboard request) and stop the cron jobs from firing new ones.
+        shutdownGate.close();
+        scheduledJobsRef.forEach(sj => { try { sj.job.cancel(); } catch (e) { /* already gone */ } });
+
+        if (syncQueue.running() || syncQueue.size() > 0) {
+            logger.info('Waiting for the running sync to finish', { timeoutMs: SHUTDOWN_WAIT_MS });
+            const finished = await shutdownGate.drain(SHUTDOWN_WAIT_MS);
+            if (!finished) {
+                logger.warn('Sync still running after the shutdown wait; closing the Actual session');
+                try { await actual.shutdown(); } catch (shutdownError) {
+                    logger.error('Error closing the Actual session', { error: shutdownError?.message });
+                }
+            }
+        }
+
         await healthCheck.stop();
         syncHistory.close();
         process.exit(0);
@@ -1234,7 +1236,10 @@ process.on('SIGINT', async () => {
         logger.error('Error during shutdown', { error: error.message });
         process.exit(1);
     }
-});
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {

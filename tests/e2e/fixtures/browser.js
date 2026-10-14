@@ -14,14 +14,14 @@
  * `require` shim satisfies the former and lets the latter's own try/catch
  * absorb the rest, so the unmodified source runs as-is in the page.
  *
- * Network is locked down: the Chart.js CDN URL the dashboard hardcodes is
- * intercepted and served from the local dependency (pinned to the same
- * version), and every other cross-origin request is aborted and recorded, so
- * a spec that accidentally reaches the network fails loudly instead of being
- * silently slow or flaky.
+ * Network is locked down: every request outside the fixture server is aborted
+ * and recorded, so a spec that accidentally reaches the network fails loudly
+ * instead of being silently slow or flaky. Chart.js is served by the
+ * dashboard itself from its npm dependency (#244), so nothing is intercepted.
  */
 
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
 const { startFixtureServer, FIXTURE_NOW } = require('./index');
 
@@ -34,17 +34,6 @@ function loadPuppeteer() {
 }
 
 const ARTIFACTS_DIR = path.join(__dirname, '..', 'artifacts');
-
-// The exact CDN URL src/services/dashboard.html hardcodes for chart.js@4.4.0.
-// That version ships dist/chart.umd.js only (no .min.js), so the request is
-// served with the unminified bundle. (#263)
-const CHART_JS_CDN_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
-const CHART_JS_PATH = path.join(
-  path.dirname(path.dirname(require.resolve('chart.js'))),
-  'dist',
-  'chart.umd.js'
-);
-const CHART_JS_SOURCE = fs.readFileSync(CHART_JS_PATH, 'utf8');
 
 const FAKE_TIMERS_SOURCE = fs.readFileSync(
   require.resolve('@sinonjs/fake-timers/src/fake-timers-src.js'),
@@ -94,8 +83,7 @@ async function closeBrowser() {
  * Open a page configured for deterministic, network-locked e2e runs.
  * @param {import('puppeteer').Browser} browser
  * @param {{ baseUrl?: string, now?: number }} [options] - `baseUrl` is the
- *   fixture server origin; any request outside it (other than the pinned
- *   Chart.js CDN URL) is aborted and recorded on `page.__externalRequests`.
+ *   fixture server origin; any request outside it is aborted and recorded on `page.__externalRequests`.
  */
 async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
   const page = await browser.newPage();
@@ -111,12 +99,45 @@ async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
   await page.evaluateOnNewDocument(fakeTimersInjectionScript(now));
 
   const externalRequests = [];
+  // Per-page request overrides (#341). openPage registers the ONE request
+  // handler that resolves every request, so a spec that adds its own handler
+  // and calls respond() or abort() throws "Request is already handled". A spec
+  // registers an override here instead; this handler asks the first matching
+  // override to resolve the request (respond, abort or continue), and falls
+  // through to the normal handling when none matches. Overrides are checked in
+  // registration order.
+  const overrides = [];
+  page.overrideRoute = (urlSubstring, handler) => {
+    const entry = { urlSubstring, handler };
+    overrides.push(entry);
+    return () => {
+      const i = overrides.indexOf(entry);
+      if (i !== -1) overrides.splice(i, 1);
+    };
+  };
+  // Record every CSP violation on every page, registered before any page
+  // script runs so none is missed. withFixture fails on a leftover one. (#289)
+  // Collected on the Node side (page.__cspViolations) because window state is
+  // per document: a violation followed by another page.goto would be lost with
+  // the old document. The in-page window.__cspViolations stays for specs that
+  // waitForFunction on it. (#289)
+  page.__cspViolations = [];
+  await page.exposeFunction('__reportCsp', (v) => { page.__cspViolations.push(v); });
+  await page.evaluateOnNewDocument(() => {
+    window.__cspViolations = [];
+    document.addEventListener('securitypolicyviolation', (e) => {
+      const v = `${e.violatedDirective} blocked ${e.blockedURI || e.sample || 'inline'}`;
+      window.__cspViolations.push(v);
+      if (typeof window.__reportCsp === 'function') window.__reportCsp(v);
+    });
+  });
   await page.setRequestInterception(true);
   page.on('request', (req) => {
     const url = req.url();
 
-    if (url === CHART_JS_CDN_URL) {
-      req.respond({ status: 200, contentType: 'application/javascript', body: CHART_JS_SOURCE });
+    const override = overrides.find((o) => url.includes(o.urlSubstring));
+    if (override) {
+      Promise.resolve(override.handler(req)).catch(() => {});
       return;
     }
 
@@ -136,8 +157,7 @@ async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
       return;
     }
 
-    // A spec should only ever talk to its own fixture server and the pinned
-    // Chart.js file above. Anything else (a real CDN, a typo'd URL, a route
+    // A spec should only ever talk to its own fixture server. Anything else (a real CDN, a typo'd URL, a route
     // that changed) is aborted and recorded so the spec fails instead of
     // hanging or quietly depending on the network. (#263)
     externalRequests.push(url);
@@ -155,10 +175,9 @@ function sanitizeName(name) {
 
 /**
  * Switch the dashboard to a tab by its visible label (e.g. "History"). The
- * dashboard's switchTab() reads the global `event` its onclick attribute
- * provides, so the button is clicked through the DOM rather than calling
- * switchTab() directly from page.evaluate, which would leave `event` unset.
- * (#263)
+ * button is clicked through the DOM so the dashboard's delegated click
+ * listener (data-action="switchTab") runs exactly as it does for a user.
+ * (#263, #243)
  * @param {import('puppeteer').Page} page
  * @param {string} label - text the tab button contains, e.g. "History"
  */
@@ -235,21 +254,54 @@ async function saveFailureArtifacts({ page, fixture, testName }) {
  */
 async function withFixture(stateName, fn, options = {}) {
   const { fixtureOverrides, testName } = options;
-  const fixture = await startFixtureServer(stateName, fixtureOverrides);
-  const browser = await launchBrowser();
-  const page = await openPage(browser, { baseUrl: fixture.url, now: fixture.now });
   const name = testName
     || (typeof expect !== 'undefined' && expect.getState().currentTestName)
     || stateName;
 
+  // Everything that can fail sits inside the try, with the handles declared
+  // first, so a launchBrowser/openPage failure still stops the fixture server
+  // and its heartbeat instead of leaking them. (#289)
+  let fixture;
+  let page;
   try {
-    return await fn({ page, fixture });
+    fixture = await startFixtureServer(stateName, fixtureOverrides);
+    const browser = await launchBrowser();
+    page = await openPage(browser, { baseUrl: fixture.url, now: fixture.now });
+
+    const result = await fn({ page, fixture });
+
+    // A spec must only talk to its own fixture server. Two layers catch a
+    // request that leaves it: (1) openPage's interception aborts and records
+    // any foreign request (pages without a CSP, e.g. about:blank), and (2) on
+    // dashboard pages the CSP (default-src/connect-src 'self') makes Chrome
+    // refuse the request before interception sees it, so it shows up as a
+    // recorded securitypolicyviolation instead. Both fail the spec here. A spec
+    // that expects either can assert and clear the list (page.__externalRequests
+    // or page.__cspViolations) before returning. (#289)
+    if (page.__externalRequests.length) {
+      throw new Error(
+        `withFixture: ${page.__externalRequests.length} request(s) left the fixture server and were blocked:\n`
+        + page.__externalRequests.map((u) => `  ${u}`).join('\n')
+      );
+    }
+    // The violation report reaches Node through the exposed binding, which is
+    // asynchronous: one page round trip lets a report from fn's last step land
+    // before the list is read. Without it a spec ending on the violation passes.
+    if (!page.isClosed()) await page.evaluate(() => new Promise((r) => setTimeout(r, 0))).catch(() => {});
+    const violations = page.__cspViolations;
+    if (violations.length) {
+      throw new Error(
+        `withFixture: ${violations.length} CSP violation(s) were recorded on the page:\n`
+        + violations.map((v) => `  ${v}`).join('\n')
+      );
+    }
+    return result;
   } catch (err) {
     await saveFailureArtifacts({ page, fixture, testName: name });
     throw err;
   } finally {
-    await page.close().catch(() => {});
-    await fixture.close().catch(() => {});
+    if (page) await page.close().catch(() => {});
+    if (fixture) await fixture.close().catch(() => {});
   }
 }
 
@@ -269,7 +321,41 @@ async function withDashboard(stateName, fn, options = {}) {
   }, rest);
 }
 
+/**
+ * Send a raw Node http request to the fixture server with caller-chosen
+ * headers. A browser page cannot be made to send a foreign Origin (it is a
+ * forbidden header, and openPage() aborts every other origin), so the
+ * cross-origin specs (#259) go through Node instead.
+ * @param {string} baseUrl - fixture.url
+ * @param {{ method?: string, path: string, headers?: Object, body?: string }} options
+ * @returns {Promise<{ status: number, headers: Object, body: any }>}
+ */
+function rawRequest(baseUrl, { method = 'GET', path: reqPath, headers = {}, body } = {}) {
+  const target = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: target.hostname,
+      port: target.port,
+      path: reqPath,
+      method,
+      headers: body === undefined ? headers : { 'Content-Length': Buffer.byteLength(body), ...headers }
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        let parsed = data;
+        try { parsed = JSON.parse(data); } catch { /* not JSON */ }
+        resolve({ status: res.statusCode, headers: res.headers, body: parsed });
+      });
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
 module.exports = {
+  rawRequest,
   launchBrowser,
   closeBrowser,
   openPage,

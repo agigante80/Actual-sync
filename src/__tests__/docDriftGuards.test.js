@@ -438,7 +438,8 @@ describe('every notification channel is testable from the dashboard (#182)', () 
     // reported symptom exactly as it was.
     describe('the dashboard UI offers a button per channel', () => {
         const DASHBOARD = read('src/services/dashboard.html');
-        const buttons = [...DASHBOARD.matchAll(/testNotification\('([a-z]+)'\)/g)].map((m) => m[1]);
+        // Buttons are wired by data attributes, not inline onclick (#243).
+        const buttons = [...DASHBOARD.matchAll(/data-action="testNotification"\s+data-arg="([a-z]+)"/g)].map((m) => m[1]);
 
         it('found the test-notification buttons at all', () => {
             expect(buttons.length).toBeGreaterThanOrEqual(6);
@@ -470,7 +471,7 @@ describe('every notification channel is testable from the dashboard (#182)', () 
  * forever and nobody notices, because nothing errors.
  */
 describe('every dashboard loader is actually invoked (#188)', () => {
-    const DASHBOARD = read('src/services/dashboard.html');
+    const DASHBOARD = read('src/services/dashboard.js');
     const defined = [...DASHBOARD.matchAll(/async function (load[A-Za-z0-9_]*)\s*\(/g)].map((m) => m[1]);
 
     it('found the loaders', () => {
