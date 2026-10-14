@@ -238,21 +238,39 @@ async function saveFailureArtifacts({ page, fixture, testName }) {
  */
 async function withFixture(stateName, fn, options = {}) {
   const { fixtureOverrides, testName } = options;
-  const fixture = await startFixtureServer(stateName, fixtureOverrides);
-  const browser = await launchBrowser();
-  const page = await openPage(browser, { baseUrl: fixture.url, now: fixture.now });
   const name = testName
     || (typeof expect !== 'undefined' && expect.getState().currentTestName)
     || stateName;
 
+  // Everything that can fail sits inside the try, with the handles declared
+  // first, so a launchBrowser/openPage failure still stops the fixture server
+  // and its heartbeat instead of leaking them. (#289)
+  let fixture;
+  let page;
   try {
-    return await fn({ page, fixture });
+    fixture = await startFixtureServer(stateName, fixtureOverrides);
+    const browser = await launchBrowser();
+    page = await openPage(browser, { baseUrl: fixture.url, now: fixture.now });
+
+    const result = await fn({ page, fixture });
+
+    // openPage aborts and records every request outside the fixture server;
+    // without this check a spec that quietly reaches for the network passes.
+    // A spec that expects blocked requests can assert and clear the list
+    // itself before returning. (#289)
+    if (page.__externalRequests.length) {
+      throw new Error(
+        `withFixture: ${page.__externalRequests.length} request(s) left the fixture server and were blocked:\n`
+        + page.__externalRequests.map((u) => `  ${u}`).join('\n')
+      );
+    }
+    return result;
   } catch (err) {
     await saveFailureArtifacts({ page, fixture, testName: name });
     throw err;
   } finally {
-    await page.close().catch(() => {});
-    await fixture.close().catch(() => {});
+    if (page) await page.close().catch(() => {});
+    if (fixture) await fixture.close().catch(() => {});
   }
 }
 
