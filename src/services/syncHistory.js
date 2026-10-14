@@ -397,6 +397,33 @@ class SyncHistoryService {
   }
 
   /**
+   * Every `(scheduleId, occurrenceDate)` that has a `missing` row for one
+   * alert on or after `sinceDate` (#356). The caller (deriveResolvedEvents)
+   * compares the schedule ids with the ones Actual still has and closes the
+   * vanished ones with a `resolved`; the ledger is the only place a deleted
+   * schedule is still remembered.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @param {string} key.alertId
+   * @param {string} key.sinceDate - `YYYY-MM-DD`, inclusive lower bound on occurrence_date
+   * @returns {Promise<Array<{scheduleId:string, occurrenceDate:string}>>}
+   */
+  async listMissingScheduleAlertSchedules({ server, alertId, sinceDate }) {
+    try {
+      return this.db.prepare(`
+        SELECT DISTINCT schedule_id AS scheduleId, occurrence_date AS occurrenceDate FROM schedule_alerts
+        WHERE server = ? AND alert_id = ? AND event = 'missing'
+          AND schedule_id IS NOT NULL AND occurrence_date IS NOT NULL AND occurrence_date >= ?
+        ORDER BY schedule_id, occurrence_date
+      `).all(server, alertId, sinceDate);
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts missing schedules', { error: error.message, server, alertId });
+      throw error;
+    }
+  }
+
+  /**
    * Remembered skip decisions for one server (#297 F1): every `skipped` row,
    * as `{scheduleId, occurrenceDate}`. `evaluate()` takes these back in as
    * `skips` so an occurrence inferred as skipped stays skipped after a later

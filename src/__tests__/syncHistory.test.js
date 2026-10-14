@@ -741,6 +741,25 @@ describe('SyncHistoryService', () => {
       expect(await syncHistory.findLatestScheduleAlert(key({ scheduleId: 's1', occurrenceDate: '2026-01-05' }))).toBeNull();
     });
 
+    test('listMissingScheduleAlertSchedules returns distinct missing (scheduleId, occurrence) pairs for one alert since a date (#356)', async () => {
+      const rec = (o) => syncHistory.recordScheduleAlert({ delivery: 'sent', ...key(), ...o });
+      await rec({});
+      await rec({}); // a reminder: same pair, listed once
+      await rec({ scheduleId: 's2', occurrenceDate: '2026-01-06' });
+      await rec({ occurrenceDate: '2025-01-01' }); // before sinceDate
+      await rec({ event: 'resolved' }); // not a missing row
+      await rec({ alertId: 'salary' }); // another alert
+      await rec({ server: 'Other' }); // another server
+      await rec({ scheduleId: null, occurrenceDate: null, event: 'missing' }); // no schedule to compare
+      const rows = await syncHistory.listMissingScheduleAlertSchedules({
+        server: key().server, alertId: key().alertId, sinceDate: '2026-01-01'
+      });
+      expect(rows).toEqual([
+        { scheduleId: key().scheduleId, occurrenceDate: key().occurrenceDate },
+        { scheduleId: 's2', occurrenceDate: '2026-01-06' }
+      ]);
+    });
+
     test('each key field isolates the lookup (server, alertId, scheduleId, occurrenceDate, event)', async () => {
       await syncHistory.recordScheduleAlert({ ...key(), delivery: 'sent' });
       expect(await syncHistory.findLatestScheduleAlert(key({ server: 'Other' }))).toBeNull();
