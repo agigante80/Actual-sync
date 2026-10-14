@@ -860,7 +860,8 @@ describe('deliver: a failing ledger lookup withholds only that event (#297 round
 describe('deliver: digest guards each destination like immediate mode (#332)', () => {
   // A transient ledger error (for example SQLITE_BUSY) on one channel must
   // withhold only that channel, never reject deliver() and starve the others.
-  function setup(server) {
+  const SALARY = { id: 'salary', schedule: 'Salary' };
+  function setup(server, alerts = [{ id: 'rent', schedule: 'Rent', channels: ['slack', 'discord'] }]) {
     const history = makeFakeHistory();
     const sender = makeFakeSender({
       webhooks: {
@@ -870,9 +871,11 @@ describe('deliver: digest guards each destination like immediate mode (#332)', (
     });
     const warnings = [];
     const logger = { warn: (message, meta) => warnings.push({ message, meta }) };
-    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['slack', 'discord'] }] });
-    const run = () => deliver([missingEvent()], {
-      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, server, rules,
+    const rules = getRules({ digest: true, alerts });
+    const events = alerts.map((a) => missingEvent({ alertId: a.id, scheduleId: `s-${a.id}` }));
+    const evaluations = alerts.map((a) => rentEvaluation({ alertId: a.id, scheduleId: `s-${a.id}`, name: a.schedule }));
+    const run = () => deliver(events, {
+      evaluations, ruleState: enabledState, history, sender, server, rules,
       timezone: 'UTC', logger, now: '2026-01-10'
     });
     return { history, sender, warnings, run };
@@ -904,7 +907,10 @@ describe('deliver: digest guards each destination like immediate mode (#332)', (
   });
 
   test('recordScheduleAlert throwing after a send does not stop the other channels, and WARNs that the row may be resent', async () => {
-    const { history, sender, warnings, run } = setup('guard-332-record');
+    const { history, sender, warnings, run } = setup('guard-332-record', [
+      { id: 'rent', schedule: 'Rent', channels: ['slack'] },
+      { id: 'salary', schedule: 'Salary', channels: ['discord'] }
+    ]);
     const realRecord = history.recordScheduleAlert.bind(history);
     history.recordScheduleAlert = async (row) => {
       if (String(row.channel).startsWith('slack')) throw new Error('SQLITE_BUSY');
@@ -912,12 +918,31 @@ describe('deliver: digest guards each destination like immediate mode (#332)', (
     };
     const result = await run();
     expect(sender.calls).toHaveLength(2); // both channels were sent to
-    expect(result).toEqual({ sent: 1, skipped: 0 });
+    expect(result).toEqual({ sent: 1, skipped: 1 }); // the unrecorded slack item is not counted as sent
     expect(history.rows.map((r) => r.channel.split(':')[0])).toEqual(['discord']);
     const warn = warnings.find((w) => /ledger write failed/i.test(w.message));
     expect(warn).toBeDefined();
     expect(warn.message).toMatch(/resent next sync/i);
     expect(warn.meta).toMatchObject({ server: 'guard-332-record', channel: 'slack', alertId: 'rent', error: 'SQLITE_BUSY' });
+  });
+
+  test('a read failing on a later item withholds the whole channel instead of sending a partial digest', async () => {
+    const { history, sender, run } = setup('guard-332-partial', [
+      { id: 'rent', schedule: 'Rent', channels: ['discord'] },
+      { ...SALARY, channels: ['discord'] }
+    ]);
+    const realFind = history.findLatestScheduleAlert.bind(history);
+    let discordReads = 0;
+    history.findLatestScheduleAlert = async (key) => {
+      // 2 mayRecord reads, then the digest reads item 1 (3rd) and item 2 (4th).
+      if (String(key.channel).startsWith('discord') && (discordReads += 1) === 4) throw new Error('SQLITE_BUSY');
+      return realFind(key);
+    };
+    const result = await run();
+    expect(discordReads).toBeGreaterThanOrEqual(4);
+    expect(sender.calls).toHaveLength(0);
+    expect(history.rows).toHaveLength(0);
+    expect(result).toEqual({ sent: 0, skipped: 2 });
   });
 });
 
