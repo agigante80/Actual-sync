@@ -3316,6 +3316,22 @@ module.exports = [
         tests: "paymentRulesRoute"
     },
     {
+        id: "372-reset-all-keeps-orphan-rules", ticket: '#372',
+        desc: "reset all keeps the dashboard rules of servers removed from the config",
+        file: "src/services/healthCheck.js",
+        anchor: "          await this.syncHistory.resetAllHistory({ remoteAddr: req.ip, configuredServers });",
+        mutant: "          await this.syncHistory.resetAllHistory({ remoteAddr: req.ip });",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "372-reset-all-deletes-configured-rules", ticket: '#372',
+        desc: "reset all deletes the dashboard rules of configured servers too",
+        file: "src/services/syncHistory.js",
+        anchor: "        'DELETE FROM payment_alert_rule WHERE server NOT IN (SELECT value FROM json_each(?))'",
+        mutant: "        'DELETE FROM payment_alert_rule WHERE ? IS NOT NULL'",
+        tests: "paymentRulesRoute"
+    },
+    {
         id: "262-reset-server-deletes-rules", ticket: '#262',
         desc: "a per-server history reset also deletes the dashboard payment rules",
         file: "src/services/syncHistory.js",
