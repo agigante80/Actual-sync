@@ -3288,6 +3288,22 @@ module.exports = [
         tests: "configLoader"
     },
     {
+        id: "262-r2-block-unconfigured-channel-silent", ticket: '#262',
+        desc: "a block template only an unconfigured channel rejects passes startup with no warning",
+        file: "src/lib/configLoader.js",
+        anchor: "                if (allChannels.code === 'invalid_template') {",
+        mutant: "                if (false) {",
+        tests: "configLoader"
+    },
+    {
+        id: "262-r2-rule-only-server-not-orphaned", ticket: '#262',
+        desc: "a removed server with dashboard rules but no sync rows is missing from the orphaned list",
+        file: "src/services/syncHistory.js",
+        anchor: "          SELECT DISTINCT server, 0, NULL FROM payment_alert_rule",
+        mutant: "          SELECT DISTINCT server, 0, NULL FROM payment_alert_rule WHERE 0",
+        tests: "paymentRulesRoute"
+    },
+    {
         id: "262-r1-orphan-rules-kept", ticket: '#262',
         desc: "a reset of a server removed from the config keeps its dashboard rules",
         file: "src/services/healthCheck.js",

@@ -11,15 +11,18 @@
  *   channels, and a channel restriction that resolves to nothing is an error.
  *   The JSON schema has already been applied to the whole config, so
  *   `skipSchema: true` skips it here.
- * - `dashboard: true`: also runs the schema check on this one entry, rejects
- *   `enabled`, requires `id`, and fails with `no_configured_destination` when
- *   the rule's channels resolve to zero destinations (a rule that could never
- *   send anything).
+ * - `dashboard: true` (save and preview): also runs the schema check on this
+ *   one entry, rejects `enabled`, requires `id`, and fails with
+ *   `no_configured_destination` when the rule's channels resolve to zero
+ *   destinations (a rule that could never send anything). Templates are
+ *   compiled against every channel the rule requests, as the sync does
+ *   (#262 review F1).
  * - `schemaOnly: true`: the schema check and a template compile only, with no
  *   channel resolution. Templates are compiled against every mode the rule's
- *   own `channels` (or every channel) could use. This is the mode of the sync
- *   step and of the rule list, so the list shows exactly what the sync will
- *   skip.
+ *   own `channels` (or every channel) could use. The sync step uses it, with
+ *   `dashboard`, for dashboard rules; the rule list uses the same mode as the
+ *   sync for dashboard rules and the startup mode for config rules, so the
+ *   list shows exactly what the sync will skip.
  */
 'use strict';
 

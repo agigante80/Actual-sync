@@ -475,6 +475,14 @@ describe('history reset and dashboard rules (#262 review L1)', () => {
     expect(h.state.history.countRules('Main')).toBe(1);
   });
 
+  test('a removed server with rules but no sync rows is listed as orphaned (round 2 L1)', async () => {
+    await h.boot();
+    h.state.history.insertRule('Old', 'moto', RENT);
+    const res = await call('GET', '/api/dashboard/orphaned-servers');
+    expect(res.status).toBe(200);
+    expect(res.json.orphaned).toEqual([{ server_name: 'Old', sync_count: 0, last_sync: null }]);
+  });
+
   test('a server removed from the config loses its rules on reset, counted in the audit', async () => {
     await h.boot();
     h.state.history.insertRule('Old', 'moto', RENT);

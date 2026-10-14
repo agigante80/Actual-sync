@@ -1091,11 +1091,16 @@ class SyncHistoryService {
   getAllServerNames() {
     try {
       const stmt = this.db.prepare(`
-        SELECT 
-          server_name,
-          COUNT(*) as sync_count,
-          MAX(timestamp) as last_sync
-        FROM sync_history
+        SELECT server_name, SUM(n) as sync_count, MAX(last_sync) as last_sync
+        FROM (
+          SELECT server_name, COUNT(*) as n, MAX(timestamp) as last_sync
+          FROM sync_history
+          GROUP BY server_name
+          -- #262 round 2 L1: a server with dashboard rules but no sync rows
+          -- must still be listed, or its rules can never be erased.
+          UNION ALL
+          SELECT DISTINCT server, 0, NULL FROM payment_alert_rule
+        )
         GROUP BY server_name
         ORDER BY server_name
       `);
