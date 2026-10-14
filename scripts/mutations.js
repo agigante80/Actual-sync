@@ -2499,6 +2499,30 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
+        id: '296-sign-zero-amount-rejects-all', ticket: '#296',
+        desc: 'a zero-amount schedule drops every non-zero transaction (wrongAmount becomes missing)',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  return bounds.some((b) => b === 0 || Math.sign(txAmount) === Math.sign(b));",
+        mutant: "  return bounds.some((b) => Math.sign(txAmount) === Math.sign(b));",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-range-unchecked', ticket: '#296',
+        desc: 'a range schedule skips the sign check, so a positive refund is taken as late or wrongAmount',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1, scheduleAmount.num2] : [scheduleAmount];",
+        mutant: "  if (typeof scheduleAmount === 'object') return true;\n  const bounds = [scheduleAmount];",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-range-first-bound-only', ticket: '#296',
+        desc: 'a range spanning zero only honours its first bound, rejecting a sign matching the other bound',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1, scheduleAmount.num2] : [scheduleAmount];",
+        mutant: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1] : [scheduleAmount];",
+        tests: 'scheduleAlerts.test'
+    },
+    {
         id: '296-never-synced-wording', ticket: '#296',
         desc: 'a never-synced account renders "has not synced since  (deadline" with an empty date',
         file: 'src/lib/scheduleAlertDelivery.js',

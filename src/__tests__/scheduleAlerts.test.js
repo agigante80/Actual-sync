@@ -1238,3 +1238,33 @@ describe('#296 round 2 L1: sign check inside the tolerance comparison', () => {
     expect(evaluations.find((e) => e.name === 'Rent').state).toBe('wrongAmount');
   });
 });
+
+describe('#296 round 2: sign compatibility edge cases', () => {
+  const tx = (id, amount, date, schedule = null) => ({ id, account: 'acc1', payee: 'pay1', amount, date, schedule });
+  const run = (scheduleOverrides, transactions, now, ruleOverrides = {}) => evaluate({
+    rules: rentRule(ruleOverrides),
+    schedules: [rentSchedule(scheduleOverrides)],
+    transactions,
+    accounts: [account({ last_sync: epochMs(now) })],
+    now,
+    timezone: TZ
+  });
+
+  test('M1: a zero-amount schedule still reports wrongAmount for a non-zero unlinked payment', () => {
+    for (const amountOp of ['is', 'isapprox']) {
+      const { evaluations } = run({ amount: 0, amountOp, date: '2026-01-05' }, [tx('t1', -1234, '2026-01-05')], '2026-01-10');
+      expect(evaluations[0].state).toBe('wrongAmount');
+    }
+  });
+
+  test('M2: a range of negative bounds ignores an unlinked positive refund (day 10 and day 5)', () => {
+    const range = { amountOp: 'isbetween', amount: { num1: -5000, num2: -7000 }, date: '2026-01-05' };
+    expect(run(range, [tx('t1', 6000, '2026-01-10')], '2026-01-14').evaluations[0].state).toBe('missing');
+    expect(run(range, [tx('t1', 6000, '2026-01-05')], '2026-01-10').evaluations[0].state).toBe('missing');
+  });
+
+  test('M2: a range spanning zero still matches a positive amount inside it', () => {
+    const range = { amountOp: 'isbetween', amount: { num1: -5000, num2: 5000 }, date: '2026-01-05' };
+    expect(run(range, [tx('t1', 3000, '2026-01-05')], '2026-01-10').evaluations[0].state).toBe('received');
+  });
+});
