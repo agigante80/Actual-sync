@@ -3933,5 +3933,109 @@ module.exports = [
         anchor: "const say = (text) => { if (where === 'preview') out.preview = text; else out.banner = text; };",
         mutant: "const say = (text) => { out.banner = text; };",
         tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-m1-stored-channels", ticket: '#268',
+        desc: 'a stored channels list is dropped again when every box is ticked',
+        file: 'src/services/dashboard.js',
+        anchor: 'if (Array.isArray(stored.channels)) {',
+        mutant: 'if (false) {',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-m1-unchanged-boxes", ticket: '#268',
+        desc: 'untouched boxes no longer keep the stored list with its unavailable entries',
+        file: 'src/services/dashboard.js',
+        anchor: 'body.channels = unchanged ? stored.channels.slice() : all.filter((c) => picked.includes(c));',
+        mutant: 'body.channels = all.filter((c) => picked.includes(c));',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-m1-unchanged-compare", ticket: '#268',
+        desc: 'changed boxes are treated as unchanged',
+        file: 'src/services/dashboard.js',
+        anchor: 'const unchanged = initial.length === picked.length && initial.every((c) => picked.includes(c));',
+        mutant: 'const unchanged = initial.every((c) => picked.includes(c));',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-m2-errors-shown", ticket: '#268',
+        desc: 'Save stays enabled while an error is shown',
+        file: 'src/services/dashboard.js',
+        anchor: 'const shown = Object.values(ed.errors).some(Boolean);',
+        mutant: 'const shown = false;',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-m2-invalid-blocks", ticket: '#268',
+        desc: 'Save ignores fields the server marked invalid',
+        file: 'src/services/dashboard.js',
+        anchor: 'Object.keys(ed.invalid).length === 0 && !shown',
+        mutant: '!shown',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-m2-save-guard", ticket: '#268',
+        desc: 'savePaymentRule no longer uses the shared Save gate',
+        file: 'src/services/dashboard.js',
+        anchor: 'if (!editorCanSave(ed, false, true, {})) return;',
+        mutant: 'if (Object.keys(ed.invalid).length > 0) return;',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-l1-send-guard", ticket: '#268',
+        desc: 'a second test send can start while one is in flight',
+        file: 'src/services/dashboard.js',
+        anchor: '    if (ed.sending) return false;\n',
+        mutant: '    if (false) return false;\n',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-l1-send-flag", ticket: '#268',
+        desc: 'the in-flight flag is never set',
+        file: 'src/services/dashboard.js',
+        anchor: '    ed.sending = true;\n    return true;',
+        mutant: '    return true;',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-l1-send-disabled", ticket: '#268',
+        desc: 'the Send button stays enabled while sending',
+        file: 'src/services/dashboard.js',
+        anchor: "flag('ae-send', !ro && writes && !ed.busy && !ed.sending && !ed.loading, !ro);",
+        mutant: "flag('ae-send', !ro && writes && !ed.busy && !ed.loading, !ro);",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-l2-focus-action", ticket: '#268',
+        desc: 'after saving an edit focus goes to Add alert instead of the row Edit button',
+        file: 'src/services/dashboard.js',
+        anchor: "editorRowFocusKey(ed.server, result.json.rule.id, 'dashboard', 'editPaymentRule');",
+        mutant: "editorRowFocusKey(ed.server, result.json.rule.id, 'dashboard', 'edit');",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-l2-row-key", ticket: '#268',
+        desc: 'the row button focus key no longer uses the shared builder format',
+        file: 'src/services/dashboard.js',
+        anchor: 'return `ed:${JSON.stringify([server, alertId, source, action])}`;',
+        mutant: 'return `ed:${JSON.stringify([server, alertId, action])}`;',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-l3-kind", ticket: '#268',
+        desc: 'the superseded twin row is counted in Applies to N schedules',
+        file: 'src/services/dashboard.js',
+        anchor: "r.kind === 'evaluated' && r.item.alertId === alertId",
+        mutant: 'r.item.alertId === alertId',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: "268-r1-l3-source", ticket: '#268',
+        desc: 'rows of another source with the same id are counted',
+        file: 'src/services/dashboard.js',
+        anchor: ' && r.item.source === source).length;',
+        mutant: ' ).length;',
+        tests: 'dashboardPayments'
     }
 ];

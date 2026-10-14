@@ -1730,8 +1730,11 @@ function paymentRuleState(item) {
     return item.ruleState || { enabled: true, mutedUntil: null, reason: null, lockedByConfig: false, muteEndDue: false };
 }
 
-function paymentAlertCount(group, alertId) {
-    return group.items.filter((i) => i.alertId === alertId).length;
+// Only evaluated rows count: the synthetic "Replaced by config.json" row of a superseded
+// twin is not a schedule the rule applies to, and it has a different source.
+function paymentAlertCount(group, alertId, source) {
+    const rows = group.rows || group.items.map((item) => ({ item, kind: 'evaluated' }));
+    return rows.filter((r) => r.kind === 'evaluated' && r.item.alertId === alertId && r.item.source === source).length;
 }
 
 function setPaymentControlMessage(text) {
@@ -1808,12 +1811,17 @@ function appendMuteControls(wrap, group, item) {
     } else if (!st.lockedByConfig) {
         wrap.appendChild(paymentControlButton('Mute...', 'openPaymentMute', group, item, 'mute'));
     }
-    const n = paymentAlertCount(group, item.alertId);
+    const n = paymentAlertCount(group, item.alertId, item.source);
     if (n > 1) wrap.appendChild(payEl('span', 'pay-applies', `Applies to ${n} schedules`));
 }
 
 // Edit, Delete, View and Copy as JSON (#268), per rule. Add/Edit/Delete follow the
 // same writes switch as the #261 controls; View and Copy always work.
+// The data-focus key of a row's editor button. Saving an edit returns focus to the same key.
+function editorRowFocusKey(server, alertId, source, action) {
+    return `ed:${JSON.stringify([server, alertId, source, action])}`;
+}
+
 function editorRowButton(label, action, group, row, writes) {
     const btn = payEl('button', 'pay-ctl', label);
     btn.type = 'button';
@@ -1821,7 +1829,7 @@ function editorRowButton(label, action, group, row, writes) {
     btn.setAttribute('data-server', group.server);
     btn.setAttribute('data-alert', row.item.alertId);
     btn.setAttribute('data-source', row.item.source);
-    btn.setAttribute('data-focus', `ed:${JSON.stringify([group.server, row.item.alertId, row.item.source, action])}`);
+    btn.setAttribute('data-focus', editorRowFocusKey(group.server, row.item.alertId, row.item.source, action));
     btn.setAttribute('aria-label', `${label} alert ${row.item.alertId}`);
     if (writes && !paymentWritesAllowed()) {
         btn.setAttribute('aria-disabled', 'true');
@@ -1886,7 +1894,7 @@ function buildPaymentMuteRow(group, item) {
     form.setAttribute('data-alert', item.alertId);
     form.noValidate = true;
 
-    const dateLabel = payEl('label', 'pay-label', `Mute "${paymentAlertCount(group, item.alertId) > 1 ? item.alertId : (item.name || item.alertId)}" until `);
+    const dateLabel = payEl('label', 'pay-label', `Mute "${paymentAlertCount(group, item.alertId, item.source) > 1 ? item.alertId : (item.name || item.alertId)}" until `);
     const date = payEl('input', 'pay-mute-date');
     date.type = 'date';
     date.value = state.until;
@@ -2674,7 +2682,14 @@ function buildRuleBody(form, storedDefinition, defaults, allChannels) {
     const all = allChannels || [];
     const picked = form.channels || [];
     if (all.length > 0) {
-        if (all.every((c) => picked.includes(c))) delete body.channels;
+        if (Array.isArray(stored.channels)) {
+            // A stored list is always written back explicitly: omitting it would widen the rule to
+            // every channel (#268 round 1). Untouched boxes keep the stored list as is, including
+            // entries that are not available now and so have no box.
+            const initial = all.filter((c) => stored.channels.includes(c));
+            const unchanged = initial.length === picked.length && initial.every((c) => picked.includes(c));
+            body.channels = unchanged ? stored.channels.slice() : all.filter((c) => picked.includes(c));
+        } else if (all.every((c) => picked.includes(c))) delete body.channels;
         else body.channels = all.filter((c) => picked.includes(c));
     }
 
@@ -2925,6 +2940,20 @@ function editorBuildBody(ed) {
     return buildRuleBody(ed.form, stored, (ed.data && ed.data.defaults) || {}, editorChannels());
 }
 
+// Save is off while any field or template error is shown (the ticket requires it); an edit
+// clears that field's error, which turns Save back on.
+function editorCanSave(ed, ro, writes, problems) {
+    const shown = Object.values(ed.errors).some(Boolean);
+    return !ro && writes && !ed.busy && Object.keys(ed.invalid).length === 0 && !shown && !problems.channels && !ed.loading;
+}
+
+// One test send at a time: false while one is already in flight.
+function beginEditorSend(ed) {
+    if (ed.sending) return false;
+    ed.sending = true;
+    return true;
+}
+
 // Local checks only for what has no server round trip worth making.
 function editorProblems(ed) {
     const f = ed.form;
@@ -3167,7 +3196,7 @@ function renderEditor() {
     // Footer.
     const problems = editorProblems(ed);
     const blocked = Object.keys(ed.invalid).length > 0;
-    const canSave = !ro && writes && !ed.busy && !blocked && !problems.channels && !ed.loading;
+    const canSave = editorCanSave(ed, ro, writes, problems);
     const hint = problems.channels || (blocked ? 'Fix the highlighted fields to save' : '') || (!writes && !ro ? paymentWritesTip() : '');
     aeText('ae-save-hint', hint);
     const flag = (id, enabled, visible) => {
@@ -3177,7 +3206,7 @@ function renderEditor() {
         if (enabled) n.removeAttribute('aria-disabled'); else n.setAttribute('aria-disabled', 'true');
     };
     flag('ae-save', canSave, !ro);
-    flag('ae-send', !ro && writes && !ed.busy && !ed.loading, !ro);
+    flag('ae-send', !ro && writes && !ed.busy && !ed.sending && !ed.loading, !ro);
     const canDelete = ed.mode !== 'new' && ed.source === 'dashboard';
     flag('ae-delete', writes && !ed.busy, canDelete);
     const del = aeEl('ae-delete');
@@ -3359,7 +3388,7 @@ async function savePaymentRule() {
     const ed = paymentsEditor;
     if (!ed || ed.busy || ed.loading || editorReadOnly(ed)) return;
     if (!paymentWritesAllowed()) { ed.banner = paymentWritesTip(); renderEditor(); return; }
-    if (Object.keys(ed.invalid).length > 0) return;
+    if (!editorCanSave(ed, false, true, {})) return;
     const problems = editorProblems(ed);
     ed.banner = '';
     if (Object.keys(problems).length > 0) {
@@ -3377,7 +3406,7 @@ async function savePaymentRule() {
     if (paymentsEditor !== ed) return;
     ed.busy = false;
     if (result.ok && result.json && result.json.rule) {
-        ed.opener = `ed:${JSON.stringify([ed.server, result.json.rule.id, 'dashboard', 'edit'])}`;
+        ed.opener = editorRowFocusKey(ed.server, result.json.rule.id, 'dashboard', 'editPaymentRule');
         setPaymentNotice(ed.mode === 'new' ? 'Alert saved.' : 'Alert updated.');
         closeEditor(true);
         return;
@@ -3439,9 +3468,13 @@ async function runEditorPreview(ed, send) {
 
 function sendPaymentTest(arg, el) {
     const ed = paymentsEditor;
-    if (!ed || el.getAttribute('aria-disabled') === 'true') return;
+    if (!ed || el.getAttribute('aria-disabled') === 'true' || !beginEditorSend(ed)) return;
     clearTimeout(editorPreviewTimer);
-    runEditorPreview(ed, true);
+    renderEditor();
+    runEditorPreview(ed, true).finally(() => {
+        ed.sending = false;
+        if (paymentsEditor === ed) renderEditor();
+    });
 }
 
 // ---- form events ------------------------------------------------------------

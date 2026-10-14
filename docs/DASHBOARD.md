@@ -127,7 +127,7 @@ Besides `config.json`, alerts can be created, edited and deleted here (#268). Th
 | Rule from `config.json` | View (read-only), Copy as JSON |
 | Dashboard rule replaced by a config rule with the same id ("Replaced by config.json") | Delete |
 | Rule on a server whose `scheduleAlerts` block was removed ("Dormant: no scheduleAlerts block") | View, Delete, Copy as JSON |
-| Stored rule that no longer validates ("Invalid, not evaluated") | Delete |
+| Stored rule that no longer validates ("Invalid, not evaluated") | Edit, Delete, Copy as JSON |
 
 A rule that has not been evaluated yet (just saved, or added since the last sync) shows "Not evaluated yet". A rule saved after the last evaluation shows "Edited, applies from the next sync".
 

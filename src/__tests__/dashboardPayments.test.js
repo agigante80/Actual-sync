@@ -88,7 +88,7 @@ function makeEnv({ route, windowGlobals = {}, dateFormat = null } = {}) {
   vm.runInContext(`${block}
 this.api = { loadPaymentsTab, paymentsSyncNow, formatCalendarDate, formatPaymentAmount, setPaymentStateFilter, togglePaymentAlert, openPaymentMute, savePaymentMute, onPaymentMuteField, unmutePaymentAlert,
   slugifyRuleId, uniqueRuleId, countPrefixMatches, prefixMatchText, scheduleOptions, formatScheduleLine, editorDeadlineText, effectiveTemplate,
-  tolerancePlaceholder, buildRuleBody, editedNote, mergePaymentRows, editorFieldForPath, mapEditorError };`, ctx);
+  tolerancePlaceholder, buildRuleBody, paymentAlertCount, editorCanSave, beginEditorSend, editorRowFocusKey, editedNote, mergePaymentRows, editorFieldForPath, mapEditorError };`, ctx);
   return { ctx, els, log, calls, timers, api: ctx.api, setActive: (v) => { active = v; } };
 }
 
@@ -799,6 +799,40 @@ describe('Payments alert editor helpers (#268)', () => {
     });
   });
 
+  describe('editor Save, Send and focus helpers', () => {
+    const ed = (over = {}) => ({ errors: {}, invalid: {}, busy: false, loading: false, ...over });
+    test('Save is off while a field or template error is shown, and on again once cleared', () => {
+      expect(api.editorCanSave(ed(), false, true, {})).toBe(true);
+      expect(api.editorCanSave(ed({ errors: { 'template:missing': 'Unknown token nope' } }), false, true, {})).toBe(false);
+      expect(api.editorCanSave(ed({ errors: { graceDays: 'bad' } }), false, true, {})).toBe(false);
+      expect(api.editorCanSave(ed({ errors: { graceDays: '' } }), false, true, {})).toBe(true);
+      expect(api.editorCanSave(ed({ invalid: { id: true } }), false, true, {})).toBe(false);
+      expect(api.editorCanSave(ed(), false, true, { channels: 'Pick at least one channel' })).toBe(false);
+      expect(api.editorCanSave(ed({ busy: true }), false, true, {})).toBe(false);
+      expect(api.editorCanSave(ed({ loading: true }), false, true, {})).toBe(false);
+      expect(api.editorCanSave(ed(), true, true, {})).toBe(false);
+      expect(api.editorCanSave(ed(), false, false, {})).toBe(false);
+    });
+    test('a second test send is refused while one is in flight', () => {
+      const e = {};
+      expect(api.beginEditorSend(e)).toBe(true);
+      expect(e.sending).toBe(true);
+      expect(api.beginEditorSend(e)).toBe(false);
+    });
+    test('the focus key after saving an edit is the row Edit button key', () => {
+      expect(api.editorRowFocusKey('Main', 'gym', 'dashboard', 'editPaymentRule')).toBe('ed:["Main","gym","dashboard","editPaymentRule"]');
+    });
+  });
+
+  describe('paymentAlertCount', () => {
+    const row = (kind, alertId, source) => ({ kind, item: { alertId, source } });
+    test('counts evaluated rows of the same alert and source, not a superseded twin', () => {
+      const group = { items: [], rows: [row('evaluated', 'a', 'config'), row('evaluated', 'a', 'config'), row('superseded', 'a', 'dashboard'), row('evaluated', 'b', 'config')] };
+      expect(api.paymentAlertCount(group, 'a', 'config')).toBe(2);
+      expect(api.paymentAlertCount({ items: [row('x', 'a', 'config').item], rows: undefined }, 'a', 'config')).toBe(1);
+    });
+  });
+
   describe('buildRuleBody', () => {
     const defaults = { graceDays: 3, earlyDays: 2, templates: { missing: 'M', wrongAmount: 'W' }, blockTemplates: { wrongAmount: 'BW' } };
     const channels = ['discord', 'slack'];
@@ -845,8 +879,20 @@ describe('Payments alert editor helpers (#268)', () => {
       expect(build(form({ remindOn: false }), { remindEveryDays: 7 }).remindEveryDays).toBeUndefined();
     });
 
+    test('a stored channels list is always written back, so editing another field never widens the rule', () => {
+      const stored = { id: 'gym', schedule: 'Gym', channels: ['slack'] };
+      expect(build(form({ channels: ['slack'], graceDays: '5' }), stored).channels).toEqual(['slack']);
+      // the user ticked every box: still explicit
+      expect(build(form({ channels: ['discord', 'slack'] }), stored).channels).toEqual(['discord', 'slack']);
+    });
+
+    test('a stored channel that is not available now survives untouched boxes and is dropped when the boxes change', () => {
+      const stored = { id: 'gym', schedule: 'Gym', channels: ['slack', 'telegram'] };
+      expect(build(form({ channels: ['slack'] }), stored).channels).toEqual(['slack', 'telegram']);
+      expect(build(form({ channels: ['discord', 'slack'] }), stored).channels).toEqual(['discord', 'slack']);
+    });
+
     test('all channels checked means no channels key; a subset lists them', () => {
-      expect(build(form(), { channels: ['slack'] }).channels).toBeUndefined();
       expect(build(form({ channels: ['slack'] }), {}).channels).toEqual(['slack']);
       expect(build(form({ channels: ['slack', 'discord'] }), {}).channels).toBeUndefined();
       expect(build(form({ channels: ['slack'] }), {}, []).channels).toBeUndefined();

@@ -218,6 +218,9 @@ describe('payments alert editor (#268)', () => {
         await page.waitForFunction(() => !document.querySelector('dialog#alert-editor[open]'));
         expect(puts).toHaveLength(1);
         expect(puts[0]).toMatchObject({ id: 'gym', graceDays: 6, period: 'next', remindEveryDays: 2, channels: ['slack'] });
+        // focus goes back to the row's Edit button, not to Add alert
+        await page.waitForFunction(() => document.activeElement && document.activeElement.dataset.action === 'editPaymentRule');
+        expect(await page.evaluate(() => document.activeElement.dataset.alert)).toBe('gym');
         await page.waitForFunction(() => document.getElementById('payments-notice').textContent === 'Alert updated.');
         const stored = history(fixture).getRule('Main', 'gym');
         expect((stored.definition || stored).graceDays).toBe(6);
@@ -407,7 +410,7 @@ describe('payments alert editor (#268)', () => {
       });
     });
 
-    test('an unknown token shows beside the template and keeps Save usable', async () => {
+    test('an unknown token shows beside the template and disables Save until it is fixed', async () => {
       await withFixture('editor-new', async ({ page, fixture }) => {
         await openPayments(page, fixture);
         await openEditor(page, addBtn);
@@ -415,6 +418,10 @@ describe('payments alert editor (#268)', () => {
         await setValue(page, '#ae-tpl-missing', 'Hi {{nope}}');
         await page.waitForFunction(() => document.getElementById('ae-err-template-missing').textContent !== '');
         expect(await text(page, '#ae-err-template-missing')).toMatch(/nope/);
+        expect(await page.$eval('#ae-save', (el) => el.getAttribute('aria-disabled'))).toBe('true');
+        await setValue(page, '#ae-tpl-missing', 'Hi there');
+        await page.waitForFunction(() => document.getElementById('ae-err-template-missing').textContent === '');
+        expect(await page.$eval('#ae-save', (el) => el.getAttribute('aria-disabled'))).toBe(null);
       });
     });
 
@@ -427,6 +434,30 @@ describe('payments alert editor (#268)', () => {
         await page.click('#ae-send');
         await page.waitForFunction(() => document.getElementById('ae-preview-note').textContent !== '');
         expect(await text(page, '#ae-preview-note')).toBe('Too many test messages, wait a minute.');
+      });
+    });
+
+    test('Send test is disabled while a send is in flight and cannot start a second one', async () => {
+      await withFixture('editor-new', async ({ page, fixture }) => {
+        await openPayments(page, fixture);
+        await openEditor(page, addBtn);
+        await pickSchedule(page, 'Electricity');
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        let sends = 0;
+        page.overrideRoute(PREVIEW_ROUTE, async (req) => {
+          if (JSON.parse(req.postData() || '{}').send) {
+            sends += 1;
+            await gate;
+          }
+          req.respond(json(200, { text: 'T', sampleKeys: [], sent: true, results: [{ channel: 'discord', target: 'x', ok: true }] }));
+        });
+        await page.click('#ae-send');
+        await page.waitForFunction(() => document.getElementById('ae-send').getAttribute('aria-disabled') === 'true');
+        await page.click('#ae-send');
+        release();
+        await page.waitForFunction(() => document.getElementById('ae-send').getAttribute('aria-disabled') === null);
+        expect(sends).toBe(1);
       });
     });
 
