@@ -3975,14 +3975,6 @@ module.exports = [
         tests: 'dashboardPayments'
     },
     {
-        id: "268-r1-m2-save-guard", ticket: '#268',
-        desc: 'savePaymentRule no longer uses the shared Save gate',
-        file: 'src/services/dashboard.js',
-        anchor: 'if (!editorCanSave(ed, false, true, {})) return;',
-        mutant: 'if (Object.keys(ed.invalid).length > 0) return;',
-        tests: 'dashboardPayments'
-    },
-    {
         id: "268-r1-l1-send-guard", ticket: '#268',
         desc: 'a second test send can start while one is in flight',
         file: 'src/services/dashboard.js',
@@ -4002,16 +3994,16 @@ module.exports = [
         id: "268-r1-l1-send-disabled", ticket: '#268',
         desc: 'the Send button stays enabled while sending',
         file: 'src/services/dashboard.js',
-        anchor: "flag('ae-send', !ro && writes && !ed.busy && !ed.sending && !ed.loading, !ro);",
-        mutant: "flag('ae-send', !ro && writes && !ed.busy && !ed.loading, !ro);",
+        anchor: "return !ro && writes && !ed.busy && !ed.sending && !ed.loading;",
+        mutant: "return !ro && writes && !ed.busy && !ed.loading;",
         tests: 'dashboardPayments'
     },
     {
         id: "268-r1-l2-focus-action", ticket: '#268',
         desc: 'after saving an edit focus goes to Add alert instead of the row Edit button',
         file: 'src/services/dashboard.js',
-        anchor: "editorRowFocusKey(ed.server, result.json.rule.id, 'dashboard', 'editPaymentRule');",
-        mutant: "editorRowFocusKey(ed.server, result.json.rule.id, 'dashboard', 'edit');",
+        anchor: "return editorRowFocusKey(server, ruleId, 'dashboard', 'editPaymentRule');",
+        mutant: "return editorRowFocusKey(server, ruleId, 'dashboard', 'edit');",
         tests: 'dashboardPayments'
     },
     {

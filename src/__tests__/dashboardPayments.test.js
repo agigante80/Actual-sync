@@ -88,7 +88,7 @@ function makeEnv({ route, windowGlobals = {}, dateFormat = null } = {}) {
   vm.runInContext(`${block}
 this.api = { loadPaymentsTab, paymentsSyncNow, formatCalendarDate, formatPaymentAmount, setPaymentStateFilter, togglePaymentAlert, openPaymentMute, savePaymentMute, onPaymentMuteField, unmutePaymentAlert,
   slugifyRuleId, uniqueRuleId, countPrefixMatches, prefixMatchText, scheduleOptions, formatScheduleLine, editorDeadlineText, effectiveTemplate,
-  tolerancePlaceholder, buildRuleBody, paymentAlertCount, editorCanSave, beginEditorSend, editorRowFocusKey, editedNote, mergePaymentRows, editorFieldForPath, mapEditorError };`, ctx);
+  tolerancePlaceholder, buildRuleBody, paymentAlertCount, editorCanSave, beginEditorSend, editorRowFocusKey, editorSavedFocusKey, editorCanSend, editedNote, mergePaymentRows, editorFieldForPath, mapEditorError };`, ctx);
   return { ctx, els, log, calls, timers, api: ctx.api, setActive: (v) => { active = v; } };
 }
 
@@ -819,6 +819,17 @@ describe('Payments alert editor helpers (#268)', () => {
       expect(e.sending).toBe(true);
       expect(api.beginEditorSend(e)).toBe(false);
     });
+    test('the Send button is off while a send is in flight', () => {
+      expect(api.editorCanSend(ed(), false, true)).toBe(true);
+      expect(api.editorCanSend(ed({ sending: true }), false, true)).toBe(false);
+      expect(api.editorCanSend(ed({ busy: true }), false, true)).toBe(false);
+      expect(api.editorCanSend(ed({ loading: true }), false, true)).toBe(false);
+      expect(api.editorCanSend(ed(), true, true)).toBe(false);
+      expect(api.editorCanSend(ed(), false, false)).toBe(false);
+    });
+    test('saving an edit returns focus to the row Edit button', () => {
+      expect(api.editorSavedFocusKey('Main', 'gym')).toBe(api.editorRowFocusKey('Main', 'gym', 'dashboard', 'editPaymentRule'));
+    });
     test('the focus key after saving an edit is the row Edit button key', () => {
       expect(api.editorRowFocusKey('Main', 'gym', 'dashboard', 'editPaymentRule')).toBe('ed:["Main","gym","dashboard","editPaymentRule"]');
     });
@@ -827,7 +838,7 @@ describe('Payments alert editor helpers (#268)', () => {
   describe('paymentAlertCount', () => {
     const row = (kind, alertId, source) => ({ kind, item: { alertId, source } });
     test('counts evaluated rows of the same alert and source, not a superseded twin', () => {
-      const group = { items: [], rows: [row('evaluated', 'a', 'config'), row('evaluated', 'a', 'config'), row('superseded', 'a', 'dashboard'), row('evaluated', 'b', 'config')] };
+      const group = { items: [], rows: [row('evaluated', 'a', 'config'), row('evaluated', 'a', 'config'), row('superseded', 'a', 'config'), row('evaluated', 'a', 'dashboard'), row('evaluated', 'b', 'config')] };
       expect(api.paymentAlertCount(group, 'a', 'config')).toBe(2);
       expect(api.paymentAlertCount({ items: [row('x', 'a', 'config').item], rows: undefined }, 'a', 'config')).toBe(1);
     });

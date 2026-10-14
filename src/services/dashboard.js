@@ -1822,6 +1822,12 @@ function editorRowFocusKey(server, alertId, source, action) {
     return `ed:${JSON.stringify([server, alertId, source, action])}`;
 }
 
+// After a save, focus returns to the saved rule's Edit button ('editPaymentRule' is the row
+// button's action; a different action here would fall back to Add alert).
+function editorSavedFocusKey(server, ruleId) {
+    return editorRowFocusKey(server, ruleId, 'dashboard', 'editPaymentRule');
+}
+
 function editorRowButton(label, action, group, row, writes) {
     const btn = payEl('button', 'pay-ctl', label);
     btn.type = 'button';
@@ -2947,6 +2953,10 @@ function editorCanSave(ed, ro, writes, problems) {
     return !ro && writes && !ed.busy && Object.keys(ed.invalid).length === 0 && !shown && !problems.channels && !ed.loading;
 }
 
+function editorCanSend(ed, ro, writes) {
+    return !ro && writes && !ed.busy && !ed.sending && !ed.loading;
+}
+
 // One test send at a time: false while one is already in flight.
 function beginEditorSend(ed) {
     if (ed.sending) return false;
@@ -3206,7 +3216,7 @@ function renderEditor() {
         if (enabled) n.removeAttribute('aria-disabled'); else n.setAttribute('aria-disabled', 'true');
     };
     flag('ae-save', canSave, !ro);
-    flag('ae-send', !ro && writes && !ed.busy && !ed.sending && !ed.loading, !ro);
+    flag('ae-send', editorCanSend(ed, ro, writes), !ro);
     const canDelete = ed.mode !== 'new' && ed.source === 'dashboard';
     flag('ae-delete', writes && !ed.busy, canDelete);
     const del = aeEl('ae-delete');
@@ -3406,7 +3416,7 @@ async function savePaymentRule() {
     if (paymentsEditor !== ed) return;
     ed.busy = false;
     if (result.ok && result.json && result.json.rule) {
-        ed.opener = editorRowFocusKey(ed.server, result.json.rule.id, 'dashboard', 'editPaymentRule');
+        ed.opener = editorSavedFocusKey(ed.server, result.json.rule.id);
         setPaymentNotice(ed.mode === 'new' ? 'Alert saved.' : 'Alert updated.');
         closeEditor(true);
         return;
