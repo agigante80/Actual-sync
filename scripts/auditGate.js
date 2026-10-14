@@ -51,6 +51,19 @@ function validateAllowlist(list) {
     return errors;
 }
 
+/** Returns error strings when `report` is not a usable npm audit v2 report. */
+function validateReport(report) {
+    const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+    if (!isObj(report)) return ['npm audit returned no report'];
+    if (report.error) {
+        const e = report.error;
+        return [`npm audit failed: ${(isObj(e) && (e.code || e.summary)) || JSON.stringify(e)}`];
+    }
+    if (report.auditReportVersion !== 2) return ['unsupported npm audit report version (expected 2)'];
+    if (!isObj(report.vulnerabilities)) return ['npm audit report has no vulnerabilities object'];
+    return [];
+}
+
 /**
  * Pure gate. `today` is a YYYY-MM-DD string (compared lexically, UTC).
  * Returns { failures, suppressed, expired, errors }.
@@ -58,6 +71,10 @@ function validateAllowlist(list) {
 function evaluate(report, allowlist, { level = 'high', today } = {}) {
     const errors = validateAllowlist(allowlist);
     if (errors.length) return { failures: [], suppressed: [], expired: [], errors };
+    // Fail closed: a report that is not a real v2 audit (registry down, network
+    // error, changed format) must never read as "no advisories".
+    const reportErrors = validateReport(report);
+    if (reportErrors.length) return { failures: [], suppressed: [], expired: [], errors: reportErrors };
     const min = SEVERITY_RANK[level];
     const live = new Map();
     const expiredIds = new Map();
@@ -68,7 +85,7 @@ function evaluate(report, allowlist, { level = 'high', today } = {}) {
     const failures = [];
     const suppressed = [];
     const expired = [];
-    for (const [pkg, v] of Object.entries((report && report.vulnerabilities) || {})) {
+    for (const [pkg, v] of Object.entries(report.vulnerabilities)) {
         for (const via of v.via || []) {
             if (typeof via !== 'object' || !(SEVERITY_RANK[via.severity] >= min)) continue;
             const id = advisoryId(via);
@@ -107,7 +124,14 @@ function main(argv) {
     const raw = args.stdin
         ? fs.readFileSync(0, 'utf8')
         : spawnSync('npm', ['audit', '--json'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).stdout;
-    const res = evaluate(JSON.parse(raw), allowlist, args);
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (e) {
+        console.error('auditGate: npm audit produced no parseable JSON report');
+        return 1;
+    }
+    const res = evaluate(parsed, allowlist, args);
     if (res.errors.length) {
         res.errors.forEach(e => console.error(`auditGate: ${e}`));
         return 1;
@@ -122,4 +146,4 @@ function main(argv) {
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
-module.exports = { evaluate, validateAllowlist, advisoryId, parseArgs };
+module.exports = { evaluate, validateReport, validateAllowlist, advisoryId, parseArgs };

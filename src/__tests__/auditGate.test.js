@@ -10,6 +10,7 @@ const { evaluate, validateAllowlist, advisoryId } = require('../../scripts/audit
 
 const ID = 'GHSA-2222-3333-cccc';
 const report = {
+    auditReportVersion: 2,
     vulnerabilities: {
         lodashish: {
             via: [{ source: 1, name: 'lodashish', title: 'Prototype pollution', severity: 'high', url: `https://github.com/advisories/${ID}` }],
@@ -21,6 +22,41 @@ const report = {
     },
 };
 const entry = (expires) => ({ entries: [{ id: ID, reason: 'no upstream fix', expires }] });
+
+describe('auditGate fails closed on a missing report', () => {
+    const none = { entries: [] };
+    const today = '2026-06-01';
+
+    test('an npm audit error report fails', () => {
+        const r = evaluate({ error: { code: 'ENOTFOUND', summary: 'request failed' } }, none, { today });
+        expect(r.errors).toHaveLength(1);
+    });
+
+    test('a report without vulnerabilities fails', () => {
+        expect(evaluate({ auditReportVersion: 2 }, none, { today }).errors).toHaveLength(1);
+        expect(evaluate({ auditReportVersion: 1, vulnerabilities: {} }, none, { today }).errors).toHaveLength(1);
+        expect(evaluate({ auditReportVersion: 2, vulnerabilities: [] }, none, { today }).errors).toHaveLength(1);
+    });
+
+    test('a valid empty v2 report passes', () => {
+        const r = evaluate({ auditReportVersion: 2, vulnerabilities: {} }, none, { today });
+        expect(r.errors).toEqual([]);
+        expect(r.failures).toEqual([]);
+    });
+
+    test('the CLI exits 1 for an error report and for empty stdout', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auditgate-'));
+        const file = path.join(dir, 'allow.json');
+        fs.writeFileSync(file, JSON.stringify(none));
+        const run = (input) => spawnSync(process.execPath, [
+            path.join(__dirname, '..', '..', 'scripts', 'auditGate.js'), '--allowlist', file, '--stdin',
+        ], { input, encoding: 'utf8' });
+        expect(run('{"error":{"code":"ENOTFOUND"}}').status).toBe(1);
+        expect(run('').status).toBe(1);
+        expect(run('{"auditReportVersion":2,"vulnerabilities":{}}').status).toBe(0);
+        fs.rmSync(dir, { recursive: true });
+    });
+});
 
 describe('auditGate', () => {
     test('with no allowlist a high advisory fails and a moderate one does not', () => {
