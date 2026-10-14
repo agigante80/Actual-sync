@@ -48,11 +48,19 @@ with per-server Sync now, filters, polling and a mobile card layout. The P3 tick
 same night: #270 was folded into #261, and #259 and #261 were revised for implementation.
 
 ## Phase: P3 v1.20 Control from the dashboard
-state: planned
+state: done
 
 The first dashboard writes: Origin check on every POST, opt-in config writes and an audit trail,
 then enable/disable and mute-until for alerts. The security ticket goes first because it guards the
 writes that follow.
+
+Outcome: done (2026-10-14), shipped as v1.20.0. The write guards (#259: Origin check, opt-in config
+writes, audit trail) and the alert controls (#261: enable/disable and mute-until with a mute-end
+summary) landed. The release also carries the schedule alert fixes #326 (completed one-off
+schedules), #296, #332, #356 (deleted schedules, ruleUnmatched once) and #359 (empty schedule list
+skips matching), the e2e harness fixes #289, and supply chain work from the
+backlog: the npm audit gate (#250), Dependabot cooldown (#251), Scorecard (#255) and the pinned
+Docker base image with Dependabot updates (#362).
 
 ## Phase: P4 v1.21 Alert editor
 state: planned
