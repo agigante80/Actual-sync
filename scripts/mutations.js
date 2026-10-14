@@ -561,8 +561,8 @@ module.exports = [
         id: '188-panel-never-loads', ticket: '#188',
         desc: 'the endpoint exists but the dashboard never calls it — the #182 mistake again',
         file: 'src/services/dashboard.js',
-        anchor: '    loadNotificationStats();\n    try {',
-        mutant: '    try {',
+        anchor: '    loadNotificationStats();\n    loadConfigAudit();\n    try {',
+        mutant: '    loadConfigAudit();\n    try {',
         tests: 'docDriftGuards'
     },
 
@@ -1149,7 +1149,7 @@ module.exports = [
         id: '242-ws-origin-unchecked', ticket: '#242',
         desc: 'the handshake skips the Origin check, reopening Cross-Site WebSocket Hijacking',
         file: 'src/services/healthCheck.js',
-        anchor: "    if (info.origin && !this.isAllowedWsOrigin(info.origin, req.headers.host)) {",
+        anchor: "    if (info.origin && !this.isAllowedOrigin(info.origin, req.headers.host)) {",
         mutant: "    if (false) {",
         tests: 'healthCheck'
     },
@@ -1288,8 +1288,8 @@ module.exports = [
         id: '246-await-between-check-and-count', ticket: '#246',
         desc: 'an await between reading the count and adding a failure lets pipelined guesses through',
         file: 'src/services/healthCheck.js',
-        anchor: "    return (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n",
-        mutant: "    return async (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n        await null;\n",
+        anchor: "    const dashboardAuth = (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n",
+        mutant: "    const dashboardAuth = async (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n        await new Promise((resolve) => setImmediate(resolve));\n",
         tests: 'healthCheck'
     },
 
@@ -2260,8 +2260,8 @@ module.exports = [
         id: '260-reset-keeps-payment-rows', ticket: '#260',
         desc: 'resetServerHistory leaves the payment snapshot rows behind',
         file: 'src/services/syncHistory.js',
-        anchor: '        delPaymentItems.run(s);',
-        mutant: '        void s;',
+        anchor: '          payment_alert_status: delPaymentItems.run(s).changes,',
+        mutant: '          payment_alert_status: (void s, 0),',
         tests: 'paymentSnapshot'
     },
     {
@@ -2456,6 +2456,238 @@ module.exports = [
         anchor: 'if (liveEl.textContent !== liveText) liveEl.textContent',
         mutant: 'if (true) liveEl.textContent',
         tests: 'dashboardPayments'
+    },
+    {
+        id: "259-origin-unchecked-dismiss-error", ticket: '#259',
+        desc: "the dismiss-error POST drops the Origin check, reopening cross-site request forgery",
+        file: "src/services/healthCheck.js",
+        anchor: "this.app.post('/api/dashboard/dismiss-error', this.dashboardAuth(), this.checkOrigin(), (req, res) =>",
+        mutant: "this.app.post('/api/dashboard/dismiss-error', this.dashboardAuth(), (req, res) =>",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-origin-unchecked-sync", ticket: '#259',
+        desc: "the sync POST drops the Origin check, reopening cross-site request forgery",
+        file: "src/services/healthCheck.js",
+        anchor: "this.app.post('/api/dashboard/sync', this.dashboardAuth(), this.checkOrigin(), async",
+        mutant: "this.app.post('/api/dashboard/sync', this.dashboardAuth(), async",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-origin-unchecked-reset-history", ticket: '#259',
+        desc: "the reset-history POST drops the Origin check, reopening cross-site request forgery",
+        file: "src/services/healthCheck.js",
+        anchor: "this.app.post('/api/dashboard/reset-history', this.dashboardAuth(), this.checkOrigin(), async",
+        mutant: "this.app.post('/api/dashboard/reset-history', this.dashboardAuth(), async",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-origin-unchecked-test-notification", ticket: '#259',
+        desc: "the test-notification POST drops the Origin check, reopening cross-site request forgery",
+        file: "src/services/healthCheck.js",
+        anchor: "this.app.post('/api/dashboard/test-notification', this.dashboardAuth(), this.checkOrigin(), async",
+        mutant: "this.app.post('/api/dashboard/test-notification', this.dashboardAuth(), async",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-origin-before-auth", ticket: '#259',
+        desc: "the sync POST checks Origin before authentication, leaking the origin policy to anonymous callers",
+        file: "src/services/healthCheck.js",
+        anchor: "this.app.post('/api/dashboard/sync', this.dashboardAuth(), this.checkOrigin(), async",
+        mutant: "this.app.post('/api/dashboard/sync', this.checkOrigin(), this.dashboardAuth(), async",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-sec-fetch-accepted", ticket: '#259',
+        desc: "a request with Sec-Fetch-Site but no Origin or Referer is accepted",
+        file: "src/services/healthCheck.js",
+        anchor: "ok = req.headers['sec-fetch-site'] === undefined;",
+        mutant: "ok = true;",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-referer-ignored", ticket: '#259',
+        desc: "the Referer fallback is dropped, so a header-stripped cross-site POST passes",
+        file: "src/services/healthCheck.js",
+        anchor: "const candidate = origin !== undefined ? origin : referer;",
+        mutant: "const candidate = origin;",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-redaction-disabled", ticket: '#259',
+        desc: "audit changes are stored without redaction",
+        file: "src/services/syncHistory.js",
+        anchor: "const text = JSON.stringify(redactValue(source, []));",
+        mutant: "const text = JSON.stringify(source);",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-redaction-exact-match", ticket: '#259',
+        desc: "redaction only hits keys that equal a denylist word, not keys containing one",
+        file: "src/services/syncHistory.js",
+        anchor: "CONFIG_AUDIT_REDACT_SUBSTRINGS.some(sub => full.includes(sub))",
+        mutant: "CONFIG_AUDIT_REDACT_SUBSTRINGS.some(sub => full === sub)",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-audit-size-uncapped", ticket: '#259',
+        desc: "an oversized audit entry is stored whole instead of truncated",
+        file: "src/services/syncHistory.js",
+        anchor: "if (Buffer.byteLength(text) <= CONFIG_AUDIT_MAX_BYTES) return text;",
+        mutant: "return text;",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-reset-server-deletes-audit", ticket: '#259',
+        desc: "a per-server history reset erases the configuration audit",
+        file: "src/services/syncHistory.js",
+        anchor: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');\n      // config_audit is deliberately",
+        mutant: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');\n      this.db.prepare('DELETE FROM config_audit').run();\n      // config_audit is deliberately",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-reset-all-deletes-audit", ticket: '#259',
+        desc: "a full history reset erases the configuration audit",
+        file: "src/services/syncHistory.js",
+        anchor: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');\n",
+        mutant: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');\n      this.db.prepare('DELETE FROM config_audit').run();\n",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-audit-never-purged", ticket: '#259',
+        desc: "config_audit rows are never purged by retention",
+        file: "src/services/syncHistory.js",
+        anchor: "DELETE FROM config_audit WHERE at < ?",
+        mutant: "DELETE FROM config_audit WHERE 0 AND at < ?",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-limit-unvalidated", ticket: '#259',
+        desc: "config-audit accepts any limit string",
+        file: "src/services/healthCheck.js",
+        anchor: "limit = typeof raw === 'string' && /^\\d{1,3}$/.test(raw) ? Number(raw) : NaN;",
+        mutant: "limit = Number(raw);",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-limit-no-upper-bound", ticket: '#259',
+        desc: "config-audit has no upper bound on limit",
+        file: "src/services/healthCheck.js",
+        anchor: "if (!(limit >= 1 && limit <= 200)) {",
+        mutant: "if (!(limit >= 1)) {",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-body-cap-raised", ticket: '#259',
+        desc: "the config write body cap is raised from 16kb",
+        file: "src/services/healthCheck.js",
+        anchor: "express.json({ limit: '16kb' })",
+        mutant: "express.json({ limit: '10mb' })",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-writes-default-on", ticket: '#259',
+        desc: "config writes are enabled when allowConfigWrites is unset",
+        file: "src/services/healthCheck.js",
+        anchor: "if (this.dashboardConfig.allowConfigWrites !== true) return 'disabled';",
+        mutant: "if (this.dashboardConfig.allowConfigWrites === false) return 'disabled';",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-writes-allowed-auth-none", ticket: '#259',
+        desc: "config writes are allowed while auth is none",
+        file: "src/services/healthCheck.js",
+        anchor: "if ((this.dashboardConfig.auth?.type || 'none') === 'none') return 'auth-none';",
+        mutant: "if (false) return 'auth-none';",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-config-write-chain-no-gate", ticket: '#259',
+        desc: "configWrite() omits requireConfigWrites",
+        file: "src/services/healthCheck.js",
+        anchor: "      this.requireConfigWrites(),\n      configBody,",
+        mutant: "      configBody,",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-content-type-unchecked", ticket: '#259',
+        desc: "a non-JSON config write body is no longer rejected with 415",
+        file: "src/services/healthCheck.js",
+        anchor: "if (!req.is('application/json')) {",
+        mutant: "if (false) {",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-redact-email-auth-parent", ticket: '#259',
+        desc: "audit redaction stops covering user/pass under the real notifications.email.auth path",
+        file: "src/services/syncHistory.js",
+        anchor: "a.includes('smtp') || a.includes('email') || a === 'auth'",
+        mutant: "a.includes('smtp')",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-unmapped-4xx-html", ticket: '#259',
+        desc: "an unmapped 4xx body-parser error falls through to Express's HTML stack page",
+        file: "src/services/healthCheck.js",
+        anchor: "if (err && err.fromBodyParser && status >= 400 && status < 500 && !res.headersSent) {",
+        mutant: "if (false) {",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-final-handler-leaks", ticket: '#259',
+        desc: "the final error handler passes the error on, so Express renders the stack",
+        file: "src/services/healthCheck.js",
+        anchor: "if (res.headersSent) return next(err);\n      // A 4xx",
+        mutant: "return next(err);\n      // A 4xx",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-unknown-server", ticket: '#259',
+        desc: "resetting an unknown server answers 200 and writes an audit row again",
+        file: "src/services/healthCheck.js",
+        anchor: "if (!known) {",
+        mutant: "if (false) {",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-server-name-uncapped", ticket: '#259',
+        desc: "the reset-history server name length cap is removed",
+        file: "src/services/healthCheck.js",
+        anchor: "server.length > 200",
+        mutant: "server.length > 2000000",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-body-error-unmarked", ticket: '#259',
+        desc: "any 4xx is relabelled invalid_body, hiding a route's own 409/404",
+        file: "src/services/healthCheck.js",
+        anchor: "if (err && err.fromBodyParser && status >= 400",
+        mutant: "if (err && status >= 400",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-final-handler-4xx-500", ticket: '#259',
+        desc: "the final error handler answers a route's 4xx as 500",
+        file: "src/services/healthCheck.js",
+        anchor: "if (status >= 400 && status < 500) {\n        return res.status(status).json({ error: 'request_error' });",
+        mutant: "if (false) {\n        return res.status(status).json({ error: 'request_error' });",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-known-history-only", ticket: '#259',
+        desc: "a retired server with only non-history rows is 404 again",
+        file: "src/services/syncHistory.js",
+        anchor: "OR EXISTS (SELECT 1 FROM account_metadata WHERE server_name = @s)",
+        mutant: "OR 0",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-nonstring-server", ticket: '#259',
+        desc: "a non-string server is no longer rejected with invalid_server",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof server !== 'string') {",
+        mutant: "if (false) {",
+        tests: "dashboardWriteSecurity"
     },
     // ---- #296: low findings from the #258 review ----------------------------
     {

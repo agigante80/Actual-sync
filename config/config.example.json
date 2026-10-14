@@ -78,6 +78,7 @@
     "dashboard": {
       "enabled": true,
       "allowedOrigins": [],
+      "allowConfigWrites": false,
       "auth": {
         "type": "none"
       }

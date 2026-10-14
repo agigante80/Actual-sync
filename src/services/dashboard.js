@@ -1036,6 +1036,7 @@ async function loadNotificationStats() {
 
 async function loadSettingsTab() {
     loadNotificationStats();
+    loadConfigAudit();
     try {
         const response = await fetch('/api/dashboard/status', getFetchOptions());
         const data = await response.json();
@@ -1066,6 +1067,40 @@ async function loadSettingsTab() {
         loadDateFormatPreference();
     } catch (error) {
         console.error('Failed to load settings:', error);
+    }
+}
+
+// Configuration changes list (#259). Every field goes through escapeHtml().
+async function loadConfigAudit() {
+    const el = document.getElementById('config-audit-list');
+    if (!el) return;
+    try {
+        const response = await fetch('/api/dashboard/config-audit?limit=50', getFetchOptions());
+        if (!response.ok) {
+            el.innerHTML = `<div style="color: #ef4444;">Failed to load configuration changes (HTTP ${escapeHtml(response.status)})</div>`;
+            return;
+        }
+        const data = await response.json();
+        const entries = Array.isArray(data.entries) ? data.entries : [];
+        if (entries.length === 0) {
+            el.innerHTML = '<div style="color: #94a3b8; padding: 10px; background: #1e293b; border-radius: 4px;">No configuration changes yet</div>';
+            return;
+        }
+        el.innerHTML = entries.map(entry => {
+            const changes = entry.changes && Object.keys(entry.changes).length > 0 ? JSON.stringify(entry.changes) : '';
+            const what = [entry.action, entry.target].filter(Boolean).join(' ');
+            return `
+                <div class="config-audit-entry" style="padding: 10px; background: #1e293b; border-radius: 4px; margin-bottom: 8px;">
+                    <div style="display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+                        <span style="color: #e2e8f0; font-weight: 500;">${escapeHtml(what)}${entry.server ? ` &middot; ${escapeHtml(entry.server)}` : ''}</span>
+                        <span style="color: #94a3b8; font-size: 0.85rem;">${escapeHtml(formatTime(entry.at))} &middot; ${escapeHtml(entry.remote_addr || 'unknown address')}</span>
+                    </div>
+                    ${changes ? `<div style="color: #94a3b8; font-size: 0.85rem; font-family: monospace; margin-top: 4px; word-break: break-all;">${escapeHtml(changes)}</div>` : ''}
+                </div>`;
+        }).join('');
+    } catch (error) {
+        console.error('Failed to load configuration changes:', error);
+        el.innerHTML = '<div style="color: #ef4444;">Failed to load configuration changes</div>';
     }
 }
 
@@ -1954,6 +1989,7 @@ const CLICK_ACTIONS = {
     triggerSync: (arg) => triggerSync(arg),
     triggerSyncByIndex: (arg) => triggerSyncByIndex(Number(arg)),
     deleteOrphanedServerByIndex: (arg) => deleteOrphanedServerByIndex(Number(arg)),
+    reloadConfigAudit: () => loadConfigAudit(),
     togglePaymentRow: (arg, el) => togglePaymentRow(arg, el),
     setPaymentStateFilter: (arg) => setPaymentStateFilter(arg),
     paymentsSyncNow: (arg) => paymentsSyncNow(arg)

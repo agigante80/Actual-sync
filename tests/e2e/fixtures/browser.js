@@ -21,6 +21,7 @@
  */
 
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
 const { startFixtureServer, FIXTURE_NOW } = require('./index');
 
@@ -271,7 +272,41 @@ async function withDashboard(stateName, fn, options = {}) {
   }, rest);
 }
 
+/**
+ * Send a raw Node http request to the fixture server with caller-chosen
+ * headers. A browser page cannot be made to send a foreign Origin (it is a
+ * forbidden header, and openPage() aborts every other origin), so the
+ * cross-origin specs (#259) go through Node instead.
+ * @param {string} baseUrl - fixture.url
+ * @param {{ method?: string, path: string, headers?: Object, body?: string }} options
+ * @returns {Promise<{ status: number, headers: Object, body: any }>}
+ */
+function rawRequest(baseUrl, { method = 'GET', path: reqPath, headers = {}, body } = {}) {
+  const target = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: target.hostname,
+      port: target.port,
+      path: reqPath,
+      method,
+      headers: body === undefined ? headers : { 'Content-Length': Buffer.byteLength(body), ...headers }
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        let parsed = data;
+        try { parsed = JSON.parse(data); } catch { /* not JSON */ }
+        resolve({ status: res.statusCode, headers: res.headers, body: parsed });
+      });
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
 module.exports = {
+  rawRequest,
   launchBrowser,
   closeBrowser,
   openPage,

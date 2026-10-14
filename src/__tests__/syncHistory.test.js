@@ -4,7 +4,7 @@
  * Tests for sync history persistence and querying
  */
 
-const { SyncHistoryService } = require('../services/syncHistory');
+const { SyncHistoryService, CONFIG_AUDIT_REDACT_SUBSTRINGS } = require('../services/syncHistory');
 const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
@@ -904,6 +904,165 @@ describe('SyncHistoryService', () => {
           if (fs.existsSync(p)) fs.unlinkSync(p);
         });
       });
+    });
+  });
+  describe('config audit (#259)', () => {
+    const storedChanges = () => syncHistory.db.prepare('SELECT changes_json FROM config_audit ORDER BY id').all();
+    const allRows = () => syncHistory.db.prepare('SELECT * FROM config_audit ORDER BY id').all();
+
+    test('records the changed fields with the metadata and reads them back newest first', () => {
+      syncHistory.recordConfigChange({
+        server: 'Main', remoteAddr: '10.0.0.1', action: 'payment_alert_state', target: 'rent',
+        changes: { enabled: [true, false] }
+      });
+      syncHistory.recordConfigChange({ server: 'Main', action: 'payment_alert_state', target: 'phone', changes: {} });
+
+      const rows = syncHistory.getConfigAudit({ limit: 10 });
+      expect(rows.map(r => r.target)).toEqual(['phone', 'rent']);
+      expect(rows[1]).toEqual({
+        at: expect.any(String), server: 'Main', remote_addr: '10.0.0.1',
+        action: 'payment_alert_state', target: 'rent', changes: { enabled: [true, false] }
+      });
+      expect(rows[0].remote_addr).toBeNull();
+      expect(syncHistory.getConfigAudit({ limit: 1 })).toHaveLength(1);
+    });
+
+    test('requires an action', () => {
+      expect(() => syncHistory.recordConfigChange({ target: 'x' })).toThrow(/action/);
+    });
+
+    test('the denylist is substring based and case insensitive', () => {
+      expect(CONFIG_AUDIT_REDACT_SUBSTRINGS).toEqual(expect.arrayContaining(
+        ['password', 'passwd', 'secret', 'token', 'apikey', 'authorization', 'webhook', 'reason']));
+    });
+
+    test('secrets are recorded as changed only, at every nesting level, while field names stay', () => {
+      syncHistory.recordConfigChange({
+        action: 'notification_settings',
+        changes: {
+          password: ['old-1', 'new-1'],
+          encryptionPassword: ['old-2', 'new-2'],
+          token: ['old-3', 'new-3'],
+          botToken: ['old-4', 'new-4'],
+          api_key: ['old-5', 'new-5'],
+          'X-Api-Key': ['old-6', 'new-6'],
+          Authorization: ['old-7', 'new-7'],
+          discord: { webhookUrl: 'https://discord.com/api/webhooks/1/old-8' },
+          slack: { url: 'https://hooks.slack.com/services/old-9' },
+          smtp: { auth: { user: 'mailer-10', pass: 'smtp-11', host: 'mail.example' } },
+          'smtp.auth.pass': ['old-12', 'new-12'],
+          reason: ['', 'call Alice about rent'],
+          note: ['a', 'https://user:hunter2@example.com/path'],
+          nested: { deeper: { clientSecret: 'old-13' } },
+          enabled: [true, false]
+        }
+      });
+      const [{ changes_json: json }] = storedChanges();
+      for (let n = 1; n <= 13; n++) expect(json).not.toMatch(new RegExp(`(old|new|mailer|smtp)-${n}\\b`));
+      for (const secret of ['Alice', 'hunter2']) expect(json).not.toContain(secret);
+
+      const changes = JSON.parse(json);
+      expect(changes.password).toBe('[redacted]');
+      expect(changes.encryptionPassword).toBe('[redacted]');
+      expect(changes.botToken).toBe('[redacted]');
+      expect(changes.reason).toBe('[redacted]');
+      expect(changes.discord.webhookUrl).toBe('[redacted]');
+      expect(changes.slack.url).toBe('[redacted]');
+      expect(changes.smtp.auth).toEqual({ user: '[redacted]', pass: '[redacted]', host: 'mail.example' });
+      expect(changes.nested.deeper.clientSecret).toBe('[redacted]');
+      expect(changes.note).toEqual(['a', '[redacted]']);
+      // Harmless fields are untouched.
+      expect(changes.enabled).toEqual([true, false]);
+    });
+
+    test('the real schema path notifications.email.auth.user/pass is redacted, nested and dotted (#259)', () => {
+      syncHistory.recordConfigChange({
+        action: 'x',
+        changes: {
+          email: [null, { auth: { user: 'real-user-1', pass: 'S3CRET', host: 'mail.example' } }],
+          'notifications.email.auth.pass': ['old-real-2', 'S3CRET-2'],
+          'notifications.email.auth.user': ['old-real-3', 'new-real-3'],
+          'notifications.email.user': 'real-user-4'
+        }
+      });
+      const [{ changes_json: json }] = storedChanges();
+      for (const secret of ['S3CRET', 'real-user-1', 'old-real-2', 'old-real-3', 'new-real-3', 'real-user-4']) {
+        expect(json).not.toContain(secret);
+      }
+      expect(JSON.parse(json).email[1].auth.host).toBe('mail.example');
+    });
+
+    test('a plain user or url key outside an smtp or channel parent is kept', () => {
+      syncHistory.recordConfigChange({
+        action: 'x', changes: { user: ['a', 'b'], homepage: { url: 'https://example.com' } }
+      });
+      expect(JSON.parse(storedChanges()[0].changes_json)).toEqual({
+        user: ['a', 'b'], homepage: { url: 'https://example.com' }
+      });
+    });
+
+    test('a change over 8 KB is stored as a names-only _truncated marker under 8 KB', () => {
+      syncHistory.recordConfigChange({ action: 'x', changes: { notes: ['', 'z'.repeat(20 * 1024)], other: [1, 2] } });
+      const [{ changes_json: json }] = storedChanges();
+      expect(Buffer.byteLength(json)).toBeLessThan(8 * 1024);
+      expect(JSON.parse(json)).toEqual({ _truncated: true, fields: ['notes', 'other'] });
+    });
+
+    test('a change just under the cap is stored whole', () => {
+      syncHistory.recordConfigChange({ action: 'x', changes: { notes: ['', 'z'.repeat(8000)] } });
+      expect(JSON.parse(storedChanges()[0].changes_json).notes[1]).toHaveLength(8000);
+    });
+
+    test('resetAllHistory keeps every audit row and appends one history_reset row with the counts and remote_addr', async () => {
+      syncHistory.recordConfigChange({ action: 'payment_alert_state', target: 'rent', changes: { enabled: [true, false] } });
+      syncHistory.recordSync({ serverName: 'Main', status: 'success' });
+      syncHistory.recordSync({ serverName: 'Other', status: 'success' });
+      syncHistory.replaceAccountMetadata('Main', [{ id: 'a1', name: 'Checking', classification: 'syncable' }]);
+
+      await syncHistory.resetAllHistory({ remoteAddr: '203.0.113.9' });
+
+      const rows = allRows();
+      expect(rows).toHaveLength(2);
+      expect(rows[0].action).toBe('payment_alert_state');
+      expect(rows[1]).toMatchObject({ action: 'history_reset', server: null, remote_addr: '203.0.113.9' });
+      expect(JSON.parse(rows[1].changes_json)).toEqual({
+        deleted: {
+          sync_history: 2, account_metadata: 1, schedule_alerts: 0, payment_alert_status: 0, payment_alert_run: 0
+        }
+      });
+      expect(syncHistory.db.prepare('SELECT COUNT(*) AS c FROM sync_history').get().c).toBe(0);
+    });
+
+    test('resetServerHistory leaves the other server and every audit row, and appends a history_reset row', async () => {
+      syncHistory.recordConfigChange({ action: 'payment_alert_state', target: 'rent', changes: {} });
+      syncHistory.recordSync({ serverName: 'Main', status: 'success' });
+      syncHistory.recordSync({ serverName: 'Other', status: 'success' });
+
+      await syncHistory.resetServerHistory('Main', { remoteAddr: '203.0.113.9' });
+
+      expect(syncHistory.getHistory({ serverName: 'Other', limit: 10 })).toHaveLength(1);
+      expect(syncHistory.getHistory({ serverName: 'Main', limit: 10 })).toHaveLength(0);
+      const rows = allRows();
+      expect(rows.map(r => r.action)).toEqual(['payment_alert_state', 'history_reset']);
+      expect(rows[1]).toMatchObject({ server: 'Main', remote_addr: '203.0.113.9' });
+      expect(JSON.parse(rows[1].changes_json).deleted.sync_history).toBe(1);
+    });
+
+    test('a reset without remoteAddr stores a null remote_addr', async () => {
+      await syncHistory.resetAllHistory();
+      expect(allRows()[0].remote_addr).toBeNull();
+    });
+
+    test('cleanup() purges audit rows older than retentionDays and keeps newer ones', () => {
+      const insert = syncHistory.db.prepare(
+        'INSERT INTO config_audit (at, action, changes_json) VALUES (?, ?, ?)');
+      const daysAgo = (n) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+      insert.run(daysAgo(31), 'old', '{}');
+      insert.run(daysAgo(29), 'new', '{}');
+
+      syncHistory.cleanup();
+
+      expect(allRows().map(r => r.action)).toEqual(['new']);
     });
   });
 });
