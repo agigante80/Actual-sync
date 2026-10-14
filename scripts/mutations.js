@@ -2872,7 +2872,7 @@ module.exports = [
         file: "src/services/healthCheck.js",
         anchor: "if (days < 0 || days > 365) return bad",
         mutant: "if (days < 0) return bad",
-        tests: "healthCheck"
+        tests: "paymentOverrides"
     },
     {
         id: "261-mute-reason-optional", ticket: '#261',
@@ -2880,7 +2880,7 @@ module.exports = [
         file: "src/services/healthCheck.js",
         anchor: "if (reason === '') return bad('reason_required');",
         mutant: "",
-        tests: "healthCheck"
+        tests: "paymentOverrides"
     },
     {
         id: "261-mute-extension-resets-start", ticket: '#261',
@@ -2888,7 +2888,7 @@ module.exports = [
         file: "src/services/healthCheck.js",
         anchor: "before && before.mutedUntil && before.mutedFrom ? before.mutedFrom : now.toISOString()",
         mutant: "now.toISOString()",
-        tests: "healthCheck"
+        tests: "paymentOverrides"
     },
     {
         id: "261-early-unmute-keeps-muted-rows", ticket: '#261',
@@ -2896,7 +2896,7 @@ module.exports = [
         file: "src/services/healthCheck.js",
         anchor: "        // latest 'muted' row would suppress the alert for good).\n        this.syncHistory.deleteMutedRows(",
         mutant: "        // latest 'muted' row would suppress the alert for good).\n        void (",
-        tests: "healthCheck"
+        tests: "paymentOverrides"
     },
     {
         id: "261-noop-put-audited", ticket: '#261',
@@ -2904,7 +2904,7 @@ module.exports = [
         file: "src/services/healthCheck.js",
         anchor: "if (Object.keys(changes).length > 0) {\n        this.syncHistory.recordConfigChange({\n          server: serverName, remoteAddr: req.ip, action: 'payment_alert_state'",
         mutant: "if (true) {\n        this.syncHistory.recordConfigChange({\n          server: serverName, remoteAddr: req.ip, action: 'payment_alert_state'",
-        tests: "healthCheck"
+        tests: "paymentOverrides"
     },
     {
         id: "261-delete-missing-override-ok", ticket: '#261',
@@ -2912,7 +2912,7 @@ module.exports = [
         file: "src/services/healthCheck.js",
         anchor: "if (!before) return res.status(404).json({ error: 'override_not_found' });",
         mutant: "",
-        tests: "healthCheck"
+        tests: "paymentOverrides"
     },
     {
         id: "261-delete-keeps-muted-rows", ticket: '#261',
@@ -2920,7 +2920,7 @@ module.exports = [
         file: "src/services/healthCheck.js",
         anchor: "      if (before.mutedUntil) {\n        this.syncHistory.deleteMutedRows({ server: serverName, alertId, since: before.mutedFrom || undefined });\n      }\n      this.syncHistory.deleteOverride(",
         mutant: "      this.syncHistory.deleteOverride(",
-        tests: "healthCheck"
+        tests: "paymentOverrides"
     },
     {
         id: "261-orphaned-always-false", ticket: '#261',
@@ -2928,7 +2928,7 @@ module.exports = [
         file: "src/services/healthCheck.js",
         anchor: "orphaned: !(known.has(o.server) && known.get(o.server).has(o.alertId))",
         mutant: "orphaned: false",
-        tests: "healthCheck"
+        tests: "paymentOverrides"
     },
     {
         id: "261-default-override-kept", ticket: '#261',

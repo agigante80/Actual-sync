@@ -1554,6 +1554,23 @@ describe('deliver: off, mute and mute end (#261)', () => {
       expect(history.getOverride('Main', 'rent').mutedUntil).toBe('2026-10-20');
     });
 
+    test('a muted row left by a failed summary is never answered by a reminder', async () => {
+      const rules = slackRules({ remindEveryDays: 3 });
+      setMute('2026-10-20');
+      at('2026-10-12T08:00:00.000Z');
+      await run([miss('2026-10-12')], { evaluations: [evalOf('2026-10-12')], rules });
+      at('2026-10-21T08:00:00.000Z');
+      sender.result = () => { throw new Error('boom'); };
+      await run([miss('2026-10-12')], { evaluations: [evalOf('2026-10-12')], rules });
+      sender.calls.length = 0;
+      at('2026-10-25T08:00:00.000Z');
+      // Summary fails again, so the muted row stays the latest; no individual reminder may go out.
+      sender.result = () => { throw new Error('boom'); };
+      await run([miss('2026-10-12')], { evaluations: [evalOf('2026-10-12')], rules });
+      expect(sender.calls).toHaveLength(2); // the two summary attempts only, no reminder
+      expect(rows("event = 'missing' AND delivery = 'sent'")).toEqual([]);
+    });
+
     test('the delivery budget stops new summaries; the next run finishes them', async () => {
       await muteDuring();
       at('2026-10-21T08:00:00.000Z');
