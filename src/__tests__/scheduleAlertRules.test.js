@@ -11,6 +11,8 @@ const {
   getRules,
   checkUniqueIds,
   expandRules,
+  ruleState,
+  muteEndsAt,
   DEFAULT_GRACE_DAYS,
   DEFAULT_EARLY_DAYS,
   DEFAULT_STALE_AFTER_DAYS
@@ -222,5 +224,74 @@ describe('expandRules', () => {
       { id: 's3', name: 'Utilities - Electric', completed: true }
     ];
     expect(expandRules(rules, allCompleted)).toEqual([]);
+  });
+});
+
+describe('normalizeRule enabled (#261)', () => {
+  test('carries enabled: false from config, and defaults to true', () => {
+    const [off, on, unset] = getRules({ alerts: [
+      { id: 'a', schedule: 'A', enabled: false },
+      { id: 'b', schedule: 'B', enabled: true },
+      { id: 'c', schedule: 'C' }
+    ] });
+    expect(off.enabled).toBe(false);
+    expect(on.enabled).toBe(true);
+    expect(unset.enabled).toBe(true);
+  });
+});
+
+describe('ruleState (#261)', () => {
+  const rule = { id: 'parking-a', enabled: true };
+  const now = new Date('2026-10-05T10:00:00Z');
+
+  test('no override and no config enabled: enabled, not muted', () => {
+    expect(ruleState({ rule, override: null, now, timezone: 'UTC' })).toEqual({
+      enabled: true, muted: false, mutedFrom: null, mutedUntil: null,
+      reason: null, lockedByConfig: false, muteEndDue: false
+    });
+  });
+
+  test('an override with enabled false switches the rule off', () => {
+    const s = ruleState({ rule, override: { enabled: false }, now, timezone: 'UTC' });
+    expect(s.enabled).toBe(false);
+    expect(s.lockedByConfig).toBe(false);
+  });
+
+  test('config enabled false wins over an override that enables', () => {
+    const s = ruleState({ rule: { ...rule, enabled: false }, override: { enabled: true }, now, timezone: 'UTC' });
+    expect(s.enabled).toBe(false);
+    expect(s.lockedByConfig).toBe(true);
+  });
+
+  test('a mute is active before the start of the day after mutedUntil', () => {
+    const override = { enabled: true, mutedFrom: '2026-10-01T08:00:00.000Z', mutedUntil: '2026-10-20', reason: 'vacant' };
+    const s = ruleState({ rule, override, now: new Date('2026-10-20T23:30:00Z'), timezone: 'UTC' });
+    expect(s).toMatchObject({ muted: true, muteEndDue: false, mutedUntil: '2026-10-20', reason: 'vacant', mutedFrom: '2026-10-01T08:00:00.000Z' });
+  });
+
+  test('a mute until 2026-10-20 is still active at 21:30 UTC in Europe/Madrid (23:30 local)', () => {
+    const override = { enabled: true, mutedUntil: '2026-10-20', reason: 'x' };
+    expect(ruleState({ rule, override, now: new Date('2026-10-20T21:30:00Z'), timezone: 'Europe/Madrid' }).muted).toBe(true);
+    // 22:00 UTC is midnight in Madrid (CEST, UTC+2): the mute is over.
+    expect(ruleState({ rule, override, now: new Date('2026-10-20T22:00:00Z'), timezone: 'Europe/Madrid' }).muted).toBe(false);
+  });
+
+  test('after the end of the mutedUntil day: not muted, muteEndDue, fields still returned', () => {
+    const override = { enabled: true, mutedFrom: '2026-09-20T08:00:00.000Z', mutedUntil: '2026-10-01', reason: 'tenant late' };
+    const s = ruleState({ rule, override, now: new Date('2026-10-02T00:00:00Z'), timezone: 'UTC' });
+    expect(s).toMatchObject({ enabled: true, muted: false, muteEndDue: true, mutedUntil: '2026-10-01', reason: 'tenant late' });
+  });
+
+  test('disabled and muted together: both reported, disabled wins in delivery', () => {
+    const override = { enabled: false, mutedUntil: '2026-10-20', reason: 'x' };
+    const s = ruleState({ rule, override, now, timezone: 'UTC' });
+    expect(s).toMatchObject({ enabled: false, muted: true });
+  });
+
+  test('muteEndsAt is the start of the day after mutedUntil in the zone', () => {
+    expect(muteEndsAt('2026-10-20', 'UTC').toISOString()).toBe('2026-10-21T00:00:00.000Z');
+    expect(muteEndsAt('2026-10-20', 'Europe/Madrid').toISOString()).toBe('2026-10-20T22:00:00.000Z');
+    // The clocks go back on 2026-10-25 in Madrid: the day after is 23:00Z.
+    expect(muteEndsAt('2026-10-25', 'Europe/Madrid').toISOString()).toBe('2026-10-25T23:00:00.000Z');
   });
 });

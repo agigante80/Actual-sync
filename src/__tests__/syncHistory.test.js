@@ -1027,7 +1027,7 @@ describe('SyncHistoryService', () => {
       expect(rows[1]).toMatchObject({ action: 'history_reset', server: null, remote_addr: '203.0.113.9' });
       expect(JSON.parse(rows[1].changes_json)).toEqual({
         deleted: {
-          sync_history: 2, account_metadata: 1, schedule_alerts: 0, payment_alert_status: 0, payment_alert_run: 0
+          sync_history: 2, account_metadata: 1, schedule_alerts: 0, payment_alert_status: 0, payment_alert_run: 0, payment_alert_override: 0
         }
       });
       expect(syncHistory.db.prepare('SELECT COUNT(*) AS c FROM sync_history').get().c).toBe(0);

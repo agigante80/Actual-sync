@@ -8,7 +8,9 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const moment = require('moment-timezone');
 const { createLogger } = require('../lib/logger');
+const { muteEndsAt } = require('../lib/scheduleAlertRules');
 
 const REDACTED = '[redacted]';
 
@@ -260,6 +262,24 @@ class SyncHistoryService {
       )
     `;
 
+    // Dashboard override of one alert rule (#261): switched off and/or muted
+    // until a date, keyed at rule level (a schedulePrefix rule shares one
+    // alert_id). A row at the default state (enabled, no mute) is never stored.
+    // `muted_from` is an ISO instant, `muted_until` a YYYY-MM-DD date. There is
+    // no IP column; the remote address lives only in config_audit.
+    const createPaymentAlertOverrideTable = `
+      CREATE TABLE IF NOT EXISTS payment_alert_override (
+        server TEXT NOT NULL,
+        alert_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        muted_from TEXT,
+        muted_until TEXT,
+        reason TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (server, alert_id)
+      )
+    `;
+
     const createIndexes = [
       'CREATE INDEX IF NOT EXISTS idx_timestamp ON sync_history(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_server_name ON sync_history(server_name)',
@@ -277,6 +297,7 @@ class SyncHistoryService {
     this.db.exec(createPaymentAlertStatusTable);
     this.db.exec(createPaymentAlertRunTable);
     this.db.exec(createConfigAuditTable);
+    this.db.exec(createPaymentAlertOverrideTable);
     this.logger.debug('Created sync_history, account_metadata, schedule_alerts and payment snapshot tables');
 
     createIndexes.forEach(idx => {
@@ -349,19 +370,24 @@ class SyncHistoryService {
    *   regardless of which destination recorded it (used by
    *   `deriveResolvedEvents`, which only needs to know an event was ever
    *   recorded at all, not on which channel).
+   * @param {string} [key.delivery] - #261: only rows with this `delivery`
+   *   (`deriveResolvedEvents` counts `sent` rows only, so a `muted` row never
+   *   makes a destination look told). Omitted: any delivery.
    * @returns {Promise<{recordedAt:string}|null>}
    */
-  async findLatestScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, channel }) {
+  async findLatestScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, channel, delivery }) {
     try {
       const filterChannel = channel !== undefined;
+      const filterDelivery = delivery !== undefined;
       const row = this.db.prepare(`
         SELECT recorded_at AS recordedAt FROM schedule_alerts
         WHERE server = ? AND alert_id = ?
           AND schedule_id IS ? AND occurrence_date IS ? AND event = ?
           ${filterChannel ? "AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))" : ''}
+          ${filterDelivery ? 'AND delivery = ?' : ''}
         ORDER BY recorded_at DESC, id DESC
         LIMIT 1
-      `).get(...[server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, ...(filterChannel ? [channel] : [])]);
+      `).get(...[server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, ...(filterChannel ? [channel] : []), ...(filterDelivery ? [delivery] : [])]);
       return row || null;
     } catch (error) {
       this.logger.error('Failed to read schedule_alerts ledger', { error: error.message, server, alertId, event });
@@ -1070,9 +1096,19 @@ class SyncHistoryService {
       const scheduleAlertsRetentionDays = Math.max(this.retentionDays, 120);
       const scheduleAlertsCutoff = this.now();
       scheduleAlertsCutoff.setDate(scheduleAlertsCutoff.getDate() - scheduleAlertsRetentionDays);
+      // #261: a mute can outlast that window (up to 365 days), so the muted
+      // rows of an alert whose override still has muted_until set are kept for
+      // the summary; they are purged normally once the mute fields are cleared.
+      // Stale mutes are expired first (UTC: cleanup has no configured zone).
+      this.expireStaleMutes({ timezone: 'UTC' });
       const scheduleAlertsResult = this.db.prepare(`
         DELETE FROM schedule_alerts
         WHERE recorded_at < ?
+          AND NOT (delivery = 'muted' AND EXISTS (
+            SELECT 1 FROM payment_alert_override o
+            WHERE o.server = schedule_alerts.server
+              AND o.alert_id = schedule_alerts.alert_id
+              AND o.muted_until IS NOT NULL))
       `).run(scheduleAlertsCutoff.toISOString());
 
       if (scheduleAlertsResult.changes > 0) {
@@ -1118,7 +1154,8 @@ class SyncHistoryService {
           OR EXISTS (SELECT 1 FROM account_metadata WHERE server_name = @s)
           OR EXISTS (SELECT 1 FROM schedule_alerts WHERE server = @s)
           OR EXISTS (SELECT 1 FROM payment_alert_status WHERE server = @s)
-          OR EXISTS (SELECT 1 FROM payment_alert_run WHERE server = @s) AS known
+          OR EXISTS (SELECT 1 FROM payment_alert_run WHERE server = @s)
+          OR EXISTS (SELECT 1 FROM payment_alert_override WHERE server = @s) AS known
     `).get({ s: serverName });
     return row.known === 1;
   }
@@ -1138,6 +1175,7 @@ class SyncHistoryService {
       const delMeta = this.db.prepare('DELETE FROM account_metadata WHERE server_name = ?');
       const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts WHERE server = ?');
       const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ?');
+      const delOverrides = this.db.prepare('DELETE FROM payment_alert_override WHERE server = ?');
       const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');
       // config_audit is deliberately NOT deleted (#259): a reset must not erase
       // the record of earlier configuration changes. It appends one
@@ -1149,7 +1187,8 @@ class SyncHistoryService {
           account_metadata: delMeta.run(s).changes,
           schedule_alerts: delScheduleAlerts.run(s).changes,
           payment_alert_status: delPaymentItems.run(s).changes,
-          payment_alert_run: delPaymentRun.run(s).changes
+          payment_alert_run: delPaymentRun.run(s).changes,
+          payment_alert_override: delOverrides.run(s).changes
         };
         this.insertConfigAudit({
           server: s, remoteAddr, action: 'history_reset', target: null, changes: { deleted }
@@ -1186,6 +1225,7 @@ class SyncHistoryService {
       const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts');
       const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status');
       const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');
+      const delOverrides = this.db.prepare('DELETE FROM payment_alert_override');
       // config_audit is kept and gets one history_reset row (see resetServerHistory).
       const reset = this.db.transaction(() => {
         const r = delHistory.run();
@@ -1194,7 +1234,8 @@ class SyncHistoryService {
           account_metadata: delMeta.run().changes,
           schedule_alerts: delScheduleAlerts.run().changes,
           payment_alert_status: delPaymentItems.run().changes,
-          payment_alert_run: delPaymentRun.run().changes
+          payment_alert_run: delPaymentRun.run().changes,
+          payment_alert_override: delOverrides.run().changes
         };
         this.insertConfigAudit({
           server: null, remoteAddr, action: 'history_reset', target: null, changes: { deleted }
@@ -1277,6 +1318,131 @@ class SyncHistoryService {
         changes
       };
     });
+  }
+
+  // ---- Payment alert overrides (#261) -------------------------------------
+
+  _overrideFromRow(row) {
+    return row ? {
+      server: row.server,
+      alertId: row.alert_id,
+      enabled: row.enabled === 1,
+      mutedFrom: row.muted_from,
+      mutedUntil: row.muted_until,
+      reason: row.reason,
+      updatedAt: row.updated_at
+    } : null;
+  }
+
+  /**
+   * @param {string} server
+   * @param {string} alertId
+   * @returns {?{server:string, alertId:string, enabled:boolean, mutedFrom:?string, mutedUntil:?string, reason:?string, updatedAt:string}}
+   */
+  getOverride(server, alertId) {
+    return this._overrideFromRow(this.db.prepare(
+      'SELECT * FROM payment_alert_override WHERE server = ? AND alert_id = ?'
+    ).get(server, alertId));
+  }
+
+  /**
+   * Replace the override of one rule. A state with the rule enabled and no
+   * mute is the default, so the row is deleted instead of stored. Returns the
+   * stored override, or null when it was normalised away.
+   */
+  setOverride({ server, alertId, enabled = true, mutedFrom = null, mutedUntil = null, reason = null }) {
+    if (enabled !== false && !mutedUntil) {
+      this.deleteOverride(server, alertId);
+      return null;
+    }
+    this.db.prepare(`
+      INSERT OR REPLACE INTO payment_alert_override
+        (server, alert_id, enabled, muted_from, muted_until, reason, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      server, alertId, enabled === false ? 0 : 1,
+      mutedUntil ? mutedFrom : null, mutedUntil || null, mutedUntil ? reason : null,
+      this.now().toISOString()
+    );
+    return this.getOverride(server, alertId);
+  }
+
+  /** @returns {boolean} true when a row was removed */
+  deleteOverride(server, alertId) {
+    return this.db.prepare(
+      'DELETE FROM payment_alert_override WHERE server = ? AND alert_id = ?'
+    ).run(server, alertId).changes > 0;
+  }
+
+  /** Every override (of one server when given), ordered by server then alert id. */
+  listOverrides(server) {
+    const rows = server === undefined
+      ? this.db.prepare('SELECT * FROM payment_alert_override ORDER BY server, alert_id').all()
+      : this.db.prepare('SELECT * FROM payment_alert_override WHERE server = ? ORDER BY server, alert_id').all(server);
+    return rows.map(row => this._overrideFromRow(row));
+  }
+
+  /**
+   * The `muted` ledger rows of one alert, optionally within [since, until).
+   * @param {{server:string, alertId:string, since?:string, until?:Date}} q
+   * @returns {Array<{scheduleId:?string, occurrenceDate:?string, event:string, channel:?string, recordedAt:string}>}
+   */
+  listMutedRows({ server, alertId, since, until }) {
+    const clauses = ["server = ?", "alert_id = ?", "delivery = 'muted'"];
+    const args = [server, alertId];
+    if (since) { clauses.push('recorded_at >= ?'); args.push(since); }
+    if (until) { clauses.push('recorded_at < ?'); args.push(until.toISOString()); }
+    return this.db.prepare(`
+      SELECT schedule_id AS scheduleId, occurrence_date AS occurrenceDate, event, channel, recorded_at AS recordedAt
+      FROM schedule_alerts WHERE ${clauses.join(' AND ')} ORDER BY id
+    `).all(...args);
+  }
+
+  /** Delete the alert's `muted` rows (since a time when given). @returns {number} */
+  deleteMutedRows({ server, alertId, since }) {
+    return since
+      ? this.db.prepare("DELETE FROM schedule_alerts WHERE server = ? AND alert_id = ? AND delivery = 'muted' AND recorded_at >= ?").run(server, alertId, since).changes
+      : this.db.prepare("DELETE FROM schedule_alerts WHERE server = ? AND alert_id = ? AND delivery = 'muted'").run(server, alertId).changes;
+  }
+
+  /** Delete the muted rows of one destination key. @returns {number} */
+  deleteMutedRow({ server, alertId, scheduleId, occurrenceDate, event, channel }) {
+    return this.db.prepare(`
+      DELETE FROM schedule_alerts
+      WHERE server = ? AND alert_id = ? AND schedule_id IS ? AND occurrence_date IS ?
+        AND event = ? AND channel IS ? AND delivery = 'muted'
+    `).run(server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, channel ?? null).changes;
+  }
+
+  /**
+   * Expire mutes whose summary never went out (#261): at the end of the
+   * `mutedUntil` day plus 7 days, clear the reason, the mute fields and the
+   * alert's muted rows, with a WARN, so a failing or deferred summary cannot
+   * keep the free-text reason forever. Covers every override of the server
+   * (all servers when none is given): enabled, switched off, config-locked or
+   * orphaned. The reason is never logged.
+   *
+   * @param {{server?:string, timezone?:string, now?:Date}} [options]
+   * @returns {Array<{server:string, alertId:string}>} the expired overrides
+   */
+  expireStaleMutes({ server, timezone = 'UTC', now } = {}) {
+    const at = (now || this.now()).getTime();
+    const expired = [];
+    const run = this.db.transaction(() => {
+      for (const o of this.listOverrides(server)) {
+        if (!o.mutedUntil) continue;
+        const expiry = moment(muteEndsAt(o.mutedUntil, timezone)).tz(timezone).add(7, 'days');
+        if (at < expiry.valueOf()) continue;
+        this.deleteMutedRows({ server: o.server, alertId: o.alertId });
+        this.setOverride({ server: o.server, alertId: o.alertId, enabled: o.enabled });
+        expired.push({ server: o.server, alertId: o.alertId });
+        this.logger.warn('Mute expired without a summary; reason and muted rows cleared', {
+          server: o.server, alertId: o.alertId, mutedUntil: o.mutedUntil
+        });
+      }
+    });
+    run();
+    return expired;
   }
 
   /**
