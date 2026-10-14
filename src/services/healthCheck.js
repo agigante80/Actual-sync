@@ -1098,8 +1098,10 @@ class HealthCheckService {
             message: `History reset for ${server}` 
           });
         } else if (server === 'all') {
-          // Reset all history
-          await this.syncHistory.resetAllHistory({ remoteAddr: req.ip });
+          // Reset all history. Servers no longer in the config also lose
+          // their dashboard rules (#372).
+          const configuredServers = this.getServers ? (this.getServers() || []).map(sv => sv.name) : null;
+          await this.syncHistory.resetAllHistory({ remoteAddr: req.ip, configuredServers });
           
           this.logger.info('All sync history reset via dashboard', {
             remoteAddress: req.ip
