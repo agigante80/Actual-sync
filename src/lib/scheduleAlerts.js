@@ -503,9 +503,16 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
         .filter((tx) => matches(tx, schedule).linked)
         .map((tx) => moment.tz(tx.date, timezone).startOf('day'));
 
+      const signOk = (tx) => schedule.amount == null || typeof schedule.amount === 'object'
+        || Math.sign(tx.amount) === Math.sign(schedule.amount);
       const candidateTx = (transactions || [])
         .map((tx) => ({ tx, match: matches(tx, schedule) }))
         .filter((c) => c.match.eligible && (!globallyUsedTx.has(c.tx) || globallyUsedTx.get(c.tx) === schedule.id))
+        // #296 round 1, M1: an UNLINKED opposite-sign transaction (a refund) is
+        // never a candidate, so neither the wrong-amount fallback nor the late
+        // pass can take it. A linked one stays authoritative (#295 M11).
+        // Ranges and a null amount skip the check, as in amountMatchesSchedule.
+        .filter((c) => c.match.linked || signOk(c.tx))
         .map((c) => ({ tx: c.tx, linked: c.match.linked, date: moment.tz(c.tx.date, timezone).startOf('day'), used: false }))
         .sort((a, b) => a.date.valueOf() - b.date.valueOf());
 

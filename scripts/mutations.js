@@ -2491,6 +2491,14 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
+        id: '296-refund-sign-ignored-in-fallback-passes', ticket: '#296',
+        desc: 'an unlinked opposite-sign refund is accepted by the wrong-amount fallback and the late pass',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "        .filter((c) => c.match.linked || signOk(c.tx))",
+        mutant: "        .filter((c) => c.match.linked || signOk(c.tx) || true)",
+        tests: 'scheduleAlerts.test'
+    },
+    {
         id: '296-redelivery-after-restart', ticket: '#296',
         desc: 'a sent missing alert is considered due again (no de-duplication across syncs and restarts)',
         file: 'src/lib/scheduleAlertDelivery.js',

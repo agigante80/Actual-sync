@@ -205,8 +205,36 @@ describe('evaluate: received / late / wrongAmount', () => {
       timezone: TZ
     });
     expect(run(6000).evaluations[0].state).toBe('received');
-    expect(run(-6000).evaluations[0].state).not.toBe('received');
+    expect(run(-6000).evaluations[0].state).toBe('missing');
     expect(run(-6000).events.map((e) => e.event)).not.toContain('resolved');
+  });
+
+  describe('#296 round 1 M1: the sign check holds in every fallback pass', () => {
+    const run = (transactions) => evaluate({
+      rules: rentRule({ amountTolerancePct: 0 }),
+      schedules: [rentSchedule({ amount: 6000, amountOp: 'is', date: '2026-01-05' })],
+      transactions,
+      accounts: [account({ last_sync: epochMs('2026-01-14') })],
+      now: '2026-01-14',
+      timezone: TZ
+    });
+    const tx = (id, amount, date, schedule = null) => ({ id, account: 'acc1', payee: 'pay1', amount, date, schedule });
+
+    test('(a) only an opposite-sign transaction in the late window -> missing', () => {
+      const { events, evaluations } = run([tx('t1', -6000, '2026-01-10')]);
+      expect(evaluations[0].state).toBe('missing');
+      expect(events.map((e) => e.event)).toContain('missing');
+    });
+
+    test('(b) opposite sign in the on-time window plus a right-sign payment later -> late', () => {
+      const { evaluations } = run([tx('t1', -6000, '2026-01-04'), tx('t2', 6000, '2026-01-10')]);
+      expect(evaluations[0].state).toBe('late');
+    });
+
+    test('(c) a LINKED opposite-sign transaction stays authoritative (Actual\'s link wins)', () => {
+      const { evaluations } = run([tx('t1', -6000, '2026-01-10', 's1')]);
+      expect(evaluations[0].state).toBe('late');
+    });
   });
 
   test('a transaction linked via transaction.schedule counts regardless of amount', () => {
