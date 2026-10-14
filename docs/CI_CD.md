@@ -208,7 +208,7 @@ curl http://localhost:3000/metrics
 1. Checkout code
 2. Setup Node.js
 3. Install dependencies
-4. Run npm audit for vulnerabilities
+4. Run `npm audit --audit-level=high` (blocking: fails on any high or critical advisory)
 5. Execute Jest tests with coverage
 6. Upload coverage to Codecov
 
@@ -416,6 +416,40 @@ throttle), all against fixture states under
 - Critical/High vulnerabilities logged
 - Manual review recommended
 - Automatic fixes suggested when available
+
+### Dependency checks
+
+Two checks look at dependency advisories. Both block a merge when they find a high or critical advisory:
+
+| Check | Where | Blocks? | What it covers |
+|-------|-------|---------|----------------|
+| `npm audit --audit-level=high` | `test` job in `ci-cd.yml` | Yes, on high or critical | The whole installed tree, on every push and PR. Moderate and low advisories are reported but do not fail the build. |
+| `actions/dependency-review-action` (`fail-on-severity: high`) | `dependency-review.yml`, pull requests only | Yes, on high or critical | Only what the PR adds or changes, compared with its base. Catches a vulnerable package introduced by the PR itself. |
+
+Trivy (job 8) is a separate image scan and is still advisory (`exit-code: 0`).
+
+The `npm audit` step runs `node scripts/auditGate.js`, which wraps `npm audit --json` and fails on any high or critical advisory that a live allowlist entry does not cover. The step used to end in `|| echo "continuing..."`, which swallowed every failure; do not restore that.
+
+#### Audit allowlist
+
+When an advisory has no available fix (for example an in-range transitive waiting on an upstream parent bump), accept it explicitly in `.github/audit-allowlist.json`:
+
+```json
+{
+  "entries": [
+    { "id": "GHSA-xxxx-xxxx-xxxx", "reason": "no upstream fix; not reachable from our code", "expires": "2026-12-31" }
+  ]
+}
+```
+
+- `id` is the GHSA id (the last part of the advisory URL that `npm audit` prints), `reason` is required, `expires` is a `YYYY-MM-DD` date.
+- An entry suppresses its advisory through the whole `expires` day (UTC). From the next day the advisory fails the gate again, so the decision is remade on a date. Re-decide by fixing the dependency, or by extending the date with a new reason in a reviewed commit.
+- A malformed entry (bad id, empty reason, bad date) fails the gate instead of being ignored. The file is empty today because the tree is clean at the `high` threshold.
+- Run it locally with `node scripts/auditGate.js`. `src/__tests__/auditGate.test.js` proves that a live entry suppresses and an expired one does not.
+
+Why a small script and not `better-npm-audit`: the gate needs an expiry that fails the build, a rule the project wants to own and test in jest, and nothing new to install, pin and keep patched in a job that guards the supply chain. The script is about 100 lines over the stable `npm audit --json` v2 report. Alternatives rejected: `better-npm-audit` (extra dependency, and its exception format would need a wrapper to enforce our expiry rule and be testable here), a `jq` filter in the workflow (untestable inline, no validation), Snyk (account and token, overlaps Dependabot and Trivy).
+
+To make `dependency-review` a required check, add "Dependency review" to the branch protection rules (a repository setting, not something the workflow can do).
 
 ### OpenSSF Scorecard
 
