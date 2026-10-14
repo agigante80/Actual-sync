@@ -770,6 +770,7 @@ describe('Payments alert editor helpers (#268)', () => {
       expect(api.editorDeadlineText(monthly(8, '2026-02-08'), 3)).toBe('deadline: 11th of each month');
       expect(api.editorDeadlineText(monthly(25, '2026-02-25'), 3)).toBe('deadline: 28th of each month');
       expect(api.editorDeadlineText(monthly(28, '2026-10-28'), 6)).toBe('deadline: 3 Nov for the 28 Oct payment');
+      expect(api.editorDeadlineText(monthly(28, '2026-02-28'), 1)).toBe('deadline: 1 Mar for the 28 Feb payment');
       expect(api.editorDeadlineText(monthly(28, '2026-02-28'), 6)).toBe('deadline: 6 Mar for the 28 Feb payment');
       expect(api.editorDeadlineText({ cadenceText: 'Every month on the last day', nextDate: '2026-01-31' }, 3)).toBe('next date 31 Jan');
       expect(api.editorDeadlineText({ cadenceText: 'Every 2 weeks on Friday', nextDate: '2026-11-05' }, 3)).toBe('next date 5 Nov');
@@ -849,6 +850,7 @@ describe('Payments alert editor helpers (#268)', () => {
       expect(build(form({ channels: ['slack'] }), {}).channels).toEqual(['slack']);
       expect(build(form({ channels: ['slack', 'discord'] }), {}).channels).toBeUndefined();
       expect(build(form({ channels: ['slack'] }), {}, []).channels).toBeUndefined();
+      expect(build(form({ channels: ['telegram', 'discord'] }), {}, ['discord', 'slack', 'telegram']).channels).toEqual(['discord', 'telegram']);
     });
 
     test('templates: only changed or stored ones are sent, an empty set is omitted', () => {
