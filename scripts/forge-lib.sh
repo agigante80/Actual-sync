@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# forge-lib-version: 46
+# forge-lib-version: 47
 # forge-lib.sh: host-aware forge operations (GitHub | Forgejo). Source it; governance components
 # call the forge_* functions instead of `gh` directly, so the same logic works whether a repo lives
 # on GitHub or a self-hosted Forgejo. ADDITIVE: a repo with no Forgejo config defaults to GitHub and
@@ -193,6 +193,12 @@
 #       a token: the environment variable's name, or `git's credential helper` when only the helper
 #       holds one (FORGE_NO_GIT_CREDENTIALS=1 still turns that off). forge_token_present is
 #       unchanged and still never asks the helper. health-check step 9 now calls the new probe.
+#   v47 New: forge_body_section_append <issue> <label> <content> (#494), the gate's Step 6 item 2
+#       write into one author section. It finds the section by a whole heading line outside fences
+#       and regions and refuses with 108 a section holding author text (WRITE ONCE), 107 an absent
+#       heading, 109 a duplicated one; 103 refuses content carrying a region marker line or a
+#       heading line or an unlabelled block, or ending inside an unclosed fence. Every existing
+#       function is unchanged.
 # Add a line here whenever a change alters what a caller must do, not merely what the library
 # does internally.
 
@@ -1155,6 +1161,151 @@ forge_body_compose_preserving() {
          return 2 ;;
   esac
   _forge_body_write forge_body_compose_preserving "$n" "$out" "$body"; rc=$?
+  _forge_tmp_done "$out"
+  return "$rc"
+}
+
+# forge_body_section_append <issue> <label> <content> (v47, #494)
+#
+# WRITE ONCE AS CODE. The gate's Step 6 item 2 used to compose the whole body freehand, and on #493
+# a search for `## Unit tests` matched an inline code span mid-line: the author's line was cut in
+# two and the section's tail duplicated. This writes into ONE author section, found by a WHOLE
+# heading line, and refuses a section that already holds author text.
+#
+# THE TARGET is a line that, after norm() (CR and trailing blanks stripped), is an ATX heading (at
+# most 3 spaces, 1 to 6 `#`, a space) whose text equals the label, outside a fence (the fenced()
+# grammar of _FORGE_AWK_MARKER, not a third copy) and outside any region. Indent and hash runs are
+# measured with match() and RLENGTH: mawk 1.3.4 has no {m,n} interval. THE SECTION ends at the next
+# such heading of level at most the target's, or at a region start marker. A deeper sub-heading
+# stays inside it and is an ordinary line: an unlabelled one is author text, like any other.
+#
+# OWNERSHIP IS PER BLOCK: a maximal run of non-blank lines, a fence line and every line inside a
+# fence counting as non-blank. A block whose first line ENDS with `(gate-written, round N)` is the
+# gate's (a label quoted mid-line is author text), its later lines included; a block that is exactly `_No response_` is a placeholder; any
+# other block is author text and refuses the whole write (108). Placement: after the last gate
+# block plus one blank line (placeholders dropped); else where the first placeholder was; else
+# after the heading and one blank line. One blank line then separates the insert from whatever
+# ends the section, replacing the blank lines that stood there. Every other line keeps its bytes,
+# CRs included; inserted lines are LF.
+#
+# CONTENT IS CHECKED BEFORE ANY FETCH and refused with 103 when it carries a region marker line, ends
+# inside an unclosed fence, holds a heading line of any level outside a fence, or has a block whose
+# first line does not end with the gate label: each would change how every later write reads the
+# body (a planted region, a fence swallowing the regions below, a section ended early or its
+# heading duplicated so the next append gets 107 or 109, or the gate's own write read back as
+# author text so the next append gets 108).
+#
+# EXIT CODES 107 (no target heading), 108 (author text) and 109 (the heading twice) are the awk's
+# own and pass through. They are distinct from the awk-internal 104 to 106 that the splice and
+# compose remap to 103; this awk never exits with those.
+# hlevel(h): the ATX level of a line already through norm(), or 0; the heading text in htext.
+_FORGE_AWK_HEADING='
+    function hlevel(h,   r, lv) {
+      match(h, /^ */); if (RLENGTH > 3) return 0
+      r = substr(h, RLENGTH + 1)
+      if (!match(r, /^#+/) || RLENGTH > 6) return 0
+      lv = RLENGTH
+      if (substr(r, lv + 1, 1) != " ") return 0
+      htext = substr(r, lv + 2); sub(/^[ \t]+/, "", htext); return lv
+    }
+'
+forge_body_section_append() {
+  local n="${1-}" label="${2-}" content="${3-}" body tmp out rc=0
+  [ -n "$n" ] && [ -n "$label" ] && [ -n "$content" ] || {
+    echo "forge-lib: usage: forge_body_section_append <issue> <label> <content>" >&2; return 2; }
+  # The content check (see above). A marker line is refused fenced or not, as _forge_region_write
+  # does; a heading line only outside a fence, where it would be read as one. Blocks are cut as the
+  # ownership pass below cuts them: a fence line and every line inside a fence are non-blank.
+  rc=0
+  printf '%s\n' "$content" | awk "$_FORGE_AWK_MARKER$_FORGE_AWK_HEADING"'
+    BEGIN { first = 1 }
+    { n = norm($0); if (mname(n) != "") mk = 1
+      f = fenced(n)
+      if (!f && n == "") { first = 1; next }
+      if (first) { first = 0; if (n !~ /\(gate-written, round [0-9]+\)$/) un = 1 }
+      if (!f && hlevel(n)) hd = 1 }
+    END { if (mk) exit 3; if (fopen) exit 4; if (hd) exit 5; if (un) exit 6 }' || rc=$?
+  case "$rc" in
+    0) ;;
+    3) echo "forge-lib: refusing content that carries a region marker line; it would plant a region in '$label'" >&2; return 103 ;;
+    4) echo "forge-lib: refusing content that ends inside an unclosed code fence; it would swallow what follows '$label'" >&2; return 103 ;;
+    5) echo "forge-lib: refusing content that carries a heading line (any level is refused); one at or above '$label' would end or duplicate it" >&2; return 103 ;;
+    6) echo "forge-lib: refusing content with a block whose first line does not end with (gate-written, round N); the next append to '$label' would read it as author text" >&2; return 103 ;;
+    *) echo "forge-lib: could not check the content for '$label' (awk exited $rc); nothing was sent" >&2; return 2 ;;
+  esac
+  forge_host >/dev/null || return 2   # above the dry-run guard (#256)
+  # Before the fetch, as in _forge_region_write: forge_api answers a dry-run GET with an empty body,
+  # which a guard after the fetch would read as a body with no heading. 107 to 109 are therefore
+  # unreachable under dry run.
+  if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
+    forge_url_check || return 2
+    printf '[dry-run] append to section %s of issue %s on %s (%s characters)\n' "$label" "$n" "$(forge_repo)" "${#content}" >&2
+    return 0
+  fi
+  body="$(_forge_body_of "$n")" || return $?
+  _forge_tmp_init || return 2
+  tmp="$_FORGE_TMPDIR/append.$$"; out="$_FORGE_TMPDIR/appended.$$"
+  printf '%s\n' "$content" > "$tmp" || { _forge_tmp_done "$tmp"; return 2; }
+  rc=0
+  printf '%s\n' "$body" | FL_LABEL="$label" FL_CONTENT_FILE="$tmp" awk "$_FORGE_AWK_MARKER$_FORGE_AWK_HEADING"'
+    BEGIN { lab = ENVIRON["FL_LABEL"] }
+    {
+      line[NR] = $0; nl = norm($0); h = nl
+      before = rgn; f = fenced(nl)
+      if (f) { kind[NR] = "f"; next }   # a fence line or a line inside a fence: plain text
+      if (before == "" && rgn != "") { kind[NR] = "s"; next }   # a region start marker
+      if (before != "") { kind[NR] = "r"; next }                # inside a region, end marker included
+      if (nl == "") { kind[NR] = "b"; next }
+      lv = hlevel(h)
+      if (lv) { kind[NR] = "h"; lvl[NR] = lv; if (htext == lab) { nt++; t = NR } ; next }
+      kind[NR] = "t"
+    }
+    END {
+      if (nt == 0) exit 107
+      if (nt > 1) exit 109
+      L = lvl[t]; e = NR + 1
+      for (i = t + 1; i <= NR; i++)
+        if (kind[i] == "s" || (kind[i] == "h" && lvl[i] <= L)) { e = i; break }
+      anchor = 0; ph = 0; first = 1
+      for (i = t + 1; i < e; i++) {
+        k = kind[i]
+        if (k == "b") { first = 1; continue }
+        if (first) {   # the first line of a block decides who owns all of it
+          first = 0
+          if (norm(line[i]) !~ /\(gate-written, round [0-9]+\)$/) {
+            if (norm(line[i]) == "_No response_" && (i + 1 >= e || kind[i + 1] == "b")) {
+              if (!ph) ph = i
+              drop[i] = 1; continue
+            }
+            exit 108   # WRITE ONCE: author text in the section
+          }
+        }
+        anchor = i
+      }
+      if (anchor) last = anchor; else if (ph) last = ph - 1; else last = t
+      for (i = 1; i <= last; i++) if (!drop[i]) print line[i]
+      if (anchor || !ph) print ""
+      while ((getline c < ENVIRON["FL_CONTENT_FILE"]) > 0) print c
+      if (e <= NR) { print ""; for (i = e; i <= NR; i++) print line[i] }
+    }
+  ' > "$out" || rc=$?
+  _forge_tmp_done "$tmp"
+  case "$rc" in
+    0) ;;
+    107) _forge_tmp_done "$out"
+         echo "forge-lib: issue #$n has no '$label' heading line outside fences and regions; refusing" >&2
+         return 107 ;;
+    108) _forge_tmp_done "$out"
+         echo "forge-lib: issue #$n: section '$label' already holds author text (WRITE ONCE); refusing" >&2
+         return 108 ;;
+    109) _forge_tmp_done "$out"
+         echo "forge-lib: issue #$n has the '$label' heading more than once; refusing" >&2
+         return 109 ;;
+    *)   _forge_tmp_done "$out"
+         echo "forge-lib: could not append to issue #$n (awk exited $rc); nothing was sent" >&2
+         return 2 ;;
+  esac
+  _forge_body_write forge_body_section_append "$n" "$out" "$body"; rc=$?
   _forge_tmp_done "$out"
   return "$rc"
 }
