@@ -39,10 +39,11 @@ If the panel keeps showing "Disconnected from log stream. Reconnecting...", look
 - **`WebSocket handshake refused`, status 401**: the ticket was missing, already used or older than 30 seconds. A ticket is spent by any handshake attempt, including a refused one, so a retry always asks for a new one.
 - **status 403, Origin not allowed**: the `Origin` header does not match the `Host` header the service received. The usual cause is a reverse proxy that rewrites `Host`: nginx `proxy_set_header Host $host;` drops a non-default port (the browser says `example.com:8443`, the service sees `example.com`). Use `proxy_set_header Host $http_host;` so the original Host is passed through. Only if the page really is served from a different origin than the one the browser connects to, add that origin to `dashboard.allowedOrigins` (see [CONFIG.md](CONFIG.md)).
 - **status 429**: more than 10 log streams are open from one address (every browser tab holds one). Behind a reverse proxy, set `healthCheck.trustProxy` so the count is per real client instead of per proxy.
+- **A button returns 403 `origin_rejected`** (Sync now, Dismiss, Reset history, Test notification): the browser sent an `Origin` (or `Referer`) that does not match the `Host` the service received, and it is not in `dashboard.allowedOrigins`. The cause and the fix are the same as for the status 403 item above: pass the original Host through the proxy (`proxy_set_header Host $http_host;`) or add the page origin to `dashboard.allowedOrigins`. Requests without browser headers (curl, Home Assistant) are not affected.
 
 ## DNS rebinding with `auth.type: none`
 
-The Origin check compares `Origin` with `Host`. A DNS rebinding attack makes both name the attacker's domain while it resolves to your service, so the check passes. With `dashboard.auth.type: none` that exposes the live log stream and every dashboard page to a web page open in a browser on the same network. There is no Host allowlist (it would need a new setting, and the maintainer has not chosen one). If the dashboard is reachable from browsers that visit untrusted sites, do not leave auth at `none`: use `basic` or `token`, which a rebinding page cannot supply, or bind to `127.0.0.1` behind a proxy that only forwards your own host name.
+The Origin check compares `Origin` with `Host`. A DNS rebinding attack makes both name the attacker's domain while it resolves to your service, so the check passes. With `dashboard.auth.type: none` that exposes the live log stream, every dashboard page and the four state-changing POSTs (`sync`, `dismiss-error`, `reset-history`, `test-notification`) to a web page open in a browser on the same network. There is no Host allowlist (it would need a new setting, and the maintainer has not chosen one). If the dashboard is reachable from browsers that visit untrusted sites, do not leave auth at `none`: use `basic` or `token`, which a rebinding page cannot supply, or bind to `127.0.0.1` behind a proxy that only forwards your own host name.
 
 ## Locked out after failed logins
 
@@ -65,11 +66,11 @@ Served at `GET /api/dashboard/accounts` (subject to the dashboard's auth setting
 
 ## Payments tab
 
-The **Payments** tab shows what the [missing-payment alerts](SCHEDULE_ALERTS.md) concluded for every watched schedule. It is read-only (toggling, muting and editing are separate features) and, like the account list, it renders **without a connection to Actual**: it reads the snapshot each sync saves, through `GET /api/dashboard/payments`. It is therefore as fresh as the last sync, and the "as of" line says when that was.
+The **Payments** tab shows what the [missing-payment alerts](SCHEDULE_ALERTS.md) concluded for every watched schedule. The states are always the real evaluation result; the [controls](#turning-alerts-off-and-muting) change only whether notifications are sent. Like the account list, the tab renders **without a connection to Actual**: it reads the snapshot each sync saves, through `GET /api/dashboard/payments`. It is therefore as fresh as the last sync, and the "as of" line says when that was.
 
 ![Payments tab, a server with alerts not configured](screenshots/dashboard-payments-empty.png)
 
-**Columns.** State, Name, Cadence (Actual's own wording), Account, expected Amount, Next due, Deadline, Last alert (the last alert actually sent) and Source. The button before a name opens the last 6 occurrences, each with its state, received date and amount, and "(+3d)" for a late one. Below 768 px rows become cards and Account, Last alert and Source move into that expanded view.
+**Columns.** State, Name, Cadence (Actual's own wording), Account, expected Amount, Next due, Deadline, Last alert (the last alert actually sent), Source and Control (see below). The button before a name opens the last 6 occurrences, each with its state, received date and amount, and "(+3d)" for a late one. Below 768 px rows become cards and Account, Last alert and Source move into that expanded view.
 
 **States.** The pill text is always shown, so colour is never the only signal.
 
@@ -99,8 +100,31 @@ Rows are sorted attention first, then late, upcoming, received, skipped; within 
 
 ![Payments tab](screenshots/dashboard-payments.png)
 
+### Turning alerts off and muting
+
+The last column, **Control**, switches an alert off or on and mutes it until a date. Changes apply from the next sync, with no restart, and are stored in the sync-history database (the configuration file is never rewritten). They need `healthCheck.dashboard.allowConfigWrites: true` and dashboard auth other than `none`; see [CONFIG.md](CONFIG.md).
+
+![Payments tab with one alert muted](screenshots/dashboard-payments-muted.png)
+
+- **The switch** (On or Off, a real switch for assistive technology) turns the alert's notifications off or on. Switching off sends nothing and writes no record; switching on delivers what is still open at the next sync.
+- **Mute...** opens a form under the row: pick the date the mute ends and give a **reason** (required, up to 200 characters), then Mute (Enter saves, Esc cancels). The alert is still evaluated while muted and the tab keeps showing the real state; nothing is sent until the end of that day, and then **one summary message** per destination lists what happened during the mute. **Unmute** ends a mute early and sends no summary.
+- **The badge** beside the state pill, never in place of it, reads "Muted until <date>" (the reason is in its tooltip), "Mute ended, summary pending" until the summary has gone out, or "Disabled in config" for an alert with `enabled: false` in `config.json`. A config-disabled alert has no switch and cannot be muted or switched on here; only an old mute can still be cleared.
+- **A rule that matches several schedules** (`schedulePrefix`) has one switch and one mute for the whole rule. They sit on the first visible row of that rule, with "Applies to N schedules"; the other rows show only the badge.
+- **Read-only dashboards.** When changes are not allowed the controls are shown but disabled, with a tooltip naming the setting to change ("Changes from the dashboard are off. Set healthCheck.dashboard.allowConfigWrites to true." or "Changes from the dashboard need dashboard authentication (basic or token).").
+- **Errors** (a refused or failed request) put the switch back to its stored state and are announced in a message above the table, which a refresh does not erase. An open mute form keeps what you typed through filters, search and refreshes, and closes if its alert leaves the snapshot.
+
+The Settings tab has an **Orphaned alert overrides** card listing overrides whose alert or server is no longer in the configuration (for example after renaming an alert id), each with a Delete button. They have no effect on delivery; delete them to clear the stored reason.
+
 Enable dashboard auth when `scheduleAlerts` is used: with the default `auth.type: none` this tab and its data are open to anyone who can reach the port.
 
 ## Behind a reverse proxy
 
 If nginx, Traefik or Caddy sits in front of the dashboard, set `healthCheck.trustProxy` (usually `1`, one proxy) so the per-client rate limit and the auth-failure log see the real client IP instead of the proxy's. Keep `dashboard.auth` enabled, and do not also publish the port directly. See [CONFIG.md](CONFIG.md#healthcheck-optional) for the accepted values and [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#1-security) for an nginx example, including the `/ws/logs` location.
+
+## Configuration changes
+
+The Settings tab lists the most recent configuration changes (newest first): when, which server, the action, the target, the client address and the changed fields. Secrets (passwords, tokens, API keys, webhook URLs, URLs with credentials) are shown as `[redacted]`. A history reset keeps this list and adds one `history_reset` entry. Entries are purged with the sync history after `retentionDays`. The same data is available at `GET /api/dashboard/config-audit?limit=N` (1 to 200, default 50).
+
+The dashboard never changes configuration unless `dashboard.allowConfigWrites` is `true` and auth is not `none`; see [CONFIG.md](CONFIG.md).
+
+![Configuration changes list on the Settings tab](screenshots/dashboard-settings-audit.png)

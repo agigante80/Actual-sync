@@ -21,6 +21,7 @@
  */
 
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
 const { startFixtureServer, FIXTURE_NOW } = require('./index');
 
@@ -114,6 +115,22 @@ async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
       if (i !== -1) overrides.splice(i, 1);
     };
   };
+  // Record every CSP violation on every page, registered before any page
+  // script runs so none is missed. withFixture fails on a leftover one. (#289)
+  // Collected on the Node side (page.__cspViolations) because window state is
+  // per document: a violation followed by another page.goto would be lost with
+  // the old document. The in-page window.__cspViolations stays for specs that
+  // waitForFunction on it. (#289)
+  page.__cspViolations = [];
+  await page.exposeFunction('__reportCsp', (v) => { page.__cspViolations.push(v); });
+  await page.evaluateOnNewDocument(() => {
+    window.__cspViolations = [];
+    document.addEventListener('securitypolicyviolation', (e) => {
+      const v = `${e.violatedDirective} blocked ${e.blockedURI || e.sample || 'inline'}`;
+      window.__cspViolations.push(v);
+      if (typeof window.__reportCsp === 'function') window.__reportCsp(v);
+    });
+  });
   await page.setRequestInterception(true);
   page.on('request', (req) => {
     const url = req.url();
@@ -135,7 +152,10 @@ async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
       return;
     }
 
-    if (baseUrl && url.startsWith(baseUrl)) {
+    // A data: URL is decoded in the browser and never reaches the network,
+    // e.g. Chrome's own calendar icon for <input type="date">. Aborting it
+    // would report a page that made no external request at all. (#261)
+    if ((baseUrl && url.startsWith(baseUrl)) || url.startsWith('data:')) {
       req.continue();
       return;
     }
@@ -237,21 +257,54 @@ async function saveFailureArtifacts({ page, fixture, testName }) {
  */
 async function withFixture(stateName, fn, options = {}) {
   const { fixtureOverrides, testName } = options;
-  const fixture = await startFixtureServer(stateName, fixtureOverrides);
-  const browser = await launchBrowser();
-  const page = await openPage(browser, { baseUrl: fixture.url, now: fixture.now });
   const name = testName
     || (typeof expect !== 'undefined' && expect.getState().currentTestName)
     || stateName;
 
+  // Everything that can fail sits inside the try, with the handles declared
+  // first, so a launchBrowser/openPage failure still stops the fixture server
+  // and its heartbeat instead of leaking them. (#289)
+  let fixture;
+  let page;
   try {
-    return await fn({ page, fixture });
+    fixture = await startFixtureServer(stateName, fixtureOverrides);
+    const browser = await launchBrowser();
+    page = await openPage(browser, { baseUrl: fixture.url, now: fixture.now });
+
+    const result = await fn({ page, fixture });
+
+    // A spec must only talk to its own fixture server. Two layers catch a
+    // request that leaves it: (1) openPage's interception aborts and records
+    // any foreign request (pages without a CSP, e.g. about:blank), and (2) on
+    // dashboard pages the CSP (default-src/connect-src 'self') makes Chrome
+    // refuse the request before interception sees it, so it shows up as a
+    // recorded securitypolicyviolation instead. Both fail the spec here. A spec
+    // that expects either can assert and clear the list (page.__externalRequests
+    // or page.__cspViolations) before returning. (#289)
+    if (page.__externalRequests.length) {
+      throw new Error(
+        `withFixture: ${page.__externalRequests.length} request(s) left the fixture server and were blocked:\n`
+        + page.__externalRequests.map((u) => `  ${u}`).join('\n')
+      );
+    }
+    // The violation report reaches Node through the exposed binding, which is
+    // asynchronous: one page round trip lets a report from fn's last step land
+    // before the list is read. Without it a spec ending on the violation passes.
+    if (!page.isClosed()) await page.evaluate(() => new Promise((r) => setTimeout(r, 0))).catch(() => {});
+    const violations = page.__cspViolations;
+    if (violations.length) {
+      throw new Error(
+        `withFixture: ${violations.length} CSP violation(s) were recorded on the page:\n`
+        + violations.map((v) => `  ${v}`).join('\n')
+      );
+    }
+    return result;
   } catch (err) {
     await saveFailureArtifacts({ page, fixture, testName: name });
     throw err;
   } finally {
-    await page.close().catch(() => {});
-    await fixture.close().catch(() => {});
+    if (page) await page.close().catch(() => {});
+    if (fixture) await fixture.close().catch(() => {});
   }
 }
 
@@ -271,7 +324,41 @@ async function withDashboard(stateName, fn, options = {}) {
   }, rest);
 }
 
+/**
+ * Send a raw Node http request to the fixture server with caller-chosen
+ * headers. A browser page cannot be made to send a foreign Origin (it is a
+ * forbidden header, and openPage() aborts every other origin), so the
+ * cross-origin specs (#259) go through Node instead.
+ * @param {string} baseUrl - fixture.url
+ * @param {{ method?: string, path: string, headers?: Object, body?: string }} options
+ * @returns {Promise<{ status: number, headers: Object, body: any }>}
+ */
+function rawRequest(baseUrl, { method = 'GET', path: reqPath, headers = {}, body } = {}) {
+  const target = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: target.hostname,
+      port: target.port,
+      path: reqPath,
+      method,
+      headers: body === undefined ? headers : { 'Content-Length': Buffer.byteLength(body), ...headers }
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        let parsed = data;
+        try { parsed = JSON.parse(data); } catch { /* not JSON */ }
+        resolve({ status: res.statusCode, headers: res.headers, body: parsed });
+      });
+    });
+    req.on('error', reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
 module.exports = {
+  rawRequest,
   launchBrowser,
   closeBrowser,
   openPage,

@@ -1,7 +1,7 @@
 /**
  * Manual sync trigger and error dismissal (#263).
  */
-const { launchBrowser, closeBrowser, withDashboard } = require('./fixtures/browser');
+const { launchBrowser, closeBrowser, withDashboard, rawRequest } = require('./fixtures/browser');
 
 describe('dashboard manual sync and dismiss (#263)', () => {
   let browser;
@@ -87,6 +87,29 @@ describe('dashboard manual sync and dismiss (#263)', () => {
         const data = await res.json();
         return data.servers['Personal Budget'].errorDismissed === true;
       }, {}, `${fixture.url}/api/dashboard/status`);
+    });
+  });
+  test('refuses a forged cross-origin POST and never starts the sync (#259)', async () => {
+    await withDashboard('healthy', async ({ fixture }) => {
+      const body = JSON.stringify({ server: 'Main Budget' });
+      const forged = await rawRequest(fixture.url, {
+        method: 'POST',
+        path: '/api/dashboard/sync',
+        headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+        body
+      });
+      expect(forged.status).toBe(403);
+      expect(forged.body).toEqual({ error: 'origin_rejected' });
+      expect(fixture.calls.syncBank).toEqual([]);
+
+      // The same request without an Origin (curl, Home Assistant) still works.
+      const headerless = await rawRequest(fixture.url, {
+        method: 'POST',
+        path: '/api/dashboard/sync',
+        headers: { 'Content-Type': 'application/json' },
+        body
+      });
+      expect(headerless.status).toBe(200);
     });
   });
 });

@@ -561,8 +561,8 @@ module.exports = [
         id: '188-panel-never-loads', ticket: '#188',
         desc: 'the endpoint exists but the dashboard never calls it — the #182 mistake again',
         file: 'src/services/dashboard.js',
-        anchor: '    loadNotificationStats();\n    try {',
-        mutant: '    try {',
+        anchor: '    loadNotificationStats();\n    loadConfigAudit();\n    try {',
+        mutant: '    loadConfigAudit();\n    try {',
         tests: 'docDriftGuards'
     },
 
@@ -1149,7 +1149,7 @@ module.exports = [
         id: '242-ws-origin-unchecked', ticket: '#242',
         desc: 'the handshake skips the Origin check, reopening Cross-Site WebSocket Hijacking',
         file: 'src/services/healthCheck.js',
-        anchor: "    if (info.origin && !this.isAllowedWsOrigin(info.origin, req.headers.host)) {",
+        anchor: "    if (info.origin && !this.isAllowedOrigin(info.origin, req.headers.host)) {",
         mutant: "    if (false) {",
         tests: 'healthCheck'
     },
@@ -1288,8 +1288,8 @@ module.exports = [
         id: '246-await-between-check-and-count', ticket: '#246',
         desc: 'an await between reading the count and adding a failure lets pipelined guesses through',
         file: 'src/services/healthCheck.js',
-        anchor: "    return (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n",
-        mutant: "    return async (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n        await null;\n",
+        anchor: "    const dashboardAuth = (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n",
+        mutant: "    const dashboardAuth = async (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n        await new Promise((resolve) => setImmediate(resolve));\n",
         tests: 'healthCheck'
     },
 
@@ -1510,11 +1510,11 @@ module.exports = [
     },
     {
         id: '258-ruleUnmatched-reminder-uses-configured-interval', ticket: '#258',
-        desc: 'ruleUnmatched reminders stop using the fixed 1-day interval and instead honor (or skip, when unset) the rule\'s own remindEveryDays',
+        desc: 'ruleUnmatched is treated like a missing reminder again and honors the rule\'s own remindEveryDays (superseded by #356: it is sent once per destination)',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "  const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;",
-        mutant: '  const remindEveryDays = rule.remindEveryDays;',
-        tests: 'scheduleAlertDelivery'
+        anchor: "  if (event.event !== 'missing') return { due: false, lastSentAt: null }; // one row per destination, ever",
+        mutant: "  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return { due: false, lastSentAt: null };",
+        tests: 'scheduleAlert'
     },
     {
         id: '258-disabled-webhook-not-skipped', ticket: '#258',
@@ -1782,8 +1782,8 @@ module.exports = [
         id: '258-r2-m5-resolved-resent-after-already-resolved-here', ticket: '#258',
         desc: 'a resolved event goes back to being resendable to a destination that already has its own resolved row recorded, resending indefinitely instead of once per destination',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: 'due: !resolvedRow,',
-        mutant: 'due: true,',
+        anchor: 'due: !resolvedRow ||',
+        mutant: 'due: true ||',
         tests: 'scheduleAlertDelivery'
     },
     {
@@ -2260,8 +2260,8 @@ module.exports = [
         id: '260-reset-keeps-payment-rows', ticket: '#260',
         desc: 'resetServerHistory leaves the payment snapshot rows behind',
         file: 'src/services/syncHistory.js',
-        anchor: '        delPaymentItems.run(s);',
-        mutant: '        void s;',
+        anchor: '          payment_alert_status: delPaymentItems.run(s).changes,',
+        mutant: '          payment_alert_status: (void s, 0),',
         tests: 'paymentSnapshot'
     },
     {
@@ -2456,5 +2456,925 @@ module.exports = [
         anchor: 'if (liveEl.textContent !== liveText) liveEl.textContent',
         mutant: 'if (true) liveEl.textContent',
         tests: 'dashboardPayments'
+    },
+    {
+        id: "259-origin-unchecked-dismiss-error", ticket: '#259',
+        desc: "the dismiss-error POST drops the Origin check, reopening cross-site request forgery",
+        file: "src/services/healthCheck.js",
+        anchor: "this.app.post('/api/dashboard/dismiss-error', this.dashboardAuth(), this.checkOrigin(), (req, res) =>",
+        mutant: "this.app.post('/api/dashboard/dismiss-error', this.dashboardAuth(), (req, res) =>",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-origin-unchecked-sync", ticket: '#259',
+        desc: "the sync POST drops the Origin check, reopening cross-site request forgery",
+        file: "src/services/healthCheck.js",
+        anchor: "this.app.post('/api/dashboard/sync', this.dashboardAuth(), this.checkOrigin(), async",
+        mutant: "this.app.post('/api/dashboard/sync', this.dashboardAuth(), async",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-origin-unchecked-reset-history", ticket: '#259',
+        desc: "the reset-history POST drops the Origin check, reopening cross-site request forgery",
+        file: "src/services/healthCheck.js",
+        anchor: "this.app.post('/api/dashboard/reset-history', this.dashboardAuth(), this.checkOrigin(), async",
+        mutant: "this.app.post('/api/dashboard/reset-history', this.dashboardAuth(), async",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-origin-unchecked-test-notification", ticket: '#259',
+        desc: "the test-notification POST drops the Origin check, reopening cross-site request forgery",
+        file: "src/services/healthCheck.js",
+        anchor: "this.app.post('/api/dashboard/test-notification', this.dashboardAuth(), this.checkOrigin(), async",
+        mutant: "this.app.post('/api/dashboard/test-notification', this.dashboardAuth(), async",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-origin-before-auth", ticket: '#259',
+        desc: "the sync POST checks Origin before authentication, leaking the origin policy to anonymous callers",
+        file: "src/services/healthCheck.js",
+        anchor: "this.app.post('/api/dashboard/sync', this.dashboardAuth(), this.checkOrigin(), async",
+        mutant: "this.app.post('/api/dashboard/sync', this.checkOrigin(), this.dashboardAuth(), async",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-sec-fetch-accepted", ticket: '#259',
+        desc: "a request with Sec-Fetch-Site but no Origin or Referer is accepted",
+        file: "src/services/healthCheck.js",
+        anchor: "ok = req.headers['sec-fetch-site'] === undefined;",
+        mutant: "ok = true;",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-referer-ignored", ticket: '#259',
+        desc: "the Referer fallback is dropped, so a header-stripped cross-site POST passes",
+        file: "src/services/healthCheck.js",
+        anchor: "const candidate = origin !== undefined ? origin : referer;",
+        mutant: "const candidate = origin;",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-redaction-disabled", ticket: '#259',
+        desc: "audit changes are stored without redaction",
+        file: "src/services/syncHistory.js",
+        anchor: "const text = JSON.stringify(redactValue(source, []));",
+        mutant: "const text = JSON.stringify(source);",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-redaction-exact-match", ticket: '#259',
+        desc: "redaction only hits keys that equal a denylist word, not keys containing one",
+        file: "src/services/syncHistory.js",
+        anchor: "CONFIG_AUDIT_REDACT_SUBSTRINGS.some(sub => full.includes(sub))",
+        mutant: "CONFIG_AUDIT_REDACT_SUBSTRINGS.some(sub => full === sub)",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-audit-size-uncapped", ticket: '#259',
+        desc: "an oversized audit entry is stored whole instead of truncated",
+        file: "src/services/syncHistory.js",
+        anchor: "if (Buffer.byteLength(text) <= CONFIG_AUDIT_MAX_BYTES) return text;",
+        mutant: "return text;",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-reset-server-deletes-audit", ticket: '#259',
+        desc: "a per-server history reset erases the configuration audit",
+        file: "src/services/syncHistory.js",
+        anchor: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');\n      // config_audit is deliberately",
+        mutant: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');\n      this.db.prepare('DELETE FROM config_audit').run();\n      // config_audit is deliberately",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-reset-all-deletes-audit", ticket: '#259',
+        desc: "a full history reset erases the configuration audit",
+        file: "src/services/syncHistory.js",
+        anchor: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');\n",
+        mutant: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');\n      this.db.prepare('DELETE FROM config_audit').run();\n",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-audit-never-purged", ticket: '#259',
+        desc: "config_audit rows are never purged by retention",
+        file: "src/services/syncHistory.js",
+        anchor: "DELETE FROM config_audit WHERE at < ?",
+        mutant: "DELETE FROM config_audit WHERE 0 AND at < ?",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-limit-unvalidated", ticket: '#259',
+        desc: "config-audit accepts any limit string",
+        file: "src/services/healthCheck.js",
+        anchor: "limit = typeof raw === 'string' && /^\\d{1,3}$/.test(raw) ? Number(raw) : NaN;",
+        mutant: "limit = Number(raw);",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-limit-no-upper-bound", ticket: '#259',
+        desc: "config-audit has no upper bound on limit",
+        file: "src/services/healthCheck.js",
+        anchor: "if (!(limit >= 1 && limit <= 200)) {",
+        mutant: "if (!(limit >= 1)) {",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-body-cap-raised", ticket: '#259',
+        desc: "the config write body cap is raised from 16kb",
+        file: "src/services/healthCheck.js",
+        anchor: "express.json({ limit: '16kb' })",
+        mutant: "express.json({ limit: '10mb' })",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-writes-default-on", ticket: '#259',
+        desc: "config writes are enabled when allowConfigWrites is unset",
+        file: "src/services/healthCheck.js",
+        anchor: "if (this.dashboardConfig.allowConfigWrites !== true) return 'disabled';",
+        mutant: "if (this.dashboardConfig.allowConfigWrites === false) return 'disabled';",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-writes-allowed-auth-none", ticket: '#259',
+        desc: "config writes are allowed while auth is none",
+        file: "src/services/healthCheck.js",
+        anchor: "if ((this.dashboardConfig.auth?.type || 'none') === 'none') return 'auth-none';",
+        mutant: "if (false) return 'auth-none';",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-config-write-chain-no-gate", ticket: '#259',
+        desc: "configWrite() omits requireConfigWrites",
+        file: "src/services/healthCheck.js",
+        anchor: "      this.requireConfigWrites(),\n      configBody,",
+        mutant: "      configBody,",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-content-type-unchecked", ticket: '#259',
+        desc: "a non-JSON config write body is no longer rejected with 415",
+        file: "src/services/healthCheck.js",
+        anchor: "if (!req.is('application/json')) {",
+        mutant: "if (false) {",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-redact-email-auth-parent", ticket: '#259',
+        desc: "audit redaction stops covering user/pass under the real notifications.email.auth path",
+        file: "src/services/syncHistory.js",
+        anchor: "a.includes('smtp') || a.includes('email') || a === 'auth'",
+        mutant: "a.includes('smtp')",
+        tests: "syncHistory"
+    },
+    {
+        id: "259-unmapped-4xx-html", ticket: '#259',
+        desc: "an unmapped 4xx body-parser error falls through to Express's HTML stack page",
+        file: "src/services/healthCheck.js",
+        anchor: "if (err && err.fromBodyParser && status >= 400 && status < 500 && !res.headersSent) {",
+        mutant: "if (false) {",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-final-handler-leaks", ticket: '#259',
+        desc: "the final error handler passes the error on, so Express renders the stack",
+        file: "src/services/healthCheck.js",
+        anchor: "if (res.headersSent) return next(err);\n      // A 4xx",
+        mutant: "return next(err);\n      // A 4xx",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-unknown-server", ticket: '#259',
+        desc: "resetting an unknown server answers 200 and writes an audit row again",
+        file: "src/services/healthCheck.js",
+        anchor: "if (!known) {",
+        mutant: "if (false) {",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-server-name-uncapped", ticket: '#259',
+        desc: "the reset-history server name length cap is removed",
+        file: "src/services/healthCheck.js",
+        anchor: "server.length > 200",
+        mutant: "server.length > 2000000",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-body-error-unmarked", ticket: '#259',
+        desc: "any 4xx is relabelled invalid_body, hiding a route's own 409/404",
+        file: "src/services/healthCheck.js",
+        anchor: "if (err && err.fromBodyParser && status >= 400",
+        mutant: "if (err && status >= 400",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-final-handler-4xx-500", ticket: '#259',
+        desc: "the final error handler answers a route's 4xx as 500",
+        file: "src/services/healthCheck.js",
+        anchor: "if (status >= 400 && status < 500) {\n        return res.status(status).json({ error: 'request_error' });",
+        mutant: "if (false) {\n        return res.status(status).json({ error: 'request_error' });",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-known-history-only", ticket: '#259',
+        desc: "a retired server with only non-history rows is 404 again",
+        file: "src/services/syncHistory.js",
+        anchor: "OR EXISTS (SELECT 1 FROM account_metadata WHERE server_name = @s)",
+        mutant: "OR 0",
+        tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-nonstring-server", ticket: '#259',
+        desc: "a non-string server is no longer rejected with invalid_server",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof server !== 'string') {",
+        mutant: "if (false) {",
+        tests: "dashboardWriteSecurity"
+    },
+    // ---- #296: low findings from the #258 review ----------------------------
+    {
+        id: '296-cannotcheck-one-wording-for-all-reasons', ticket: '#296',
+        desc: 'interval-violation and error cannotCheck render the bank-connection text again',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  cannotCheck: '{{#if (eq reason \"interval-violation\")}}",
+        mutant: "  cannotCheck: '{{#if (eq reason \"never-matches\")}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-error-reason-uses-bank-wording', ticket: '#296',
+        desc: 'the error reason falls through to the bank-connection wording',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{else if (eq reason \"error\")}}",
+        mutant: "{{else if (eq reason \"never-matches\")}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-reason-not-in-context', ticket: '#296',
+        desc: 'the cannotCheck reason is no longer passed to the template',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    reason: event.reason || null,",
+        mutant: "    reason: null,",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-refund-sign-ignored', ticket: '#296',
+        desc: 'an unlinked opposite-sign refund is accepted by the wrong-amount fallback and the late pass',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "        .filter((c) => c.match.linked || signCompatible(c.tx.amount, schedule.amount))",
+        mutant: "        .filter((c) => c.match.linked || signCompatible(c.tx.amount, schedule.amount) || true)",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-tolerance-sign-ignored', ticket: '#296',
+        desc: 'amountWithinTolerance ignores the sign, so a sibling schedule of opposite sign hijacks the payment',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  if (!signCompatible(amount, expected)) return false;",
+        mutant: "  if (false) return false;",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-zero-amount-rejects-all', ticket: '#296',
+        desc: 'a zero-amount schedule drops every non-zero transaction (wrongAmount becomes missing)',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  return bounds.some((b) => b === 0 || Math.sign(txAmount) === Math.sign(b));",
+        mutant: "  return bounds.some((b) => Math.sign(txAmount) === Math.sign(b));",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-range-unchecked', ticket: '#296',
+        desc: 'a range schedule skips the sign check, so a positive refund is taken as late or wrongAmount',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1, scheduleAmount.num2] : [scheduleAmount];",
+        mutant: "  if (typeof scheduleAmount === 'object') return true;\n  const bounds = [scheduleAmount];",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-range-first-bound-only', ticket: '#296',
+        desc: 'a range spanning zero only honours its first bound, rejecting a sign matching the other bound',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1, scheduleAmount.num2] : [scheduleAmount];",
+        mutant: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1] : [scheduleAmount];",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-never-synced-wording', ticket: '#296',
+        desc: 'a never-synced account renders "has not synced since  (deadline" with an empty date',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{#if last_sync}}has not synced since {{last_sync}}{{else}}has never synced{{/if}}",
+        mutant: "has not synced since {{last_sync}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-redelivery-after-restart', ticket: '#296',
+        desc: 'a sent missing alert is considered due again (no de-duplication across syncs and restarts)',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  if (!latest) return { due: true, lastSentAt: null };\n  // #261: held back by a mute.",
+        mutant: "  if (!latest || true) return { due: true, lastSentAt: null };\n  // #261: held back by a mute.",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '296-resolved-sent-every-sync', ticket: '#296',
+        desc: 'a resolved alert is not de-duplicated, so it repeats on every later sync',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };",
+        mutant: "    return { due: true, lastSentAt: null };",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '296-never-synced-account-reports-missing', ticket: '#296',
+        desc: 'an account with no last_sync is treated as synced, so a missing payment is reported',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "const stale = !lastSync || today.diff(lastSync, 'days') > binding.staleAfterDays;\n        const lastSyncAfterDeadline = lastSync && lastSync.isAfter(occ.deadline, 'day');",
+        mutant: "const stale = lastSync ? today.diff(lastSync, 'days') > binding.staleAfterDays : false;\n        const lastSyncAfterDeadline = !lastSync || lastSync.isAfter(occ.deadline, 'day');",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '332-digest-lookup-failure-rejects-batch', ticket: '#332',
+        desc: "a failing per-destination ledger read in digest mode rejects the whole deliver() batch again instead of withholding only that channel",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      logger.warn('Schedule alert ledger lookup failed; destination withheld until the next sync', {",
+        mutant: "      throw error;\n      logger.warn('Schedule alert ledger lookup failed; destination withheld until the next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-lookup-failure-sends-anyway', ticket: '#332',
+        desc: "a failing digest ledger read no longer skips the channel, so the loop carries on with nothing due or a stale state",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        server, channel, error: error.message\n      });\n      continue;\n    }\n    if (dueItems.length === 0) continue;",
+        mutant: "        server, channel, error: error.message\n      });\n    }\n    if (dueItems.length === 0) continue;",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-record-failure-rejects-batch', ticket: '#332',
+        desc: "a failing ledger write after a successful digest send rejects deliver() again and stops the remaining channels",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      } catch (error) {\n        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {",
+        mutant: "      } catch (error) {\n        throw error;\n        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-unrecorded-item-counted-sent', ticket: '#332',
+        desc: "an item whose ledger write failed is still reported as sent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        sentKeys.add(eventKey(item.event));\n      } catch (error) {",
+        mutant: "        sentKeys.add(eventKey(item.event));\n      } catch (error) {\n        sentKeys.add(eventKey(item.event));",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-write-failure-stops-channel-items', ticket: '#332',
+        desc: "a ledger write failure in digest mode stops recording the remaining items on the same channel",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "the row may be resent next sync', {\n          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n      }",
+        mutant: "the row may be resent next sync', {\n          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n        break;\n      }",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-immediate-write-failure-aborts-destinations', ticket: '#332',
+        desc: "a ledger write failure after a successful immediate send goes to the outer catch again and stops the remaining destinations",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {\n            server, alertId: event.alertId, event: event.event, channel: destination.channel",
+        mutant: "          throw error;\n          logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {\n            server, alertId: event.alertId, event: event.event, channel: destination.channel",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-immediate-unrecorded-destination-counted-sent', ticket: '#332',
+        desc: "an immediate destination whose ledger write failed still makes the event count as sent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          sentAny = true;\n        } catch (error) {",
+        mutant: "          sentAny = true;\n        } catch (error) {\n          sentAny = true;",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: "261-summary-bounded-by-mute-end", ticket: '#261',
+        desc: "the mute summary only covers rows recorded before the end of the mute day",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "const mutedRows = history.listMutedRows({ server, alertId, since: override.mutedFrom || undefined });",
+        mutant: "const mutedRows = history.listMutedRows({ server, alertId, since: override.mutedFrom || undefined, until: muteEndsAt(override.mutedUntil, timezone) });",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-reason-only-unvalidated", ticket: '#261',
+        desc: "a reason-only PUT skips the trim, required and length check",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof body.reason === 'string' && !('mutedUntil' in body) && before && before.mutedUntil) {",
+        mutant: "if (false) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-reason-checked-unmuted", ticket: '#261',
+        desc: "a reason-only check also rejects a request on an alert that is not muted",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof body.reason === 'string' && !('mutedUntil' in body) && before && before.mutedUntil) {",
+        mutant: "if (typeof body.reason === 'string' && body.mutedUntil !== null) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-noop-change-logged", ticket: '#261',
+        desc: "a no-op override change still logs 'Configuration change recorded'",
+        file: "src/services/syncHistory.js",
+        anchor: "if (audited) this.logger.info('Configuration change recorded'",
+        mutant: "if (true) this.logger.info('Configuration change recorded'",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-override-change-not-atomic", ticket: '#261',
+        desc: "the override change and its audit row run outside one transaction",
+        file: "src/services/syncHistory.js",
+        anchor: "    const apply = this.db.transaction(() => {\n      if (dropMutedRows)",
+        mutant: "    const apply = ((fn) => fn)(() => {\n      if (dropMutedRows)",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-mute-ends-end-of-day", ticket: '#261',
+        desc: "a mute ends at the start of the mutedUntil day instead of the end of it",
+        file: "src/lib/scheduleAlertRules.js",
+        anchor: ".add(1, 'day').startOf('day')",
+        mutant: ".add(0, 'day').startOf('day')",
+        tests: "scheduleAlertRules"
+    },
+    {
+        id: "261-config-lock-ignored", ticket: '#261',
+        desc: "a config-locked alert still counts as enabled",
+        file: "src/lib/scheduleAlertRules.js",
+        anchor: "enabled: !lockedByConfig && o.enabled !== false",
+        mutant: "enabled: o.enabled !== false",
+        tests: "scheduleAlertRules"
+    },
+    {
+        id: "261-mute-never-active", ticket: '#261',
+        desc: "a mute whose end is in the future is not reported as muted",
+        file: "src/lib/scheduleAlertRules.js",
+        anchor: "now.getTime() < muteEndsAt(mutedUntil, timezone).getTime()",
+        mutant: "now.getTime() > muteEndsAt(mutedUntil, timezone).getTime()",
+        tests: "scheduleAlertRules"
+    },
+    {
+        id: "261-mute-days-unbounded", ticket: '#261',
+        desc: "a mute date beyond 365 days is accepted",
+        file: "src/services/healthCheck.js",
+        anchor: "if (days < 0 || days > 365) return bad",
+        mutant: "if (days < 0) return bad",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-mute-reason-optional", ticket: '#261',
+        desc: "a mute without a reason is accepted",
+        file: "src/services/healthCheck.js",
+        anchor: "if (reason === '') return 'reason_required';",
+        mutant: "",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-mute-extension-resets-start", ticket: '#261',
+        desc: "extending a mute moves its start to now",
+        file: "src/services/healthCheck.js",
+        anchor: "before && before.mutedUntil && before.mutedFrom ? before.mutedFrom : now.toISOString()",
+        mutant: "now.toISOString()",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-early-unmute-keeps-muted-rows", ticket: '#261',
+        desc: "an early unmute leaves the held-back rows in place",
+        file: "src/services/healthCheck.js",
+        anchor: "dropMutedRows: Boolean(before && before.mutedUntil && next.mutedUntil === null),",
+        mutant: "dropMutedRows: false,",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-noop-put-audited", ticket: '#261',
+        desc: "a PUT that changes nothing is still written to the audit trail",
+        file: "src/services/syncHistory.js",
+        anchor: "const audited = Boolean(changes && Object.keys(changes).length > 0);",
+        mutant: "const audited = true;",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-delete-missing-override-ok", ticket: '#261',
+        desc: "DELETE of an unknown override answers 200 instead of 404",
+        file: "src/services/healthCheck.js",
+        anchor: "if (!before) return res.status(404).json({ error: 'override_not_found' });",
+        mutant: "",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-delete-keeps-muted-rows", ticket: '#261',
+        desc: "DELETE of a muted override leaves its muted rows behind",
+        file: "src/services/healthCheck.js",
+        anchor: "dropMutedRows: Boolean(before.mutedUntil),",
+        mutant: "dropMutedRows: false,",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-orphaned-always-false", ticket: '#261',
+        desc: "an override of a removed alert is not flagged orphaned",
+        file: "src/services/healthCheck.js",
+        anchor: "orphaned: !(known.has(o.server) && known.get(o.server).has(o.alertId))",
+        mutant: "orphaned: false",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-default-override-kept", ticket: '#261',
+        desc: "a default-state override (on, not muted) is stored instead of deleted",
+        file: "src/services/syncHistory.js",
+        anchor: "if (enabled !== false && !mutedUntil) {",
+        mutant: "if (false) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-cleanup-purges-muted-rows", ticket: '#261',
+        desc: "the retention cleanup purges the muted rows of an active mute",
+        file: "src/services/syncHistory.js",
+        anchor: "AND o.muted_until IS NOT NULL))",
+        mutant: "AND 1 = 0))",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-expiry-immediate", ticket: '#261',
+        desc: "a stale mute expires with no 7 day grace after its end",
+        file: "src/services/syncHistory.js",
+        anchor: ".tz(timezone).add(7, 'days')",
+        mutant: ".tz(timezone).add(0, 'days')",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-muted-row-counts-as-told", ticket: '#261',
+        desc: "a muted ledger row suppresses the destination like a sent one (no summary, no resend)",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "if (latest.delivery === 'muted') return { due: false, lastSentAt: null };",
+        mutant: "",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-summary-resent-every-sync", ticket: '#261',
+        desc: "the mute-end summary ignores its own ledger row and is sent again",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "event: 'muteEnded' })) continue; // already told",
+        mutant: "event: 'muteEnded' })) void 0; // already told",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-summary-not-recorded", ticket: '#261',
+        desc: "the mute-end summary is not written to the ledger after sending",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "await history.recordScheduleAlert({ ...summaryKey, event: 'muteEnded', delivery: 'sent' });",
+        mutant: "",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-summary-failure-clears-mute", ticket: '#261',
+        desc: "a failed summary send still clears the mute",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "if (!ok) { complete = false; continue; }",
+        mutant: "if (!ok) { continue; }",
+        tests: "scheduleAlertDelivery"
+    },
+
+    // ---- #289: now() seam at per-call sites, port read-back ----------------------
+    {
+        id: '289-e2e-external-request-guard-dropped', ticket: '#289',
+        desc: "withFixture no longer fails when a spec's request was blocked by interception",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "    if (page.__externalRequests.length) {\n      throw new Error(",
+        mutant: "    if (false && page.__externalRequests.length) {\n      throw new Error(",
+        tests: 'e2eHarnessGuard'
+    },
+    {
+        id: '261-e2e-data-url-counted-external', ticket: '#261',
+        desc: "withFixture counts a data: URL as an external request and fails a page that used the date picker",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "url.startsWith(baseUrl)) || url.startsWith('data:')) {",
+        mutant: "url.startsWith(baseUrl)) || false) {",
+        tests: 'e2eHarnessGuard'
+    },
+    {
+        id: '289-e2e-csp-violation-guard-dropped', ticket: '#289',
+        desc: "withFixture no longer fails when a CSP violation was recorded on the page",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "    if (violations.length) {\n      throw new Error(",
+        mutant: "    if (false && violations.length) {\n      throw new Error(",
+        tests: 'e2eHarnessGuard'
+    },
+    {
+        id: '289-e2e-csp-report-round-trip-dropped', ticket: '#289',
+        desc: "withFixture reads the CSP violation list before a report from the spec's last step reaches Node",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "    if (!page.isClosed()) await page.evaluate(() => new Promise((r) => setTimeout(r, 0))).catch(() => {});",
+        mutant: "",
+        tests: 'e2eHarnessGuard'
+    },
+    {
+        id: '289-port-readback-dropped', ticket: '#289',
+        desc: "start() no longer reads the OS-assigned port back, so service.port stays 0 after port: 0",
+        file: 'src/services/healthCheck.js',
+        anchor: "            this.port = this.server.address().port;",
+        mutant: "            void this.server.address().port;",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-health-uptime-real-clock', ticket: '#289',
+        desc: "/health computes uptime from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "this.app.get('/health', (req, res) => {\n      const uptime = Math.floor((this.now().getTime()",
+        mutant: "this.app.get('/health', (req, res) => {\n      const uptime = Math.floor((new Date().getTime()",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-health-timestamp-real-clock', ticket: '#289',
+        desc: "/health stamps its timestamp from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "const health = {\n        status: 'UP',\n        timestamp: this.now().toISOString(),",
+        mutant: "const health = {\n        status: 'UP',\n        timestamp: new Date().toISOString(),",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-metrics-uptime-real-clock', ticket: '#289',
+        desc: "/metrics computes uptime from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "this.app.get('/metrics', (req, res) => {\n      const uptime = Math.floor((this.now().getTime()",
+        mutant: "this.app.get('/metrics', (req, res) => {\n      const uptime = Math.floor((new Date().getTime()",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-metrics-timestamp-real-clock', ticket: '#289',
+        desc: "/metrics stamps its timestamp from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "status: this.getOverallStatus(),\n        timestamp: this.now().toISOString(),",
+        mutant: "status: this.getOverallStatus(),\n        timestamp: new Date().toISOString(),",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-ready-window-real-clock', ticket: '#289',
+        desc: "/ready measures its 60s startup window against the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "(this.now().getTime() - new Date(this.status.startTime).getTime()) < 60000;",
+        mutant: "(new Date().getTime() - new Date(this.status.startTime).getTime()) < 60000;",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-ready-timestamp-real-clock', ticket: '#289',
+        desc: "/ready READY response stamps the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "res.json({ status: 'READY', timestamp: this.now().toISOString() });",
+        mutant: "res.json({ status: 'READY', timestamp: new Date().toISOString() });",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-not-ready-timestamp-real-clock', ticket: '#289',
+        desc: "/ready NOT_READY response stamps the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "status: 'NOT_READY', \n          timestamp: this.now().toISOString(),",
+        mutant: "status: 'NOT_READY', \n          timestamp: new Date().toISOString(),",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-last-sync-time-real-clock', ticket: '#289',
+        desc: "updateSyncStatus stamps lastSyncTime from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "this.status.lastSyncTime = this.now().toISOString();",
+        mutant: "this.status.lastSyncTime = new Date().toISOString();",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-server-version-checked-at-real-clock', ticket: '#289',
+        desc: "updateServerVersion stamps checkedAt from the real clock instead of now()",
+        file: 'src/services/healthCheck.js',
+        anchor: "checkedAt: this.now().toISOString()",
+        mutant: "checkedAt: new Date().toISOString()",
+        tests: 'healthCheckPort'
+    },
+    {
+        id: '289-history-cutoff-real-clock', ticket: '#289',
+        desc: "getHistory measures its days cutoff from the real clock instead of now()",
+        file: 'src/services/syncHistory.js',
+        anchor: "const cutoffDate = this.now();\n        cutoffDate.setDate(cutoffDate.getDate() - filters.days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      query += ' ORDER BY timestamp DESC';",
+        mutant: "const cutoffDate = new Date();\n        cutoffDate.setDate(cutoffDate.getDate() - filters.days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      query += ' ORDER BY timestamp DESC';",
+        tests: 'syncHistory'
+    },
+    {
+        id: '289-statistics-cutoff-real-clock', ticket: '#289',
+        desc: "getStatistics measures its days cutoff from the real clock instead of now()",
+        file: 'src/services/syncHistory.js',
+        anchor: "const cutoffDate = this.now();\n        cutoffDate.setDate(cutoffDate.getDate() - filters.days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      const stmt = this.db.prepare(query);\n      const stats",
+        mutant: "const cutoffDate = new Date();\n        cutoffDate.setDate(cutoffDate.getDate() - filters.days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      const stmt = this.db.prepare(query);\n      const stats",
+        tests: 'syncHistory'
+    },
+    {
+        id: '289-statistics-by-server-cutoff-real-clock', ticket: '#289',
+        desc: "getStatisticsByServer measures its days cutoff from the real clock instead of now()",
+        file: 'src/services/syncHistory.js',
+        anchor: "if (days) {\n        const cutoffDate = this.now();\n        cutoffDate.setDate(cutoffDate.getDate() - days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      query += ' GROUP BY",
+        mutant: "if (days) {\n        const cutoffDate = new Date();\n        cutoffDate.setDate(cutoffDate.getDate() - days);\n        query += ' AND timestamp >= ?';\n        params.push(cutoffDate.toISOString());\n      }\n\n      query += ' GROUP BY",
+        tests: 'syncHistory'
+    },
+    {
+        id: '289-cleanup-cutoff-real-clock', ticket: '#289',
+        desc: "cleanup measures the sync_history retention cutoff from the real clock instead of now()",
+        file: 'src/services/syncHistory.js',
+        anchor: "try {\n      const cutoffDate = this.now();\n      cutoffDate.setDate(cutoffDate.getDate() - this.retentionDays);",
+        mutant: "try {\n      const cutoffDate = new Date();\n      cutoffDate.setDate(cutoffDate.getDate() - this.retentionDays);",
+        tests: 'syncHistory'
+    },
+    {
+        id: '289-schedule-alerts-cutoff-real-clock', ticket: '#289',
+        desc: "cleanup measures the schedule_alerts retention cutoff from the real clock instead of now()",
+        file: 'src/services/syncHistory.js',
+        anchor: "const scheduleAlertsCutoff = this.now();",
+        mutant: "const scheduleAlertsCutoff = new Date();",
+        tests: 'syncHistory'
+    },
+
+    // ---- #326: completed one-off schedule closes its open missing ---------
+    {
+        id: '326-completed-oneoff-not-bound', ticket: '#326',
+        desc: 'a completed one-off schedule is no longer bound, so its open missing is never resolved',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: "if (!isActive(s) && typeof s.date === 'string') {",
+        mutant: "if (false && !isActive(s) && typeof s.date === 'string') {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-recurring-bound', ticket: '#326',
+        desc: 'a completed recurring schedule is bound too, so it would also be resolved on completion',
+        file: 'src/lib/scheduleAlertRules.js',
+        anchor: "if (!isActive(s) && typeof s.date === 'string') {",
+        mutant: "if (!isActive(s)) {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-lookback-ignored', ticket: '#326',
+        desc: 'the look-back window is not applied, so a missing older than it is still resolved',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: ".subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
+        mutant: ".subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');\n    sinceDate = '0000-01-01';\n    for (const schedule of completedSchedules)",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-wording-lost', ticket: '#326',
+        desc: 'closed_by is not put in the render context, so the resolved text claims a payment arrived',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "closed_by: event.closedBy || null,",
+        mutant: "closed_by: null,",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-custom-template-used', ticket: '#326',
+        desc: 'a custom resolved template without closed_by is used for a completed one-off, claiming a payment arrived',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    if (!handled) templates.resolved = DEFAULT_TEMPLATES.resolved;",
+        mutant: "    if (false && !handled) templates.resolved = DEFAULT_TEMPLATES.resolved;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-payment-resolved-loses-custom-template', ticket: '#326',
+        desc: 'the built-in resolved replaces every custom template without closed_by, including ordinary payments',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  if (event.closedBy) {",
+        mutant: "  if (true) {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-resolved-repeats', ticket: '#326',
+        desc: 'the per-destination already-resolved check is skipped, so resolved repeats every sync',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };",
+        mutant: "return { due: true, lastSentAt: null };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-resolved-final-after-later-missing', ticket: '#326',
+        desc: 'any resolved row is final, so a completed-then-uncompleted (or unlinked-then-relinked) schedule never closes again',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };",
+        mutant: "return { due: !resolvedRow, lastSentAt: null };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-lookback-off-by-one', ticket: '#326',
+        desc: 'the look-back cutoff is one day short, so a missing exactly MAX_LOOKBACK_DAYS old is no longer resolved',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: ".subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
+        mutant: ".subtract(MAX_LOOKBACK_DAYS - 1, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
+        tests: 'scheduleAlert'
+    },
+    // ---- #356: deleted schedule closes its open missing; ruleUnmatched once ---
+    {
+        id: '356-deleted-never-inferred', ticket: '#356',
+        desc: "a schedule missing from Actual's list is not detected, so its open missing never closes",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        if (existingScheduleIds.has(row.scheduleId)) continue;",
+        mutant: "        if (true) continue;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-existing-schedule-closed', ticket: '#356',
+        desc: "a schedule still present in Actual is closed as deleted too",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        if (existingScheduleIds.has(row.scheduleId)) continue;",
+        mutant: "        if (false) continue;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-deleted-no-list-guard', ticket: '#356',
+        desc: "deletion is inferred even when the schedule list is unusable (null), risking a mass resolve",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  if (existingScheduleIds) {\n    const sinceDate",
+        mutant: "  if (true) {\n    existingScheduleIds = existingScheduleIds || new Set();\n    const sinceDate",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-empty-list-trusted', ticket: '#356',
+        desc: "an empty schedule list is trusted as everything deleted instead of ignored",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "Array.isArray(rawSchedules) && rawSchedules.length > 0",
+        mutant: "Array.isArray(rawSchedules)",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-deleted-wording-lost', ticket: '#356',
+        desc: "the deleted branch is dropped from the built-in resolved, so a deleted schedule is reported as a payment",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{else if (eq closed_by \"deleted\")}}",
+        mutant: "{{else if (eq closed_by \"never\")}}",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-deleted-custom-template-used', ticket: '#356',
+        desc: "a custom resolved without closed_by is used for a deleted schedule, claiming a payment arrived",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "const handled = /\\bclosed_by\\b/.test(custom) && (literals.length === 0 || literals.includes(event.closedBy));",
+        mutant: "const handled = /\\bclosed_by\\b/.test(custom);",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-ruleUnmatched-repeats', ticket: '#356',
+        desc: "ruleUnmatched is due again on every sync after it was sent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !!matchedRow && matchedRow.recordedAt > latest.recordedAt, lastSentAt: latest.recordedAt };",
+        mutant: "return { due: true, lastSentAt: latest.recordedAt };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-ruleUnmatched-never-rearms', ticket: '#356',
+        desc: "ruleUnmatched never fires again after the rule matched and later unmatched",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !!matchedRow && matchedRow.recordedAt > latest.recordedAt, lastSentAt: latest.recordedAt };",
+        mutant: "return { due: false, lastSentAt: latest.recordedAt };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-rematch-not-recorded', ticket: '#356',
+        desc: "a rule matching again leaves no ruleMatched marker, so a later unmatch stays silent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      await history.recordScheduleAlert({ ...key, event: 'ruleMatched', delivery: 'inferred' });",
+        mutant: "      void key;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-reversed-eq-order-ignored', ticket: '#356',
+        desc: 'a template written as (eq "completed" closed_by) is honoured for a deleted schedule and claims a payment arrived',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "|[\"']([^\"']*)[\"']\\s+closed_by\\b/g)]",
+        mutant: "/g)]",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-matched-from-evaluations-only', ticket: '#356',
+        desc: "a rule is only counted as matched when it has an evaluation, so a cannotCheck-only rule never re-arms ruleUnmatched",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: ".filter((id) => !unmatchedIds.has(id))",
+        mutant: ".filter((id) => !unmatchedIds.has(id) && (evaluations || []).some((e) => e.alertId === id))",
+        tests: 'scheduleAlert'
+    },
+
+    // ---- #359: an empty schedule list skips rule matching ------------------
+    {
+        id: '359-empty-list-evaluated', ticket: '#359',
+        desc: "an empty schedule list is evaluated, so every rule raises ruleUnmatched",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "if (!scheduleListReliable && scheduleAlertRules.length > 0) {",
+        mutant: "if (false) {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '359-skip-without-rules-warns', ticket: '#359',
+        desc: "the skip also fires (and warns) when no rule is configured",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "if (!scheduleListReliable && scheduleAlertRules.length > 0) {",
+        mutant: "if (!scheduleListReliable) {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '359-skipped-still-delivered', ticket: '#359',
+        desc: "a skipped sync still runs delivery, marking every rule matched and re-arming ruleUnmatched",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "if (evaluated.skipped) return { events: 0, sent: 0, skipped: 0 };",
+        mutant: "",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '359-skipped-snapshot-replaced', ticket: '#359',
+        desc: "a skipped sync replaces the dashboard snapshot with an empty one",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "} else if (evaluated && evaluated.skipped) {",
+        mutant: "} else if (evaluated && evaluated.skipped && false) {",
+        tests: 'scheduleAlert'
     }
 ];

@@ -79,6 +79,24 @@ The WebSocket log stream carries log metadata (server names, account names, sync
 
 Credentials are compared in constant time (SHA-256 digests with `crypto.timingSafeEqual`), and the basic-auth username and password are both always compared.
 
+### State-changing dashboard requests (#259)
+
+The four dashboard POSTs (`sync`, `dismiss-error`, `reset-history`, `test-notification`) are protected against cross-site request forgery, after authentication:
+
+- **Origin guard**: a request carrying `Origin` (or, without it, `Referer`) must be same-origin or in `dashboard.allowedOrigins`, otherwise it gets 403 `origin_rejected`. A request with neither header is accepted unless the browser marked it with `Sec-Fetch-Site`. Authentication runs first, so an unauthenticated caller learns nothing about the origin rule. This applies at every auth type, including `none`. `allowedOrigins` therefore also authorizes these POSTs: list only origins you control.
+- **DNS rebinding**: the check compares `Origin` with `Host`, which a rebinding page controls. With `auth.type: none`, a rebinding page can still reach all four POSTs; use `basic` or `token`.
+- **Opt-in writes**: configuration-changing routes exist only behind `dashboard.allowConfigWrites: true` (default `false`) and are refused while auth is `none` (403 `config_writes_disabled`). Their JSON body is capped at 16 KB.
+- **Audit trail**: every configuration change, and every history reset, is recorded with time, server, client address, action, target and changed fields. Values under keys containing `password`, `passwd`, `secret`, `token`, `apikey`, `authorization`, `webhook` or `reason`, SMTP `user`/`pass`, and URLs under slack/discord/ntfy/webhook keys or with embedded credentials are stored as `[redacted]`. An entry is capped at 8 KB. Entries are kept across history resets and purged after `retentionDays`.
+
+### Alert overrides and mute reasons (#261)
+
+The dashboard's alert switch and mute are stored in the sync-history SQLite database (table `payment_alert_override`: server, alert id, on/off, mute start and end, reason, update time; no IP address). Like the rest of that file it is not encrypted at rest.
+
+- The free-text **mute reason** (up to 200 characters) can mention a person or a situation. It is shown in the dashboard as text only and is included in the one summary message sent when the mute ends, so it travels to your configured notification channels (for Telegram, Telegram's servers). Remove `{{reason}}` from the `muteEnded` template to keep it out of messages.
+- It is recorded in the configuration audit trail as `[redacted]`, and never written to the logs.
+- It is cleared when the summary has been sent, on an early unmute, and at the latest 7 days after the mute's end date even if no summary could be sent. A history reset deletes every override and held-back record. `DELETE /api/dashboard/payments/:server/:alertId/state` removes one, and `GET /api/dashboard/payment-overrides` exports all of them.
+- Changes use the same gates as other configuration writes (auth, Origin check, `allowConfigWrites`).
+
 ### HTTP security headers (#243)
 
 [`helmet`](https://helmetjs.github.io/) is mounted first in the Express stack, before the rate limiter and the body parser, so every response carries these headers, including `401`s and parse errors:
@@ -260,8 +278,10 @@ USER node
 
 **Implementation**:
 ```bash
-npm audit
+npm audit --audit-level=high
 ```
+
+**Enforcement** (#250): CI runs `node scripts/auditGate.js` (a wrapper over `npm audit` at the high level, with an expiring allowlist) on every push and pull request and fails the build on any high or critical advisory. Pull requests also run `actions/dependency-review-action` (`fail-on-severity: high`), which blocks a PR that introduces a vulnerable dependency. An unfixable advisory can be accepted for a limited time in `.github/audit-allowlist.json`; see [CI/CD, Dependency checks](CI_CD.md#dependency-checks).
 
 **Response Protocol**:
 1. **Critical/High**: Patch within 7 days
@@ -274,6 +294,8 @@ npm audit
 - Dependabot (GitHub)
 - Renovate Bot
 - Snyk
+
+**Cooldown (#251)**: Dependabot version updates wait before proposing a new release: 5 days for npm patch and minor, 7 days for npm major, 5 days for GitHub Actions. Malicious package versions are usually detected and unpublished within hours to a couple of days, so a short wait skips most of them. It is a probabilistic control, not a guarantee. Security updates are exempt on purpose: they respond to a known advisory, where waiting only increases exposure. The policy and its rationale live in `.github/dependabot.yml`, and `src/__tests__/dependabotConfig.test.js` fails if a cooldown is added to the security entry.
 
 **Manual Process**:
 1. Review `npm audit` output
@@ -587,6 +609,8 @@ docker scout cves actual-sync:latest
    trivy image actual-sync:latest
    ```
 
+6. **OpenSSF Scorecard** - Weekly supply chain posture check (workflow `scorecard.yml`, results in the Security tab next to CodeQL and Trivy). It measures rather than fixes; the checks the project acts on and the ones it ignores on purpose are listed in [CI/CD: OpenSSF Scorecard](CI_CD.md#openssf-scorecard).
+
 ---
 
 ## 🔍 Automated Security Scanning
@@ -629,7 +653,7 @@ npm audit --audit-level=high
 
 **Runs**: After Docker test build completes
 
-**Supply chain** (#249): every GitHub Action in every workflow is pinned to a full commit SHA with a version comment, so a repointed tag or compromised upstream branch cannot run new code in CI, where Docker Hub, GitHub App and Codecov credentials are in scope. `scripts/check-action-pins.sh` fails CI on any unpinned reference, and Dependabot's `github-actions` entry keeps the pins current. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
+**Supply chain** (#249): every GitHub Action in every workflow is pinned to a full commit SHA with a version comment, so a repointed tag or compromised upstream branch cannot run new code in CI, where Docker Hub, GitHub App and Codecov credentials are in scope. `scripts/check-action-pins.sh` fails CI on any unpinned reference, and Dependabot's `github-actions` entry keeps the pins current. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions). The Docker base image is pinned the same way (`node:22-alpine` by digest), and Dependabot's `docker` entry proposes a digest bump when a patched base is published (#362).
 
 **Location**: `security-scan` job in CI/CD workflow
 

@@ -13,6 +13,44 @@ const { createLogger } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 const { resolveVersion } = require('../lib/version');
 const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
+const moment = require('moment-timezone');
+const { getRules, ruleState } = require('../lib/scheduleAlertRules');
+const { resolveTimezone } = require('../lib/timezone');
+
+// 16 KB JSON parser for configuration writes (#259), used by configWrite().
+// markParser tags an error with fromBodyParser so jsonBodyErrors can tell a
+// body-parser failure from a 4xx raised by a route. A corrupt gzip body arrives
+// as createError(400, zlibErr) with no `type`, so only a marker works. (#259)
+const markParser = (parser) => (req, res, next) =>
+  parser(req, res, (e) => next(e && Object.assign(e, { fromBodyParser: true })));
+
+const configJson = markParser(express.json({ limit: '16kb' }));
+
+/**
+ * Four-argument error middleware that answers body-parser failures as JSON
+ * instead of Express's HTML error page. Registered after the global
+ * express.json() and as the last element of every configWrite() chain. (#259)
+ */
+function jsonBodyErrors(err, req, res, next) {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'payload_too_large' });
+  }
+  if (err && err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'invalid_json' });
+  }
+  if (err && (err.type === 'charset.unsupported' || err.type === 'encoding.unsupported')) {
+    return res.status(400).json({ error: 'invalid_body_encoding' });
+  }
+  // Any other 4xx body-parser failure (a corrupt gzip body, an aborted
+  // request, a bad Content-Length) gets a JSON body, never Express's HTML page
+  // with a stack trace. Only errors marked by markParser qualify: a 4xx that a
+  // route passed to next(err) keeps its own status via the final handler.
+  const status = err && (err.status || err.statusCode);
+  if (err && err.fromBodyParser && status >= 400 && status < 500 && !res.headersSent) {
+    return res.status(status).json({ error: 'invalid_body' });
+  }
+  return next(err);
+}
 
 /**
  * Fixed-window count of failed dashboard logins per client key. (#246)
@@ -90,6 +128,8 @@ class HealthCheckService {
     // timestamps and can drive many requests; production uses the defaults. (#263)
     this.now = options.now || (() => new Date());
     this.rateLimitMax = options.rateLimitMax ?? 60;
+    // The timezone mute dates are read in (#261); production passes resolveTimezone(config).
+    this.getTimezone = options.getTimezone || (() => resolveTimezone({}));
     this.host = options.host || '0.0.0.0';
     this.prometheusService = options.prometheusService;
     this.syncHistory = options.syncHistory;
@@ -160,10 +200,41 @@ class HealthCheckService {
     this.app.disable('x-powered-by');
     this.app.use(helmet(this.helmetOptions(options.hsts === true)));
 
-    // Parse JSON bodies
-    this.app.use(express.json());
+    // Order matters (#259): helmet, then the rate limiter, then configRouter,
+    // then the global body parser, then the routes. The limiter sits before
+    // configRouter so a configWrite() route can answer 429; configRouter sits
+    // before the global express.json() so a configWrite() route meets its own
+    // 16 KB parser first. Every route that uses configWrite() is registered on
+    // this.configRouter, never on this.app. Unmatched requests fall through to
+    // the global parser (100 KB default, unchanged).
+    this.app.use(this.createRateLimiter());
+    this.configRouter = express.Router();
+    this.app.use(this.configRouter);
+
+    // Parse JSON bodies. jsonBodyErrors keeps a malformed body on the four
+    // existing POSTs a JSON answer instead of Express's HTML page (#259).
+    this.app.use(markParser(express.json()));
+    this.app.use(jsonBodyErrors);
     
     this.setupRoutes();
+  }
+
+  /**
+   * The per-IP rate limiter, mounted in the constructor (it used to be created
+   * in setupRoutes(); it moved so configRouter sits behind it). (#259)
+   */
+  createRateLimiter() {
+    return rateLimit({
+      windowMs: 60 * 1000, // 1 minute
+      max: this.rateLimitMax, // requests per minute per IP (60 unless a test overrides it)
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: 'Too many requests, please try again later.',
+      // The dashboard fetches /icon.png as its favicon + header logo on every
+      // load; exempt this cacheable static asset so it never competes with the
+      // dashboard API calls for the per-IP abuse budget. (#113)
+      skip: (req) => req.path === '/icon.png' || req.path === '/vendor/chart.umd.min.js' || req.path === '/dashboard.js'
+    });
   }
 
   /**
@@ -233,7 +304,9 @@ class HealthCheckService {
     // the same tick, so with an await in between (express-rate-limit's async
     // MemoryStore) all of them read the old count and a single write of 60
     // wrong guesses was checked in full against a limit of 10.
-    return (req, res, next) => {
+    // Named (not an anonymous arrow): the route-enumeration test in
+    // dashboardWriteSecurity.test.js matches layers by layer.handle.name. (#259)
+    const dashboardAuth = (req, res, next) => {
       // Skip if dashboard is disabled
       if (!this.dashboardConfig.enabled) {
         return res.status(403).json({ error: 'Dashboard is disabled' });
@@ -263,6 +336,235 @@ class HealthCheckService {
         next(err);
       }
     };
+    return dashboardAuth;
+  }
+
+  /**
+   * Origin guard for state-changing requests (#259). Applied per route, after
+   * dashboardAuth() (an unauthenticated cross-origin request gets 401 and
+   * learns nothing about the origin policy), on every route whose method is
+   * not GET, HEAD or OPTIONS. The route-enumeration test enforces that.
+   *
+   * - Origin decides when present; otherwise the Referer's origin does.
+   * - No Origin, no Referer and no Sec-Fetch-Site: not a browser (curl, Home
+   *   Assistant), accepted.
+   * - Sec-Fetch-Site with neither Origin nor Referer is refused, even
+   *   same-origin: a browser always adds Origin to a state-changing request.
+   * - Origin: null, malformed values and unparseable Referers are refused.
+   */
+  checkOrigin() {
+    // Named for the route-enumeration test (see dashboardAuth).
+    const checkOrigin = (req, res, next) => {
+      const { origin, referer } = req.headers;
+      const candidate = origin !== undefined ? origin : referer;
+      let ok;
+      if (candidate === undefined) {
+        ok = req.headers['sec-fetch-site'] === undefined;
+      } else {
+        ok = this.isAllowedOrigin(candidate, req.headers.host);
+      }
+      if (ok) return next();
+      this.logger.warn('Request refused: origin not allowed', {
+        method: req.method,
+        path: req.path,
+        origin: typeof candidate === 'string' ? candidate.slice(0, 200) : null,
+        remoteAddress: req.ip
+      });
+      return res.status(403).json({ error: 'origin_rejected' });
+    };
+    return checkOrigin;
+  }
+
+  /** The rule state the dashboard shows and the PUT returns (#261). */
+  publicRuleState(rule, override, now, timezone) {
+    const st = ruleState({ rule, override: override || null, now, timezone });
+    // muteEndDue is decided here, in the server timezone delivery uses, so the
+    // client never compares the mute date with the browser's own date.
+    return { enabled: st.enabled, mutedUntil: st.mutedUntil, reason: st.reason, lockedByConfig: st.lockedByConfig, muteEndDue: st.muteEndDue };
+  }
+
+  /**
+   * PUT /api/dashboard/payments/:server/:alertId/state (#261). Validation
+   * order: body shape, dates and reason, 404s, then 409. The given keys merge
+   * into the stored override.
+   */
+  putPaymentAlertState(req, res) {
+    const body = req.body;
+    const KEYS = ['enabled', 'mutedUntil', 'reason'];
+    const bad = (code, status = 400) => res.status(status).json({ error: code });
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) return bad('invalid_body');
+    const given = Object.keys(body);
+    if (given.length === 0 || given.some((k) => !KEYS.includes(k))) return bad('invalid_body');
+    if ('enabled' in body && typeof body.enabled !== 'boolean') return bad('invalid_body');
+    if ('mutedUntil' in body && body.mutedUntil !== null && typeof body.mutedUntil !== 'string') return bad('invalid_body');
+    if ('reason' in body && body.reason !== null && typeof body.reason !== 'string') return bad('invalid_body');
+
+    const timezone = this.getTimezone();
+    const now = this.now();
+    let reason;
+    if (typeof body.mutedUntil === 'string') {
+      const m = /^\d{4}-\d{2}-\d{2}$/.test(body.mutedUntil) ? moment.tz(body.mutedUntil, 'YYYY-MM-DD', true, timezone) : null;
+      if (!m || !m.isValid() || m.format('YYYY-MM-DD') !== body.mutedUntil) return bad('invalid_muted_until');
+      const today = moment.tz(now, timezone).startOf('day');
+      const days = Math.round(m.clone().startOf('day').diff(today, 'days', true));
+      if (days < 0 || days > 365) return bad('invalid_muted_until');
+    }
+    // A reason given with a date, or alone on a muted alert, passes the same
+    // trim, required and length check (a long reason is rejected, never cut).
+    // The reason-only case is checked once the stored mute is known: on an
+    // alert that is not muted the reason is ignored, as before (#261 round 2).
+    const checkReason = () => {
+      reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+      if (reason === '') return 'reason_required';
+      if (reason.length > 200) return 'invalid_reason';
+      return null;
+    };
+    if (typeof body.mutedUntil === 'string') {
+      const reasonError = checkReason();
+      if (reasonError) return bad(reasonError);
+    }
+
+    const serverName = req.params.server;
+    const alertId = req.params.alertId;
+    const servers = this.getServers ? (this.getServers() || []) : [];
+    const server = servers.find((s) => s.name === serverName);
+    if (!server) return bad('server_not_found', 404);
+    const rule = getRules(server.scheduleAlerts).find((r) => r.id === alertId);
+    if (!rule) return bad('alert_not_found', 404);
+    const unmuteOnly = body.mutedUntil === null && !('enabled' in body);
+    if (rule.enabled === false && !unmuteOnly) return bad('disabled_in_config', 409);
+
+    try {
+      const before = this.syncHistory.getOverride(serverName, alertId);
+      if (typeof body.reason === 'string' && !('mutedUntil' in body) && before && before.mutedUntil) {
+        const reasonError = checkReason();
+        if (reasonError) return bad(reasonError);
+      }
+      const next = {
+        server: serverName,
+        alertId,
+        enabled: before ? before.enabled : true,
+        mutedFrom: before ? before.mutedFrom : null,
+        mutedUntil: before ? before.mutedUntil : null,
+        reason: before ? before.reason : null
+      };
+      if ('enabled' in body) next.enabled = body.enabled;
+      if (body.mutedUntil === null) {
+        next.mutedFrom = null; next.mutedUntil = null; next.reason = null;
+      } else if (typeof body.mutedUntil === 'string') {
+        // An extension keeps the original start so the summary covers the whole period.
+        next.mutedFrom = before && before.mutedUntil && before.mutedFrom ? before.mutedFrom : now.toISOString();
+        next.mutedUntil = body.mutedUntil;
+        next.reason = reason;
+      } else if (typeof body.reason === 'string' && before && before.mutedUntil) {
+        next.reason = reason;
+      }
+
+      // One transaction: the held-back rows, the override and the audit row
+      // change together or not at all. An early unmute drops the rows (no
+      // summary; otherwise the latest 'muted' row would suppress the alert for good).
+      const was = { enabled: before ? before.enabled : true, mutedUntil: before ? before.mutedUntil : null, reason: before ? before.reason : null };
+      const stored = this.syncHistory.applyOverrideChange({
+        server: serverName,
+        alertId,
+        override: next,
+        dropMutedRows: Boolean(before && before.mutedUntil && next.mutedUntil === null),
+        mutedSince: before && before.mutedFrom ? before.mutedFrom : undefined,
+        remoteAddr: req.ip,
+        auditChanges: (saved) => {
+          const is = { enabled: saved ? saved.enabled : true, mutedUntil: saved ? saved.mutedUntil : null, reason: saved ? saved.reason : null };
+          const changes = {};
+          for (const field of Object.keys(was)) {
+            if (was[field] !== is[field]) changes[field] = [was[field], is[field]];
+          }
+          return changes;
+        }
+      });
+      return res.json({ ruleState: this.publicRuleState(rule, stored, now, timezone) });
+    } catch (error) {
+      this.logger.error('Failed to update payment alert state', { error: error.message });
+      return res.status(500).json({ error: 'Failed to update payment alert state' });
+    }
+  }
+
+  /** DELETE /api/dashboard/payments/:server/:alertId/state (#261): reset enabled and the mute. */
+  deletePaymentAlertState(req, res) {
+    const serverName = req.params.server;
+    const alertId = req.params.alertId;
+    try {
+      const before = this.syncHistory.getOverride(serverName, alertId);
+      if (!before) return res.status(404).json({ error: 'override_not_found' });
+      const changes = {};
+      if (before.enabled !== true) changes.enabled = [before.enabled, true];
+      if (before.mutedUntil) {
+        changes.mutedUntil = [before.mutedUntil, null];
+        changes.reason = [before.reason, null];
+      }
+      this.syncHistory.applyOverrideChange({
+        server: serverName,
+        alertId,
+        override: null,
+        dropMutedRows: Boolean(before.mutedUntil),
+        mutedSince: before.mutedFrom || undefined,
+        remoteAddr: req.ip,
+        auditChanges: () => changes
+      });
+      return res.json({ deleted: true });
+    } catch (error) {
+      this.logger.error('Failed to delete payment alert override', { error: error.message });
+      return res.status(500).json({ error: 'Failed to delete payment alert override' });
+    }
+  }
+
+  /** Why configuration writes are unavailable, or null when they are allowed. */
+  configWritesReason() {
+    if (this.dashboardConfig.allowConfigWrites !== true) return 'disabled';
+    if ((this.dashboardConfig.auth?.type || 'none') === 'none') return 'auth-none';
+    return null;
+  }
+
+  /** Refuses configuration writes unless enabled and auth is not none. (#259) */
+  requireConfigWrites() {
+    const requireConfigWrites = (req, res, next) => {
+      const reason = this.configWritesReason();
+      if (reason) return res.status(403).json({ error: 'config_writes_disabled', reason });
+      return next();
+    };
+    return requireConfigWrites;
+  }
+
+  /**
+   * The middleware chain for every route that changes configuration (#261,
+   * #262): auth, Origin, writes enabled, a JSON-only 16 KB body, and last the
+   * JSON error mapper (it must be part of the chain: Express runs an error
+   * handler only for layers registered before it, so a router-level handler
+   * would never see a route registered later). Register such routes on
+   * this.configRouter, not this.app, so the 16 KB parser runs first.
+   * @returns {Function[]}
+   */
+  configWrite() {
+    const configBody = (req, res, next) => {
+      const hasBody = req.headers['transfer-encoding'] !== undefined ||
+        Number(req.headers['content-length']) > 0;
+      if (!hasBody) {
+        // body-parser leaves req.body undefined when there is no body.
+        req.body = {};
+        return next();
+      }
+      // req.is() is type-is, the matcher express.json() uses by default, so
+      // this check and the parser cannot disagree.
+      if (!req.is('application/json')) {
+        return res.status(415).json({ error: 'invalid_content_type' });
+      }
+      return configJson(req, res, next);
+    };
+    return [
+      this.dashboardAuth(),
+      this.checkOrigin(),
+      this.requireConfigWrites(),
+      configBody,
+      jsonBodyErrors
+    ];
   }
 
   /**
@@ -305,22 +607,6 @@ class HealthCheckService {
    * Set up Express routes
    */
   setupRoutes() {
-    // Rate limiting middleware - prevent abuse
-    const limiter = rateLimit({
-      windowMs: 60 * 1000, // 1 minute
-      max: this.rateLimitMax, // requests per minute per IP (60 unless a test overrides it)
-      standardHeaders: true,
-      legacyHeaders: false,
-      message: 'Too many requests, please try again later.',
-      // The dashboard fetches /icon.png as its favicon + header logo on every
-      // load; exempt this cacheable static asset so it never competes with the
-      // dashboard API calls for the per-IP abuse budget. (#113)
-      skip: (req) => req.path === '/icon.png' || req.path === '/vendor/chart.umd.min.js' || req.path === '/dashboard.js'
-    });
-
-    // Apply rate limiting to all routes
-    this.app.use(limiter);
-
     // Health endpoint - simple alive check
     this.app.get('/health', (req, res) => {
       const uptime = Math.floor((this.now().getTime() - new Date(this.status.startTime).getTime()) / 1000);
@@ -647,7 +933,7 @@ class HealthCheckService {
     });
 
     // Dashboard API: Dismiss server error (with authentication)
-    this.app.post('/api/dashboard/dismiss-error', this.dashboardAuth(), (req, res) => {
+    this.app.post('/api/dashboard/dismiss-error', this.dashboardAuth(), this.checkOrigin(), (req, res) => {
       try {
         const { server } = req.body;
         
@@ -685,7 +971,7 @@ class HealthCheckService {
     });
 
     // Dashboard API: Trigger manual sync (with authentication)
-    this.app.post('/api/dashboard/sync', this.dashboardAuth(), async (req, res) => {
+    this.app.post('/api/dashboard/sync', this.dashboardAuth(), this.checkOrigin(), async (req, res) => {
       if (!this.syncBank) {
         return res.status(503).json({ 
           error: 'Sync function not available',
@@ -763,7 +1049,7 @@ class HealthCheckService {
     });
 
     // Dashboard API: Reset sync history (with authentication)
-    this.app.post('/api/dashboard/reset-history', this.dashboardAuth(), async (req, res) => {
+    this.app.post('/api/dashboard/reset-history', this.dashboardAuth(), this.checkOrigin(), async (req, res) => {
       if (!this.syncHistory) {
         return res.status(503).json({ 
           error: 'Sync history service not available'
@@ -774,8 +1060,24 @@ class HealthCheckService {
         const { server } = req.body;
         
         if (server && server !== 'all') {
+          if (typeof server !== 'string') {
+            return res.status(400).json({ error: 'invalid_server' });
+          }
+          if (server.length > 200) {
+            return res.status(400).json({ error: 'server_name_too_long' });
+          }
+          // Only a configured server, or an orphan that still has history rows
+          // (the orphaned-servers cleanup), can be reset. Anything else would
+          // write a history_reset audit row for a name that never existed.
+          const configured = this.getServers ? (this.getServers() || []).map(sv => sv.name) : null;
+          const known = configured === null ||
+            configured.includes(server) ||
+            this.syncHistory.hasServerData(server);
+          if (!known) {
+            return res.status(404).json({ error: 'server_not_found' });
+          }
           // Reset history for specific server
-          await this.syncHistory.resetServerHistory(server);
+          await this.syncHistory.resetServerHistory(server, { remoteAddr: req.ip });
           
           this.logger.info('Sync history reset for server via dashboard', {
             server: server,
@@ -788,7 +1090,7 @@ class HealthCheckService {
           });
         } else if (server === 'all') {
           // Reset all history
-          await this.syncHistory.resetAllHistory();
+          await this.syncHistory.resetAllHistory({ remoteAddr: req.ip });
           
           this.logger.info('All sync history reset via dashboard', {
             remoteAddress: req.ip
@@ -812,7 +1114,7 @@ class HealthCheckService {
     });
 
     // Dashboard API: Test notification channels (with authentication)
-    this.app.post('/api/dashboard/test-notification', this.dashboardAuth(), async (req, res) => {
+    this.app.post('/api/dashboard/test-notification', this.dashboardAuth(), this.checkOrigin(), async (req, res) => {
       const { channel } = req.body;
 
       if (!channel) {
@@ -1198,10 +1500,14 @@ This test verifies that notifications are configured correctly and can reach the
 
         const daysBetween = (from, to) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000);
 
+        const now = this.now();
+        const timezone = this.getTimezone();
         const result = servers.map((server) => {
           if (!server.scheduleAlerts) {
             return { server: server.name, configured: false, lastRun: null, items: [] };
           }
+          const rulesById = new Map(getRules(server.scheduleAlerts).map((r) => [r.id, r]));
+          const overrides = new Map(this.syncHistory.listOverrides(server.name).map((o) => [o.alertId, o]));
           const { items, run } = this.syncHistory.getPaymentSnapshot(server.name);
           const lastSent = this.syncHistory.getLastSentAlerts(server.name);
           return {
@@ -1211,9 +1517,9 @@ This test verifies that notifications are configured correctly and can reach the
             items: items.map((item) => ({
               ...item,
               lastAlertAt: lastSent.get(JSON.stringify([item.alertId, item.scheduleId])) || null,
-              // Constants until #262 (source) and #261 (rule state) land.
+              // Constant until #262 lands.
               source: 'config',
-              ruleState: { enabled: true, mutedUntil: null, reason: null },
+              ruleState: this.publicRuleState(rulesById.get(item.alertId), overrides.get(item.alertId), now, timezone),
               occurrences: item.occurrences.map((o) => ({
                 ...o,
                 daysLate: o.state === 'late' && o.receivedDate && o.deadline
@@ -1227,6 +1533,37 @@ This test verifies that notifications are configured correctly and can reach the
       } catch (error) {
         this.logger.error('Failed to get payments', { error: error.message });
         res.status(500).json({ error: 'Failed to retrieve payments' });
+      }
+    });
+
+    // Payment alert controls (#261). PUT and DELETE change configuration, so
+    // they sit on configRouter behind configWrite(); the GET export is a plain
+    // dashboard read.
+    this.configRouter.put('/api/dashboard/payments/:server/:alertId/state', ...this.configWrite(), (req, res) => {
+      this.putPaymentAlertState(req, res);
+    });
+    this.configRouter.delete('/api/dashboard/payments/:server/:alertId/state', ...this.configWrite(), (req, res) => {
+      this.deletePaymentAlertState(req, res);
+    });
+    this.app.get('/api/dashboard/payment-overrides', this.dashboardAuth(), (req, res) => {
+      if (!this.syncHistory) return res.status(503).json({ error: 'Sync history not available' });
+      try {
+        const servers = this.getServers ? (this.getServers() || []) : [];
+        const known = new Map(servers.map((srv) => [srv.name, new Set(getRules(srv.scheduleAlerts).map((r) => r.id))]));
+        const overrides = this.syncHistory.listOverrides().map((o) => ({
+          server: o.server,
+          alertId: o.alertId,
+          enabled: o.enabled,
+          mutedFrom: o.mutedFrom,
+          mutedUntil: o.mutedUntil,
+          reason: o.reason,
+          updatedAt: o.updatedAt,
+          orphaned: !(known.has(o.server) && known.get(o.server).has(o.alertId))
+        }));
+        res.json({ overrides });
+      } catch (error) {
+        this.logger.error('Failed to list payment overrides', { error: error.message });
+        res.status(500).json({ error: 'Failed to retrieve payment overrides' });
       }
     });
 
@@ -1251,6 +1588,38 @@ This test verifies that notifications are configured correctly and can reach the
       }
     });
 
+    // What the dashboard may do: whether configuration writes are available
+    // and, when not, why. (#259)
+    this.app.get('/api/dashboard/capabilities', this.dashboardAuth(), (req, res) => {
+      const reason = this.configWritesReason();
+      res.json({ configWrites: reason === null, reason });
+    });
+
+    // Configuration change audit, newest first. (#259)
+    this.app.get('/api/dashboard/config-audit', this.dashboardAuth(), (req, res) => {
+      if (!this.syncHistory) {
+        return res.status(503).json({ error: 'Sync history not available' });
+      }
+
+      // One query value of 1 to 3 digits, then 1 to 200. A repeated ?limit
+      // arrives as an array and fails the first step.
+      let limit = 50;
+      if (req.query.limit !== undefined) {
+        const raw = req.query.limit;
+        limit = typeof raw === 'string' && /^\d{1,3}$/.test(raw) ? Number(raw) : NaN;
+        if (!(limit >= 1 && limit <= 200)) {
+          return res.status(400).json({ error: 'invalid_limit' });
+        }
+      }
+
+      try {
+        res.json({ entries: this.syncHistory.getConfigAudit({ limit }) });
+      } catch (error) {
+        this.logger.error('Failed to get configuration audit', { error: error.message });
+        res.status(500).json({ error: 'Failed to retrieve configuration changes' });
+      }
+    });
+
     // 404 handler
     this.app.use((req, res) => {
       this.logger.warn('Unknown endpoint requested', { 
@@ -1269,6 +1638,40 @@ This test verifies that notifications are configured correctly and can reach the
         availableEndpoints: endpoints
       });
     });
+
+    // Final error handler (#259): a thrown or passed error is logged and answered
+    // as JSON. Express's default handler would render the stack trace as HTML.
+    this.app.use((err, req, res, next) => {
+      this.logger.error('Unhandled request error', {
+        error: err && err.message,
+        path: req.path,
+        method: req.method
+      });
+      if (res.headersSent) return next(err);
+      // A 4xx from a route or middleware keeps its status; never a stack. (#259)
+      const status = err && (err.status || err.statusCode);
+      if (status >= 400 && status < 500) {
+        return res.status(status).json({ error: 'request_error' });
+      }
+      return res.status(500).json({ error: 'internal_error' });
+    });
+  }
+
+  /**
+   * Startup notices about configuration writes (#259), logged once from start().
+   * allowedOrigins authorizes writes as well as the log stream, so say so.
+   */
+  logWriteConfigWarnings() {
+    if (this.dashboardConfig.allowConfigWrites !== true) return;
+    if (this.configWritesReason() === 'auth-none') {
+      this.logger.error('dashboard.allowConfigWrites is true but dashboard.auth.type is "none": configuration writes stay refused. Enable basic or token auth to use them.');
+    }
+    const origins = this.dashboardConfig.allowedOrigins || [];
+    if (origins.length > 0) {
+      this.logger.warn('dashboard.allowedOrigins also authorizes state-changing requests: pages on these origins can submit configuration writes. Review the list.', {
+        allowedOrigins: origins
+      });
+    }
   }
 
   /** getRunningSync() guarded, so a failing callback cannot break the status route. (#272) */
@@ -1436,7 +1839,7 @@ This test verifies that notifications are configured correctly and can reach the
 
     if (!this.dashboardConfig.enabled) return refuse(403, 'Dashboard is disabled');
 
-    if (info.origin && !this.isAllowedWsOrigin(info.origin, req.headers.host)) {
+    if (info.origin && !this.isAllowedOrigin(info.origin, req.headers.host)) {
       return refuse(403, 'Origin not allowed');
     }
 
@@ -1472,11 +1875,17 @@ This test verifies that notifications are configured correctly and can reach the
   }
 
   /**
-   * @param {string} origin - the handshake's Origin header
-   * @param {string} host - the handshake's Host header
+   * The one origin rule, shared by the /ws/logs handshake and the Origin guard
+   * on state-changing requests (#242, #259). Same-origin is a host comparison
+   * (port included), not scheme + host, so a TLS-terminating proxy that does
+   * not set trustProxy still works: the service sees plain HTTP but the
+   * browser's Origin says https. dashboard.allowedOrigins is the only extra
+   * list; there is deliberately no separate write list.
+   * @param {string} origin - the Origin header (or a Referer URL)
+   * @param {string} host - the Host header
    * @returns {boolean} true when same-origin or listed in dashboard.allowedOrigins
    */
-  isAllowedWsOrigin(origin, host) {
+  isAllowedOrigin(origin, host) {
     let parsed;
     try {
       parsed = new URL(origin);
@@ -1526,6 +1935,7 @@ This test verifies that notifications are configured correctly and can reach the
    * @returns {Promise<void>}
    */
   async start() {
+    this.logWriteConfigWarnings();
     return new Promise((resolve, reject) => {
       try {
         const http = require('http');

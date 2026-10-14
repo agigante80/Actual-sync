@@ -50,6 +50,14 @@
     "description": "Settings tab, scrolled to date format preferences"
   },
   {
+    "file": "dashboard-settings-audit.png",
+    "state": "settings-audit",
+    "tab": "settings",
+    "scrollToText": "Configuration changes",
+    "fullPage": false,
+    "description": "Settings tab, the Configuration changes list with three audit entries"
+  },
+  {
     "file": "dashboard-settings-danger-zone.png",
     "state": "settings-danger-zone",
     "tab": "settings",
@@ -81,5 +89,11 @@
     "state": "payments-not-configured",
     "tab": "payments",
     "description": "Payments tab, a server with missing-payment alerts not configured"
+  },
+  {
+    "file": "dashboard-payments-muted.png",
+    "state": "payments-muted",
+    "tab": "payments",
+    "description": "Payments tab, an alert muted until a date with its reason, beside the real state pill"
   }
 ]

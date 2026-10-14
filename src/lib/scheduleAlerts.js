@@ -209,8 +209,28 @@ function resolveTolerancePct(rule, schedule) {
  * @returns {boolean}
  */
 function amountWithinTolerance(amount, expected, tolerancePct) {
+  // #296: a refund (opposite sign) of the same size is not the payment.
+  if (!signCompatible(amount, expected)) return false;
   const allowed = Math.abs(expected) * (tolerancePct / 100);
   return Math.abs(Math.abs(amount) - Math.abs(expected)) <= allowed;
+}
+
+/**
+ * Whether a transaction's sign can belong to a schedule's expected amount
+ * (#296). An opposite-sign transaction (a refund) is never the payment.
+ * Rules: a null amount or a zero amount (sign is undefined, so any
+ * transaction is compatible and the amount check reports wrongAmount); a
+ * range (`{num1, num2}`) accepts the sign of either bound, which also covers
+ * a range spanning zero, and any range with a zero bound.
+ *
+ * @param {number} txAmount
+ * @param {number|{num1: number, num2: number}|null} scheduleAmount
+ * @returns {boolean}
+ */
+function signCompatible(txAmount, scheduleAmount) {
+  if (scheduleAmount == null) return true;
+  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1, scheduleAmount.num2] : [scheduleAmount];
+  return bounds.some((b) => b === 0 || Math.sign(txAmount) === Math.sign(b));
 }
 
 /**
@@ -379,6 +399,9 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
   const rememberedSkips = new Set(skips || []);
   const evaluations = [];
   const warnings = [];
+  // #326: completed one-off schedules bound to a rule. Not evaluated; the
+  // delivery layer checks the ledger for an open `missing` and closes it.
+  const completedSchedules = [];
 
   const today = moment.tz(now, timezone).startOf('day');
   const accountsById = new Map((accounts || []).map((a) => [a.id, a]));
@@ -410,6 +433,17 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
     }
 
     const schedule = binding.schedule;
+    if (binding.completedOneOff) {
+      completedSchedules.push({
+        alertId: binding.id,
+        scheduleId: binding.scheduleId,
+        name: binding.scheduleName,
+        account: schedule.accountName || schedule.account,
+        payee: schedule.payeeName || schedule.payee,
+        expectedAmount: schedule.amount != null ? schedule.amount : null
+      });
+      continue;
+    }
     const dateConfig = schedule.date;
 
     // #295 review, H2: one bad schedule (a malformed recurrence config, or
@@ -504,6 +538,11 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
       const candidateTx = (transactions || [])
         .map((tx) => ({ tx, match: matches(tx, schedule) }))
         .filter((c) => c.match.eligible && (!globallyUsedTx.has(c.tx) || globallyUsedTx.get(c.tx) === schedule.id))
+        // #296 round 1, M1: an UNLINKED opposite-sign transaction (a refund) is
+        // never a candidate, so neither the wrong-amount fallback nor the late
+        // pass can take it. A linked one stays authoritative (#295 M11).
+        // See signCompatible for the zero-amount and range rules.
+        .filter((c) => c.match.linked || signCompatible(c.tx.amount, schedule.amount))
         .map((c) => ({ tx: c.tx, linked: c.match.linked, date: moment.tz(c.tx.date, timezone).startOf('day'), used: false }))
         .sort((a, b) => a.date.valueOf() - b.date.valueOf());
 
@@ -760,7 +799,7 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
     }
   }
 
-  return { events, evaluations, warnings, skipDecisions };
+  return { events, evaluations, warnings, skipDecisions, completedSchedules };
 }
 
 module.exports = { evaluate, skipKey, MAX_LOOKBACK_DAYS, MAX_OCCURRENCES, LINKED_EARLY_WINDOW_DAYS };

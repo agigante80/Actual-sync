@@ -198,6 +198,7 @@ try {
         isSyncQueued: (serverName) => syncQueue.has(serverName),
         getRunningSync: () => syncQueue.running(),
         getServers: () => config.servers,
+        getTimezone: () => resolveTimezone(config),
         getSchedules: () => {
             // Return schedule info for each server
             const scheduleMap = {};

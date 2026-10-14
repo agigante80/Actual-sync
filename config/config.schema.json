@@ -20,7 +20,8 @@
         "wrongAmount": { "$ref": "#/$defs/messageTemplate" },
         "resolved": { "$ref": "#/$defs/messageTemplate" },
         "cannotCheck": { "$ref": "#/$defs/messageTemplate" },
-        "ruleUnmatched": { "$ref": "#/$defs/messageTemplate" }
+        "ruleUnmatched": { "$ref": "#/$defs/messageTemplate" },
+        "muteEnded": { "$ref": "#/$defs/messageTemplate" }
       }
     },
     "scheduleAlert": {
@@ -36,6 +37,11 @@
           "type": "string",
           "pattern": "^[a-z0-9-]{1,64}$",
           "description": "Stable alert id, used by the schedule_alerts ledger and the dashboard (#261/#262). Defaults to a slug of schedule/schedulePrefix. Must be unique per server (checked at startup, since a JSON Schema cannot enforce uniqueness across array items)."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set to false to switch this alert rule off in the config (#261). A rule disabled here cannot be switched on from the dashboard; it shows as Disabled in config."
         },
         "schedule": {
           "type": "string",
@@ -506,9 +512,14 @@
             },
             "allowedOrigins": {
               "type": "array",
-              "description": "Extra browser origins (scheme://host[:port]) allowed to open the /ws/logs live log stream. Same-origin is always allowed. Needed only when the dashboard is served under a different origin than the one the browser connects to, e.g. behind some reverse proxies.",
+              "description": "Extra browser origins (scheme://host[:port]) allowed to open the /ws/logs live log stream and to submit state-changing requests (POST and other writes) to the dashboard API. Same-origin is always allowed. Needed only when the dashboard is served under a different origin than the one the browser connects to, e.g. behind some reverse proxies. Review this list before enabling allowConfigWrites.",
               "items": { "type": "string", "pattern": "^https?://[^/\\s]+$" },
               "default": []
+            },
+            "allowConfigWrites": {
+              "type": "boolean",
+              "description": "Allow the dashboard to change configuration (alert settings). Off by default; also refused while auth.type is none.",
+              "default": false
             },
             "auth": {
               "type": "object",

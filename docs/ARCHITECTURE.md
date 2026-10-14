@@ -101,6 +101,8 @@ const SCHEDULE_CRON = '03 03 */2 * *'; // Every other day at 03:03 AM
 
 **Payment alert snapshot (dashboard payments)**: Right after `maybeRunScheduleAlerts` (still inside the sync, Actual session open), `persistPaymentSnapshot()` in `lib/scheduleAlertsStep.js` saves the #258 evaluation into `payment_alert_status` and `payment_alert_run` through `SyncHistoryService.replacePaymentSnapshot()` (one transaction: upsert the evaluations, delete rows for rules that no longer evaluate, write the run row). A failed evaluation only updates the run row (`recordPaymentRunFailure`), a server without a `scheduleAlerts` block has its rows deleted, and any persistence error is logged at WARN and never changes the sync result. The dashboard reads it at `GET /api/dashboard/payments` without touching Actual; `lastAlertAt` is joined from the `schedule_alerts` ledger at request time because the ledger is written after the snapshot. Same pattern as account metadata above.
 
+**Payment alert overrides (#261)**: the dashboard's per-alert switch and mute live in `payment_alert_override` (one row per server and alert id, written by the `PUT`/`DELETE .../state` routes through `SyncHistoryService.setOverride()`). At the end of each sync `deliverScheduleAlerts` reads them once per run and `deliver()` applies the pure `ruleState()` from `lib/scheduleAlertRules.js` (config `enabled: false`, then the override, then the default): a muted event is recorded as a `muted` ledger row instead of sent, and once the mute day has passed one `muteEnded` summary per destination is sent. Evaluation and the snapshot are untouched, so the Payments tab always shows the real state.
+
 ---
 
 ### 3. Retry Handler

@@ -200,10 +200,16 @@ message-template variables.
 ```json
 "scheduleAlerts": {
   "alerts": [
-    { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 }
+    { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6, "earlyDays": 2 }
   ]
 }
 ```
+
+- **`enabled`** (default `true`): `false` switches the alert off for good. It is still evaluated and shown in the Payments tab with a "Disabled in config" badge, but sends nothing, and the dashboard cannot switch it on or mute it. The dashboard's own on/off switch and mute (see [DASHBOARD.md](DASHBOARD.md#turning-alerts-off-and-muting)) are stored separately, never written to this file, and lose to this setting.
+- **`graceDays`** (default `3`): days after the occurrence date before it counts as overdue.
+- **`earlyDays`** (default `2`, 0-31): days before the occurrence date a matching transaction still counts as on time. `graceDays + earlyDays` must stay below the schedule's shortest interval between occurrences, otherwise the rule is skipped with a `cannotCheck` (reason `interval-violation`) and a warning.
+- **Timezone**: occurrence dates, deadlines and "today" use the top-level [`timezone`](#timezone-optional) (default: `TZ`, then the system zone, then `UTC`).
+- An account that was never bank-synced (`last_sync` is null) always gives `cannotCheck`, never `missing`.
 
 ### healthCheck (optional)
 
@@ -225,7 +231,8 @@ HTTP server for health probes, Prometheus metrics, and the web dashboard.
   - `"basic"` requires **username** and **password**.
   - `"token"` requires **token** (sent as `Authorization: Bearer <token>`).
   - A missing or blank credential locks the dashboard out (every request gets 500 `Invalid authentication configuration`), so set the credentials when you enable auth.
-- **dashboard.allowedOrigins** (array of `scheme://host[:port]`, default: `[]`) - extra browser origins allowed to open the `/ws/logs` live log stream. Same-origin is always allowed, and a request with no `Origin` header (a script, not a browser) is not origin-checked. Any other browser origin is refused with 403 at every auth type; this is the guard against Cross-Site WebSocket Hijacking. Same-origin means `Origin` equals the `Host` header the service receives, port included, so a proxy that rewrites `Host` causes a 403 (see the troubleshooting in [DASHBOARD.md](DASHBOARD.md)). Add an entry only if the dashboard page is served under a different origin than the host the browser connects to, for example `["https://budget.example.com"]`.
+- **dashboard.allowedOrigins** (array of `scheme://host[:port]`, default: `[]`) - extra browser origins allowed to open the `/ws/logs` live log stream and to send state-changing requests (the four dashboard POSTs: `sync`, `dismiss-error`, `reset-history`, `test-notification`). Same-origin is always allowed, and a request with no `Origin` header (a script, not a browser) is not origin-checked. Any other browser origin is refused with 403 at every auth type (`origin_rejected` on a POST); this is the guard against Cross-Site WebSocket Hijacking and cross-site request forgery. Listing an origin lets that site act as the dashboard, so list only origins you control. Same-origin means `Origin` equals the `Host` header the service receives, port included, so a proxy that rewrites `Host` causes a 403 (see the troubleshooting in [DASHBOARD.md](DASHBOARD.md)). Add an entry only if the dashboard page is served under a different origin than the host the browser connects to, for example `["https://budget.example.com"]`.
+- **dashboard.allowConfigWrites** (boolean, default: `false`) - opt in to dashboard routes that change configuration. The dashboard is read-only for configuration until this is `true`. Even then, writes are refused while `dashboard.auth.type` is `none`. Every configuration change is recorded in the "Configuration changes" list (Settings tab, `GET /api/dashboard/config-audit`) with secrets redacted. The service logs an ERROR at startup when writes are enabled with auth `none`, and a WARN naming `allowedOrigins` when that list is non-empty.
 
 ```json
 "healthCheck": {

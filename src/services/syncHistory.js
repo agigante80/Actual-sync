@@ -8,7 +8,75 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const moment = require('moment-timezone');
 const { createLogger } = require('../lib/logger');
+const { muteEndsAt } = require('../lib/scheduleAlertRules');
+
+const REDACTED = '[redacted]';
+
+// Field denylist for config_audit.changes_json (#259): case-insensitive
+// SUBSTRING of the key name with `_` and `-` removed (so `api_key`, `X-Api-Key`
+// and `apiKey` all hit `apikey`), at every nesting level. `reason` is the
+// free-text mute reason of #261, which can name a person. Over-redaction is
+// deliberate: a false positive hides a harmless value, a false negative stores
+// a secret. Exported for the test.
+const CONFIG_AUDIT_REDACT_SUBSTRINGS = [
+  'password', 'passwd', 'secret', 'token', 'apikey', 'authorization', 'webhook', 'reason'
+];
+const CONFIG_AUDIT_MAX_BYTES = 8 * 1024;
+const NOTIFICATION_CHANNEL_NAMES = ['slack', 'discord', 'ntfy', 'webhook'];
+const URL_WITH_CREDENTIALS = /^[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]*@/i;
+
+const normalizeKey = (key) => String(key).toLowerCase().replace(/[_-]/g, '');
+
+/**
+ * Should the value under `key` be hidden? `context` holds the ancestor key
+ * names (dotted keys count as paths: `notifications.email.auth.pass` is `pass` under
+ * `email` and `auth`). The real SMTP credentials live at notifications.email.auth.
+ */
+function isSensitiveKey(key, context) {
+  const segments = String(key).split('.');
+  const leaf = normalizeKey(segments[segments.length - 1]);
+  const full = normalizeKey(key);
+  if (CONFIG_AUDIT_REDACT_SUBSTRINGS.some(sub => full.includes(sub))) return true;
+  const ancestors = context.concat(segments.slice(0, -1)).map(normalizeKey);
+  if ((leaf === 'user' || leaf === 'pass') && ancestors.some(a => a.includes('smtp') || a.includes('email') || a === 'auth')) return true;
+  if (leaf === 'url' && ancestors.some(a => NOTIFICATION_CHANNEL_NAMES.some(n => a.includes(n)))) return true;
+  return false;
+}
+
+function redactValue(value, context) {
+  if (typeof value === 'string') {
+    return URL_WITH_CREDENTIALS.test(value) ? REDACTED : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => redactValue(item, context));
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, inner] of Object.entries(value)) {
+      out[key] = isSensitiveKey(key, context)
+        ? REDACTED
+        : redactValue(inner, context.concat(key));
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * changes -> the changes_json text: redacted, then capped at 8 KB. Over the
+ * cap (or not serialisable) it becomes { _truncated: true, fields: [names] }.
+ */
+function serializeAuditChanges(changes) {
+  const source = changes && typeof changes === 'object' ? changes : {};
+  const fieldNames = () => Object.keys(source).slice(0, 50).map(name => name.slice(0, 64));
+  try {
+    const text = JSON.stringify(redactValue(source, []));
+    if (Buffer.byteLength(text) <= CONFIG_AUDIT_MAX_BYTES) return text;
+  } catch { /* fall through to the marker */ }
+  return JSON.stringify({ _truncated: true, fields: fieldNames() });
+}
 
 class SyncHistoryService {
   /**
@@ -179,6 +247,39 @@ class SyncHistoryService {
       )
     `;
 
+    // Configuration change audit (#259). Append-only: the history resets leave
+    // it alone and add a history_reset row; only cleanup() purges it, by age.
+    // changes_json is redacted and capped before it is stored.
+    const createConfigAuditTable = `
+      CREATE TABLE IF NOT EXISTS config_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        server TEXT,
+        remote_addr TEXT,
+        action TEXT NOT NULL,
+        target TEXT,
+        changes_json TEXT NOT NULL
+      )
+    `;
+
+    // Dashboard override of one alert rule (#261): switched off and/or muted
+    // until a date, keyed at rule level (a schedulePrefix rule shares one
+    // alert_id). A row at the default state (enabled, no mute) is never stored.
+    // `muted_from` is an ISO instant, `muted_until` a YYYY-MM-DD date. There is
+    // no IP column; the remote address lives only in config_audit.
+    const createPaymentAlertOverrideTable = `
+      CREATE TABLE IF NOT EXISTS payment_alert_override (
+        server TEXT NOT NULL,
+        alert_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        muted_from TEXT,
+        muted_until TEXT,
+        reason TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (server, alert_id)
+      )
+    `;
+
     const createIndexes = [
       'CREATE INDEX IF NOT EXISTS idx_timestamp ON sync_history(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_server_name ON sync_history(server_name)',
@@ -186,7 +287,8 @@ class SyncHistoryService {
       'CREATE INDEX IF NOT EXISTS idx_correlation_id ON sync_history(correlation_id)',
       'CREATE INDEX IF NOT EXISTS idx_account_meta_server ON account_metadata(server_name)',
       'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_lookup ON schedule_alerts(server, alert_id, schedule_id, occurrence_date, event)',
-      'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_recorded_at ON schedule_alerts(recorded_at)'
+      'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_recorded_at ON schedule_alerts(recorded_at)',
+      'CREATE INDEX IF NOT EXISTS idx_config_audit_at ON config_audit(at)'
     ];
 
     this.db.exec(createSyncHistoryTable);
@@ -194,6 +296,8 @@ class SyncHistoryService {
     this.db.exec(createScheduleAlertsTable);
     this.db.exec(createPaymentAlertStatusTable);
     this.db.exec(createPaymentAlertRunTable);
+    this.db.exec(createConfigAuditTable);
+    this.db.exec(createPaymentAlertOverrideTable);
     this.logger.debug('Created sync_history, account_metadata, schedule_alerts and payment snapshot tables');
 
     createIndexes.forEach(idx => {
@@ -266,22 +370,81 @@ class SyncHistoryService {
    *   regardless of which destination recorded it (used by
    *   `deriveResolvedEvents`, which only needs to know an event was ever
    *   recorded at all, not on which channel).
-   * @returns {Promise<{recordedAt:string}|null>}
+   * @param {string} [key.delivery] - #261: only rows with this `delivery`
+   *   (`deriveResolvedEvents` counts `sent` rows only, so a `muted` row never
+   *   makes a destination look told). Omitted: any delivery.
+   * @returns {Promise<{recordedAt:string, delivery:string}|null>}
    */
-  async findLatestScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, channel }) {
+  async findLatestScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, channel, delivery }) {
     try {
       const filterChannel = channel !== undefined;
+      const filterDelivery = delivery !== undefined;
       const row = this.db.prepare(`
-        SELECT recorded_at AS recordedAt FROM schedule_alerts
+        SELECT recorded_at AS recordedAt, delivery FROM schedule_alerts
         WHERE server = ? AND alert_id = ?
           AND schedule_id IS ? AND occurrence_date IS ? AND event = ?
           ${filterChannel ? "AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))" : ''}
+          ${filterDelivery ? 'AND delivery = ?' : ''}
         ORDER BY recorded_at DESC, id DESC
         LIMIT 1
-      `).get(...[server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, ...(filterChannel ? [channel] : [])]);
+      `).get(...[server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, ...(filterChannel ? [channel] : []), ...(filterDelivery ? [delivery] : [])]);
       return row || null;
     } catch (error) {
       this.logger.error('Failed to read schedule_alerts ledger', { error: error.message, server, alertId, event });
+      throw error;
+    }
+  }
+
+  /**
+   * Occurrence dates that have a `missing` row for one schedule on or after
+   * `sinceDate` (#326). The caller (deriveResolvedEvents) closes them with a
+   * `resolved` when the schedule is marked completed; whether a destination
+   * already got that `resolved` is decided per destination later, as usual.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @param {string} key.alertId
+   * @param {string} key.scheduleId
+   * @param {string} key.sinceDate - `YYYY-MM-DD`, inclusive lower bound on occurrence_date
+   * @returns {Promise<string[]>}
+   */
+  async listMissingScheduleAlertOccurrences({ server, alertId, scheduleId, sinceDate }) {
+    try {
+      return this.db.prepare(`
+        SELECT DISTINCT occurrence_date AS occurrenceDate FROM schedule_alerts
+        WHERE server = ? AND alert_id = ? AND schedule_id = ? AND event = 'missing'
+          AND occurrence_date IS NOT NULL AND occurrence_date >= ?
+        ORDER BY occurrence_date
+      `).all(server, alertId, scheduleId, sinceDate).map((r) => r.occurrenceDate);
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts missing rows', { error: error.message, server, alertId });
+      throw error;
+    }
+  }
+
+  /**
+   * Every `(scheduleId, occurrenceDate)` that has a `missing` row for one
+   * alert on or after `sinceDate` (#356). The caller (deriveResolvedEvents)
+   * compares the schedule ids with the ones Actual still has and closes the
+   * vanished ones with a `resolved`; the ledger is the only place a deleted
+   * schedule is still remembered.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @param {string} key.alertId
+   * @param {string} key.sinceDate - `YYYY-MM-DD`, inclusive lower bound on occurrence_date
+   * @returns {Promise<Array<{scheduleId:string, occurrenceDate:string}>>}
+   */
+  async listMissingScheduleAlertSchedules({ server, alertId, sinceDate }) {
+    try {
+      return this.db.prepare(`
+        SELECT DISTINCT schedule_id AS scheduleId, occurrence_date AS occurrenceDate FROM schedule_alerts
+        WHERE server = ? AND alert_id = ? AND event = 'missing'
+          AND schedule_id IS NOT NULL AND occurrence_date IS NOT NULL AND occurrence_date >= ?
+        ORDER BY schedule_id, occurrence_date
+      `).all(server, alertId, sinceDate);
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts missing schedules', { error: error.message, server, alertId });
       throw error;
     }
   }
@@ -987,9 +1150,19 @@ class SyncHistoryService {
       const scheduleAlertsRetentionDays = Math.max(this.retentionDays, 120);
       const scheduleAlertsCutoff = this.now();
       scheduleAlertsCutoff.setDate(scheduleAlertsCutoff.getDate() - scheduleAlertsRetentionDays);
+      // #261: a mute can outlast that window (up to 365 days), so the muted
+      // rows of an alert whose override still has muted_until set are kept for
+      // the summary; they are purged normally once the mute fields are cleared.
+      // Stale mutes are expired first (UTC: cleanup has no configured zone).
+      this.expireStaleMutes({ timezone: 'UTC' });
       const scheduleAlertsResult = this.db.prepare(`
         DELETE FROM schedule_alerts
         WHERE recorded_at < ?
+          AND NOT (delivery = 'muted' AND EXISTS (
+            SELECT 1 FROM payment_alert_override o
+            WHERE o.server = schedule_alerts.server
+              AND o.alert_id = schedule_alerts.alert_id
+              AND o.muted_until IS NOT NULL))
       `).run(scheduleAlertsCutoff.toISOString());
 
       if (scheduleAlertsResult.changes > 0) {
@@ -997,6 +1170,16 @@ class SyncHistoryService {
           deletedRecords: scheduleAlertsResult.changes,
           retentionDays: scheduleAlertsRetentionDays,
           cutoffDate: scheduleAlertsCutoff.toISOString()
+        });
+      }
+
+      // config_audit (#259) is purged by age at retentionDays, like sync_history.
+      const auditResult = this.db.prepare('DELETE FROM config_audit WHERE at < ?')
+        .run(cutoffDate.toISOString());
+      if (auditResult.changes > 0) {
+        this.logger.info('Cleaned up old configuration audit rows', {
+          deletedRecords: auditResult.changes,
+          retentionDays: this.retentionDays
         });
       }
 
@@ -1013,10 +1196,30 @@ class SyncHistoryService {
   }
 
   /**
+   * True when any table resetServerHistory clears has a row for this name.
+   * sync_history ages out after 90 days but the other tables do not, so a
+   * retired server can still be known without any history rows. (#259)
+   * @param {string} serverName
+   * @returns {boolean}
+   */
+  hasServerData(serverName) {
+    const row = this.db.prepare(`
+      SELECT EXISTS (SELECT 1 FROM sync_history WHERE server_name = @s)
+          OR EXISTS (SELECT 1 FROM account_metadata WHERE server_name = @s)
+          OR EXISTS (SELECT 1 FROM schedule_alerts WHERE server = @s)
+          OR EXISTS (SELECT 1 FROM payment_alert_status WHERE server = @s)
+          OR EXISTS (SELECT 1 FROM payment_alert_run WHERE server = @s)
+          OR EXISTS (SELECT 1 FROM payment_alert_override WHERE server = @s) AS known
+    `).get({ s: serverName });
+    return row.known === 1;
+  }
+
+  /**
    * Reset sync history for a specific server
    * @param {string} serverName - Name of the server
+   * @param {{remoteAddr?: string}} [options] - recorded on the history_reset audit row (#259)
    */
-  async resetServerHistory(serverName) {
+  async resetServerHistory(serverName, { remoteAddr } = {}) {
     try {
       // Clear sync history, the dashboard account snapshot and the schedule
       // alert ledger atomically, so a reset never leaves orphaned account
@@ -1026,13 +1229,24 @@ class SyncHistoryService {
       const delMeta = this.db.prepare('DELETE FROM account_metadata WHERE server_name = ?');
       const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts WHERE server = ?');
       const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ?');
+      const delOverrides = this.db.prepare('DELETE FROM payment_alert_override WHERE server = ?');
       const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');
+      // config_audit is deliberately NOT deleted (#259): a reset must not erase
+      // the record of earlier configuration changes. It appends one
+      // history_reset row, in this transaction, with the deleted counts.
       const reset = this.db.transaction((s) => {
         const r = delHistory.run(s);
-        delMeta.run(s);
-        delScheduleAlerts.run(s);
-        delPaymentItems.run(s);
-        delPaymentRun.run(s);
+        const deleted = {
+          sync_history: r.changes,
+          account_metadata: delMeta.run(s).changes,
+          schedule_alerts: delScheduleAlerts.run(s).changes,
+          payment_alert_status: delPaymentItems.run(s).changes,
+          payment_alert_run: delPaymentRun.run(s).changes,
+          payment_alert_override: delOverrides.run(s).changes
+        };
+        this.insertConfigAudit({
+          server: s, remoteAddr, action: 'history_reset', target: null, changes: { deleted }
+        });
         return r;
       });
       const result = reset(serverName);
@@ -1054,8 +1268,9 @@ class SyncHistoryService {
 
   /**
    * Reset all sync history
+   * @param {{remoteAddr?: string}} [options] - recorded on the history_reset audit row (#259)
    */
-  async resetAllHistory() {
+  async resetAllHistory({ remoteAddr } = {}) {
     try {
       // Clear all sync history, all account snapshots and the whole schedule
       // alert ledger atomically. (#99, #258)
@@ -1064,12 +1279,21 @@ class SyncHistoryService {
       const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts');
       const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status');
       const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');
+      const delOverrides = this.db.prepare('DELETE FROM payment_alert_override');
+      // config_audit is kept and gets one history_reset row (see resetServerHistory).
       const reset = this.db.transaction(() => {
         const r = delHistory.run();
-        delMeta.run();
-        delScheduleAlerts.run();
-        delPaymentItems.run();
-        delPaymentRun.run();
+        const deleted = {
+          sync_history: r.changes,
+          account_metadata: delMeta.run().changes,
+          schedule_alerts: delScheduleAlerts.run().changes,
+          payment_alert_status: delPaymentItems.run().changes,
+          payment_alert_run: delPaymentRun.run().changes,
+          payment_alert_override: delOverrides.run().changes
+        };
+        this.insertConfigAudit({
+          server: null, remoteAddr, action: 'history_reset', target: null, changes: { deleted }
+        });
         return r;
       });
       const result = reset();
@@ -1085,6 +1309,227 @@ class SyncHistoryService {
       });
       throw error;
     }
+  }
+
+  /**
+   * Insert one config_audit row (no logging). Redacts and caps `changes`.
+   * Used by recordConfigChange() and, inside their transactions, by the resets.
+   */
+  insertConfigAudit({ server, remoteAddr, action, target, changes }) {
+    return this.db.prepare(`
+      INSERT INTO config_audit (at, server, remote_addr, action, target, changes_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      this.now().toISOString(),
+      server ?? null,
+      remoteAddr ?? null,
+      action,
+      target ?? null,
+      serializeAuditChanges(changes)
+    );
+  }
+
+  /**
+   * Record one configuration change (#259). Called by the config routes after a
+   * successful write only. `changes` is { field: [before, after] } with changed
+   * fields only; secrets are redacted and the row is capped at 8 KB.
+   * Never logs values: INFO carries the action and target.
+   * @param {{server?: string, remoteAddr?: string, action: string, target?: string, changes?: Object}} entry
+   * @returns {number} the new row id
+   */
+  recordConfigChange({ server, remoteAddr, action, target, changes } = {}) {
+    if (typeof action !== 'string' || action === '') {
+      throw new Error('recordConfigChange requires an action');
+    }
+    const result = this.insertConfigAudit({ server, remoteAddr, action, target, changes });
+    this.logger.info('Configuration change recorded', { action, target: target ?? null });
+    return Number(result.lastInsertRowid);
+  }
+
+  /**
+   * Configuration changes, newest first. Throws on a database error.
+   * @param {{limit?: number}} [options]
+   * @returns {Array<{at: string, server: ?string, remote_addr: ?string, action: string, target: ?string, changes: Object}>}
+   */
+  getConfigAudit({ limit = 50 } = {}) {
+    const rows = this.db.prepare(`
+      SELECT at, server, remote_addr, action, target, changes_json
+      FROM config_audit
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(limit);
+    return rows.map(row => {
+      let changes = {};
+      try {
+        changes = JSON.parse(row.changes_json);
+      } catch { /* a corrupt row still lists, with no changes */ }
+      return {
+        at: row.at,
+        server: row.server,
+        remote_addr: row.remote_addr,
+        action: row.action,
+        target: row.target,
+        changes
+      };
+    });
+  }
+
+  // ---- Payment alert overrides (#261) -------------------------------------
+
+  _overrideFromRow(row) {
+    return row ? {
+      server: row.server,
+      alertId: row.alert_id,
+      enabled: row.enabled === 1,
+      mutedFrom: row.muted_from,
+      mutedUntil: row.muted_until,
+      reason: row.reason,
+      updatedAt: row.updated_at
+    } : null;
+  }
+
+  /**
+   * @param {string} server
+   * @param {string} alertId
+   * @returns {?{server:string, alertId:string, enabled:boolean, mutedFrom:?string, mutedUntil:?string, reason:?string, updatedAt:string}}
+   */
+  getOverride(server, alertId) {
+    return this._overrideFromRow(this.db.prepare(
+      'SELECT * FROM payment_alert_override WHERE server = ? AND alert_id = ?'
+    ).get(server, alertId));
+  }
+
+  /**
+   * Replace the override of one rule. A state with the rule enabled and no
+   * mute is the default, so the row is deleted instead of stored. Returns the
+   * stored override, or null when it was normalised away.
+   */
+  setOverride({ server, alertId, enabled = true, mutedFrom = null, mutedUntil = null, reason = null }) {
+    if (enabled !== false && !mutedUntil) {
+      this.deleteOverride(server, alertId);
+      return null;
+    }
+    this.db.prepare(`
+      INSERT OR REPLACE INTO payment_alert_override
+        (server, alert_id, enabled, muted_from, muted_until, reason, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      server, alertId, enabled === false ? 0 : 1,
+      mutedUntil ? mutedFrom : null, mutedUntil || null, mutedUntil ? reason : null,
+      this.now().toISOString()
+    );
+    return this.getOverride(server, alertId);
+  }
+
+  /** @returns {boolean} true when a row was removed */
+  deleteOverride(server, alertId) {
+    return this.db.prepare(
+      'DELETE FROM payment_alert_override WHERE server = ? AND alert_id = ?'
+    ).run(server, alertId).changes > 0;
+  }
+
+  /** Every override (of one server when given), ordered by server then alert id. */
+  listOverrides(server) {
+    const rows = server === undefined
+      ? this.db.prepare('SELECT * FROM payment_alert_override ORDER BY server, alert_id').all()
+      : this.db.prepare('SELECT * FROM payment_alert_override WHERE server = ? ORDER BY server, alert_id').all(server);
+    return rows.map(row => this._overrideFromRow(row));
+  }
+
+  /**
+   * The `muted` ledger rows of one alert, optionally within [since, until).
+   * @param {{server:string, alertId:string, since?:string, until?:Date}} q
+   * @returns {Array<{scheduleId:?string, occurrenceDate:?string, event:string, channel:?string, recordedAt:string}>}
+   */
+  listMutedRows({ server, alertId, since, until }) {
+    const clauses = ["server = ?", "alert_id = ?", "delivery = 'muted'"];
+    const args = [server, alertId];
+    if (since) { clauses.push('recorded_at >= ?'); args.push(since); }
+    if (until) { clauses.push('recorded_at < ?'); args.push(until.toISOString()); }
+    return this.db.prepare(`
+      SELECT schedule_id AS scheduleId, occurrence_date AS occurrenceDate, event, channel, recorded_at AS recordedAt
+      FROM schedule_alerts WHERE ${clauses.join(' AND ')} ORDER BY id
+    `).all(...args);
+  }
+
+  /** Delete the alert's `muted` rows (since a time when given). @returns {number} */
+  deleteMutedRows({ server, alertId, since }) {
+    return since
+      ? this.db.prepare("DELETE FROM schedule_alerts WHERE server = ? AND alert_id = ? AND delivery = 'muted' AND recorded_at >= ?").run(server, alertId, since).changes
+      : this.db.prepare("DELETE FROM schedule_alerts WHERE server = ? AND alert_id = ? AND delivery = 'muted'").run(server, alertId).changes;
+  }
+
+  /**
+   * Apply one operator change to an override, its held-back muted rows and its
+   * audit row in a single transaction (#261), so a failing audit insert leaves
+   * nothing changed (same pattern as resetServerHistory).
+   * @param {Object} change
+   * @param {string} change.server
+   * @param {string} change.alertId
+   * @param {?Object} change.override - the override to store, or null to delete it
+   * @param {boolean} [change.dropMutedRows] - delete the alert's muted rows
+   * @param {string} [change.mutedSince] - limit that delete to rows since this time
+   * @param {string} [change.remoteAddr]
+   * @param {(stored: ?Object) => Object} change.auditChanges - the audit `changes`, from the stored override
+   * @returns {?Object} the stored override (null when deleted or normalised away)
+   */
+  applyOverrideChange({ server, alertId, override, dropMutedRows = false, mutedSince, remoteAddr, auditChanges }) {
+    const apply = this.db.transaction(() => {
+      if (dropMutedRows) this.deleteMutedRows({ server, alertId, since: mutedSince });
+      let stored = null;
+      if (override) stored = this.setOverride(override);
+      else this.deleteOverride(server, alertId);
+      const changes = auditChanges(stored);
+      const audited = Boolean(changes && Object.keys(changes).length > 0);
+      if (audited) {
+        this.insertConfigAudit({ server, remoteAddr, action: 'payment_alert_state', target: alertId, changes });
+      }
+      return { stored, audited };
+    });
+    const { stored, audited } = apply();
+    // Logged only when an audit row was written: a no-op change records nothing.
+    if (audited) this.logger.info('Configuration change recorded', { action: 'payment_alert_state', target: alertId });
+    return stored;
+  }
+
+  /** Delete the muted rows of one destination key. @returns {number} */
+  deleteMutedRow({ server, alertId, scheduleId, occurrenceDate, event, channel }) {
+    return this.db.prepare(`
+      DELETE FROM schedule_alerts
+      WHERE server = ? AND alert_id = ? AND schedule_id IS ? AND occurrence_date IS ?
+        AND event = ? AND channel IS ? AND delivery = 'muted'
+    `).run(server, alertId, scheduleId ?? null, occurrenceDate ?? null, event, channel ?? null).changes;
+  }
+
+  /**
+   * Expire mutes whose summary never went out (#261): at the end of the
+   * `mutedUntil` day plus 7 days, clear the reason, the mute fields and the
+   * alert's muted rows, with a WARN, so a failing or deferred summary cannot
+   * keep the free-text reason forever. Covers every override of the server
+   * (all servers when none is given): enabled, switched off, config-locked or
+   * orphaned. The reason is never logged.
+   *
+   * @param {{server?:string, timezone?:string, now?:Date}} [options]
+   * @returns {Array<{server:string, alertId:string}>} the expired overrides
+   */
+  expireStaleMutes({ server, timezone = 'UTC', now } = {}) {
+    const at = (now || this.now()).getTime();
+    const expired = [];
+    const run = this.db.transaction(() => {
+      for (const o of this.listOverrides(server)) {
+        if (!o.mutedUntil) continue;
+        const expiry = moment(muteEndsAt(o.mutedUntil, timezone)).tz(timezone).add(7, 'days');
+        if (at < expiry.valueOf()) continue;
+        this.deleteMutedRows({ server: o.server, alertId: o.alertId });
+        this.setOverride({ server: o.server, alertId: o.alertId, enabled: o.enabled });
+        expired.push({ server: o.server, alertId: o.alertId });
+        this.logger.warn('Mute expired without a summary; reason and muted rows cleared', {
+          server: o.server, alertId: o.alertId, mutedUntil: o.mutedUntil
+        });
+      }
+    });
+    run();
+    return expired;
   }
 
   /**
@@ -1107,4 +1552,4 @@ class SyncHistoryService {
 
 }
 
-module.exports = { SyncHistoryService };
+module.exports = { SyncHistoryService, CONFIG_AUDIT_REDACT_SUBSTRINGS };

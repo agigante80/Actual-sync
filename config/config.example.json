@@ -12,7 +12,8 @@
         "staleAfterDays": 3,
         "alerts": [
           { "id": "rent", "schedule": "Rent - Apartment", "graceDays": 6 },
-          { "id": "salary", "schedule": "Salary", "graceDays": 3, "earlyDays": 5, "amountTolerancePct": 0 }
+          { "id": "salary", "schedule": "Salary", "graceDays": 3, "earlyDays": 5, "amountTolerancePct": 0 },
+          { "id": "gym", "schedule": "Gym", "enabled": false }
         ]
       }
     },
@@ -78,6 +79,7 @@
     "dashboard": {
       "enabled": true,
       "allowedOrigins": [],
+      "allowConfigWrites": false,
       "auth": {
         "type": "none"
       }

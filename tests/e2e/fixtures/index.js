@@ -113,6 +113,24 @@ function seeder(clock, hc, history) {
     paymentRunFailure(serverName, errorCode, minutesAgo = 0) {
       at(minutesAgo, () => history.recordPaymentRunFailure(serverName, errorCode));
     },
+    /**
+     * One configuration change in the audit trail (#259), recorded the way a
+     * config route will record it.
+     * @param {{ server?: string, remoteAddr?: string, action: string, target?: string, changes?: Object }} change
+     * @param {number} [minutesAgo=0]
+     */
+    configChange(change, minutesAgo = 0) {
+      at(minutesAgo, () => history.recordConfigChange(change));
+    },
+    /**
+     * A stored alert override (#261), written the way the state route writes it.
+     * @param {{ server: string, alertId: string, enabled?: boolean, mutedFrom?: string,
+     *   mutedUntil?: string, reason?: string }} override
+     * @param {number} [minutesAgo=0]
+     */
+    override(override, minutesAgo = 0) {
+      at(minutesAgo, () => history.setOverride(override));
+    },
     /** A delivered alert in the ledger, which the route joins as "Last alert". */
     scheduleAlert(alert, minutesAgo = 0) {
       at(minutesAgo, () => {
@@ -177,8 +195,15 @@ async function startFixtureServer(stateName, overrides = {}) {
     // /api/dashboard/metrics only checks that a Prometheus service exists.
     prometheusService: { getMetrics: async () => '', recordSync: () => {} },
     notificationService,
-    dashboardConfig: { enabled: true, auth: state.auth || { type: 'none' } },
+    dashboardConfig: {
+      enabled: true,
+      auth: state.auth || { type: 'none' },
+      allowConfigWrites: state.allowConfigWrites,
+      allowedOrigins: state.allowedOrigins
+    },
     getServers: () => servers,
+    // Mute dates are read in this zone; the browser is emulated in UTC too. (#261)
+    getTimezone: () => 'UTC',
     getCronSchedules: () => (state.schedules || []).map(s => ({
       ...s,
       nextInvocation: new Date(FIXTURE_NOW + (s.nextInMinutes ?? 60) * MINUTE).toISOString()

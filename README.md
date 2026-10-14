@@ -139,7 +139,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate) applied to failures
 - ✅ **Rate Limiting** - Failure-notification spam prevention with configurable intervals
 - ✅ **Missing-Payment Alerts** - Compares Actual's own schedules against posted transactions per server and notifies when an expected payment is late, missing, wrong-amount, or cannot be checked (stale bank connection); see [Missing-Payment Alerts](#-missing-payment-alerts)
-- ✅ **Payments Tab** - Read-only dashboard view of every watched schedule: state, expected amount, next due date, deadline, the last 6 occurrences and the last alert sent; works without a connection to Actual; see [Payments tab](#payments-tab)
+- ✅ **Payments Tab** - Dashboard view of every watched schedule, with an on/off switch and mute-until per alert: state, expected amount, next due date, deadline, the last 6 occurrences and the last alert sent; works without a connection to Actual; see [Payments tab](#payments-tab)
 
 ### 🛡️ Reliability & Security
 
@@ -410,7 +410,7 @@ See **[docs/CONFIG.md](docs/CONFIG.md)** for complete configuration reference in
 | `npm test` | `jest` | Run test suite |
 | `npm run test:watch` | `jest --watch` | Run tests in watch mode |
 | `npm run test:coverage` | `jest --coverage` | Generate coverage report |
-| `npm run test:e2e` | `jest --config jest.e2e.config.js` | Run the browser E2E suite (see [TESTING.md](docs/TESTING.md#-browser-e2e-tests-263)) |
+| `npm run test:e2e` | `node --experimental-vm-modules node_modules/.bin/jest --config jest.e2e.config.js --runInBand` | Run the browser E2E suite (see [TESTING.md](docs/TESTING.md#-browser-e2e-tests-263)) |
 
 ### Command Line Examples
 
@@ -689,6 +689,22 @@ The **Payments** tab lists every schedule watched by [Missing-Payment Alerts](#-
 
 See [docs/DASHBOARD.md](docs/DASHBOARD.md#payments-tab) for dates, refresh and failure messages.
 
+##### Turning alerts off and muting
+
+The last column of the tab switches an alert off or on and mutes it until a date, without editing `config.json` or restarting. It needs `healthCheck.dashboard.allowConfigWrites: true` and dashboard auth other than `none` (otherwise the controls are shown disabled, with a tooltip saying why).
+
+![Payments tab with one alert muted](docs/screenshots/dashboard-payments-muted.png)
+
+The pill always shows what Actual says; a separate badge beside it shows "Muted until <date>" or "Disabled in config". A mute needs a **reason**. The alert keeps being evaluated while muted, and when the mute ends each destination gets **one summary message** if anything was held back (nothing if not). Unmuting early sends no summary.
+
+**Pause the alert while a parking spot is vacant.** Click **Mute...** on the parking row, pick the date the spot is let again, and write "vacant until 1 March". Nothing is sent for that alert until the end of that day. If the rent was missed meanwhile, you then get one message such as:
+
+> 🔔 Rent - Parking: mute ended (1 Jan 2026 to 1 Mar 2026, "vacant until 1 March"). 1 event(s) while muted: missing for 5 Feb 2026;
+
+**Stop an alert permanently.** There are two ways. Put `"enabled": false` on the alert in `config.json` (see the `gym` alert in `config/config.example.json`): it stays visible in the tab with a "Disabled in config" badge, and the dashboard cannot switch it on. Or use the switch on the row: it is stored by the dashboard, can be flipped back at any time, and the config setting wins over it.
+
+The reason is stored in the sync-history database, shown in the dashboard as text, and **included in the summary message**, so it goes to your notification channels. Remove `{{reason}}` from the `muteEnded` template if you do not want that. See [docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md#switching-alerts-off-and-muting) for the exact rules and [docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md) for how the reason is stored and cleared.
+
 ---
 
 **Dashboard Capabilities:**
@@ -720,6 +736,34 @@ npm run screenshots
 ```
 
 See **[docs/DASHBOARD.md](docs/DASHBOARD.md)** for complete dashboard documentation including authentication setup, API endpoints, and reverse proxy configuration.
+
+#### Editing from the dashboard
+
+The dashboard is read-only for configuration by default. State-changing requests (sync, dismiss, reset, test notification) are refused when they come from another browser origin.
+
+```json
+"dashboard": { "enabled": true }
+```
+
+Enable writes only with authentication:
+
+```json
+"dashboard": {
+  "enabled": true,
+  "allowConfigWrites": true,
+  "auth": { "type": "basic", "username": "admin", "password": "change-me" }
+}
+```
+
+Behind a reverse proxy that serves the page under another origin, list it (this also authorizes POSTs from it):
+
+```json
+"dashboard": { "allowedOrigins": ["https://budget.example.com"] }
+```
+
+Every configuration change is listed, with secrets redacted, in the Settings tab:
+
+![Configuration changes](docs/screenshots/dashboard-settings-audit.png)
 
 ### Health Check Endpoints
 
@@ -965,7 +1009,7 @@ schedule in Actual was renamed to `"Rent - Apartment"` (or deleted). The rule's 
 
 > ❓ Payment alert "rent" matches no schedule in Main. Check the schedule name in Actual.
 
-This repeats once per day while unmatched (a fixed interval, independent of `remindEveryDays`).
+This is sent once per destination while the rule stays unmatched, not on every sync. It is sent again only after the rule matches a schedule again and later stops matching.
 
 **9. Overlapping windows** - a *weekly* schedule (7-day interval between occurrences) with
 `graceDays: 5, earlyDays: 3` (5 + 3 = 8, greater than or equal to the 7-day interval): a late
@@ -982,10 +1026,10 @@ Logged warning:
 
 > Rule "rent": graceDays (5) + earlyDays (3) >= the schedule's shortest interval between occurrences (7 days); the on-time and late windows of consecutive occurrences would overlap, so this rule was skipped.
 
-Sent alert (the shared `cannotCheck` template has no `occurrence`/`deadline` to fill in for this
-reason, so those two fields render blank - this is expected for `interval-violation`):
+Sent alert (the built-in `cannotCheck` template has its own wording per `reason`, so this one points
+at the rule, not at the bank connection):
 
-> ⏸️ Cannot check Rent - Apartment: Checking has not synced since  (deadline ). Check the bank connection.
+> ⏸️ Cannot check Rent - Apartment: the rule's graceDays plus earlyDays reach the schedule's interval between occurrences, so its windows would overlap. Shorten them in config.json.
 
 **10. Digest** - in the same sync, the Rent rule above is `missing` and a second rule, watching an
 income schedule **"Salary"** (recurrence Monthly on the 5th, expected +3200.00 into Checking from
@@ -1031,6 +1075,8 @@ Every template (built-in or an override under `templates`) can reference these; 
 | `received_date` / `received_date_raw` | The date the matching transaction posted |
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
+| `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events) |
+| `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual, `deleted` when the schedule was removed in Actual (empty otherwise) |
 | `budget` | The server name |
 | `alert_id` | The rule's `id` |
 
@@ -1038,7 +1084,7 @@ A variable that does not apply to the current event type is always present as `n
 
 ### Timezone
 
-Every date in this feature - an occurrence date, a deadline, "today", account staleness - is computed in one timezone: `timezone` from the top-level config, falling back to the host machine's own local IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) when unset. A global `timezone` config key does not exist yet (tracked separately); until it does, every server's alerts use the sync process's own local zone.
+Every date in this feature - an occurrence date, a deadline, "today", account staleness - is computed in one timezone: the top-level `timezone` config key (see [CONFIG.md](docs/CONFIG.md#timezone-optional)), falling back to the process timezone (`TZ`, else the system zone), and to `UTC` when that is blank or not a valid IANA name. All servers share it.
 
 See **[docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md)** for the full configuration reference, the algorithm's edge cases, and message-template overrides.
 

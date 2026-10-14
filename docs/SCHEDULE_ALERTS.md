@@ -16,6 +16,7 @@ unconfirmable instead of missing.
 - [Enabling it](#enabling-it)
 - [Configuration reference](#configuration-reference)
 - [Event types](#event-types)
+- [Switching alerts off and muting](#switching-alerts-off-and-muting)
 - [De-duplication and reminders](#de-duplication-and-reminders)
 - [Digest mode](#digest-mode)
 - [Startup validation](#startup-validation)
@@ -37,7 +38,8 @@ For each server with a `scheduleAlerts` block:
 3. For every occurrence of a watched schedule, a matching transaction is looked for by two means:
    Actual's own transaction-to-schedule link (authoritative, regardless of amount) or an
    account + payee match within an early/grace window around the occurrence date.
-4. What happened for the most recent occurrence becomes zero or one event: `missing`,
+4. What happened for each occurrence in the look-back window (up to 90 days: twice the schedule's longest interval, at least 7) becomes zero or one event
+   of its own, so several overdue occurrences can each produce one: `missing`,
    `wrongAmount`, `cannotCheck`, `resolved`, or (for a rule matching no schedule) `ruleUnmatched`.
    See [Event types](#event-types).
 5. Each event is de-duplicated against a ledger (the `schedule_alerts` table in the sync-history
@@ -102,9 +104,10 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 | `graceDays` | integer, 0-60 | `3` | Days after the occurrence date before it counts as overdue (deadline = occurrence + `graceDays`). |
 | `earlyDays` | integer, 0-31 | `2` | Days before the occurrence date a matching transaction still counts as on time. |
 | `period` | `"occurrence"` \| `"next"` | `"occurrence"` | What `{{period}}` names: the occurrence's own month, or the following month (for a payment due at month end, for the month ahead). |
-| `amountTolerancePct` | number, 0-100 | derived | How far a posted amount may differ from the schedule's expected amount and still be on time. Defaults to Actual's own schedule amount mode: `0` for an exact amount, `7.5` for "approximately". |
+| `amountTolerancePct` | number, 0-100 | derived | How far a posted amount may differ from the schedule's expected amount and still be on time. The sign must match for an unlinked transaction, in both the on-time and the late window: an outgoing refund of the same size is not the incoming payment and is never reported as a wrong amount or a late payment. A transaction Actual itself linked to the schedule is always trusted. A schedule with amount `0` accepts any sign (a non-zero payment is then a wrong amount). A range amount ("between") accepts the sign of either bound, so a range spanning zero or with a zero bound accepts anything. Defaults to Actual's own schedule amount mode: `0` for an exact amount, `7.5` for "approximately". |
 | `remindEveryDays` | integer, 1-30 | off | Repeat an unresolved `missing` alert every N days instead of sending it once. |
 | `channels` | array of `telegram`\|`email`\|`slack`\|`discord`\|`webhook`\|`ntfy` | every configured channel | Which notification channels this rule uses. A channel with no usable destination configured is silently skipped. |
+| `enabled` | boolean | `true` | `false` switches the alert off permanently: it is still evaluated and shown in the Payments tab, but sends nothing, and the dashboard cannot switch it on. See [Switching alerts off and muting](#switching-alerts-off-and-muting). |
 | `templates` | object | - | Per-rule template overrides. Takes priority over the block-level `templates`. |
 
 ## Event types
@@ -113,9 +116,108 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 |---|---|---|
 | `missing` | No matching transaction by the deadline, and the account is synced past it. | Repeats every `remindEveryDays`, if set. |
 | `wrongAmount` | A matching transaction posted in-window, but its amount is outside tolerance. | One-time; not repeated. |
-| `cannotCheck` | The account's last sync is stale (`reason: "stale"`), not yet past the deadline (`reason: "not-synced"`), or the rule's own window configuration is unsound (`reason: "interval-violation"`, see below). | Never a false `missing`. |
-| `resolved` | A payment previously reported `missing` later posts, on time or late. | Closes out the alert; no manual dismissal needed. |
-| `ruleUnmatched` | A rule's `schedule`/`schedulePrefix` matches no schedule in Actual (renamed, deleted, or a typo). | Repeats once per day while unmatched (a fixed interval, independent of the rule's own `remindEveryDays`). |
+| `cannotCheck` | The account's last sync is stale (`reason: "stale"`), not yet past the deadline (`reason: "not-synced"`), the rule's own window configuration is unsound (`reason: "interval-violation"`, see below), or the rule threw while being evaluated (`reason: "error"`). | Never a false `missing`. An account that was never bank-synced (no `last_sync` yet) always gives `cannotCheck` (`reason: "stale"`) until its first sync. The built-in message has its own wording per reason; only `stale` and `not-synced` mention the bank connection. |
+| `resolved` | A payment previously reported `missing` later posts, on time or late. | Closes out the alert; no manual dismissal needed. Also sent when a one-off schedule with an open `missing` is marked completed, or any schedule with an open `missing` is deleted, in Actual (see below). |
+| `ruleUnmatched` | A rule's `schedule`/`schedulePrefix` matches no schedule in Actual (renamed, deleted, or a typo). | Sent once per destination while the rule stays unmatched; sent again only after the rule matched a schedule again and later unmatched (see below). |
+
+## Lifecycle of a completed one-off schedule (#326)
+
+Actual drops a schedule marked completed out of the active set, and a completed schedule is never
+evaluated for new alerts. A completed **one-off** schedule (a single date, not a recurrence) that has
+an open `missing` (including its reminders) in the ledger still gets one `resolved`, so the alert
+thread closes instead of staying open forever:
+
+- The `resolved` uses the built-in "marked completed in Actual" wording (`closed_by` is `completed`),
+  whether or not a matching transaction exists. Completing a schedule is the signal; no payment is
+  looked for.
+- Only a `missing` whose occurrence date is inside the 90-day look-back window is closed. An older one
+  stays as it is.
+- After it is delivered nothing more is sent for that occurrence, unless the schedule is uncompleted (or a
+  payment unlinked) and a new `missing` is recorded for it; then the reminders restart and the next close
+  is delivered again. A completed one-off that never had a `missing` sends nothing, and a completed
+  recurring schedule is unaffected.
+- A custom `resolved` template that never mentions `closed_by` is not used for this case: the built-in
+  "marked completed in Actual" text is sent instead, so an older template cannot claim a payment
+  arrived. A template that compares `closed_by` to quoted values (for example `(eq closed_by "completed")`, in either order) gets the built-in text for any value it does not name; a template that only tests `{{#if closed_by}}` or prints it is used as written. A normal payment `resolved` always uses your template.
+
+## Lifecycle of a deleted schedule (#356)
+
+A schedule deleted in Actual vanishes from the schedule list, so it is never evaluated again. If it left
+an open `missing` in the ledger (including its reminders), the alert thread is closed with one `resolved`
+per open occurrence and destination:
+
+- The `resolved` uses the built-in "<name> (<expected date>): removed in Actual. Alert closed." wording (`closed_by` is `deleted`).
+  It is built from the ledger alone: the schedule is gone, so `name` is the rule's exact `schedule` name
+  (the rule's `id` for a `schedulePrefix` rule), and payee, account and amounts are empty.
+- Only a `missing` whose occurrence date is inside the 90-day look-back window is closed, and only for
+  destinations that received that `missing`. After it is delivered nothing more is sent for that
+  occurrence (same rule as for completed schedules).
+- Deletion is only inferred when Actual's schedule list was read successfully and is not empty. See
+  "An empty schedule list" below.
+- A custom `resolved` template that never mentions `closed_by` gets the built-in text here. A template that compares `closed_by` to quoted values (for example `(eq closed_by "completed")`, in either order) gets the built-in text for any value it does not name; a template that only tests `{{#if closed_by}}` or prints it is used as written.
+- A rule bound to the deleted schedule by exact name now matches nothing, so it also sends one
+  `ruleUnmatched` per destination (not one per sync).
+
+## An empty schedule list (#356, #359)
+
+If reading Actual's schedule list fails, the whole alert evaluation is skipped for that sync. An empty
+list (or one that is not a list) is treated as just as unreliable, because a transient empty read (a
+budget still loading, a partial download) would otherwise read as "every schedule was deleted":
+
+- When at least one rule is configured, rule matching is skipped for that sync. No `ruleUnmatched`,
+  no alert, no deletion close and no `ruleMatched` marker is produced, and one WARN says the schedule
+  list was empty and alert evaluation was skipped. The dashboard keeps the last good payment snapshot.
+- With no rules configured an empty list is a no-op and logs nothing.
+- Nothing from earlier syncs is undone: a `ruleUnmatched` already sent stays recorded and a rule that was
+  unmatched stays deduped. The next sync that reads a non-empty list evaluates normally.
+- Trade-off: if you really delete every schedule, open alerts stay open and no `ruleUnmatched` is sent
+  until a schedule exists again.
+
+## Switching alerts off and muting
+
+Besides `enabled: false` in the config file, an operator can switch an alert off, or mute it until a
+date with a reason, from the dashboard (see [DASHBOARD.md](DASHBOARD.md#turning-alerts-off-and-muting)).
+These are runtime overrides stored in the sync-history database; the config file is never rewritten.
+Evaluation is unchanged: every rule is still evaluated and the Payments tab and its snapshot keep
+showing the real state. Only delivery changes.
+
+**Precedence:** `enabled: false` in the config wins, then the dashboard override, then the default
+(on, not muted). A config-disabled alert cannot be switched on or muted from the dashboard (its old
+mute can still be cleared). An override whose alert or server is no longer configured is ignored.
+
+| Rule state | What delivery does with an event | Ledger row |
+|---|---|---|
+| on, not muted | sends it | `sent` |
+| muted | sends nothing, for all five event kinds | `muted`, one per destination and event |
+| off (config or switch) | sends nothing | none |
+
+Switching an alert back on delivers what is still open at the next sync. A `muted` row stops the
+same event repeating at that destination (reminders write nothing during a mute), and a
+`resolved` notice goes only to destinations that were actually told about the `missing` event.
+
+**Mute lifecycle.** A mute lasts until the end of its `mutedUntil` day in the configured
+[timezone](#timezone), up to 365 days ahead. Extending it keeps its original start.
+- *Early unmute* deletes the alert's held-back `muted` rows and sends no summary.
+- *Mute end:* on the first sync after that day, each destination that had at least one event held
+  back gets **one** `muteEnded` message (a separate message even in digest mode); a destination with
+  nothing held back gets nothing. Events that resolved themselves during the mute (a `missing`
+  occurrence that was then paid) are dropped silently and not counted. The covered events are then
+  recorded as sent, so a still-open `missing` is not sent a second time, and the mute fields and
+  reason are cleared once every destination has its summary. A failed send is retried on the next
+  sync, only for the failed destinations. Meanwhile new events are delivered normally, and the tab
+  shows "Mute ended, summary pending".
+- *Deferred:* if the alert is switched off or config-disabled when the mute ends, the summary waits.
+- *Expiry:* 7 days after the end day (counted from the end of that day) the reason and the held-back
+  rows are deleted and the mute is cleared even if no summary was sent, so a failing destination
+  cannot keep them forever. This runs for every override of the server on each sync and at startup.
+- *Retention:* the ledger purge skips `muted` rows of an alert whose mute is still set.
+
+Delivery runs one at a time (inside the sync queue), but the dashboard writes are not queued behind
+a sync: a change that lands while a delivery run is in progress takes effect on the
+next run, and an early unmute at that moment can leave a few held-back rows or one extra summary.
+
+**Prefix rules.** A `schedulePrefix` rule has one override for the whole rule (keyed by server and
+alert id), not one per matched schedule.
 
 ## De-duplication and reminders
 
@@ -131,7 +233,12 @@ tracked and retried separately (#297 F3). A key that already has a row is not se
 
 - a `missing` event, when `remindEveryDays` is set and that many days have passed since the latest
   recorded row for that destination;
-- a `ruleUnmatched` event, which always uses a fixed 1-day interval, regardless of `remindEveryDays`.
+
+`ruleUnmatched` is not a reminder (#356): it is sent once per destination and stays silent while the rule
+keeps matching nothing. When the rule matches a schedule again, the ledger records a `ruleMatched` marker
+(`delivery: inferred`, never sent anywhere); the next time the rule matches nothing, `ruleUnmatched` is
+sent again. Ledger rows older than the 120-day retention are purged, so a rule unmatched for longer than
+that can be reported once more.
 
 Keying the ledger per destination, not just per channel type, means each destination is retried
 independently (#295 review, H5): if one of two configured Slack webhooks is down, only its own row
@@ -164,6 +271,18 @@ have waited longest since their last send, so daily reminders cannot crowd out t
 This means digest lines are ordered by that rule, not by schedule, and the order can change from
 sync to sync. The header count always matches what the message contains. A single
 event larger than the limit on its own is still sent, truncated with a trailing `…`.
+
+A transient ledger error (for example `SQLITE_BUSY`) never rejects a sync, in digest or immediate
+mode (#332). The two kinds of failure are handled differently:
+
+- Read failure (checking whether a destination is due): nothing is sent for the affected unit this
+  sync, with a WARN, and it is retried next sync. In digest mode the unit is one channel's whole
+  digest, and the other channels still go out. In immediate mode it is the one event, and the
+  other events still go out.
+- Write failure (recording the row after a successful send): the message already went out, so the
+  WARN says the row may be resent next sync, the remaining items, destinations and channels are
+  still processed, and that item or destination is not counted as sent. An immediate-mode event
+  counts as sent if at least one destination's row was written.
 
 ### Delivery budget and send order
 
@@ -208,8 +327,8 @@ mid-sync (#295 review, H6/M2):
 
 Message wording uses the same [Handlebars](https://handlebarsjs.com/) template engine as the rest
 of Actual-sync's notifications (see [NOTIFICATIONS.md](./NOTIFICATIONS.md), "Message templates").
-Override any of the five built-in messages (`missing`, `wrongAmount`, `resolved`, `cannotCheck`,
-`ruleUnmatched`) under `scheduleAlerts.templates` (block-wide) or `alerts[].templates` (per rule):
+Override any of the six built-in messages (`missing`, `wrongAmount`, `resolved`, `cannotCheck`,
+`ruleUnmatched`, and `muteEnded`, the one summary sent when a [mute](#switching-alerts-off-and-muting) ends) under `scheduleAlerts.templates` (block-wide) or `alerts[].templates` (per rule):
 
 ```json
 "scheduleAlerts": {
@@ -253,16 +372,20 @@ template that wants to format it differently.
 | `received_date` / `received_date_raw` | The date the matching transaction posted |
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
+| `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events; for `muteEnded`, the reason given for the mute) |
+| `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual, `deleted` when the schedule was removed in Actual (empty otherwise) |
+| `muted_from` / `muted_until` | `muteEnded` only: the start and the end date of the mute, in `dateFormat` |
+| `events_count` | `muteEnded` only: how many distinct events were held back |
+| `events` | `muteEnded` only: the held-back events, each with `event`, `expected_date` and `deadline` (use `{{#each events as \|e\|}}{{e.event}}{{/each}}`) |
 | `budget` | The server name |
 | `alert_id` | The rule's `id` |
 
 ## Timezone
 
 Every date computed by this feature - an occurrence date, a deadline, "today", account staleness -
-is computed in one timezone: the top-level `timezone` config key, falling back to the host
-machine's own local IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) when unset. A
-`timezone` config key does not exist yet as of this release, so in practice every server currently
-shares the sync process's own local zone.
+is computed in one timezone: the top-level `timezone` config key (see
+[CONFIG.md](CONFIG.md#timezone-optional)), falling back to the process timezone (`TZ`, else the
+system zone), and to `UTC` when that is blank or not a valid IANA name. All servers share it.
 
 ## Payment snapshot and the dashboard API
 
