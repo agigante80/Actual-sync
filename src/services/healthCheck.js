@@ -914,7 +914,10 @@ class HealthCheckService {
         const { server } = req.body;
         
         if (server && server !== 'all') {
-          if (typeof server !== 'string' || server.length > 200) {
+          if (typeof server !== 'string') {
+            return res.status(400).json({ error: 'invalid_server' });
+          }
+          if (server.length > 200) {
             return res.status(400).json({ error: 'server_name_too_long' });
           }
           // Only a configured server, or an orphan that still has history rows

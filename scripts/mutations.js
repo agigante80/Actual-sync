@@ -2680,5 +2680,13 @@ module.exports = [
         anchor: "OR EXISTS (SELECT 1 FROM account_metadata WHERE server_name = @s)",
         mutant: "OR 0",
         tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-nonstring-server", ticket: '#259',
+        desc: "a non-string server is no longer rejected with invalid_server",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof server !== 'string') {",
+        mutant: "if (false) {",
+        tests: "dashboardWriteSecurity"
     }
 ];

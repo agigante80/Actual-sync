@@ -292,6 +292,17 @@ describe('Origin check on the existing POST routes (#259)', () => {
       expect(ctx.history.hasServerData('Retired')).toBe(false);
     });
 
+    test.each([
+      ['a number', { server: 5 }],
+      ['an object', { server: { a: 1 } }]
+    ])('a non-string server (%s) is 400 invalid_server (#259)', async (name, body) => {
+      const ctx = await makeService();
+      const res = await post(ctx.svc, 'reset-history', body);
+      expect(res.status).toBe(400);
+      expect(res.json).toEqual({ error: 'invalid_server' });
+      expect(ctx.history.getConfigAudit({ limit: 10 })).toEqual([]);
+    });
+
     test('a server name over 200 characters is 400 before anything is stored (#259)', async () => {
       const ctx = await makeService();
       const res = await post(ctx.svc, 'reset-history', { server: 'x'.repeat(201) });
