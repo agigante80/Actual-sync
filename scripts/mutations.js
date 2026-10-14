@@ -3303,16 +3303,16 @@ module.exports = [
         id: "262-r1-orphan-rules-kept", ticket: '#262',
         desc: "a reset of a server removed from the config keeps its dashboard rules",
         file: "src/services/healthCheck.js",
-        anchor: "const purgeRules = configured !== null && !configured.includes(server);",
-        mutant: "const purgeRules = false;",
+        anchor: "const purgeRules = configured !== null && !configured.includes(server) &&",
+        mutant: "const purgeRules = false &&",
         tests: "paymentRulesRoute"
     },
     {
         id: "262-r1-configured-rules-purged", ticket: '#262',
         desc: "a reset of a configured server deletes its dashboard rules",
         file: "src/services/healthCheck.js",
-        anchor: "const purgeRules = configured !== null && !configured.includes(server);",
-        mutant: "const purgeRules = true;",
+        anchor: "const purgeRules = configured !== null && !configured.includes(server) &&",
+        mutant: "const purgeRules = true &&",
         tests: "paymentRulesRoute"
     },
     {
