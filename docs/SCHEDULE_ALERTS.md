@@ -165,6 +165,12 @@ This means digest lines are ordered by that rule, not by schedule, and the order
 sync to sync. The header count always matches what the message contains. A single
 event larger than the limit on its own is still sent, truncated with a trailing `…`.
 
+A transient ledger error (for example `SQLITE_BUSY`) in digest mode behaves like immediate mode
+(#332). If reading the ledger for one channel fails, only that channel's digest is withheld this
+sync, with a WARN, and the other channels still go out; it is retried next sync. If writing a
+ledger row fails after the digest was already sent, the WARN says the row may be resent next sync,
+the remaining items and channels are still processed, and that item is not counted as sent.
+
 ### Delivery budget and send order
 
 Delivery is bounded by a time budget (30 seconds per sync). A send already started is always
