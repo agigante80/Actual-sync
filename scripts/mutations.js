@@ -2841,5 +2841,149 @@ module.exports = [
         anchor: "          sentAny = true;\n        } catch (error) {",
         mutant: "          sentAny = true;\n        } catch (error) {\n          sentAny = true;",
         tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: "261-mute-ends-end-of-day", ticket: '#261',
+        desc: "a mute ends at the start of the mutedUntil day instead of the end of it",
+        file: "src/lib/scheduleAlertRules.js",
+        anchor: ".add(1, 'day').startOf('day')",
+        mutant: ".add(0, 'day').startOf('day')",
+        tests: "scheduleAlertRules"
+    },
+    {
+        id: "261-config-lock-ignored", ticket: '#261',
+        desc: "a config-locked alert still counts as enabled",
+        file: "src/lib/scheduleAlertRules.js",
+        anchor: "enabled: !lockedByConfig && o.enabled !== false",
+        mutant: "enabled: o.enabled !== false",
+        tests: "scheduleAlertRules"
+    },
+    {
+        id: "261-mute-never-active", ticket: '#261',
+        desc: "a mute whose end is in the future is not reported as muted",
+        file: "src/lib/scheduleAlertRules.js",
+        anchor: "now.getTime() < muteEndsAt(mutedUntil, timezone).getTime()",
+        mutant: "now.getTime() > muteEndsAt(mutedUntil, timezone).getTime()",
+        tests: "scheduleAlertRules"
+    },
+    {
+        id: "261-mute-days-unbounded", ticket: '#261',
+        desc: "a mute date beyond 365 days is accepted",
+        file: "src/services/healthCheck.js",
+        anchor: "if (days < 0 || days > 365) return bad",
+        mutant: "if (days < 0) return bad",
+        tests: "healthCheck"
+    },
+    {
+        id: "261-mute-reason-optional", ticket: '#261',
+        desc: "a mute without a reason is accepted",
+        file: "src/services/healthCheck.js",
+        anchor: "if (reason === '') return bad('reason_required');",
+        mutant: "",
+        tests: "healthCheck"
+    },
+    {
+        id: "261-mute-extension-resets-start", ticket: '#261',
+        desc: "extending a mute moves its start to now",
+        file: "src/services/healthCheck.js",
+        anchor: "before && before.mutedUntil && before.mutedFrom ? before.mutedFrom : now.toISOString()",
+        mutant: "now.toISOString()",
+        tests: "healthCheck"
+    },
+    {
+        id: "261-early-unmute-keeps-muted-rows", ticket: '#261',
+        desc: "an early unmute leaves the held-back rows in place",
+        file: "src/services/healthCheck.js",
+        anchor: "        // latest 'muted' row would suppress the alert for good).\n        this.syncHistory.deleteMutedRows(",
+        mutant: "        // latest 'muted' row would suppress the alert for good).\n        void (",
+        tests: "healthCheck"
+    },
+    {
+        id: "261-noop-put-audited", ticket: '#261',
+        desc: "a PUT that changes nothing is still written to the audit trail",
+        file: "src/services/healthCheck.js",
+        anchor: "if (Object.keys(changes).length > 0) {\n        this.syncHistory.recordConfigChange({\n          server: serverName, remoteAddr: req.ip, action: 'payment_alert_state'",
+        mutant: "if (true) {\n        this.syncHistory.recordConfigChange({\n          server: serverName, remoteAddr: req.ip, action: 'payment_alert_state'",
+        tests: "healthCheck"
+    },
+    {
+        id: "261-delete-missing-override-ok", ticket: '#261',
+        desc: "DELETE of an unknown override answers 200 instead of 404",
+        file: "src/services/healthCheck.js",
+        anchor: "if (!before) return res.status(404).json({ error: 'override_not_found' });",
+        mutant: "",
+        tests: "healthCheck"
+    },
+    {
+        id: "261-delete-keeps-muted-rows", ticket: '#261',
+        desc: "DELETE of a muted override leaves its muted rows behind",
+        file: "src/services/healthCheck.js",
+        anchor: "      if (before.mutedUntil) {\n        this.syncHistory.deleteMutedRows({ server: serverName, alertId, since: before.mutedFrom || undefined });\n      }\n      this.syncHistory.deleteOverride(",
+        mutant: "      this.syncHistory.deleteOverride(",
+        tests: "healthCheck"
+    },
+    {
+        id: "261-orphaned-always-false", ticket: '#261',
+        desc: "an override of a removed alert is not flagged orphaned",
+        file: "src/services/healthCheck.js",
+        anchor: "orphaned: !(known.has(o.server) && known.get(o.server).has(o.alertId))",
+        mutant: "orphaned: false",
+        tests: "healthCheck"
+    },
+    {
+        id: "261-default-override-kept", ticket: '#261',
+        desc: "a default-state override (on, not muted) is stored instead of deleted",
+        file: "src/services/syncHistory.js",
+        anchor: "if (enabled !== false && !mutedUntil) {",
+        mutant: "if (false) {",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-cleanup-purges-muted-rows", ticket: '#261',
+        desc: "the retention cleanup purges the muted rows of an active mute",
+        file: "src/services/syncHistory.js",
+        anchor: "AND o.muted_until IS NOT NULL))",
+        mutant: "AND 1 = 0))",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-expiry-immediate", ticket: '#261',
+        desc: "a stale mute expires with no 7 day grace after its end",
+        file: "src/services/syncHistory.js",
+        anchor: ".tz(timezone).add(7, 'days')",
+        mutant: ".tz(timezone).add(0, 'days')",
+        tests: "paymentOverrides"
+    },
+    {
+        id: "261-muted-row-counts-as-told", ticket: '#261',
+        desc: "a muted ledger row suppresses the destination like a sent one (no summary, no resend)",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "if (latest.delivery === 'muted') return { due: false, lastSentAt: null };",
+        mutant: "",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-summary-resent-every-sync", ticket: '#261',
+        desc: "the mute-end summary ignores its own ledger row and is sent again",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "event: 'muteEnded' })) continue; // already told",
+        mutant: "event: 'muteEnded' })) void 0; // already told",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-summary-not-recorded", ticket: '#261',
+        desc: "the mute-end summary is not written to the ledger after sending",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "await history.recordScheduleAlert({ ...summaryKey, event: 'muteEnded', delivery: 'sent' });",
+        mutant: "",
+        tests: "scheduleAlertDelivery"
+    },
+    {
+        id: "261-summary-failure-clears-mute", ticket: '#261',
+        desc: "a failed summary send still clears the mute",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "if (!ok) { complete = false; continue; }",
+        mutant: "if (!ok) { continue; }",
+        tests: "scheduleAlertDelivery"
     }
 ];
