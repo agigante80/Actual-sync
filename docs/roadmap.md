@@ -35,13 +35,17 @@ supply chain work from the backlog (#249, #254), the payments API from P2 (#260)
 digest fairness fixes (#337, #338). Review lows went to backlog as #326 and #332.
 
 ## Phase: P2 v1.19 Payments tab
-state: open
+state: done
 
 Read-only Payments tab showing watched schedules and alert status. Helmet/CSP and the vendored
 Chart.js land first in this phase, because the new tab adds dashboard script that must be written
 under the CSP rather than retrofitted. Both already shipped in v1.18.0. The tab itself is split in
 two: #260 persists the alert snapshot and serves `GET /api/dashboard/payments` (shipped in
 v1.18.0), then #341 builds the tab UI on that API.
+
+Outcome: done (2026-10-14), shipped as v1.19.0. The Payments tab (#341) landed on the #260 API
+with per-server Sync now, filters, polling and a mobile card layout. The P3 tickets were gated the
+same night: #270 was folded into #261, and #259 and #261 were revised for implementation.
 
 ## Phase: P3 v1.20 Control from the dashboard
 state: planned

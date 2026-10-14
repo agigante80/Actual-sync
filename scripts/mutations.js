@@ -2327,5 +2327,134 @@ module.exports = [
         anchor: '      if (bracketed || (requested !== undefined',
         mutant: '      if ((requested !== undefined',
         tests: 'paymentsRoute'
+    },
+    {
+        id: '341-group-title-innerhtml', ticket: '#341',
+        desc: 'server name written as HTML in the group heading',
+        file: 'src/services/dashboard.js',
+        anchor: "    head.appendChild(payEl('h3', 'pay-group-title', group.server));",
+        mutant: "    head.innerHTML = '<h3 class=\"pay-group-title\">' + group.server + '</h3>';",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-name-insert-html', ticket: '#341',
+        desc: 'schedule name inserted as HTML',
+        file: 'src/services/dashboard.js',
+        anchor: "        nameTd.appendChild(document.createTextNode(item.name || ''));",
+        mutant: "        nameTd.insertAdjacentHTML('beforeend', item.name || '');",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-sync-arg-all', ticket: '#341',
+        desc: 'Sync now button always targets all servers',
+        file: 'src/services/dashboard.js',
+        anchor: "    syncBtn.setAttribute('data-arg', group.server);",
+        mutant: "    syncBtn.setAttribute('data-arg', 'all');",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-error-banner-hidden', ticket: '#341',
+        desc: 'load-failure banner never shown',
+        file: 'src/services/dashboard.js',
+        anchor: "    errorEl.hidden = !paymentsLoadError;",
+        mutant: "    errorEl.hidden = true;",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-poll-cap-off-by-one', ticket: '#341',
+        desc: 'status poll runs one read too many',
+        file: 'src/services/dashboard.js',
+        anchor: 'paymentsReads < PAYMENTS_SYNC_MAX_POLLS',
+        mutant: 'paymentsReads <= PAYMENTS_SYNC_MAX_POLLS',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-failed-read-counts', ticket: '#341',
+        desc: 'a failed status read counts toward the two null reads',
+        file: 'src/services/dashboard.js',
+        anchor: '            paymentsNullStreak = 0; // a failed read never counts toward the two',
+        mutant: '            paymentsNullStreak += 1;',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-one-null-enough', ticket: '#341',
+        desc: 'one null status read ends the wait',
+        file: 'src/services/dashboard.js',
+        anchor: 'paymentsNullStreak >= 2',
+        mutant: 'paymentsNullStreak >= 1',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-date-local-tz', ticket: '#341',
+        desc: 'calendar dates formatted in the browser time zone',
+        file: 'src/services/dashboard.js',
+        anchor: "    const fmt = (locale, options) => date.toLocaleDateString(locale, { ...options, timeZone: 'UTC' });",
+        mutant: "    const fmt = (locale, options) => date.toLocaleDateString(locale, { ...options });",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-interval-ignores-tab', ticket: '#341',
+        desc: '60 s poll runs while another tab is active',
+        file: 'src/services/dashboard.js',
+        anchor: "    if (document.hidden || !paymentsTabActive()) return;",
+        mutant: "    if (document.hidden) return;",
+        tests: 'dashboardPayments'
+    }
+,
+    {
+        id: '341-second-status-loop', ticket: '#341',
+        desc: 'every Sync now click starts its own status loop',
+        file: 'src/services/dashboard.js',
+        anchor: '    if (!paymentsWatching) await watchPaymentsSync();',
+        mutant: '    await watchPaymentsSync();',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-busy-after-post', ticket: '#341',
+        desc: 'the server is marked syncing only after the POST resolves (double-click sends two)',
+        file: 'src/services/dashboard.js',
+        anchor: '    paymentsSyncing.add(serverName);\n    renderPayments();\n    let failure',
+        mutant: '    renderPayments();\n    let failure',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-error-rewritten', ticket: '#341',
+        desc: 'the role=alert load error is rewritten on every render',
+        file: 'src/services/dashboard.js',
+        anchor: '    if (errorEl.textContent !== paymentsLoadError) errorEl.textContent',
+        mutant: '    if (true) errorEl.textContent',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-loop-end-clears-pending', ticket: '#341',
+        desc: 'the loop ending frees a server whose POST is still pending',
+        file: 'src/services/dashboard.js',
+        anchor: 'paymentsQueued.forEach((name) => paymentsSyncing.delete(name));',
+        mutant: 'paymentsSyncing.clear();',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-late-queue-keeps-streak', ticket: '#341',
+        desc: 'a late-resolving POST keeps the earlier null-read streak',
+        file: 'src/services/dashboard.js',
+        anchor: '    paymentsNullStreak = 0; // a job was just queued',
+        mutant: '    // a job was just queued',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-late-queue-keeps-reads', ticket: '#341',
+        desc: 'a late-queued server inherits the shared loop read count',
+        file: 'src/services/dashboard.js',
+        anchor: '    paymentsReads = 0;\n    if (!paymentsWatching)',
+        mutant: '    if (!paymentsWatching)',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-live-region-rewritten', ticket: '#341',
+        desc: 'the sync-start live region is rewritten on every render',
+        file: 'src/services/dashboard.js',
+        anchor: 'if (liveEl.textContent !== liveText) liveEl.textContent',
+        mutant: 'if (true) liveEl.textContent',
+        tests: 'dashboardPayments'
     }
 ];

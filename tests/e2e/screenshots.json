@@ -69,5 +69,17 @@
     "scrollToText": "Accounts",
     "fullPage": false,
     "description": "Accounts card, syncable, manual and closed accounts across three servers"
+  },
+  {
+    "file": "dashboard-payments.png",
+    "state": "payments-attention",
+    "tab": "payments",
+    "description": "Payments tab, 12 watched schedules with a missing and a wrong-amount payment needing attention"
+  },
+  {
+    "file": "dashboard-payments-empty.png",
+    "state": "payments-not-configured",
+    "tab": "payments",
+    "description": "Payments tab, a server with missing-payment alerts not configured"
   }
 ]
