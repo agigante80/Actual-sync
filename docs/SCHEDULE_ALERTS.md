@@ -150,14 +150,26 @@ per open occurrence and destination:
 - Only a `missing` whose occurrence date is inside the 90-day look-back window is closed, and only for
   destinations that received that `missing`. After it is delivered nothing more is sent for that
   occurrence (same rule as for completed schedules).
-- Deletion is only inferred when Actual's schedule list was read successfully and is not empty. If the read
-  fails the whole alert evaluation is skipped for that sync, and an empty list is treated as unreliable
-  (a transient empty read must not close every open alert), so nothing is closed until a later sync sees
-  a non-empty list. An empty list is never trusted, so if the budget's last schedule is deleted the alert
-  stays open until a later sync reads a non-empty list.
+- Deletion is only inferred when Actual's schedule list was read successfully and is not empty. See
+  "An empty schedule list" below.
 - A custom `resolved` template that never mentions `closed_by` gets the built-in text here. A template that compares `closed_by` to quoted values (for example `(eq closed_by "completed")`, in either order) gets the built-in text for any value it does not name; a template that only tests `{{#if closed_by}}` or prints it is used as written.
 - A rule bound to the deleted schedule by exact name now matches nothing, so it also sends one
   `ruleUnmatched` per destination (not one per sync).
+
+## An empty schedule list (#356, #359)
+
+If reading Actual's schedule list fails, the whole alert evaluation is skipped for that sync. An empty
+list (or one that is not a list) is treated as just as unreliable, because a transient empty read (a
+budget still loading, a partial download) would otherwise read as "every schedule was deleted":
+
+- When at least one rule is configured, rule matching is skipped for that sync. No `ruleUnmatched`,
+  no alert, no deletion close and no `ruleMatched` marker is produced, and one WARN says the schedule
+  list was empty and alert evaluation was skipped. The dashboard keeps the last good payment snapshot.
+- With no rules configured an empty list is a no-op and logs nothing.
+- Nothing from earlier syncs is undone: a `ruleUnmatched` already sent stays recorded and a rule that was
+  unmatched stays deduped. The next sync that reads a non-empty list evaluates normally.
+- Trade-off: if you really delete every schedule, open alerts stay open and no `ruleUnmatched` is sent
+  until a schedule exists again.
 
 ## De-duplication and reminders
 

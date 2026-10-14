@@ -1227,4 +1227,82 @@ describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356
     await run(apiFor({ deleted: true }), '2026-01-14T00:00:00.000Z');
     expect(unmatched()).toHaveLength(2);
   });
+  describe('an empty schedule list skips rule matching (#359)', () => {
+    const emptyApi = (lastSync = '2026-01-10') => makeFakeApi({
+      schedules: [], payees: [], accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs(lastSync) }]
+    });
+    const ledgerRows = () => history.db.prepare('SELECT event FROM schedule_alerts').all().map((r) => r.event);
+    const warnLogger = () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() });
+    const runLogged = (api, now, logger, srv = block) => {
+      jest.setSystemTime(new Date(now));
+      return runScheduleAlertsStep({
+        api, server: srv, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+        notificationService: notifier(), logger, now: new Date(now)
+      });
+    };
+
+    test('rules configured: nothing is sent or recorded, and one WARN says the evaluation was skipped', async () => {
+      const logger = warnLogger();
+      const result = await runLogged(emptyApi(), '2026-01-10T00:00:00.000Z', logger);
+      expect(result).toEqual({ events: 0, sent: 0, skipped: 0 });
+      expect(requests).toHaveLength(0);
+      expect(ledgerRows()).toEqual([]);
+      const warns = logger.warn.mock.calls.filter(([m]) => /empty schedule list/.test(m));
+      expect(warns).toHaveLength(1);
+      expect(warns[0][0]).toMatch(/evaluation skipped/);
+    });
+
+    test('a non-array schedule list is treated the same way', async () => {
+      const api = emptyApi();
+      api.getSchedules = jest.fn().mockResolvedValue(undefined);
+      const logger = warnLogger();
+      await runLogged(api, '2026-01-10T00:00:00.000Z', logger);
+      expect(requests).toHaveLength(0);
+      expect(ledgerRows()).toEqual([]);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+    });
+
+    test('an empty sync between two unmatched syncs writes no ruleMatched marker, so the earlier ruleUnmatched stays deduped', async () => {
+      await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z');
+      expect(unmatched()).toHaveLength(1);
+      const before = ledgerRows();
+
+      await runLogged(emptyApi(), '2026-01-11T00:00:00.000Z', warnLogger());
+      expect(ledgerRows()).toEqual(before);
+
+      await run(apiFor({ deleted: true }), '2026-01-12T00:00:00.000Z');
+      expect(unmatched()).toHaveLength(1);
+      expect(ledgerRows()).not.toContain('ruleMatched');
+    });
+
+    test('the next sync with a real list behaves normally after an empty one', async () => {
+      await runLogged(emptyApi(), '2026-01-10T00:00:00.000Z', warnLogger());
+      expect(requests).toHaveLength(0);
+      await run(apiFor({ deleted: true }), '2026-01-11T00:00:00.000Z');
+      expect(unmatched()).toHaveLength(1);
+    });
+
+    test('zero rules: an empty list is a no-op without a WARN', async () => {
+      const logger = warnLogger();
+      const result = await runLogged(emptyApi(), '2026-01-10T00:00:00.000Z', logger, { scheduleAlerts: { alerts: [] } });
+      expect(result).toEqual({ events: 0, sent: 0, skipped: 0 });
+      expect(requests).toHaveLength(0);
+      expect(ledgerRows()).toEqual([]);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    test('the dashboard snapshot from the last good sync is kept', async () => {
+      const server_ = { scheduleAlerts: block.scheduleAlerts };
+      const logger = warnLogger();
+      const good = await evaluateScheduleAlerts({ api: apiFor(), server: server_, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-10T00:00:00.000Z'), logger });
+      persistPaymentSnapshot(server_, good, { syncHistory: history, serverName: 'Main', outcome: {}, logger });
+      const snapshot = () => JSON.stringify(history.db.prepare('SELECT * FROM payment_alert_status').all());
+      const kept = snapshot();
+      expect(JSON.parse(kept).length).toBeGreaterThan(0);
+
+      const skipped = await evaluateScheduleAlerts({ api: emptyApi(), server: server_, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-11T00:00:00.000Z'), logger });
+      persistPaymentSnapshot(server_, skipped, { syncHistory: history, serverName: 'Main', outcome: {}, logger });
+      expect(snapshot()).toBe(kept);
+    });
+  });
 });
