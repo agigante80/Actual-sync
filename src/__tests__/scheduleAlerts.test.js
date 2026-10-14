@@ -74,6 +74,18 @@ describe('evaluate: missing / cannotCheck', () => {
     expect(evaluations[0].state).toBe('missing');
   });
 
+  test('#296: an account never bank-synced (last_sync null) gives cannotCheck, never missing', () => {
+    const { events } = evaluate({
+      rules: rentRule(),
+      schedules: [rentSchedule()],
+      transactions: [],
+      accounts: [account({ last_sync: null })],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'stale', lastSync: null })]);
+  });
+
   test('stale bank connection (last_sync more than staleAfterDays ago) -> cannotCheck, reason stale', () => {
     const { events } = evaluate({
       rules: rentRule(),
@@ -181,6 +193,48 @@ describe('evaluate: received / late / wrongAmount', () => {
     expect(events).toEqual([]); // late is not a "problem" event; resolved is derived by the delivery layer
     expect(evaluations[0].state).toBe('late');
     expect(evaluations[0].occurrences[0]).toMatchObject({ state: 'late', receivedDate: '2026-01-09' });
+  });
+
+  test('#296: an outgoing refund of the same size is not the incoming payment (sign must match)', () => {
+    const run = (amount) => evaluate({
+      rules: rentRule({ amountTolerancePct: 0 }),
+      schedules: [rentSchedule({ amount: 6000 })],
+      transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount, date: '2026-01-05', schedule: null }],
+      accounts: [account()],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(run(6000).evaluations[0].state).toBe('received');
+    expect(run(-6000).evaluations[0].state).toBe('missing');
+    expect(run(-6000).events.map((e) => e.event)).not.toContain('resolved');
+  });
+
+  describe('#296 round 1 M1: the sign check holds in every fallback pass', () => {
+    const run = (transactions) => evaluate({
+      rules: rentRule({ amountTolerancePct: 0 }),
+      schedules: [rentSchedule({ amount: 6000, amountOp: 'is', date: '2026-01-05' })],
+      transactions,
+      accounts: [account({ last_sync: epochMs('2026-01-14') })],
+      now: '2026-01-14',
+      timezone: TZ
+    });
+    const tx = (id, amount, date, schedule = null) => ({ id, account: 'acc1', payee: 'pay1', amount, date, schedule });
+
+    test('(a) only an opposite-sign transaction in the late window -> missing', () => {
+      const { events, evaluations } = run([tx('t1', -6000, '2026-01-10')]);
+      expect(evaluations[0].state).toBe('missing');
+      expect(events.map((e) => e.event)).toContain('missing');
+    });
+
+    test('(b) opposite sign in the on-time window plus a right-sign payment later -> late', () => {
+      const { evaluations } = run([tx('t1', -6000, '2026-01-04'), tx('t2', 6000, '2026-01-10')]);
+      expect(evaluations[0].state).toBe('late');
+    });
+
+    test('(c) a LINKED opposite-sign transaction stays authoritative (Actual\'s link wins)', () => {
+      const { evaluations } = run([tx('t1', -6000, '2026-01-10', 's1')]);
+      expect(evaluations[0].state).toBe('late');
+    });
   });
 
   test('a transaction linked via transaction.schedule counts regardless of amount', () => {
@@ -1155,5 +1209,62 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     const dec = evaluations[0].occurrences.find((o) => o.date === '2026-12-05');
     expect(oct).toMatchObject({ state: 'late', receivedDate: '2026-11-02' });
     expect(dec).toMatchObject({ state: 'received', receivedDate: '2026-12-04' });
+  });
+});
+
+describe('#296 round 2 L1: sign check inside the tolerance comparison', () => {
+  test('an opposite-sign amount of the same size is not a better match for a sibling schedule', () => {
+    const tx = { id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null };
+    const rules = getRules({
+      staleAfterDays: 3,
+      alerts: [
+        { id: 'rent', schedule: 'Rent', graceDays: 3, earlyDays: 2 },
+        { id: 'dep', schedule: 'Deposit', graceDays: 3, earlyDays: 2 }
+      ]
+    });
+    const { evaluations } = evaluate({
+      rules,
+      schedules: [
+        rentSchedule({ amount: -40000 }),
+        rentSchedule({ id: 's2', name: 'Deposit', amount: 50000 })
+      ],
+      transactions: [tx],
+      accounts: [account()],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    // Without the sign check in amountWithinTolerance, the Deposit's +50000
+    // "fits" the -50000 payment and Rent becomes missing via betterMatchedElsewhere.
+    expect(evaluations.find((e) => e.name === 'Rent').state).toBe('wrongAmount');
+  });
+});
+
+describe('#296 round 2: sign compatibility edge cases', () => {
+  const tx = (id, amount, date, schedule = null) => ({ id, account: 'acc1', payee: 'pay1', amount, date, schedule });
+  const run = (scheduleOverrides, transactions, now, ruleOverrides = {}) => evaluate({
+    rules: rentRule(ruleOverrides),
+    schedules: [rentSchedule(scheduleOverrides)],
+    transactions,
+    accounts: [account({ last_sync: epochMs(now) })],
+    now,
+    timezone: TZ
+  });
+
+  test('M1: a zero-amount schedule still reports wrongAmount for a non-zero unlinked payment', () => {
+    for (const amountOp of ['is', 'isapprox']) {
+      const { evaluations } = run({ amount: 0, amountOp, date: '2026-01-05' }, [tx('t1', -1234, '2026-01-05')], '2026-01-10');
+      expect(evaluations[0].state).toBe('wrongAmount');
+    }
+  });
+
+  test('M2: a range of negative bounds ignores an unlinked positive refund (day 10 and day 5)', () => {
+    const range = { amountOp: 'isbetween', amount: { num1: -5000, num2: -7000 }, date: '2026-01-05' };
+    expect(run(range, [tx('t1', 6000, '2026-01-10')], '2026-01-14').evaluations[0].state).toBe('missing');
+    expect(run(range, [tx('t1', 6000, '2026-01-05')], '2026-01-10').evaluations[0].state).toBe('missing');
+  });
+
+  test('M2: a range spanning zero still matches a positive amount inside it', () => {
+    const range = { amountOp: 'isbetween', amount: { num1: -5000, num2: 5000 }, date: '2026-01-05' };
+    expect(run(range, [tx('t1', 3000, '2026-01-05')], '2026-01-10').evaluations[0].state).toBe('received');
   });
 });

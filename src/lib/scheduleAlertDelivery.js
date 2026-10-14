@@ -125,7 +125,7 @@ const VARIABLES = [
   'expected_amount', 'expected_date', 'deadline', 'grace_days',
   'period', 'cadence',
   'days_overdue', 'received_amount', 'received_date', 'difference',
-  'last_sync', 'budget', 'alert_id',
+  'last_sync', 'reason', 'budget', 'alert_id',
   'expected_amount_raw', 'expected_date_raw', 'deadline_raw', 'days_overdue_raw',
   'received_amount_raw', 'received_date_raw', 'difference_raw', 'last_sync_raw'
 ];
@@ -145,8 +145,13 @@ const DEFAULT_TEMPLATES = {
     + '(difference {{difference}}).',
   resolved: '✅ {{name}}: {{received_amount}} arrived {{received_date}}, {{#if (eq days_overdue 0)}}on time'
     + '{{else}}{{days_overdue}} day(s) after the deadline{{/if}}. Alert closed.',
-  cannotCheck: '⏸️ Cannot check {{name}}: {{account}} has not synced since {{last_sync}} (deadline {{deadline}}). '
-    + 'Check the bank connection.',
+  // One wording per `reason` (#296): only stale / not-synced are about the bank
+  // connection; interval-violation and error are about the rule and the service.
+  cannotCheck: '{{#if (eq reason "interval-violation")}}⏸️ Cannot check {{name}}: the rule\'s graceDays plus earlyDays '
+    + 'reach the schedule\'s interval between occurrences, so its windows would overlap. Shorten them in config.json.'
+    + '{{else if (eq reason "error")}}⏸️ Cannot check {{name}}: the check failed with an error. See the service log.'
+    + '{{else}}⏸️ Cannot check {{name}}: {{account}} {{#if last_sync}}has not synced since {{last_sync}}{{else}}has never synced{{/if}} (deadline {{deadline}}). '
+    + 'Check the bank connection.{{/if}}',
   ruleUnmatched: '❓ Payment alert "{{alert_id}}" matches no schedule in {{budget}}. Check the schedule name in Actual.'
 };
 
@@ -248,6 +253,7 @@ function buildContext(event, evaluation, rule, { server, timezone }) {
     difference_raw: event.difference != null ? event.difference : null,
     last_sync: formatDate(event.lastSync, dateFormat, timezone),
     last_sync_raw: event.lastSync || null,
+    reason: event.reason || null,
     budget: server,
     alert_id: event.alertId
   };
@@ -575,11 +581,22 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
         });
       }
       if (ok) {
-        await history.recordScheduleAlert({
-          server, alertId: event.alertId, scheduleId: event.scheduleId, occurrenceDate: event.occurrence,
-          event: event.event, delivery: 'sent', channel: destination.key
-        });
-        sentAny = true;
+        // #332: the message already went out, so a failed ledger write must not
+        // abort the remaining destinations or turn the event into "skipped"
+        // when an earlier destination has a row. Same rule as the digest path:
+        // this destination has no row (may be resent next sync) and does not
+        // count as sent.
+        try {
+          await history.recordScheduleAlert({
+            server, alertId: event.alertId, scheduleId: event.scheduleId, occurrenceDate: event.occurrence,
+            event: event.event, delivery: 'sent', channel: destination.key
+          });
+          sentAny = true;
+        } catch (error) {
+          logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {
+            server, alertId: event.alertId, event: event.event, channel: destination.channel, error: error.message
+          });
+        }
       }
     }
     return sentAny;
@@ -733,10 +750,20 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     if (!target) continue; // resolveChannels already guarantees this, defensive only
     const key = destinationKey(channel, target);
 
+    // #332: same guard as `sendEvent` (#297 round 1, L1). A ledger read that
+    // fails (e.g. SQLITE_BUSY) withholds only this channel's digest this sync
+    // (WARN, no send, no row; retried next sync), never the other channels.
     const dueItems = [];
-    for (const item of channelItems) {
-      const state = await destinationDueState(item.event, item.rule, key, history, server, now, timezone);
-      if (state.due) dueItems.push({ item, lastSentAt: state.lastSentAt });
+    try {
+      for (const item of channelItems) {
+        const state = await destinationDueState(item.event, item.rule, key, history, server, now, timezone);
+        if (state.due) dueItems.push({ item, lastSentAt: state.lastSentAt });
+      }
+    } catch (error) {
+      logger.warn('Schedule alert ledger lookup failed; destination withheld until the next sync', {
+        server, channel, error: error.message
+      });
+      continue;
     }
     if (dueItems.length === 0) continue;
 
@@ -807,12 +834,21 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     if (!ok) continue; // H5: withhold only this channel's rows; other channels are unaffected
 
     for (const item of included) {
-      await history.recordScheduleAlert({
-        server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
-        occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent',
-        channel: key
-      });
-      sentKeys.add(eventKey(item.event));
+      // #332: the digest already went out, so a failed ledger write must not
+      // stop the remaining items or channels. That item has no row and may be
+      // resent next sync; it is not counted as sent.
+      try {
+        await history.recordScheduleAlert({
+          server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
+          occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent',
+          channel: key
+        });
+        sentKeys.add(eventKey(item.event));
+      } catch (error) {
+        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {
+          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message
+        });
+      }
     }
   }
 

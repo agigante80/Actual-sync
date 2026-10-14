@@ -857,6 +857,163 @@ describe('deliver: a failing ledger lookup withholds only that event (#297 round
   });
 });
 
+describe('deliver: digest guards each destination like immediate mode (#332)', () => {
+  // A transient ledger error (for example SQLITE_BUSY) on one channel must
+  // withhold only that channel, never reject deliver() and starve the others.
+  const SALARY = { id: 'salary', schedule: 'Salary' };
+  function setup(server, alerts = [{ id: 'rent', schedule: 'Rent', channels: ['slack', 'discord'] }]) {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      webhooks: {
+        slack: [{ name: 'a', url: 'https://slack/a', enabled: true }],
+        discord: [{ name: 'd', url: 'https://discord/x', enabled: true }]
+      }
+    });
+    const warnings = [];
+    const logger = { warn: (message, meta) => warnings.push({ message, meta }) };
+    const rules = getRules({ digest: true, alerts });
+    const events = alerts.map((a) => missingEvent({ alertId: a.id, scheduleId: `s-${a.id}` }));
+    const evaluations = alerts.map((a) => rentEvaluation({ alertId: a.id, scheduleId: `s-${a.id}`, name: a.schedule }));
+    const run = () => deliver(events, {
+      evaluations, ruleState: enabledState, history, sender, server, rules,
+      timezone: 'UTC', logger, now: '2026-01-10'
+    });
+    return { history, sender, warnings, run };
+  }
+
+  test('isDestinationDue throwing for one channel withholds only that channel, with a WARN', async () => {
+    const { history, sender, warnings, run } = setup('guard-332-due');
+    const realFind = history.findLatestScheduleAlert.bind(history);
+    let armed = false;
+    let discordReads = 0;
+    history.findLatestScheduleAlert = async (key) => {
+      // A one-off error: the mayRecord pre-check (first discord read) succeeds,
+      // then the digest's own read of the discord destination (second) throws.
+      if (String(key.channel).startsWith('discord')) {
+        discordReads += 1;
+        if (discordReads === 2) { armed = true; throw new Error('SQLITE_BUSY'); }
+      }
+      return realFind(key);
+    };
+    const result = await run();
+    expect(armed).toBe(true);
+    expect(result).toEqual({ sent: 1, skipped: 0 });
+    expect(sender.calls).toHaveLength(1);
+    expect(sender.calls[0].slack).toBeDefined();
+    expect(history.rows.map((r) => r.channel.split(':')[0])).toEqual(['slack']);
+    const warn = warnings.find((w) => /ledger lookup failed/i.test(w.message));
+    expect(warn).toBeDefined();
+    expect(warn.meta).toMatchObject({ server: 'guard-332-due', channel: 'discord', error: 'SQLITE_BUSY' });
+  });
+
+  test('recordScheduleAlert throwing after a send does not stop the other channels, and WARNs that the row may be resent', async () => {
+    const { history, sender, warnings, run } = setup('guard-332-record', [
+      { id: 'rent', schedule: 'Rent', channels: ['slack'] },
+      { id: 'salary', schedule: 'Salary', channels: ['discord'] }
+    ]);
+    const realRecord = history.recordScheduleAlert.bind(history);
+    history.recordScheduleAlert = async (row) => {
+      if (String(row.channel).startsWith('slack')) throw new Error('SQLITE_BUSY');
+      return realRecord(row);
+    };
+    const result = await run();
+    expect(sender.calls).toHaveLength(2); // both channels were sent to
+    expect(result).toEqual({ sent: 1, skipped: 1 }); // the unrecorded slack item is not counted as sent
+    expect(history.rows.map((r) => r.channel.split(':')[0])).toEqual(['discord']);
+    const warn = warnings.find((w) => /ledger write failed/i.test(w.message));
+    expect(warn).toBeDefined();
+    expect(warn.message).toMatch(/resent next sync/i);
+    expect(warn.meta).toMatchObject({ server: 'guard-332-record', channel: 'slack', alertId: 'rent', error: 'SQLITE_BUSY' });
+  });
+
+  test('a write failing for one item keeps processing the remaining items on the SAME channel', async () => {
+    // Guards the loop: a `break` after the write-failure WARN would leave
+    // salary unrecorded although the digest already went out.
+    const { history, sender, warnings, run } = setup('guard-332-same-channel', [
+      { id: 'rent', schedule: 'Rent', channels: ['slack'] },
+      { ...SALARY, channels: ['slack'] }
+    ]);
+    const realRecord = history.recordScheduleAlert.bind(history);
+    // Fail the FIRST write whichever item the digest orders first, so the
+    // test cannot pass vacuously when the failing item happens to be last.
+    let first = null;
+    history.recordScheduleAlert = async (row) => {
+      if (first === null) { first = row.alertId; throw new Error('SQLITE_BUSY'); }
+      return realRecord(row);
+    };
+    const result = await run();
+    expect(sender.calls).toHaveLength(1);
+    expect(result).toEqual({ sent: 1, skipped: 1 });
+    expect(history.rows).toHaveLength(1);
+    expect(history.rows[0].alertId).not.toBe(first);
+    expect(warnings.filter((w) => /ledger write failed/i.test(w.message))).toHaveLength(1);
+  });
+
+  test('a read failing on a later item withholds the whole channel instead of sending a partial digest', async () => {
+    const { history, sender, run } = setup('guard-332-partial', [
+      { id: 'rent', schedule: 'Rent', channels: ['discord'] },
+      { ...SALARY, channels: ['discord'] }
+    ]);
+    const realFind = history.findLatestScheduleAlert.bind(history);
+    let discordReads = 0;
+    history.findLatestScheduleAlert = async (key) => {
+      // 2 mayRecord reads, then the digest reads item 1 (3rd) and item 2 (4th).
+      if (String(key.channel).startsWith('discord') && (discordReads += 1) === 4) throw new Error('SQLITE_BUSY');
+      return realFind(key);
+    };
+    const result = await run();
+    expect(discordReads).toBeGreaterThanOrEqual(4);
+    expect(sender.calls).toHaveLength(0);
+    expect(history.rows).toHaveLength(0);
+    expect(result).toEqual({ sent: 0, skipped: 2 });
+  });
+});
+
+describe('deliver: immediate mode survives a ledger write failure after a send (#332)', () => {
+  test('a failing write for one destination does not stop the others and the event still counts as sent', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      telegram: { enabled: true },
+      webhooks: {
+        slack: [{ name: 'a', url: 'https://slack/a', enabled: true }],
+        discord: [{ name: 'd', url: 'https://discord/x', enabled: true }]
+      }
+    });
+    const warnings = [];
+    const logger = { warn: (message, meta) => warnings.push({ message, meta }) };
+    const realRecord = history.recordScheduleAlert.bind(history);
+    history.recordScheduleAlert = async (row) => {
+      if (String(row.channel).startsWith('slack')) throw new Error('SQLITE_BUSY');
+      return realRecord(row);
+    };
+    const result = await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender,
+      now: '2026-01-10', server: 'imm-332',
+      rules: rentRules({ channels: ['telegram', 'slack', 'discord'] }),
+      timezone: 'UTC', logger
+    });
+    expect(sender.calls).toHaveLength(3);
+    expect(result).toEqual({ sent: 1, skipped: 0 });
+    expect(history.rows.map((r) => r.channel.split(':')[0]).sort()).toEqual(['discord', 'telegram']);
+    const warn = warnings.find((w) => /ledger write failed/i.test(w.message));
+    expect(warn).toBeDefined();
+    expect(warn.message).toMatch(/resent next sync/i);
+    expect(warn.meta).toMatchObject({ server: 'imm-332', channel: 'slack', alertId: 'rent', error: 'SQLITE_BUSY' });
+    expect(warnings.some((w) => /send threw/i.test(w.message))).toBe(false);
+  });
+
+  test('when every write fails the event is not counted as sent', async () => {
+    const history = makeFakeHistory();
+    history.recordScheduleAlert = async () => { throw new Error('SQLITE_BUSY'); };
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const result = await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender,
+      now: '2026-01-10', server: 'imm-332b', rules: rentRules(), timezone: 'UTC', logger: quietLogger
+    });
+    expect(result).toEqual({ sent: 0, skipped: 1 });
+  });
+});
+
 describe('destinationKey (#295 review round 2, M8)', () => {
   test('a named webhook target is keyed by its name plus a URL hash, never its URL', () => {
     const key = destinationKey('slack', { name: 'ops-alerts', url: 'https://hooks.example/services/T00/B00/secret' });
@@ -1043,5 +1200,49 @@ describe('deliver: delivery budget starvation (#337, #338)', () => {
     for (const r of history.rows) perAlert.set(r.alertId, (perAlert.get(r.alertId) || 0) + 1);
     expect(perAlert.size).toBe(COUNT);
     expect(Math.min(...perAlert.values())).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('deliver: cannotCheck wording follows the reason (#296)', () => {
+  async function renderCannotCheck(reason, extra = {}) {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const event = {
+      event: 'cannotCheck', alertId: 'rent', scheduleId: 's1', occurrence: null, deadline: null, reason, ...extra
+    };
+    await deliver([event], {
+      evaluations: [rentEvaluation({ state: 'cannotCheck' })], ruleState: enabledState, history, sender,
+      now: '2026-01-10', server: 'Main', rules: rentRules(), timezone: 'UTC', logger: quietLogger
+    });
+    expect(sender.calls).toHaveLength(1);
+    return sender.calls[0].telegram.html;
+  }
+
+  test.each([['stale'], ['not-synced']])('reason %s keeps the bank-connection wording', async (reason) => {
+    const text = await renderCannotCheck(reason, { occurrence: '2026-01-05', deadline: '2026-01-08', lastSync: '2026-01-01' });
+    expect(text).toMatch(/Check the bank connection/);
+    expect(text).toMatch(/has not synced since/);
+  });
+
+  test('stale with a last sync date renders it; without one it says never synced', async () => {
+    const withDate = await renderCannotCheck('not-synced', { occurrence: '2026-01-05', deadline: '2026-01-08', lastSync: '2026-01-01' });
+    expect(withDate).toMatch(/has not synced since 1 Jan 2026 \(deadline /);
+    const never = await renderCannotCheck('not-synced', { occurrence: '2026-01-05', deadline: '2026-01-08' });
+    expect(never).toMatch(/has never synced \(deadline /);
+    expect(never).not.toMatch(/synced since|\s{2}\(/);
+  });
+
+  test('interval-violation does not blame the bank connection and points at the rule', async () => {
+    const text = await renderCannotCheck('interval-violation');
+    expect(text).not.toMatch(/bank connection|synced since/);
+    expect(text).toMatch(/Rent/);
+    expect(text).toMatch(/graceDays/);
+  });
+
+  test('error does not blame the bank connection and points at the log', async () => {
+    const text = await renderCannotCheck('error');
+    expect(text).not.toMatch(/bank connection|synced since/);
+    expect(text).toMatch(/Rent/);
+    expect(text).toMatch(/log/i);
   });
 });

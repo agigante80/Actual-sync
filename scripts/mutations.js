@@ -2688,5 +2688,158 @@ module.exports = [
         anchor: "if (typeof server !== 'string') {",
         mutant: "if (false) {",
         tests: "dashboardWriteSecurity"
+    },
+    // ---- #296: low findings from the #258 review ----------------------------
+    {
+        id: '296-cannotcheck-one-wording-for-all-reasons', ticket: '#296',
+        desc: 'interval-violation and error cannotCheck render the bank-connection text again',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  cannotCheck: '{{#if (eq reason \"interval-violation\")}}",
+        mutant: "  cannotCheck: '{{#if (eq reason \"never-matches\")}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-error-reason-uses-bank-wording', ticket: '#296',
+        desc: 'the error reason falls through to the bank-connection wording',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{else if (eq reason \"error\")}}",
+        mutant: "{{else if (eq reason \"never-matches\")}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-reason-not-in-context', ticket: '#296',
+        desc: 'the cannotCheck reason is no longer passed to the template',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    reason: event.reason || null,",
+        mutant: "    reason: null,",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-refund-sign-ignored', ticket: '#296',
+        desc: 'an unlinked opposite-sign refund is accepted by the wrong-amount fallback and the late pass',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "        .filter((c) => c.match.linked || signCompatible(c.tx.amount, schedule.amount))",
+        mutant: "        .filter((c) => c.match.linked || signCompatible(c.tx.amount, schedule.amount) || true)",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-tolerance-sign-ignored', ticket: '#296',
+        desc: 'amountWithinTolerance ignores the sign, so a sibling schedule of opposite sign hijacks the payment',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  if (!signCompatible(amount, expected)) return false;",
+        mutant: "  if (false) return false;",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-zero-amount-rejects-all', ticket: '#296',
+        desc: 'a zero-amount schedule drops every non-zero transaction (wrongAmount becomes missing)',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  return bounds.some((b) => b === 0 || Math.sign(txAmount) === Math.sign(b));",
+        mutant: "  return bounds.some((b) => Math.sign(txAmount) === Math.sign(b));",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-range-unchecked', ticket: '#296',
+        desc: 'a range schedule skips the sign check, so a positive refund is taken as late or wrongAmount',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1, scheduleAmount.num2] : [scheduleAmount];",
+        mutant: "  if (typeof scheduleAmount === 'object') return true;\n  const bounds = [scheduleAmount];",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-sign-range-first-bound-only', ticket: '#296',
+        desc: 'a range spanning zero only honours its first bound, rejecting a sign matching the other bound',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1, scheduleAmount.num2] : [scheduleAmount];",
+        mutant: "  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1] : [scheduleAmount];",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-never-synced-wording', ticket: '#296',
+        desc: 'a never-synced account renders "has not synced since  (deadline" with an empty date',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{#if last_sync}}has not synced since {{last_sync}}{{else}}has never synced{{/if}}",
+        mutant: "has not synced since {{last_sync}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-redelivery-after-restart', ticket: '#296',
+        desc: 'a sent missing alert is considered due again (no de-duplication across syncs and restarts)',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  if (!latest) return { due: true, lastSentAt: null };\n  if (event.event !== 'missing'",
+        mutant: "  if (!latest || true) return { due: true, lastSentAt: null };\n  if (event.event !== 'missing'",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '296-resolved-sent-every-sync', ticket: '#296',
+        desc: 'a resolved alert is not de-duplicated, so it repeats on every later sync',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    return { due: !resolvedRow, lastSentAt: null };",
+        mutant: "    return { due: true, lastSentAt: null };",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '296-never-synced-account-reports-missing', ticket: '#296',
+        desc: 'an account with no last_sync is treated as synced, so a missing payment is reported',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "const stale = !lastSync || today.diff(lastSync, 'days') > binding.staleAfterDays;\n        const lastSyncAfterDeadline = lastSync && lastSync.isAfter(occ.deadline, 'day');",
+        mutant: "const stale = lastSync ? today.diff(lastSync, 'days') > binding.staleAfterDays : false;\n        const lastSyncAfterDeadline = !lastSync || lastSync.isAfter(occ.deadline, 'day');",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '332-digest-lookup-failure-rejects-batch', ticket: '#332',
+        desc: "a failing per-destination ledger read in digest mode rejects the whole deliver() batch again instead of withholding only that channel",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      logger.warn('Schedule alert ledger lookup failed; destination withheld until the next sync', {",
+        mutant: "      throw error;\n      logger.warn('Schedule alert ledger lookup failed; destination withheld until the next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-lookup-failure-sends-anyway', ticket: '#332',
+        desc: "a failing digest ledger read no longer skips the channel, so the loop carries on with nothing due or a stale state",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        server, channel, error: error.message\n      });\n      continue;\n    }\n    if (dueItems.length === 0) continue;",
+        mutant: "        server, channel, error: error.message\n      });\n    }\n    if (dueItems.length === 0) continue;",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-record-failure-rejects-batch', ticket: '#332',
+        desc: "a failing ledger write after a successful digest send rejects deliver() again and stops the remaining channels",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      } catch (error) {\n        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {",
+        mutant: "      } catch (error) {\n        throw error;\n        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-unrecorded-item-counted-sent', ticket: '#332',
+        desc: "an item whose ledger write failed is still reported as sent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        sentKeys.add(eventKey(item.event));\n      } catch (error) {",
+        mutant: "        sentKeys.add(eventKey(item.event));\n      } catch (error) {\n        sentKeys.add(eventKey(item.event));",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-write-failure-stops-channel-items', ticket: '#332',
+        desc: "a ledger write failure in digest mode stops recording the remaining items on the same channel",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "the row may be resent next sync', {\n          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n      }",
+        mutant: "the row may be resent next sync', {\n          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n        break;\n      }",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-immediate-write-failure-aborts-destinations', ticket: '#332',
+        desc: "a ledger write failure after a successful immediate send goes to the outer catch again and stops the remaining destinations",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {\n            server, alertId: event.alertId, event: event.event, channel: destination.channel",
+        mutant: "          throw error;\n          logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {\n            server, alertId: event.alertId, event: event.event, channel: destination.channel",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-immediate-unrecorded-destination-counted-sent', ticket: '#332',
+        desc: "an immediate destination whose ledger write failed still makes the event count as sent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          sentAny = true;\n        } catch (error) {",
+        mutant: "          sentAny = true;\n        } catch (error) {\n          sentAny = true;",
+        tests: 'scheduleAlertDelivery'
     }
 ];
