@@ -506,9 +506,14 @@
             },
             "allowedOrigins": {
               "type": "array",
-              "description": "Extra browser origins (scheme://host[:port]) allowed to open the /ws/logs live log stream. Same-origin is always allowed. Needed only when the dashboard is served under a different origin than the one the browser connects to, e.g. behind some reverse proxies.",
+              "description": "Extra browser origins (scheme://host[:port]) allowed to open the /ws/logs live log stream and to submit state-changing requests (POST and other writes) to the dashboard API. Same-origin is always allowed. Needed only when the dashboard is served under a different origin than the one the browser connects to, e.g. behind some reverse proxies. Review this list before enabling allowConfigWrites.",
               "items": { "type": "string", "pattern": "^https?://[^/\\s]+$" },
               "default": []
+            },
+            "allowConfigWrites": {
+              "type": "boolean",
+              "description": "Allow the dashboard to change configuration (alert settings). Off by default; also refused while auth.type is none.",
+              "default": false
             },
             "auth": {
               "type": "object",
