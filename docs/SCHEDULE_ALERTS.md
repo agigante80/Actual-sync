@@ -478,7 +478,9 @@ A server with a `scheduleAlerts` block can also have rules created in the dashbo
   previous snapshot, rather than quietly evaluating config rules only.
 - **Erasure.** A history reset deletes the schedule snapshot but keeps the rules, which are
   configuration; delete them with the rule `DELETE` route. The exception is a server removed from the
-  config: a reset of that server, or of all history, deletes its rules too (#262, #372). Rule values
+  config: a reset of that server, or of all history, deletes its rules too (#262, #372), but only
+  while configuration writes are allowed (`allowConfigWrites` on and auth not `none`). With writes
+  off, the reset keeps them, because the reset route does not require config writes. Rule values
   appear in the configuration audit trail.
 
 ## Design notes and known limitations
