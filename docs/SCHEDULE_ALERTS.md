@@ -118,7 +118,7 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 | `missing` | No matching transaction by the deadline, and the account is synced past it. | Repeats every `remindEveryDays`, if set. |
 | `wrongAmount` | A matching transaction posted in-window, but its amount is outside tolerance. | One-time; not repeated. |
 | `cannotCheck` | The account's last sync is stale (`reason: "stale"`), not yet past the deadline (`reason: "not-synced"`), the rule's own window configuration is unsound (`reason: "interval-violation"`, see below), or the rule threw while being evaluated (`reason: "error"`). | Never a false `missing`. An account that was never bank-synced (no `last_sync` yet) always gives `cannotCheck` (`reason: "stale"`) until its first sync. The built-in message has its own wording per reason; only `stale` and `not-synced` mention the bank connection. |
-| `resolved` | A payment previously reported `missing` later posts, on time or late. | Closes out the alert; no manual dismissal needed. Also sent when a one-off schedule with an open `missing` is marked completed, or any schedule with an open `missing` is deleted, in Actual (see below). |
+| `resolved` | A payment previously reported `missing` later posts, on time or late. | Closes out the alert; no manual dismissal needed. Also sent when a one-off schedule with an open `missing` is marked completed, or any schedule with an open `missing` is deleted in Actual, or a rule's target is edited so it no longer names the schedule (see below). |
 | `ruleUnmatched` | A rule's `schedule`/`schedulePrefix` matches no schedule in Actual (renamed, deleted, or a typo). | Sent once per destination while the rule stays unmatched; sent again only after the rule matched a schedule again and later unmatched (see below). |
 
 ## Lifecycle of a completed one-off schedule (#326)
@@ -158,6 +158,33 @@ per open occurrence and destination:
 - A custom `resolved` template that never mentions `closed_by` gets the built-in text here. A template that compares `closed_by` to quoted values (for example `(eq closed_by "completed")`, in either order) gets the built-in text for any value it does not name; a template that only tests `{{#if closed_by}}` or prints it is used as written.
 - A rule bound to the deleted schedule by exact name now matches nothing, so it also sends one
   `ruleUnmatched` per destination (not one per sync).
+
+## Lifecycle of a retargeted rule (#373)
+
+When a rule stops naming a schedule it had an open `missing` for, but that schedule still exists in
+Actual, it is not a deletion. The alert thread is closed anyway, with one `resolved` per open occurrence
+and destination. Two things trigger this:
+
+- the rule's `schedule` or `schedulePrefix` is edited, in the dashboard or in the config file;
+- the schedule is renamed in Actual so the rule no longer matches it. This close is final: renaming the
+  schedule back, or fixing the rule, does not alert that occurrence again unless `remindEveryDays` is set,
+  and a later payment sends no second close.
+
+- The `resolved` uses the built-in "<name> (<expected date>): no longer tracked by this alert rule. Alert closed."
+  wording (`closed_by` is `rule_changed`). `name` is the schedule's own current name in Actual.
+- It works exactly like the deleted case otherwise: 90-day look-back window, only destinations that
+  received the `missing`, nothing more is sent for that occurrence afterwards, and a mute or a disabled
+  rule holds the close back the same way.
+- It is only inferred when Actual's schedule list was read successfully and is not empty.
+- A schedule the rule still names (an exact name, or any name under the prefix, completed ones included) is
+  never closed this way.
+- The close is matched by rule id. A config rule without an `id` gets one from its schedule name, so
+  editing its `schedule` changes the id and no close is sent; give the rule an `id` to keep it stable.
+  Deleting a rule sends nothing, but its sent `missing` rows stay in the ledger: a new rule created later
+  with the same id and a different target sends one close for those old occurrences.
+- The close only goes to destinations the rule still has. If the same edit also removes the channel
+  that received the `missing`, that channel never gets a close.
+- The same template rules as for the deleted case apply to a custom `resolved`.
 
 ## An empty schedule list (#356, #359)
 
@@ -374,7 +401,7 @@ template that wants to format it differently.
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
 | `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events; for `muteEnded`, the reason given for the mute) |
-| `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual, `deleted` when the schedule was removed in Actual (empty otherwise) |
+| `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual, `deleted` when the schedule was removed in Actual, `rule_changed` when the rule's target was edited so it no longer names the schedule (empty otherwise) |
 | `muted_from` / `muted_until` | `muteEnded` only: the start and the end date of the mute, in `dateFormat` |
 | `events_count` | `muteEnded` only: how many distinct events were held back |
 | `events` | `muteEnded` only: the held-back events, each with `event`, `expected_date` and `deadline` (use `{{#each events as \|e\|}}{{e.event}}{{/each}}`) |

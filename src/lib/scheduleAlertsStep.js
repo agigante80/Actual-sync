@@ -41,7 +41,7 @@
  */
 
 const moment = require('moment-timezone');
-const { getRules, mergeRules, ruleState } = require('./scheduleAlertRules');
+const { getRules, mergeRules, ruleState, matchedScheduleIdsByRule } = require('./scheduleAlertRules');
 const { evaluate, skipKey, MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS, CADENCE_DATE_FORMAT } = require('./scheduleAlerts');
 const { getRecurringDescription } = require('./vendor/actualSchedules');
 const { validateScheduleAlert } = require('./scheduleAlertValidation');
@@ -288,10 +288,15 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
     const existingScheduleIds = scheduleListReliable
         ? new Set(rawSchedules.map((s) => s.id))
         : null;
+    // #373: what each rule's current target matches, and the live name of every
+    // schedule, so an open `missing` for a schedule a rule no longer targets
+    // can be closed (`closed_by: rule_changed`) with the schedule's own name.
+    const matchedScheduleIds = scheduleListReliable ? matchedScheduleIdsByRule(scheduleAlertRules, rawSchedules) : null;
+    const scheduleNameById = scheduleListReliable ? new Map(rawSchedules.map((s) => [s.id, s.name])) : null;
 
     return {
-        events, evaluations, warnings, skipDecisions, completedSchedules, existingScheduleIds, scheduleAlertRules,
-        hydratedSchedules, timezone, serverName, now: alertNow
+        events, evaluations, warnings, skipDecisions, completedSchedules, existingScheduleIds, matchedScheduleIds, scheduleNameById,
+        scheduleAlertRules, hydratedSchedules, timezone, serverName, now: alertNow
     };
 }
 
@@ -315,7 +320,7 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
  * @returns {Promise<{events: number, sent: number, skipped: number}>}
  */
 async function deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger, deliverBudgetMs }) {
-    const { events, evaluations, skipDecisions, completedSchedules, existingScheduleIds, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    const { events, evaluations, skipDecisions, completedSchedules, existingScheduleIds, matchedScheduleIds, scheduleNameById, scheduleAlertRules, timezone, serverName, now } = evaluated;
     // #359: nothing was evaluated, so there is nothing to deliver and
     // `deliver()` must not run (it would mark every rule as matched).
     if (evaluated.skipped) return { events: 0, sent: 0, skipped: 0 };
@@ -339,6 +344,8 @@ async function deliverScheduleAlerts(evaluated, { syncHistory, notificationServi
         evaluations,
         completedSchedules,
         existingScheduleIds,
+        matchedScheduleIds,
+        scheduleNameById,
         ruleState: makeRuleStateLookup({ syncHistory, serverName, rules: scheduleAlertRules, now, timezone }),
         history: syncHistory,
         sender: notificationService,

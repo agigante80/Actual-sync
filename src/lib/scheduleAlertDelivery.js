@@ -150,8 +150,10 @@ const DEFAULT_TEMPLATES = {
   // #326: `closed_by` is "completed" when the one-off schedule was marked
   // completed in Actual instead of a payment arriving; the other branch is the
   // original text, unchanged. #356: "deleted" is the schedule removed from Actual.
+  // #373: "rule_changed" is the rule's target edited so it no longer names the schedule.
   resolved: '{{#if (eq closed_by "completed")}}✅ {{name}}: marked completed in Actual. Alert closed.'
-    + '{{else if (eq closed_by "deleted")}}✅ {{name}} ({{expected_date}}): removed in Actual. Alert closed.{{else}}'
+    + '{{else if (eq closed_by "deleted")}}✅ {{name}} ({{expected_date}}): removed in Actual. Alert closed.'
+    + '{{else if (eq closed_by "rule_changed")}}✅ {{name}} ({{expected_date}}): no longer tracked by this alert rule. Alert closed.{{else}}'
     + '✅ {{name}}: {{received_amount}} arrived {{received_date}}, {{#if (eq days_overdue 0)}}on time'
     + '{{else}}{{days_overdue}} day(s) after the deadline{{/if}}. Alert closed.{{/if}}',
   // One wording per `reason` (#296): only stale / not-synced are about the bank
@@ -911,7 +913,7 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
  * @param {string} server
  * @returns {Promise<Object[]>} synthesized `resolved` events, shaped like `evaluate()`'s AlertEvent
  */
-async function deriveResolvedEvents(evaluations, history, server, logger, { completedSchedules, existingScheduleIds, rules, now, timezone } = {}) {
+async function deriveResolvedEvents(evaluations, history, server, logger, { completedSchedules, existingScheduleIds, matchedScheduleIds, scheduleNameById, rules, now, timezone } = {}) {
   const resolved = [];
   // #356: a schedule deleted in Actual is gone from the schedule list, so its
   // open `missing` rows (same look-back window) are closed with a `resolved`
@@ -927,17 +929,28 @@ async function deriveResolvedEvents(evaluations, history, server, logger, { comp
       try {
         rows = await history.listMissingScheduleAlertSchedules({ server, alertId: rule.id, sinceDate });
       } catch (error) {
-        logger.warn('Schedule alert ledger lookup failed; deleted-schedule check withheld until the next sync', {
+        logger.warn('Schedule alert ledger lookup failed; deleted/retargeted-schedule check withheld until the next sync', {
           server, alertId: rule.id, event: 'resolved', error: error.message
         });
         continue;
       }
       for (const row of rows) {
-        if (existingScheduleIds.has(row.scheduleId)) continue;
+        let closedBy = 'deleted';
+        let scheduleName = rule.schedule || null; // exact-name rules only; a prefix rule falls back to its id
+        if (existingScheduleIds.has(row.scheduleId)) {
+          // #373: the schedule still exists, so this is only a close when the
+          // rule's current target no longer names it (the rule was edited).
+          // Without the matched map nothing is inferred. The schedule's own
+          // name is used: the rule's `schedule` now names something else.
+          const matched = matchedScheduleIds && matchedScheduleIds.get(rule.id);
+          if (!matched || matched.has(row.scheduleId)) continue;
+          closedBy = 'rule_changed';
+          scheduleName = (scheduleNameById && scheduleNameById.get(row.scheduleId)) || null;
+        }
         resolved.push({
           event: 'resolved',
-          closedBy: 'deleted',
-          scheduleName: rule.schedule || null, // exact-name rules only; a prefix rule falls back to its id
+          closedBy,
+          scheduleName,
           alertId: rule.id,
           scheduleId: row.scheduleId,
           occurrence: row.occurrenceDate,
@@ -1054,7 +1067,7 @@ async function markRulesMatched(matchedAlertIds, history, server, now, logger) {
  * "arrived ," with empty amount and date for a completed one-off, falsely
  * saying money arrived. So when the event is closed by completion and the
  * custom `resolved` never mentions `closed_by`, the built-in `resolved` is
- * used for that event. #356: the same holds for `closedBy: 'deleted'`.
+ * used for that event. #356, #373: the same holds for `closedBy: 'deleted'` and `'rule_changed'`.
  * A custom `resolved` is honoured only when it mentions `closed_by` and, if
  * it compares `closed_by` to quoted literals, one of them is this event's
  * value: a #326-style template that branches on `(eq closed_by "completed")`
@@ -1318,7 +1331,7 @@ async function runMuteEndPhase({ rules, evaluations, stateOf, history, sender, s
  *   this promise settles (see `sendEvent`'s doc comment).
  * @returns {Promise<{sent: number, skipped: number}>}
  */
-async function deliver(events, { evaluations, completedSchedules, existingScheduleIds, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
+async function deliver(events, { evaluations, completedSchedules, existingScheduleIds, matchedScheduleIds, scheduleNameById, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
   const log = logger || { warn() {} };
   const rulesById = new Map((rules || []).map((r) => [r.id, r]));
   let sent = 0;
@@ -1337,7 +1350,7 @@ async function deliver(events, { evaluations, completedSchedules, existingSchedu
   dropPaidMutedRows({ evaluations: evaluations || [], rulesById, stateOf, history, sender, server, log });
   await runMuteEndPhase({ rules: rules || [], evaluations: evaluations || [], stateOf, history, sender, server, timezone, log, now, deadline });
 
-  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log, { completedSchedules, existingScheduleIds, rules, now, timezone });
+  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log, { completedSchedules, existingScheduleIds, matchedScheduleIds, scheduleNameById, rules, now, timezone });
   // #356 L2: a rule matched this sync unless it produced a `ruleUnmatched`
   // event. Deriving it from evaluations missed rules whose schedule only
   // yields cannotCheck or is a completed recurring one, leaving the

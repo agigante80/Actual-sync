@@ -157,6 +157,29 @@ function checkUniqueIds(servers) {
 }
 
 /**
+ * Every schedule a rule's target (`schedulePrefix` first, else exact
+ * `schedule`) names, completed ones included. Shared by `expandRules` and
+ * `matchedScheduleIdsByRule` so "matched" means one thing everywhere.
+ */
+function ruleNameMatches(rule, schedules) {
+  if (rule.schedulePrefix) {
+    return (schedules || []).filter((s) => typeof s.name === 'string' && s.name.startsWith(rule.schedulePrefix));
+  }
+  if (rule.schedule) return (schedules || []).filter((s) => s.name === rule.schedule);
+  return [];
+}
+
+/**
+ * #373: rule id -> Set of the schedule ids its CURRENT target names (completed
+ * ones included, since a completed schedule is still bound to the rule).
+ * Delivery uses it to tell an open `missing` whose schedule the rule no longer
+ * targets (the target was edited) from one that is still tracked.
+ */
+function matchedScheduleIdsByRule(rules, schedules) {
+  return new Map((rules || []).map((rule) => [rule.id, new Set(ruleNameMatches(rule, schedules).map((s) => s.id))]));
+}
+
+/**
  * Expand each rule against the schedules Actual currently has, matching
  * `schedule` by exact name and `schedulePrefix` by name prefix. A rule that
  * matches nothing expands to one `unmatched: true` binding (the caller emits
@@ -189,14 +212,7 @@ function expandRules(rules, schedules) {
     // as a name mismatch, firing a daily `ruleUnmatched` for a rule that was
     // actually working fine.
     const isActive = (s) => s.completed !== true;
-    let rawMatches;
-    if (rule.schedulePrefix) {
-      rawMatches = (schedules || []).filter((s) => typeof s.name === 'string' && s.name.startsWith(rule.schedulePrefix));
-    } else if (rule.schedule) {
-      rawMatches = (schedules || []).filter((s) => s.name === rule.schedule);
-    } else {
-      rawMatches = [];
-    }
+    const rawMatches = ruleNameMatches(rule, schedules);
     const matches = rawMatches.filter(isActive);
 
     // #326: a COMPLETED ONE-OFF schedule (`date` is a plain date string, not a
@@ -275,6 +291,7 @@ module.exports = {
   normalizeRule,
   checkUniqueIds,
   expandRules,
+  matchedScheduleIdsByRule,
   DEFAULT_GRACE_DAYS,
   DEFAULT_EARLY_DAYS,
   DEFAULT_STALE_AFTER_DAYS
