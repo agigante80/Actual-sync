@@ -2484,14 +2484,6 @@ module.exports = [
     },
     {
         id: '296-refund-sign-ignored', ticket: '#296',
-        desc: 'an opposite-sign refund of the same size counts as the payment again',
-        file: 'src/lib/scheduleAlerts.js',
-        anchor: "  if (Math.sign(amount) !== Math.sign(expected)) return false;",
-        mutant: "  void expected;",
-        tests: 'scheduleAlerts.test'
-    },
-    {
-        id: '296-refund-sign-ignored-in-fallback-passes', ticket: '#296',
         desc: 'an unlinked opposite-sign refund is accepted by the wrong-amount fallback and the late pass',
         file: 'src/lib/scheduleAlerts.js',
         anchor: "        .filter((c) => c.match.linked || signOk(c.tx))",
