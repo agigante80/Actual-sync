@@ -161,9 +161,14 @@ per open occurrence and destination:
 
 ## Lifecycle of a retargeted rule (#373)
 
-When a rule's `schedule` or `schedulePrefix` is edited (in the dashboard or in the config file) so it no
-longer names a schedule it had an open `missing` for, that schedule still exists in Actual, so it is not
-a deletion. The alert thread is closed anyway, with one `resolved` per open occurrence and destination:
+When a rule stops naming a schedule it had an open `missing` for, but that schedule still exists in
+Actual, it is not a deletion. The alert thread is closed anyway, with one `resolved` per open occurrence
+and destination. Two things trigger this:
+
+- the rule's `schedule` or `schedulePrefix` is edited, in the dashboard or in the config file;
+- the schedule is renamed in Actual so the rule no longer matches it. This close is final: renaming the
+  schedule back, or fixing the rule, does not alert that occurrence again unless `remindEveryDays` is set,
+  and a later payment sends no second close.
 
 - The `resolved` uses the built-in "<name> (<expected date>): no longer tracked by this alert rule. Alert closed."
   wording (`closed_by` is `rule_changed`). `name` is the schedule's own current name in Actual.
@@ -172,7 +177,13 @@ a deletion. The alert thread is closed anyway, with one `resolved` per open occu
   rule holds the close back the same way.
 - It is only inferred when Actual's schedule list was read successfully and is not empty.
 - A schedule the rule still names (an exact name, or any name under the prefix, completed ones included) is
-  never closed this way. If the rule is deleted, its ledger rows are removed with it, so nothing is sent.
+  never closed this way.
+- The close is matched by rule id. A config rule without an `id` gets one from its schedule name, so
+  editing its `schedule` changes the id and no close is sent; give the rule an `id` to keep it stable.
+  Deleting a rule sends nothing, but its sent `missing` rows stay in the ledger: a new rule created later
+  with the same id and a different target sends one close for those old occurrences.
+- The close only goes to destinations the rule still has. If the same edit also removes the channel
+  that received the `missing`, that channel never gets a close.
 - The same template rules as for the deleted case apply to a custom `resolved`.
 
 ## An empty schedule list (#356, #359)
