@@ -74,6 +74,18 @@ describe('evaluate: missing / cannotCheck', () => {
     expect(evaluations[0].state).toBe('missing');
   });
 
+  test('#296: an account never bank-synced (last_sync null) gives cannotCheck, never missing', () => {
+    const { events } = evaluate({
+      rules: rentRule(),
+      schedules: [rentSchedule()],
+      transactions: [],
+      accounts: [account({ last_sync: null })],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'stale', lastSync: null })]);
+  });
+
   test('stale bank connection (last_sync more than staleAfterDays ago) -> cannotCheck, reason stale', () => {
     const { events } = evaluate({
       rules: rentRule(),

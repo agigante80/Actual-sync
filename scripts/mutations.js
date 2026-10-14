@@ -2456,5 +2456,62 @@ module.exports = [
         anchor: 'if (liveEl.textContent !== liveText) liveEl.textContent',
         mutant: 'if (true) liveEl.textContent',
         tests: 'dashboardPayments'
+    },
+    // ---- #296: low findings from the #258 review ----------------------------
+    {
+        id: '296-cannotcheck-one-wording-for-all-reasons', ticket: '#296',
+        desc: 'interval-violation and error cannotCheck render the bank-connection text again',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  cannotCheck: '{{#if (eq reason \"interval-violation\")}}",
+        mutant: "  cannotCheck: '{{#if (eq reason \"never-matches\")}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-error-reason-uses-bank-wording', ticket: '#296',
+        desc: 'the error reason falls through to the bank-connection wording',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{else if (eq reason \"error\")}}",
+        mutant: "{{else if (eq reason \"never-matches\")}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-reason-not-in-context', ticket: '#296',
+        desc: 'the cannotCheck reason is no longer passed to the template',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    reason: event.reason || null,",
+        mutant: "    reason: null,",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '296-refund-sign-ignored', ticket: '#296',
+        desc: 'an opposite-sign refund of the same size counts as the payment again',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  if (Math.sign(amount) !== Math.sign(expected)) return false;",
+        mutant: "  void expected;",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '296-redelivery-after-restart', ticket: '#296',
+        desc: 'a sent missing alert is considered due again (no de-duplication across syncs and restarts)',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  if (!latest) return { due: true, lastSentAt: null };\n  if (event.event !== 'missing'",
+        mutant: "  if (!latest || true) return { due: true, lastSentAt: null };\n  if (event.event !== 'missing'",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '296-resolved-sent-every-sync', ticket: '#296',
+        desc: 'a resolved alert is not de-duplicated, so it repeats on every later sync',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "    return { due: !resolvedRow, lastSentAt: null };",
+        mutant: "    return { due: true, lastSentAt: null };",
+        tests: 'scheduleAlertsSync'
+    },
+    {
+        id: '296-never-synced-account-reports-missing', ticket: '#296',
+        desc: 'an account with no last_sync is treated as synced, so a missing payment is reported',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "const stale = !lastSync || today.diff(lastSync, 'days') > binding.staleAfterDays;\n        const lastSyncAfterDeadline = lastSync && lastSync.isAfter(occ.deadline, 'day');",
+        mutant: "const stale = lastSync ? today.diff(lastSync, 'days') > binding.staleAfterDays : false;\n        const lastSyncAfterDeadline = !lastSync || lastSync.isAfter(occ.deadline, 'day');",
+        tests: 'scheduleAlerts.test'
     }
 ];
