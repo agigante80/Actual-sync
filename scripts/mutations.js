@@ -2653,6 +2653,14 @@ module.exports = [
         tests: 'scheduleAlert'
     },
     {
+        id: '326-payment-resolved-loses-custom-template', ticket: '#326',
+        desc: 'the built-in resolved replaces every custom template without closed_by, including ordinary payments',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
+        mutant: "if (!/\\bclosed_by\\b/.test(templates.resolved))",
+        tests: 'scheduleAlert'
+    },
+    {
         id: '326-completed-resolved-repeats', ticket: '#326',
         desc: 'the per-destination already-resolved check is skipped, so resolved repeats every sync',
         file: 'src/lib/scheduleAlertDelivery.js',

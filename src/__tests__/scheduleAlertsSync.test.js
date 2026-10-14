@@ -981,13 +981,15 @@ describe('scheduleAlertsSync: completed one-off schedule closes its open missing
     });
 
     test('a normal payment resolved still uses the custom template', async () => {
-      const srv = withTemplate(legacy);
+      // A sentinel only the custom template produces: the built-in payment
+      // text also says "arrived", so matching on it cannot tell them apart.
+      const srv = withTemplate('CUSTOM-PAID {{name}} {{received_date}}');
       await runWith(srv, apiFor(), '2026-01-10T00:00:00.000Z');
       const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }];
       await runWith(srv, apiFor({ transactions: paid, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
       expect(requests).toHaveLength(2);
-      expect(requests[1].body.text).toMatch(/arrived 2026-01-10|arrived .*2026/);
-      expect(requests[1].body.text).not.toMatch(/marked completed/);
+      expect(requests[1].body.text).toMatch(/^CUSTOM-PAID Rent 10 Jan 2026$/);
+      expect(requests[1].body.text).not.toMatch(/Alert closed/);
     });
   });
 
