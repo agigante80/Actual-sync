@@ -88,6 +88,15 @@ The four dashboard POSTs (`sync`, `dismiss-error`, `reset-history`, `test-notifi
 - **Opt-in writes**: configuration-changing routes exist only behind `dashboard.allowConfigWrites: true` (default `false`) and are refused while auth is `none` (403 `config_writes_disabled`). Their JSON body is capped at 16 KB.
 - **Audit trail**: every configuration change, and every history reset, is recorded with time, server, client address, action, target and changed fields. Values under keys containing `password`, `passwd`, `secret`, `token`, `apikey`, `authorization`, `webhook` or `reason`, SMTP `user`/`pass`, and URLs under slack/discord/ntfy/webhook keys or with embedded credentials are stored as `[redacted]`. An entry is capped at 8 KB. Entries are kept across history resets and purged after `retentionDays`.
 
+### Alert overrides and mute reasons (#261)
+
+The dashboard's alert switch and mute are stored in the sync-history SQLite database (table `payment_alert_override`: server, alert id, on/off, mute start and end, reason, update time; no IP address). Like the rest of that file it is not encrypted at rest.
+
+- The free-text **mute reason** (up to 200 characters) can mention a person or a situation. It is shown in the dashboard as text only and is included in the one summary message sent when the mute ends, so it travels to your configured notification channels (for Telegram, Telegram's servers). Remove `{{reason}}` from the `muteEnded` template to keep it out of messages.
+- It is recorded in the configuration audit trail as `[redacted]`, and never written to the logs.
+- It is cleared when the summary has been sent, on an early unmute, and at the latest 7 days after the mute's end date even if no summary could be sent. A history reset deletes every override and held-back record. `DELETE /api/dashboard/payments/:server/:alertId/state` removes one, and `GET /api/dashboard/payment-overrides` exports all of them.
+- Changes use the same gates as other configuration writes (auth, Origin check, `allowConfigWrites`).
+
 ### HTTP security headers (#243)
 
 [`helmet`](https://helmetjs.github.io/) is mounted first in the Express stack, before the rate limiter and the body parser, so every response carries these headers, including `401`s and parse errors:

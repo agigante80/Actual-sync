@@ -157,6 +157,9 @@ match the code, not as an integration surface:
 | GET  | `/api/dashboard/history` | Sync history records (`?limit=N`, optional `?serverName=` to filter to one server) |
 | GET  | `/api/dashboard/accounts` | Discovered bank accounts |
 | GET  | `/api/dashboard/payments` | Missing-payment alert snapshot per server (optional `?server=`), no connection to Actual needed |
+| GET  | `/api/dashboard/payment-overrides` | Every stored payment alert override (switch and mute), with an `orphaned` flag |
+| PUT  | `/api/dashboard/payments/:server/:alertId/state` | Switch an alert on or off, or mute or unmute it (needs config writes) |
+| DELETE | `/api/dashboard/payments/:server/:alertId/state` | Reset an alert's override, including one whose alert or server no longer exists (needs config writes) |
 | GET  | `/api/dashboard/notifications` | Failure-alert rate-limit usage + recent sync outcomes per server |
 | GET  | `/api/dashboard/capabilities` | `{configWrites, reason}`: whether dashboard config writes are enabled (`reason` is `disabled`, `auth-none` or null) |
 | GET  | `/api/dashboard/config-audit` | Configuration change audit trail, newest first (`?limit=N`, 1 to 200, default 50; otherwise 400 `invalid_limit`). 503 `Sync history not available` without history, 500 `Failed to retrieve configuration changes` on a read error |
@@ -187,7 +190,7 @@ auth when `scheduleAlerts` is used (it exposes schedule, payee and account names
           "cadenceText": "Every month on the 5th", "account": "Main", "payee": "Tenant A",
           "expectedAmount": 6000, "nextDate": "2026-02-05", "deadline": "2026-01-11",
           "state": "missing", "lastAlertAt": "2026-01-12T08:01:00Z", "source": "config",
-          "ruleState": { "enabled": true, "mutedUntil": null, "reason": null },
+          "ruleState": { "enabled": true, "mutedUntil": null, "reason": null, "lockedByConfig": false },
           "occurrences": [ { "date": "2026-01-05", "deadline": "2026-01-11", "state": "missing", "receivedDate": null, "receivedAmount": null, "daysLate": null } ]
         }
       ]
@@ -204,8 +207,14 @@ auth when `scheduleAlerts` is used (it exposes schedule, payee and account names
 - `lastAlertAt` is the latest delivered alert (`delivery = 'sent'`, resolved notices included)
   from the `schedule_alerts` ledger, computed at request time; `null` when none was sent or the
   last one is older than the ledger retention.
-- `source` is always `"config"` and `ruleState` always `{ enabled: true, mutedUntil: null, reason: null }`
-  until rule editing (#262) and enable/mute (#261) land.
+- `source` is always `"config"` until rule editing (#262) lands.
+- `ruleState` is `{ enabled, mutedUntil, reason, lockedByConfig }`, computed per request from the
+  stored override (#261) and the rule: `enabled` is `false` when the rule has `enabled: false` in
+  the config (`lockedByConfig: true`) or the operator switched it off; `mutedUntil` is a
+  `YYYY-MM-DD` date (or `null`) and `reason` its reason. `mutedUntil` stays set, in the past, from the
+  end of the mute until the summary has been sent. Without an override it is
+  `{ "enabled": true, "mutedUntil": null, "reason": null, "lockedByConfig": false }`. The `state` of an
+  item is always the real evaluation result: a switch or a mute never changes it.
 - `configured: false` (no `scheduleAlerts` block) gives `items: []` and `lastRun: null`; a
   configured server has `lastRun: null` before its first run. `lastRun.at` is the latest attempt,
   `lastSuccessAt` the latest success (`null` until one happens). On a failed run the previous
@@ -224,6 +233,52 @@ auth when `scheduleAlerts` is used (it exposes schedule, payee and account names
 | 503 | `{"error":"Server list not available"}` | the server list is not wired |
 | 503 | `{"error":"Sync history not available"}` | sync history is disabled |
 | 500 | `{"error":"Failed to retrieve payments"}` | the snapshot or ledger read threw (logged) |
+
+#### Payment alert state (#261)
+
+`PUT /api/dashboard/payments/:server/:alertId/state` switches an alert off or on, or mutes it until a
+date, without editing `config.json` or restarting. It runs behind dashboard auth, the Origin check and
+the config-writes gate (see above), so it needs `dashboard.allowConfigWrites: true` and auth other than
+`none`. The body is a JSON object with at least one of these keys and no others:
+
+| Key | Rule |
+|-----|------|
+| `enabled` | boolean |
+| `mutedUntil` | `YYYY-MM-DD` from today to today + 365 days (in the configured timezone), or `null` to unmute |
+| `reason` | string, 1 to 200 characters after trimming; required when `mutedUntil` is a date, ignored when it is `null` |
+
+It merges the given keys into the stored override and answers `200 {"ruleState": {...}}` (the shape
+above). `{"enabled":true}` when nothing is stored is a no-op: nothing is stored and nothing is audited.
+Extending a mute keeps its original start, so the summary covers the whole period. Every accepted
+change that alters the stored state is written to the configuration audit trail with the action
+`payment_alert_state`; the reason is recorded as `[redacted]`. Rejected and no-op writes are not audited.
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `invalid_json`, `invalid_body_encoding` | a malformed body or an unsupported charset or content encoding (the shared body parser) |
+| 400 | `invalid_body` | not an object, no known key, an unknown key, or a wrong type |
+| 400 | `invalid_muted_until` | not a real date, in the past, or more than 365 days ahead |
+| 400 | `reason_required` | a mute date with a missing or blank reason |
+| 400 | `invalid_reason` | a reason over 200 characters after trimming |
+| 401 | | no or bad credentials (the dashboard auth bodies) |
+| 403 | `origin_rejected`, `config_writes_disabled` | the Origin or config-writes gate |
+| 404 | `server_not_found`, `alert_not_found` | the server or alert id is not configured |
+| 409 | `disabled_in_config` | any change to an alert with `enabled: false` in the config, except one that only unmutes |
+| 413, 415 | `payload_too_large`, `invalid_content_type` | a body over 16 KB, or not `application/json` |
+
+The checks run in that order: body shape, then date and reason, then 404, then 409. A top-level JSON
+string body is rejected by the strict parser as `invalid_json`.
+
+`DELETE` on the same path removes the override (switch and mute together) and answers
+`200 {"deleted": true}`. It checks the stored override first, so the override of a server or alert
+that is no longer configured (an orphan) can still be deleted; with no override it is
+`404 override_not_found`. Deleting a mute also deletes its held-back ledger rows, with no summary.
+
+`GET /api/dashboard/payment-overrides` returns
+`{"overrides": [{ "server", "alertId", "enabled", "mutedFrom", "mutedUntil", "reason", "updatedAt", "orphaned" }]}`
+ordered by server and alert id. An orphaned override (its server or alert is no longer in the
+configuration) is ignored by delivery and by `ruleState`, and the Settings tab lists it for deletion.
+This is also the export of everything stored about overrides.
 
 `GET /api/dashboard/notifications` exposes rate-limit headroom and recent sync outcomes per
 server. Rate limiting is otherwise invisible: a server at zero remaining is having its failure
