@@ -1067,6 +1067,14 @@ describe('deliver: cannotCheck wording follows the reason (#296)', () => {
     expect(text).toMatch(/has not synced since/);
   });
 
+  test('stale with a last sync date renders it; without one it says never synced', async () => {
+    const withDate = await renderCannotCheck('not-synced', { occurrence: '2026-01-05', deadline: '2026-01-08', lastSync: '2026-01-01' });
+    expect(withDate).toMatch(/has not synced since 1 Jan 2026 \(deadline /);
+    const never = await renderCannotCheck('not-synced', { occurrence: '2026-01-05', deadline: '2026-01-08' });
+    expect(never).toMatch(/has never synced \(deadline /);
+    expect(never).not.toMatch(/synced since|\s{2}\(/);
+  });
+
   test('interval-violation does not blame the bank connection and points at the rule', async () => {
     const text = await renderCannotCheck('interval-violation');
     expect(text).not.toMatch(/bank connection|synced since/);

@@ -2499,6 +2499,14 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
+        id: '296-never-synced-wording', ticket: '#296',
+        desc: 'a never-synced account renders "has not synced since  (deadline" with an empty date',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{#if last_sync}}has not synced since {{last_sync}}{{else}}has never synced{{/if}}",
+        mutant: "has not synced since {{last_sync}}",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
         id: '296-redelivery-after-restart', ticket: '#296',
         desc: 'a sent missing alert is considered due again (no de-duplication across syncs and restarts)',
         file: 'src/lib/scheduleAlertDelivery.js',

@@ -150,7 +150,7 @@ const DEFAULT_TEMPLATES = {
   cannotCheck: '{{#if (eq reason "interval-violation")}}⏸️ Cannot check {{name}}: the rule\'s graceDays plus earlyDays '
     + 'reach the schedule\'s interval between occurrences, so its windows would overlap. Shorten them in config.json.'
     + '{{else if (eq reason "error")}}⏸️ Cannot check {{name}}: the check failed with an error. See the service log.'
-    + '{{else}}⏸️ Cannot check {{name}}: {{account}} has not synced since {{last_sync}} (deadline {{deadline}}). '
+    + '{{else}}⏸️ Cannot check {{name}}: {{account}} {{#if last_sync}}has not synced since {{last_sync}}{{else}}has never synced{{/if}} (deadline {{deadline}}). '
     + 'Check the bank connection.{{/if}}',
   ruleUnmatched: '❓ Payment alert "{{alert_id}}" matches no schedule in {{budget}}. Check the schedule name in Actual.'
 };
