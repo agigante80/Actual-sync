@@ -56,7 +56,7 @@ jobs:
 
       # Autobuild attempts to build any compiled languages (not needed for JS)
       - name: 🏗️ Autobuild
-        uses: github/codeql-action/autobuild@9f759ee644a3e7c15c1390abf49868036c00067b # v3.38.3
+        uses: github/codeql-action/autobuild@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
 
       # Perform CodeQL Analysis
       - name: 🔒 Perform CodeQL Analysis
