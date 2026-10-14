@@ -89,5 +89,11 @@
     "state": "payments-not-configured",
     "tab": "payments",
     "description": "Payments tab, a server with missing-payment alerts not configured"
+  },
+  {
+    "file": "dashboard-payments-muted.png",
+    "state": "payments-muted",
+    "tab": "payments",
+    "description": "Payments tab, an alert muted until a date with its reason, beside the real state pill"
   }
 ]

@@ -89,4 +89,36 @@ function attentionEvaluations() {
   ];
 }
 
-module.exports = { AS_OF_MIN, FAILED_AT_MIN, ALERT_MIN, CONFIGURED, ev, occurrences, attentionEvaluations };
+/**
+ * The alert controls states (#261). Main watches: parking-a (one schedule,
+ * missing), rent (a schedulePrefix rule matching three schedules), power, and
+ * legacy, which the configuration file switches off. Ids match the rules so
+ * the state route can find them.
+ */
+const CONTROL_SERVER = {
+  name: 'Main',
+  scheduleAlerts: {
+    alerts: [
+      { id: 'parking-a', schedule: 'Rent - Parking' },
+      { id: 'rent', schedulePrefix: 'Rent ' },
+      { id: 'power', schedule: 'Electricity' },
+      { id: 'legacy', schedule: 'Old Subscription', enabled: false }
+    ]
+  }
+};
+
+function controlEvaluations() {
+  const rent = (n, name) => ev('rent', name, 'upcoming', {
+    scheduleId: `sched-rent-${n}`, nextDate: '2026-01-2' + n, deadline: '2026-01-2' + (n + 3)
+  });
+  return [
+    ev('parking-a', 'Rent - Parking', 'missing'),
+    rent(1, 'Rent North'),
+    rent(2, 'Rent South'),
+    rent(3, 'Rent East'),
+    ev('power', 'Electricity', 'received', { cadenceText: 'Every month on the 20th', payee: 'Power Co', expectedAmount: 5000 }),
+    ev('legacy', 'Old Subscription', 'received', { cadenceText: 'Every month on the 1st', payee: 'Old Co', expectedAmount: 900 })
+  ];
+}
+
+module.exports = { CONTROL_SERVER, controlEvaluations, AS_OF_MIN, FAILED_AT_MIN, ALERT_MIN, CONFIGURED, ev, occurrences, attentionEvaluations };

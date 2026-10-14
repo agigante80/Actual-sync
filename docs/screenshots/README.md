@@ -24,7 +24,7 @@ npm install
 npm run screenshots
 ```
 
-This creates the 14 screenshots listed in `tests/e2e/screenshots.json`:
+This creates the 15 screenshots listed in `tests/e2e/screenshots.json`:
 
 - `dashboard-overview-healthy.png` - Overview tab, three servers all syncing cleanly, 2-column layout
 - `dashboard-overview-degraded.png` - Overview tab, degraded system with failing and partial servers
@@ -40,6 +40,7 @@ This creates the 14 screenshots listed in `tests/e2e/screenshots.json`:
 - `dashboard-accounts.png` - Accounts card, syncable, manual and closed accounts across three servers
 - `dashboard-payments.png` - Payments tab, missing-payment alerts per server
 - `dashboard-payments-empty.png` - Payments tab, a server with alerts not configured
+- `dashboard-payments-muted.png` - Payments tab, an alert muted until a date with its reason beside the real state pill
 
 ### How It Works
 
