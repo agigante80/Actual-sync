@@ -1,5 +1,13 @@
 # Configuration Migration Guide
 
+## Upgrading to the Origin check release (#259)
+
+- **Cross-origin browser POSTs are refused.** `sync`, `dismiss-error`, `reset-history` and `test-notification` now return 403 `origin_rejected` when a browser sends an `Origin` or `Referer` that is not same-origin and not in `dashboard.allowedOrigins`. curl, scripts and Home Assistant (no browser headers) are unaffected.
+- **WARNING: `dashboard.allowedOrigins` now also authorizes these POSTs**, not only `/ws/logs`. Review the list and remove any origin you do not fully control.
+- **Behind a reverse proxy**, if the dashboard buttons now fail with 403, the proxy is rewriting `Host`. Use `proxy_set_header Host $http_host;` (nginx), or add the page origin to `dashboard.allowedOrigins`.
+- **Body errors are JSON.** Malformed or oversized bodies on these routes now return JSON (`invalid_json` 400, `payload_too_large` 413) instead of an HTML error page.
+- New optional setting `dashboard.allowConfigWrites` (default `false`); nothing changes unless you enable it.
+
 ## Upgrading to 1.11.0
 
 **Read this before upgrading if you use notifications.** Four changes alter behaviour for existing configs. Two can make a channel go *silent*, one can make a channel start *talking*, and one can stop the service from starting.

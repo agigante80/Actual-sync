@@ -158,10 +158,14 @@ match the code, not as an integration surface:
 | GET  | `/api/dashboard/accounts` | Discovered bank accounts |
 | GET  | `/api/dashboard/payments` | Missing-payment alert snapshot per server (optional `?server=`), no connection to Actual needed |
 | GET  | `/api/dashboard/notifications` | Failure-alert rate-limit usage + recent sync outcomes per server |
+| GET  | `/api/dashboard/capabilities` | `{configWrites, reason}`: whether dashboard config writes are enabled (`reason` is `disabled`, `auth-none` or null) |
+| GET  | `/api/dashboard/config-audit` | Configuration change audit trail, newest first (`?limit=N`, 1 to 200, default 50; otherwise 400 `invalid_limit`). 503 `Sync history not available` without history, 500 `Failed to retrieve configuration changes` on a read error |
 | POST | `/api/dashboard/sync` | Trigger a manual sync |
 | POST | `/api/dashboard/dismiss-error` | Clear a server's last error |
 | POST | `/api/dashboard/reset-history` | Reset stored sync history |
 | POST | `/api/dashboard/test-notification` | Send a test notification (`email`, `discord`, `slack`, `telegram`, `ntfy`, `generic`) |
+
+All four POSTs run the dashboard auth first and then an Origin check: a cross-origin browser request is refused with 403 `{"error":"origin_rejected"}`. Configuration-changing routes additionally return 403 `config_writes_disabled` unless `dashboard.allowConfigWrites` is true and auth is not `none`, 415 `invalid_content_type` for a non-JSON body, 413 `payload_too_large` above 16 KB and 400 `invalid_json` for a malformed body.
 
 `GET /api/dashboard/payments` serves the snapshot of the last missing-payment evaluation
 (#258) that a sync persists after evaluating (#260), so a dashboard can list every watched schedule without
@@ -584,7 +588,7 @@ Real-time log streaming via WebSocket connection. **Not public**: the handshake 
 | more than 10 open log streams from one address | always | 429 |
 | no valid ticket (an `Authorization` header is not accepted here) | `dashboard.auth.type` basic or token | 401 |
 
-The per-address cap and the `handshake refused` log lines use the client address Express resolves: the TCP peer address by default, or the `X-Forwarded-For` client when `healthCheck.trustProxy` is set. Without `trustProxy`, behind a reverse proxy the cap counts every stream through that proxy together. The ticket is spent before any other check, so a handshake refused for its Origin, the cap or a disabled dashboard cannot be retried with the same ticket. With `auth.type: none` the Origin check does not stop DNS rebinding; see [DASHBOARD.md](DASHBOARD.md).
+The per-address cap and the `handshake refused` log lines use the client address Express resolves: the TCP peer address by default, or the `X-Forwarded-For` client when `healthCheck.trustProxy` is set. Without `trustProxy`, behind a reverse proxy the cap counts every stream through that proxy together. The ticket is spent before any other check, so a handshake refused for its Origin, the cap or a disabled dashboard cannot be retried with the same ticket. The same Origin rule guards the state-changing dashboard POSTs (403 `origin_rejected`). With `auth.type: none` the Origin check does not stop DNS rebinding; see [DASHBOARD.md](DASHBOARD.md).
 
 **Authenticating from a browser.** A browser cannot put an `Authorization` header on a WebSocket, so the dashboard first calls `GET /api/dashboard/ws-ticket` (behind the normal dashboard auth) and gets a ticket that is single use and valid for 30 seconds:
 

@@ -39,10 +39,11 @@ If the panel keeps showing "Disconnected from log stream. Reconnecting...", look
 - **`WebSocket handshake refused`, status 401**: the ticket was missing, already used or older than 30 seconds. A ticket is spent by any handshake attempt, including a refused one, so a retry always asks for a new one.
 - **status 403, Origin not allowed**: the `Origin` header does not match the `Host` header the service received. The usual cause is a reverse proxy that rewrites `Host`: nginx `proxy_set_header Host $host;` drops a non-default port (the browser says `example.com:8443`, the service sees `example.com`). Use `proxy_set_header Host $http_host;` so the original Host is passed through. Only if the page really is served from a different origin than the one the browser connects to, add that origin to `dashboard.allowedOrigins` (see [CONFIG.md](CONFIG.md)).
 - **status 429**: more than 10 log streams are open from one address (every browser tab holds one). Behind a reverse proxy, set `healthCheck.trustProxy` so the count is per real client instead of per proxy.
+- **A button returns 403 `origin_rejected`** (Sync now, Dismiss, Reset history, Test notification): the browser sent an `Origin` (or `Referer`) that does not match the `Host` the service received, and it is not in `dashboard.allowedOrigins`. The cause and the fix are the same as for the status 403 item above: pass the original Host through the proxy (`proxy_set_header Host $http_host;`) or add the page origin to `dashboard.allowedOrigins`. Requests without browser headers (curl, Home Assistant) are not affected.
 
 ## DNS rebinding with `auth.type: none`
 
-The Origin check compares `Origin` with `Host`. A DNS rebinding attack makes both name the attacker's domain while it resolves to your service, so the check passes. With `dashboard.auth.type: none` that exposes the live log stream and every dashboard page to a web page open in a browser on the same network. There is no Host allowlist (it would need a new setting, and the maintainer has not chosen one). If the dashboard is reachable from browsers that visit untrusted sites, do not leave auth at `none`: use `basic` or `token`, which a rebinding page cannot supply, or bind to `127.0.0.1` behind a proxy that only forwards your own host name.
+The Origin check compares `Origin` with `Host`. A DNS rebinding attack makes both name the attacker's domain while it resolves to your service, so the check passes. With `dashboard.auth.type: none` that exposes the live log stream, every dashboard page and the four state-changing POSTs (`sync`, `dismiss-error`, `reset-history`, `test-notification`) to a web page open in a browser on the same network. There is no Host allowlist (it would need a new setting, and the maintainer has not chosen one). If the dashboard is reachable from browsers that visit untrusted sites, do not leave auth at `none`: use `basic` or `token`, which a rebinding page cannot supply, or bind to `127.0.0.1` behind a proxy that only forwards your own host name.
 
 ## Locked out after failed logins
 
@@ -104,3 +105,11 @@ Enable dashboard auth when `scheduleAlerts` is used: with the default `auth.type
 ## Behind a reverse proxy
 
 If nginx, Traefik or Caddy sits in front of the dashboard, set `healthCheck.trustProxy` (usually `1`, one proxy) so the per-client rate limit and the auth-failure log see the real client IP instead of the proxy's. Keep `dashboard.auth` enabled, and do not also publish the port directly. See [CONFIG.md](CONFIG.md#healthcheck-optional) for the accepted values and [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#1-security) for an nginx example, including the `/ws/logs` location.
+
+## Configuration changes
+
+The Settings tab lists the most recent configuration changes (newest first): when, which server, the action, the target, the client address and the changed fields. Secrets (passwords, tokens, API keys, webhook URLs, URLs with credentials) are shown as `[redacted]`. A history reset keeps this list and adds one `history_reset` entry. Entries are purged with the sync history after `retentionDays`. The same data is available at `GET /api/dashboard/config-audit?limit=N` (1 to 200, default 50).
+
+The dashboard never changes configuration unless `dashboard.allowConfigWrites` is `true` and auth is not `none`; see [CONFIG.md](CONFIG.md).
+
+![Configuration changes list on the Settings tab](screenshots/dashboard-settings-audit.png)

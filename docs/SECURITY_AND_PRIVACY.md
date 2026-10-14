@@ -79,6 +79,15 @@ The WebSocket log stream carries log metadata (server names, account names, sync
 
 Credentials are compared in constant time (SHA-256 digests with `crypto.timingSafeEqual`), and the basic-auth username and password are both always compared.
 
+### State-changing dashboard requests (#259)
+
+The four dashboard POSTs (`sync`, `dismiss-error`, `reset-history`, `test-notification`) are protected against cross-site request forgery, after authentication:
+
+- **Origin guard**: a request carrying `Origin` (or, without it, `Referer`) must be same-origin or in `dashboard.allowedOrigins`, otherwise it gets 403 `origin_rejected`. A request with neither header is accepted unless the browser marked it with `Sec-Fetch-Site`. Authentication runs first, so an unauthenticated caller learns nothing about the origin rule. This applies at every auth type, including `none`. `allowedOrigins` therefore also authorizes these POSTs: list only origins you control.
+- **DNS rebinding**: the check compares `Origin` with `Host`, which a rebinding page controls. With `auth.type: none`, a rebinding page can still reach all four POSTs; use `basic` or `token`.
+- **Opt-in writes**: configuration-changing routes exist only behind `dashboard.allowConfigWrites: true` (default `false`) and are refused while auth is `none` (403 `config_writes_disabled`). Their JSON body is capped at 16 KB.
+- **Audit trail**: every configuration change, and every history reset, is recorded with time, server, client address, action, target and changed fields. Values under keys containing `password`, `passwd`, `secret`, `token`, `apikey`, `authorization`, `webhook` or `reason`, SMTP `user`/`pass`, and URLs under slack/discord/ntfy/webhook keys or with embedded credentials are stored as `[redacted]`. An entry is capped at 8 KB. Entries are kept across history resets and purged after `retentionDays`.
+
 ### HTTP security headers (#243)
 
 [`helmet`](https://helmetjs.github.io/) is mounted first in the Express stack, before the rate limiter and the body parser, so every response carries these headers, including `401`s and parse errors:
