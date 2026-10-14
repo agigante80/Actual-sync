@@ -2286,5 +2286,29 @@ module.exports = [
         mutant: "    if (document.hidden) return;",
         tests: 'dashboardPayments'
     }
-
+,
+    {
+        id: '341-second-status-loop', ticket: '#341',
+        desc: 'every Sync now click starts its own status loop',
+        file: 'src/services/dashboard.js',
+        anchor: '    if (!paymentsWatching) await watchPaymentsSync();',
+        mutant: '    await watchPaymentsSync();',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-busy-after-post', ticket: '#341',
+        desc: 'the server is marked syncing only after the POST resolves (double-click sends two)',
+        file: 'src/services/dashboard.js',
+        anchor: '    paymentsSyncing.add(serverName);\n    renderPayments();\n    let failure',
+        mutant: '    renderPayments();\n    let failure',
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-error-rewritten', ticket: '#341',
+        desc: 'the role=alert load error is rewritten on every render',
+        file: 'src/services/dashboard.js',
+        anchor: '    if (errorEl.textContent !== paymentsLoadError) errorEl.textContent',
+        mutant: '    if (true) errorEl.textContent',
+        tests: 'dashboardPayments'
+    }
 ];

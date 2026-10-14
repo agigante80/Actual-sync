@@ -1469,6 +1469,10 @@ let paymentsRequestSeq = 0;
 const paymentsExpanded = new Set();   // row keys whose occurrence strip is open
 const paymentsSyncing = new Set();    // server names with a started sync being watched
 const paymentsSyncErrors = new Map(); // server name -> "Could not start sync (...)"
+const paymentsSyncAlertEls = new Map(); // server name -> its role=alert node, reused across renders
+const paymentsQueued = new Set();     // subset of paymentsSyncing whose POST succeeded
+let paymentsWatching = false;         // one shared status loop for every server in paymentsSyncing
+let paymentsNullStreak = 0;           // consecutive successful null runningSync reads of that loop
 
 function paymentsTabActive() {
     const tab = document.getElementById('payments-tab');
@@ -1692,7 +1696,8 @@ function buildPaymentsGroup(group, groupIndex) {
     if (run && run.lastSuccessAt) {
         head.appendChild(payEl('span', 'pay-asof', `as of ${formatTime(run.lastSuccessAt)}`));
     } else {
-        head.appendChild(payEl('span', 'pay-asof'));
+        // A configured server that has never evaluated: the as-of line says so.
+        head.appendChild(payEl('span', 'pay-asof', run ? 'No successful evaluation yet' : ''));
     }
 
     // Exactly one Sync now per configured group, whatever its lastRun.
@@ -1706,9 +1711,18 @@ function buildPaymentsGroup(group, groupIndex) {
 
     const syncError = paymentsSyncErrors.get(group.server);
     if (syncError) {
-        const alertEl = payEl('div', 'pay-sync-error', syncError);
-        alertEl.setAttribute('role', 'alert');
+        // Reuse the node and rewrite its text only on change, so a re-render
+        // (search keystroke, poll) does not make a screen reader announce it again.
+        let alertEl = paymentsSyncAlertEls.get(group.server);
+        if (!alertEl) {
+            alertEl = payEl('div', 'pay-sync-error', '');
+            alertEl.setAttribute('role', 'alert');
+            paymentsSyncAlertEls.set(group.server, alertEl);
+        }
+        if (alertEl.textContent !== syncError) alertEl.textContent = syncError;
         head.appendChild(alertEl);
+    } else {
+        paymentsSyncAlertEls.delete(group.server);
     }
     section.appendChild(head);
 
@@ -1716,7 +1730,6 @@ function buildPaymentsGroup(group, groupIndex) {
         section.appendChild(payEl('p', 'pay-note', 'Runs after the next sync'));
         return section;
     }
-    if (!run.lastSuccessAt) section.appendChild(payEl('p', 'pay-note', 'No successful evaluation yet'));
 
     const failureParts = [];
     if (!run.ok) failureParts.push(`last evaluation failed at ${formatTime(run.at)} (${run.errorCode})`);
@@ -1735,7 +1748,7 @@ function renderPayments() {
     const errorEl = document.getElementById('payments-error');
     if (!content) return;
 
-    errorEl.textContent = paymentsLoadError;
+    if (errorEl.textContent !== paymentsLoadError) errorEl.textContent = paymentsLoadError;
     errorEl.hidden = !paymentsLoadError;
 
     // Keep the server select in step with the configured servers.
@@ -1845,7 +1858,11 @@ function onPaymentsSearch(arg, input) {
 // the queue picks the job up is not "done"), then refresh once.
 async function paymentsSyncNow(serverName) {
     if (!serverName || paymentsSyncing.has(serverName)) return;
+    // Mark the server busy before the fetch: the button is disabled at once, so
+    // a double-click cannot send a second POST or start a second loop.
     paymentsSyncErrors.delete(serverName);
+    paymentsSyncing.add(serverName);
+    renderPayments();
     let failure = '';
     try {
         const response = await fetch('/api/dashboard/sync', {
@@ -1859,35 +1876,48 @@ async function paymentsSyncNow(serverName) {
         failure = 'Could not start sync (network error)';
     }
     if (failure) {
+        paymentsSyncing.delete(serverName);
         paymentsSyncErrors.set(serverName, failure);
         renderPayments();
-        return; // no polling; the next click retries
+        return; // no polling for this server; the next click retries
     }
-    paymentsSyncing.add(serverName);
-    renderPayments();
-    await watchPaymentsSync(serverName);
+    paymentsQueued.add(serverName);
+    paymentsNullStreak = 0; // a job was just queued: earlier null reads no longer count
+    if (!paymentsWatching) await watchPaymentsSync();
 }
 
-async function watchPaymentsSync(serverName) {
-    let nullStreak = 0;
+// ONE status loop serves every server in paymentsSyncing (the per-IP limiter
+// is 60/min; a loop per click would exceed it and 429 its own reads).
+async function watchPaymentsSync() {
+    paymentsWatching = true;
     let stopped = false;
-    // Counted in iterations, not time: the E2E page clock is frozen.
-    for (let reads = 0; reads < PAYMENTS_SYNC_MAX_POLLS; reads++) {
-        await new Promise((resolve) => setTimeout(resolve, PAYMENTS_SYNC_POLL_MS));
-        if (document.hidden || !paymentsTabActive()) { stopped = true; break; }
-        try {
-            const response = await fetch('/api/dashboard/status', getFetchOptions());
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const status = await response.json();
-            nullStreak = status && status.runningSync ? 0 : nullStreak + 1;
-        } catch (e) {
-            nullStreak = 0; // a failed read never counts toward the two
+    try {
+        // Counted in iterations, not time: the E2E page clock is frozen.
+        for (let reads = 0; reads < PAYMENTS_SYNC_MAX_POLLS && paymentsSyncing.size > 0; reads++) {
+            await new Promise((resolve) => setTimeout(resolve, PAYMENTS_SYNC_POLL_MS));
+            if (paymentsSyncing.size === 0) break;
+            if (document.hidden || !paymentsTabActive()) { stopped = true; break; }
+            try {
+                const response = await fetch('/api/dashboard/status', getFetchOptions());
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const status = await response.json();
+                paymentsNullStreak = status && status.runningSync ? 0 : paymentsNullStreak + 1;
+            } catch (e) {
+                paymentsNullStreak = 0; // a failed read never counts toward the two
+            }
+            if (paymentsNullStreak >= 2) break;
         }
-        if (nullStreak >= 2) break;
+    } finally {
+        paymentsWatching = false;
     }
-    paymentsSyncing.delete(serverName);
+    // Only servers whose POST succeeded are done; one still posting stays busy
+    // and gets a fresh loop when its POST resolves.
+    const hadSyncs = paymentsQueued.size > 0;
+    paymentsQueued.forEach((name) => paymentsSyncing.delete(name));
+    paymentsQueued.clear();
     if (stopped) { renderPayments(); return; } // switching back refreshes
-    await loadPaymentsTab(true);
+    if (hadSyncs) await loadPaymentsTab(true);
+    else renderPayments();
 }
 
 // 60 s refresh: skipped while the page is hidden or another tab is showing.

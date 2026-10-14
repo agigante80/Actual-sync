@@ -275,6 +275,83 @@ describe('Payments tab client (#341)', () => {
       expect(errorEl.textContent).toBe('Could not start sync (network error)');
     });
 
+    test('two servers clicked together share ONE status loop and one refresh', async () => {
+      let reads = 0;
+      const env = makeEnv({
+        route: (url, opts) => {
+          if (opts.method === 'POST') return ok({ success: true });
+          if (url.includes('/api/dashboard/status')) { reads += 1; return ok({ runningSync: reads <= 2 ? BUSY : null }); }
+          return payments(group({ server: 'Main' }), group({ server: 'Other' }));
+        }
+      });
+      await env.api.loadPaymentsTab();
+      const before = env.calls.length;
+      await Promise.all([env.api.paymentsSyncNow('Main'), env.api.paymentsSyncNow('Other')]);
+      await flush();
+      const after = env.calls.slice(before);
+      // 2 busy + 2 null reads from a single loop; a loop per click would read twice as often
+      expect(after.filter((c) => c.url.includes('/status'))).toHaveLength(4);
+      expect(after.filter((c) => c.method === 'POST')).toHaveLength(2);
+      expect(after.filter((c) => c.url.includes('/api/dashboard/payments'))).toHaveLength(1);
+      const buttons = env.els['payments-content'].find((e) => e.attrs['data-action'] === 'paymentsSyncNow');
+      expect(buttons.map((b) => b.textContent)).toEqual(['Sync now', 'Sync now']);
+    });
+
+    test('a double-click sends one POST and disables the button before the fetch resolves', async () => {
+      let release;
+      const env = makeEnv({
+        route: (url, opts) => {
+          if (opts.method === 'POST') return new Promise((r) => { release = () => r(ok({ success: true })); });
+          if (url.includes('/status')) return ok({ runningSync: null });
+          return payments(group());
+        }
+      });
+      await env.api.loadPaymentsTab();
+      const first = env.api.paymentsSyncNow('Main');
+      const button = env.els['payments-content'].find((e) => e.tag === 'button')[0];
+      expect(button.disabled).toBe(true);
+      expect(button.textContent).toBe('Syncing...');
+      await env.api.paymentsSyncNow('Main');
+      release();
+      await first;
+      await flush();
+      expect(env.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    });
+
+    test('a failed POST frees the button again', async () => {
+      const env = makeEnv({ route: (url, opts) => (opts.method === 'POST' ? fail(500) : payments(group())) });
+      await env.api.loadPaymentsTab();
+      await env.api.paymentsSyncNow('Main');
+      const button = env.els['payments-content'].find((e) => e.tag === 'button')[0];
+      expect(button.disabled).toBe(false);
+      expect(button.textContent).toBe('Sync now');
+    });
+
+    test('re-rendering keeps the same alert nodes and does not rewrite their text', async () => {
+      let boom = false;
+      const env = makeEnv({
+        route: (url, opts) => {
+          if (opts.method === 'POST') return fail(429);
+          if (boom) return fail(500);
+          return payments(group());
+        }
+      });
+      await env.api.loadPaymentsTab();
+      await env.api.paymentsSyncNow('Main');
+      const syncAlert = () => env.els['payments-content'].find((e) => e.className === 'pay-sync-error')[0];
+      const first = syncAlert();
+      boom = true;
+      await env.api.loadPaymentsTab();
+      const errorEl = env.els['payments-error'];
+      const writes = [];
+      let text = errorEl.textContent;
+      Object.defineProperty(errorEl, 'textContent', { get: () => text, set: (v) => { writes.push(v); text = v; } });
+      env.api.setPaymentStateFilter('attention');
+      env.api.setPaymentStateFilter('all');
+      expect(writes).toEqual([]);
+      expect(syncAlert()).toBe(first);
+    });
+
     test('polling stops, without a refresh, when the tab is switched away', async () => {
       const env = syncEnv([BUSY]);
       await env.api.loadPaymentsTab();

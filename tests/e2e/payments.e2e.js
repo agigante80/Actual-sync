@@ -190,12 +190,9 @@ describe('dashboard payments tab (#341)', () => {
         await openPayments(page, fixture);
         expect(await page.$$('#payments-content table')).toHaveLength(0);
         const notes = await page.$$eval('#payments-content .pay-note, #payments-content .pay-failure', (els) => els.map((e) => e.textContent));
-        expect(notes).toEqual([
-          'No successful evaluation yet',
-          'last evaluation failed at 2026-01-15 08:01:00 (actual_read_failed)'
-        ]);
+        expect(notes).toEqual(['last evaluation failed at 2026-01-15 08:01:00 (actual_read_failed)']);
         expect(await page.$$('.pay-asof')).toHaveLength(1);
-        expect(await page.$eval('.pay-asof', (el) => el.textContent)).toBe('');
+        expect(await page.$eval('.pay-asof', (el) => el.textContent)).toBe('No successful evaluation yet');
       });
     });
 
