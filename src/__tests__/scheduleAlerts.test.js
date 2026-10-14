@@ -1211,3 +1211,30 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     expect(dec).toMatchObject({ state: 'received', receivedDate: '2026-12-04' });
   });
 });
+
+describe('#296 round 2 L1: sign check inside the tolerance comparison', () => {
+  test('an opposite-sign amount of the same size is not a better match for a sibling schedule', () => {
+    const tx = { id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null };
+    const rules = getRules({
+      staleAfterDays: 3,
+      alerts: [
+        { id: 'rent', schedule: 'Rent', graceDays: 3, earlyDays: 2 },
+        { id: 'dep', schedule: 'Deposit', graceDays: 3, earlyDays: 2 }
+      ]
+    });
+    const { evaluations } = evaluate({
+      rules,
+      schedules: [
+        rentSchedule({ amount: -40000 }),
+        rentSchedule({ id: 's2', name: 'Deposit', amount: 50000 })
+      ],
+      transactions: [tx],
+      accounts: [account()],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    // Without the sign check in amountWithinTolerance, the Deposit's +50000
+    // "fits" the -50000 payment and Rent becomes missing via betterMatchedElsewhere.
+    expect(evaluations.find((e) => e.name === 'Rent').state).toBe('wrongAmount');
+  });
+});

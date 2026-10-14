@@ -2491,6 +2491,14 @@ module.exports = [
         tests: 'scheduleAlerts.test'
     },
     {
+        id: '296-tolerance-sign-ignored', ticket: '#296',
+        desc: 'amountWithinTolerance ignores the sign, so a sibling schedule of opposite sign hijacks the payment',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  if (Math.sign(amount) !== Math.sign(expected)) return false;",
+        mutant: "  if (false) return false;",
+        tests: 'scheduleAlerts.test'
+    },
+    {
         id: '296-never-synced-wording', ticket: '#296',
         desc: 'a never-synced account renders "has not synced since  (deadline" with an empty date',
         file: 'src/lib/scheduleAlertDelivery.js',
