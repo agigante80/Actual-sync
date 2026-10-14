@@ -3332,6 +3332,22 @@ module.exports = [
         tests: "paymentRulesRoute"
     },
     {
+        id: "372-r-reset-all-ungated", ticket: '#372',
+        desc: "reset all deletes orphan rules while config writes are off",
+        file: "src/services/healthCheck.js",
+        anchor: "          const configuredServers = this.getServers && this.configWritesReason() === null",
+        mutant: "          const configuredServers = this.getServers",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "372-r-reset-server-ungated", ticket: '#372',
+        desc: "reset of one orphan server deletes its rules while config writes are off",
+        file: "src/services/healthCheck.js",
+        anchor: "            this.configWritesReason() === null;",
+        mutant: "            true;",
+        tests: "paymentRulesRoute"
+    },
+    {
         id: "262-reset-server-deletes-rules", ticket: '#262',
         desc: "a per-server history reset also deletes the dashboard payment rules",
         file: "src/services/syncHistory.js",
