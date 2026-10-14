@@ -458,6 +458,51 @@
             .pay-table tr.pay-strip-row td { display: block; }
             .pay-details { display: block; }
         }
+        /* Payment alert editor (#268) */
+        .pay-ctl.pay-ctl-danger { background: #7f1d1d; color: #fecaca; }
+        .pay-edited { font-size: 0.75rem; color: #fcd34d; }
+        .pay-pill.pay-pending, .pay-pill.pay-dormant { background: #334155; color: #cbd5e1; }
+        .pay-pill.pay-superseded { background: #1e293b; border: 1px dashed #94a3b8; color: #cbd5e1; }
+        .pay-pill.pay-invalid { background: #7f1d1d; color: #fca5a5; }
+        .pay-src-dashboard { color: #93c5fd; }
+        .pay-list-note { color: #fcd34d; font-size: 0.85rem; }
+        .pay-notice { color: #6ee7b7; font-size: 0.85rem; }
+        .pay-notice:empty { display: none; }
+        .ae-dialog { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 0; width: min(760px, 96vw); max-height: 94vh; }
+        .ae-dialog::backdrop { background: rgba(2, 6, 23, 0.7); }
+        .ae-dialog [hidden] { display: none !important; }
+        .ae-inner { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; max-height: calc(94vh - 4px); overflow-y: auto; box-sizing: border-box; }
+        .ae-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .ae-head h2 { margin: 0; font-size: 1.15rem; }
+        .ae-banner { background: #7f1d1d; color: #fecaca; padding: 8px 10px; border-radius: 6px; }
+        .ae-banner.ae-info { background: #1e3a5f; color: #bfdbfe; }
+        .ae-form { display: flex; flex-direction: column; gap: 12px; margin: 0; }
+        .ae-row { display: flex; gap: 12px; border: 0; padding: 0; margin: 0; min-width: 0; }
+        .ae-lab { width: 110px; flex: none; color: #94a3b8; font-size: 0.9rem; padding-top: 6px; padding-left: 0; }
+        .ae-ctl { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+        .ae-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+        .ae-dialog input[type="text"], .ae-dialog input[type="number"], .ae-dialog select, .ae-dialog textarea { padding: 7px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; font: inherit; box-sizing: border-box; }
+        .ae-dialog input[type="number"] { width: 6em; }
+        .ae-dialog textarea { width: 100%; min-height: 5.5em; font-family: monospace; font-size: 0.85rem; }
+        .ae-note { color: #94a3b8; font-size: 0.85rem; }
+        .ae-err { color: #fca5a5; font-size: 0.85rem; }
+        .ae-err:empty { display: none; }
+        .ae-warn { color: #fcd34d; }
+        .ae-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+        .ae-chip { background: #334155; color: #cbd5e1; padding: 2px 8px; font-size: 0.75rem; font-family: monospace; }
+        .ae-tpl summary { cursor: pointer; padding: 4px 0; }
+        .ae-preview { background: #0f172a; border: 1px solid #334155; border-radius: 4px; padding: 8px; white-space: pre-wrap; min-height: 2.2em; }
+        .ae-results { list-style: none; margin: 0; padding: 0; font-size: 0.85rem; }
+        .ae-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+        .ae-foot-gap { margin-right: auto; }
+        .ae-dialog button[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+        .ae-json textarea { height: 12em; }
+        @media (max-width: 600px) {
+            .ae-dialog { width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; }
+            .ae-inner { max-height: 100vh; height: 100%; }
+            .ae-row { flex-direction: column; gap: 4px; }
+            .ae-lab { width: auto; padding-top: 0; }
+        }
     </style>
 </head>
 <body>
@@ -659,9 +704,143 @@
                 <div id="payments-sync-status" class="pay-sr-only" role="status" aria-live="polite"></div>
                 <!-- Persistent live region for alert control errors (#261), outside #payments-content -->
                 <div id="payments-control-status" class="pay-control-status" role="status" aria-live="polite"></div>
+                <div id="payments-notice" class="pay-notice" role="status" aria-live="polite"></div>
                 <div id="payments-content"><div class="loading">Loading payments...</div></div>
             </div>
         </div>
+
+        <!-- Payment alert editor (#268). Native <dialog>: showModal() gives the modal focus containment, the inert background and Esc.
+             No inline handlers or styles (CSP, #243); the script builds the dynamic parts with textContent. -->
+        <dialog id="alert-editor" class="ae-dialog" aria-labelledby="alert-editor-title">
+            <div class="ae-inner">
+                <div class="ae-head">
+                    <h2 id="alert-editor-title" tabindex="-1">Add payment alert</h2>
+                    <button type="button" class="pay-ctl" data-action="closeAlertEditor" aria-label="Close">Close</button>
+                </div>
+                <div id="ae-banner" class="ae-banner" role="alert" hidden></div>
+                <div id="ae-loading" class="ae-note">Loading...</div>
+                <form id="ae-form" class="ae-form" data-form="alertEditor" novalidate hidden>
+                    <div class="ae-row"><span class="ae-lab">Server</span><div class="ae-ctl"><span id="ae-server"></span></div></div>
+                    <div class="ae-row">
+                        <label class="ae-lab" for="ae-id">Id</label>
+                        <div class="ae-ctl">
+                            <input id="ae-id" type="text" maxlength="64" autocomplete="off" data-input="onEditorInput" data-field="id">
+                            <span class="ae-note">Letters, digits, hyphens. Fixed after the first save.</span>
+                            <div id="ae-err-id" class="ae-err"></div>
+                        </div>
+                    </div>
+                    <fieldset class="ae-row">
+                        <legend class="ae-lab">Watch</legend>
+                        <div class="ae-ctl">
+                            <div id="ae-nosnap" hidden>
+                                <span>No schedules captured yet. Run Sync now first.</span>
+                                <button type="button" id="ae-sync" data-action="paymentsSyncNow">Sync now</button>
+                            </div>
+                            <div id="ae-pick" class="ae-ctl">
+                                <div class="ae-inline">
+                                    <label><input type="radio" name="ae-watch" id="ae-mode-schedule" value="schedule" data-change="onEditorWatchModeChange"> One schedule</label>
+                                    <select id="ae-schedule" aria-label="Schedule" data-change="onEditorScheduleChange"></select>
+                                </div>
+                                <div class="ae-inline">
+                                    <label><input type="radio" name="ae-watch" id="ae-mode-prefix" value="prefix" data-change="onEditorWatchModeChange"> Names starting with</label>
+                                    <input id="ae-prefix" type="text" aria-label="Name prefix" autocomplete="off" data-input="onEditorInput" data-field="prefix">
+                                    <span id="ae-matches" class="ae-note"></span>
+                                </div>
+                                <div id="ae-sline" class="ae-note"></div>
+                                <div id="ae-asof" class="ae-note"></div>
+                            </div>
+                            <div id="ae-err-watch" class="ae-err"></div>
+                        </div>
+                    </fieldset>
+                    <div class="ae-row">
+                        <span class="ae-lab">Deadline</span>
+                        <div class="ae-ctl">
+                            <div class="ae-inline">
+                                <label>Grace days <input id="ae-grace" type="number" min="0" max="60" data-input="onEditorInput" data-field="graceDays"></label>
+                                <label>Early days <input id="ae-early" type="number" min="0" max="31" data-input="onEditorInput" data-field="earlyDays"></label>
+                                <span id="ae-deadline" class="ae-note"></span>
+                            </div>
+                            <div id="ae-err-graceDays" class="ae-err"></div>
+                            <div id="ae-err-earlyDays" class="ae-err"></div>
+                        </div>
+                    </div>
+                    <fieldset class="ae-row">
+                        <legend class="ae-lab">Month shown in {{period}}</legend>
+                        <div class="ae-ctl">
+                            <div class="ae-inline">
+                                <label><input type="radio" name="ae-period" id="ae-period-occurrence" value="occurrence" data-input="onEditorInput" data-field="period"> The month of the due date</label>
+                                <label><input type="radio" name="ae-period" id="ae-period-next" value="next" data-input="onEditorInput" data-field="period"> The following month</label>
+                            </div>
+                            <span class="ae-note">Only changes what {{period}} prints in the messages.</span>
+                            <div id="ae-err-period" class="ae-err"></div>
+                        </div>
+                    </fieldset>
+                    <div class="ae-row">
+                        <label class="ae-lab" for="ae-tol">Tolerance</label>
+                        <div class="ae-ctl">
+                            <div class="ae-inline"><input id="ae-tol" type="number" min="0" max="100" step="any" data-input="onEditorInput" data-field="tolerance"> <span>%</span></div>
+                            <div id="ae-err-tolerance" class="ae-err"></div>
+                        </div>
+                    </div>
+                    <div class="ae-row">
+                        <span class="ae-lab">Reminders</span>
+                        <div class="ae-ctl">
+                            <div class="ae-inline">
+                                <label><input type="checkbox" id="ae-remind-on" data-input="onEditorInput" data-field="remindOn"> Remind every</label>
+                                <input id="ae-remind-days" type="number" min="1" max="30" aria-label="Reminder days" data-input="onEditorInput" data-field="remindDays">
+                                <span>days while missing</span>
+                            </div>
+                            <div id="ae-err-reminders" class="ae-err"></div>
+                        </div>
+                    </div>
+                    <fieldset class="ae-row">
+                        <legend class="ae-lab">Channels</legend>
+                        <div class="ae-ctl">
+                            <div id="ae-channels" class="ae-inline"></div>
+                            <div id="ae-err-channels" class="ae-err"></div>
+                        </div>
+                    </fieldset>
+                    <div class="ae-row">
+                        <span class="ae-lab">Messages</span>
+                        <div class="ae-ctl">
+                            <div id="ae-templates"></div>
+                            <div class="ae-note">Variables (click to insert at the cursor):</div>
+                            <div id="ae-vars" class="ae-chips"></div>
+                        </div>
+                    </div>
+                    <div class="ae-row">
+                        <span class="ae-lab">Preview</span>
+                        <div class="ae-ctl">
+                            <div class="ae-inline">
+                                <label>Message <select id="ae-preview-event" data-input="onEditorInput" data-field="previewEvent"></select></label>
+                                <button type="button" id="ae-send" data-action="sendPaymentTest">Send test to all destinations</button>
+                            </div>
+                            <div id="ae-preview-text" class="ae-preview"></div>
+                            <div id="ae-preview-keys" class="ae-note"></div>
+                            <div id="ae-preview-note" class="ae-err"></div>
+                            <ul id="ae-results" class="ae-results"></ul>
+                        </div>
+                    </div>
+                </form>
+                <div id="ae-json" class="ae-json" hidden>
+                    <div class="ae-note">Press Ctrl+C to copy.</div>
+                    <textarea id="ae-json-text" readonly aria-label="Rule as JSON"></textarea>
+                </div>
+                <div id="ae-copy-status" class="pay-notice" role="status" aria-live="polite"></div>
+                <div id="ae-foot" class="ae-foot">
+                    <span id="ae-save-hint" class="ae-note ae-foot-gap"></span>
+                    <button type="button" id="ae-copy" class="pay-ctl" data-action="copyPaymentRuleJson">Copy as JSON</button>
+                    <button type="button" id="ae-delete" class="pay-ctl pay-ctl-danger" data-action="deletePaymentRuleAsk">Delete</button>
+                    <button type="button" id="ae-cancel" class="pay-ctl" data-action="closeAlertEditor">Cancel</button>
+                    <button type="button" id="ae-save" data-action="savePaymentRule">Save</button>
+                </div>
+                <div id="ae-confirm" class="ae-foot" hidden>
+                    <span class="ae-foot-gap">Delete this alert?</span>
+                    <button type="button" id="ae-delete-yes" class="pay-ctl pay-ctl-danger" data-action="deletePaymentRuleConfirm">Delete</button>
+                    <button type="button" id="ae-delete-keep" class="pay-ctl" data-action="deletePaymentRuleKeep">Keep</button>
+                </div>
+            </div>
+        </dialog>
 
         <!-- Settings Tab -->
         <div id="settings-tab" class="tab-content">
