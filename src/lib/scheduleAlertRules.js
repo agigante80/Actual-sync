@@ -2,10 +2,10 @@
  * Schedule alert rule loading (#258).
  *
  * The single merge point that turns a server's `scheduleAlerts` config block
- * into the normalized rule list `scheduleAlerts.js` evaluates. In this ticket
- * the only source is `config.json`; #262 adds dashboard-created rules and
- * #261 adds enable/mute state, both by plugging into `getRules` /
- * `expandRules` rather than changing the evaluation engine (see #258's
+ * into the normalized rule list `scheduleAlerts.js` evaluates. `getRules` is
+ * config-only; `mergeRules` (#262) adds the dashboard-created rules stored in
+ * `payment_alert_rule`, and #261's enable/mute state plugs in through
+ * `ruleState`, none of it changing the evaluation engine (see #258's
  * "Design impact" comment).
  *
  * This file has no I/O: it is pure data transformation over the config object
@@ -92,6 +92,42 @@ function normalizeRule(alert, block) {
 function getRules(scheduleAlerts) {
   if (!scheduleAlerts || !Array.isArray(scheduleAlerts.alerts)) return [];
   return scheduleAlerts.alerts.map((alert) => normalizeRule(alert, scheduleAlerts));
+}
+
+/**
+ * Merge config rules with the dashboard rules stored for a server (#262).
+ * Pure: the caller reads the rows (`syncHistory.listRules`).
+ *
+ * Every entry keeps the normalized rule shape and adds `source`
+ * (`'config'|'dashboard'`), `superseded`, the raw `definition` and `updatedAt`
+ * (null for a config rule). A dashboard rule whose id equals a config rule's id
+ * is `superseded: true`: config wins, and the stored row is kept (it becomes
+ * active again if the config rule is removed) but must not be evaluated.
+ * Compare ids with `deriveRuleId`, as every other lookup does.
+ *
+ * @param {Object[]} configRules - `getRules(block)`
+ * @param {Array<{alertId:string, definition:Object, updatedAt:string}>} dashboardRows
+ * @param {?Object} block - the server's `scheduleAlerts` block
+ * @returns {Object[]} config rules first (config order), then dashboard rules
+ *   in the order given
+ */
+function mergeRules(configRules, dashboardRows, block) {
+  const rawConfig = block && Array.isArray(block.alerts) ? block.alerts : [];
+  const configIds = new Set(configRules.map((rule) => rule.id));
+  const merged = configRules.map((rule, index) => ({
+    ...rule, source: 'config', superseded: false, definition: rawConfig[index] || null, updatedAt: null
+  }));
+  for (const row of dashboardRows || []) {
+    const rule = normalizeRule(row.definition, block || {});
+    merged.push({
+      ...rule,
+      source: 'dashboard',
+      superseded: configIds.has(rule.id),
+      definition: row.definition,
+      updatedAt: row.updatedAt
+    });
+  }
+  return merged;
 }
 
 /**
@@ -235,6 +271,7 @@ module.exports = {
   muteEndsAt,
   deriveRuleId,
   getRules,
+  mergeRules,
   checkUniqueIds,
   expandRules,
   DEFAULT_GRACE_DAYS,

@@ -1528,7 +1528,7 @@ class SyncHistoryService {
    * @returns {number} rows stored
    */
   replaceScheduleSnapshot(server, schedules, capturedAt) {
-    const at = capturedAt instanceof Date ? capturedAt.toISOString() : String(capturedAt);
+    const at = capturedAt instanceof Date ? capturedAt.toISOString() : String(capturedAt || this.now().toISOString());
     const del = this.db.prepare('DELETE FROM actual_schedule_snapshot WHERE server = ?');
     const ins = this.db.prepare(`
       INSERT OR REPLACE INTO actual_schedule_snapshot (

@@ -744,6 +744,92 @@ describe('persistPaymentSnapshot and error codes (#260)', () => {
     expect(warnings.some((w) => /payment alert snapshot/.test(w.message))).toBe(true);
   });
 
+  describe('schedule snapshot and dashboard rules (#262)', () => {
+    const recurring = { frequency: 'monthly', start: '2026-01-05', endMode: 'never', interval: 1, patterns: [] };
+    const apiWith = (extra = {}) => fakeApi({
+      schedules: [
+        rentSchedule({ date: recurring, next_date: '2026-02-05' }),
+        rentSchedule({ id: 's3', name: 'Water', date: recurring, next_date: '2026-02-05' }),
+        rentSchedule({ id: 's2', name: 'Tax', date: '2026-03-01', amount: { num1: -9000, num2: -5000 }, amountOp: 'isbetween', account: 'gone', payee: null, completed: true })
+      ],
+      ...extra
+    });
+
+    test('a successful evaluation stores every schedule with names, cents, range and cadence', async () => {
+      await syncOnce(configured, apiWith());
+      const snap = syncHistory.getScheduleSnapshot('Main');
+      expect(snap.capturedAt).toBe(NOW.toISOString());
+      const rent = snap.schedules.find((s) => s.id === 's1');
+      expect(rent).toMatchObject({
+        name: 'Rent', amount: -50000, amountOp: 'is', account: 'Checking', payee: 'Landlord', nextDate: '2026-02-05', completed: false
+      });
+      expect(rent.cadenceText).toEqual(expect.stringMatching(/month/i));
+      const tax = snap.schedules.find((s) => s.id === 's2');
+      expect(tax).toMatchObject({
+        cadenceText: null, amount: null, amountMin: -9000, amountMax: -5000, amountOp: 'isbetween',
+        account: null, payee: null, completed: true
+      });
+    });
+
+    test('a failed evaluation keeps the previous snapshot', async () => {
+      await syncOnce(configured, apiWith());
+      const before = syncHistory.getScheduleSnapshot('Main');
+      await syncOnce(configured, fakeApi({ getSchedules: jest.fn().mockRejectedValue(new Error('down')) }), new Date('2026-01-11T00:00:00.000Z'));
+      expect(syncHistory.getScheduleSnapshot('Main')).toEqual(before);
+    });
+
+    test('removing the scheduleAlerts block deletes the snapshot', async () => {
+      await syncOnce(configured, apiWith());
+      await syncOnce({}, apiWith());
+      expect(syncHistory.getScheduleSnapshot('Main')).toEqual({ capturedAt: null, schedules: [] });
+    });
+
+    test('a snapshot write error logs a WARN and leaves the alert snapshot and the call intact', async () => {
+      const failing = Object.create(syncHistory);
+      failing.replaceScheduleSnapshot = () => { throw new Error('disk full'); };
+      const { evaluated } = await syncOnce(configured, apiWith(), NOW, failing);
+      expect(evaluated).not.toBeNull();
+      expect(syncHistory.getPaymentSnapshot('Main').items).toHaveLength(1);
+      expect(warnings.some((w) => /schedule snapshot/.test(w.message))).toBe(true);
+    });
+
+    test('a dashboard rule is evaluated alongside the config rules', async () => {
+      syncHistory.insertRule('Main', 'water', { id: 'water', schedule: 'Water' });
+      const { evaluated } = await syncOnce(configured, apiWith());
+      expect(evaluated.scheduleAlertRules.map((r) => r.id)).toEqual(['rent', 'water']);
+      expect(syncHistory.getPaymentSnapshot('Main').items.map((i) => i.alertId).sort()).toEqual(['rent', 'water']);
+    });
+
+    test('a dashboard rule shadowed by a config rule id is not evaluated', async () => {
+      syncHistory.insertRule('Main', 'rent', { id: 'rent', schedule: 'Water' });
+      const { evaluated } = await syncOnce(configured, apiWith());
+      expect(evaluated.scheduleAlertRules).toHaveLength(1);
+      expect(evaluated.scheduleAlertRules[0].schedule).toBe('Rent');
+    });
+
+    test('a stored rule that no longer validates is excluded with one WARN; the others still run', async () => {
+      syncHistory.insertRule('Main', 'water', { id: 'water', schedule: 'Water' });
+      syncHistory.insertRule('Main', 'bad-a', { id: 'bad-a', schedule: 'Water', graceDays: 999 });
+      syncHistory.insertRule('Main', 'bad-b', { id: 'bad-b', schedule: 'Water', templates: { missing: '{{nope}}' } });
+      const { evaluated } = await syncOnce(configured, apiWith());
+      expect(evaluated.scheduleAlertRules.map((r) => r.id)).toEqual(['rent', 'water']);
+      const warns = warnings.filter((w) => /excluded/.test(w.message));
+      expect(warns).toHaveLength(1);
+      expect(warns[0].meta.ruleIds).toEqual(['bad-a', 'bad-b']);
+    });
+
+    test('a listRules failure is evaluation_failed and keeps the previous snapshots (no config-only fallback)', async () => {
+      await syncOnce(configured, apiWith());
+      const before = syncHistory.getPaymentSnapshot('Main');
+      const failing = Object.create(syncHistory);
+      failing.listRules = () => { throw new Error('locked'); };
+      const { evaluated, outcome } = await syncOnce(configured, apiWith(), NOW, failing);
+      expect(evaluated).toBeNull();
+      expect(outcome).toEqual({ failed: true, errorCode: 'evaluation_failed' });
+      expect(syncHistory.getPaymentSnapshot('Main').items).toEqual(before.items);
+    });
+  });
+
   test('is a no-op without syncHistory', () => {
     expect(() => persistPaymentSnapshot(configured, { evaluations: [], warnings: [] }, { serverName: 'Main', outcome: {}, logger })).not.toThrow();
     // Without the guard it would throw on syncHistory.deletePaymentSnapshot/replace
