@@ -52,6 +52,7 @@
 const moment = require('moment-timezone');
 const crypto = require('crypto');
 const { compileTemplateSet } = require('./templateRenderer');
+const { MAX_LOOKBACK_DAYS } = require('./scheduleAlerts');
 const { DISCORD_CONTENT_MAX, SLACK_TEXT_MAX, TELEGRAM_TEXT_MAX, escapeTelegramHtml, escapeSlack } = require('./channelEscape');
 
 /**
@@ -126,7 +127,7 @@ const VARIABLES = [
   'period', 'cadence',
   'days_overdue', 'received_amount', 'received_date', 'difference',
   'last_sync', 'reason', 'budget', 'alert_id',
-  'expected_amount_raw', 'expected_date_raw', 'deadline_raw', 'days_overdue_raw',
+  'closed_by', 'expected_amount_raw', 'expected_date_raw', 'deadline_raw', 'days_overdue_raw',
   'received_amount_raw', 'received_date_raw', 'difference_raw', 'last_sync_raw'
 ];
 
@@ -143,8 +144,12 @@ const DEFAULT_TEMPLATES = {
     + 'from {{payee}} into {{account}} by {{deadline}} (for {{period}}, {{cadence}}). {{days_overdue}} day(s) overdue.{{/if}}',
   wrongAmount: '⚠️ {{name}}: received {{received_amount}} on {{received_date}}, expected {{expected_amount}} '
     + '(difference {{difference}}).',
-  resolved: '✅ {{name}}: {{received_amount}} arrived {{received_date}}, {{#if (eq days_overdue 0)}}on time'
-    + '{{else}}{{days_overdue}} day(s) after the deadline{{/if}}. Alert closed.',
+  // #326: `closed_by` is "completed" when the one-off schedule was marked
+  // completed in Actual instead of a payment arriving; the other branch is the
+  // original text, unchanged.
+  resolved: '{{#if (eq closed_by "completed")}}✅ {{name}}: marked completed in Actual. Alert closed.{{else}}'
+    + '✅ {{name}}: {{received_amount}} arrived {{received_date}}, {{#if (eq days_overdue 0)}}on time'
+    + '{{else}}{{days_overdue}} day(s) after the deadline{{/if}}. Alert closed.{{/if}}',
   // One wording per `reason` (#296): only stale / not-synced are about the bank
   // connection; interval-violation and error are about the rule and the service.
   cannotCheck: '{{#if (eq reason "interval-violation")}}⏸️ Cannot check {{name}}: the rule\'s graceDays plus earlyDays '
@@ -254,6 +259,7 @@ function buildContext(event, evaluation, rule, { server, timezone }) {
     last_sync: formatDate(event.lastSync, dateFormat, timezone),
     last_sync_raw: event.lastSync || null,
     reason: event.reason || null,
+    closed_by: event.closedBy || null,
     budget: server,
     alert_id: event.alertId
   };
@@ -375,7 +381,11 @@ async function destinationDueState(event, rule, destinationKey, history, server,
       server, alertId: event.alertId, scheduleId: event.scheduleId,
       occurrenceDate: event.occurrence, event: 'resolved', channel: destinationKey
     });
-    return { due: !resolvedRow, lastSentAt: null };
+    // #326 review M2: a resolved is final only if no `missing` was recorded after
+    // it. A schedule completed (resolved), then uncompleted, restarts its
+    // reminders; the next close (payment or completion) must be delivered
+    // again. Same for a transaction unlinked after a resolved and relinked.
+    return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };
   }
 
   const latest = await history.findLatestScheduleAlert({
@@ -543,7 +553,7 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
       return false;
     }
 
-    const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+    const templates = templatesFor(event, rule);
     const channels = Array.from(new Set(destinations.map((d) => d.channel)));
     const modes = channels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
     const context = buildContext(event, evaluation, rule, { server, timezone });
@@ -783,7 +793,7 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     const rendered = [];
     for (const { item } of dueItems) {
       try {
-        const templates = { ...DEFAULT_TEMPLATES, ...(item.rule.templates || {}) };
+        const templates = templatesFor(item.event, item.rule);
         const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
         const context = buildContext(item.event, item.evaluation, item.rule, { server, timezone });
         const lines = {};
@@ -876,8 +886,43 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
  * @param {string} server
  * @returns {Promise<Object[]>} synthesized `resolved` events, shaped like `evaluate()`'s AlertEvent
  */
-async function deriveResolvedEvents(evaluations, history, server, logger) {
+async function deriveResolvedEvents(evaluations, history, server, logger, { completedSchedules, now, timezone } = {}) {
   const resolved = [];
+  // #326: a one-off schedule marked completed in Actual is no longer
+  // evaluated, so close any `missing` it left open (within the same look-back
+  // window evaluation uses) with a `resolved` carrying `closedBy: 'completed'`.
+  // Only completed one-offs bound to a rule are looked up. The per-destination
+  // "already resolved here" check in destinationDueState keeps it to one send.
+  if ((completedSchedules || []).length > 0) {
+    let sinceDate = moment.tz(now, timezone).startOf('day').subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');
+    for (const schedule of completedSchedules) {
+      let occurrences;
+      try {
+        occurrences = await history.listMissingScheduleAlertOccurrences({
+          server, alertId: schedule.alertId, scheduleId: schedule.scheduleId, sinceDate
+        });
+      } catch (error) {
+        logger.warn('Schedule alert ledger lookup failed; completed-schedule check withheld until the next sync', {
+          server, alertId: schedule.alertId, event: 'resolved', error: error.message
+        });
+        continue;
+      }
+      for (const occurrence of occurrences) {
+        resolved.push({
+          event: 'resolved',
+          closedBy: 'completed',
+          alertId: schedule.alertId,
+          scheduleId: schedule.scheduleId,
+          occurrence,
+          deadline: null,
+          daysOverdue: null,
+          receivedAmount: null,
+          receivedDate: null,
+          expectedAmount: schedule.expectedAmount
+        });
+      }
+    }
+  }
   for (const evaluation of evaluations) {
     for (const occ of evaluation.occurrences || []) {
       if (occ.state !== 'received' && occ.state !== 'late') continue;
@@ -911,6 +956,21 @@ async function deriveResolvedEvents(evaluations, history, server, logger) {
     }
   }
   return resolved;
+}
+
+/**
+ * The template set for one event: the built-ins overlaid with the rule's own
+ * (block-level templates are already merged into `rule.templates`). #326: a
+ * custom `resolved` written before `closed_by` existed would render
+ * "arrived ," with empty amount and date for a completed one-off, falsely
+ * saying money arrived. So when the event is closed by completion and the
+ * custom `resolved` never mentions `closed_by`, the built-in `resolved` is
+ * used for that event. A template that mentions it is honoured as written.
+ */
+function templatesFor(event, rule) {
+  const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+  if (event.closedBy && !/\bclosed_by\b/.test(templates.resolved)) templates.resolved = DEFAULT_TEMPLATES.resolved;
+  return templates;
 }
 
 /**
@@ -951,14 +1011,20 @@ async function mayRecord(event, rule, sender, history, server, now, timezone) {
  *   this promise settles (see `sendEvent`'s doc comment).
  * @returns {Promise<{sent: number, skipped: number}>}
  */
-async function deliver(events, { evaluations, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
+async function deliver(events, { evaluations, completedSchedules, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
   const log = logger || { warn() {} };
   const rulesById = new Map((rules || []).map((r) => [r.id, r]));
   let sent = 0;
   let skipped = 0;
 
-  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log);
+  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log, { completedSchedules, now, timezone });
   const allEvents = [...(events || []), ...resolvedEvents];
+  // Render context for the #326 completed-schedule `resolved` events: name,
+  // payee and account come from the same lookup as for any other event.
+  const renderEvaluations = [
+    ...(evaluations || []),
+    ...(completedSchedules || []).map((s) => ({ ...s, cadenceText: null, occurrences: [] }))
+  ];
 
   const eligible = [];
   for (const event of allEvents) {
@@ -996,7 +1062,7 @@ async function deliver(events, { evaluations, ruleState, history, sender, now, s
     }
     if (!due) { skipped += 1; continue; }
 
-    const evaluation = (evaluations || []).find(
+    const evaluation = renderEvaluations.find(
       (e) => e.alertId === event.alertId && e.scheduleId === event.scheduleId
     ) || null;
 

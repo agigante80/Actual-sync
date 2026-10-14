@@ -370,6 +370,33 @@ class SyncHistoryService {
   }
 
   /**
+   * Occurrence dates that have a `missing` row for one schedule on or after
+   * `sinceDate` (#326). The caller (deriveResolvedEvents) closes them with a
+   * `resolved` when the schedule is marked completed; whether a destination
+   * already got that `resolved` is decided per destination later, as usual.
+   *
+   * @param {Object} key
+   * @param {string} key.server
+   * @param {string} key.alertId
+   * @param {string} key.scheduleId
+   * @param {string} key.sinceDate - `YYYY-MM-DD`, inclusive lower bound on occurrence_date
+   * @returns {Promise<string[]>}
+   */
+  async listMissingScheduleAlertOccurrences({ server, alertId, scheduleId, sinceDate }) {
+    try {
+      return this.db.prepare(`
+        SELECT DISTINCT occurrence_date AS occurrenceDate FROM schedule_alerts
+        WHERE server = ? AND alert_id = ? AND schedule_id = ? AND event = 'missing'
+          AND occurrence_date IS NOT NULL AND occurrence_date >= ?
+        ORDER BY occurrence_date
+      `).all(server, alertId, scheduleId, sinceDate).map((r) => r.occurrenceDate);
+    } catch (error) {
+      this.logger.error('Failed to read schedule_alerts missing rows', { error: error.message, server, alertId });
+      throw error;
+    }
+  }
+
+  /**
    * Remembered skip decisions for one server (#297 F1): every `skipped` row,
    * as `{scheduleId, occurrenceDate}`. `evaluate()` takes these back in as
    * `skips` so an occurrence inferred as skipped stays skipped after a later

@@ -399,6 +399,9 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
   const rememberedSkips = new Set(skips || []);
   const evaluations = [];
   const warnings = [];
+  // #326: completed one-off schedules bound to a rule. Not evaluated; the
+  // delivery layer checks the ledger for an open `missing` and closes it.
+  const completedSchedules = [];
 
   const today = moment.tz(now, timezone).startOf('day');
   const accountsById = new Map((accounts || []).map((a) => [a.id, a]));
@@ -430,6 +433,17 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
     }
 
     const schedule = binding.schedule;
+    if (binding.completedOneOff) {
+      completedSchedules.push({
+        alertId: binding.id,
+        scheduleId: binding.scheduleId,
+        name: binding.scheduleName,
+        account: schedule.accountName || schedule.account,
+        payee: schedule.payeeName || schedule.payee,
+        expectedAmount: schedule.amount != null ? schedule.amount : null
+      });
+      continue;
+    }
     const dateConfig = schedule.date;
 
     // #295 review, H2: one bad schedule (a malformed recurrence config, or
@@ -785,7 +799,7 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
     }
   }
 
-  return { events, evaluations, warnings, skipDecisions };
+  return { events, evaluations, warnings, skipDecisions, completedSchedules };
 }
 
 module.exports = { evaluate, skipKey, MAX_LOOKBACK_DAYS, MAX_OCCURRENCES, LINKED_EARLY_WINDOW_DAYS };
