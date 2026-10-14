@@ -24,7 +24,7 @@ npm install
 npm run screenshots
 ```
 
-This creates the 11 screenshots listed in `tests/e2e/screenshots.json`:
+This creates the 14 screenshots listed in `tests/e2e/screenshots.json`:
 
 - `dashboard-overview-healthy.png` - Overview tab, three servers all syncing cleanly, 2-column layout
 - `dashboard-overview-degraded.png` - Overview tab, degraded system with failing and partial servers
@@ -34,9 +34,12 @@ This creates the 11 screenshots listed in `tests/e2e/screenshots.json`:
 - `dashboard-history.png` - History tab, recent syncs table
 - `dashboard-history-errors.png` - History tab, a longer run with a known number of failure rows
 - `dashboard-settings.png` - Settings tab, scrolled to date format preferences
+- `dashboard-settings-audit.png` - Settings tab, the Configuration changes list with three recorded changes
 - `dashboard-settings-danger-zone.png` - Settings tab, Danger Zone reset controls and orphaned server cleanup
 - `dashboard-hero.png` - Full dashboard hero shot, six servers, used for the README gallery
 - `dashboard-accounts.png` - Accounts card, syncable, manual and closed accounts across three servers
+- `dashboard-payments.png` - Payments tab, missing-payment alerts per server
+- `dashboard-payments-empty.png` - Payments tab, a server with alerts not configured
 
 ### How It Works
 

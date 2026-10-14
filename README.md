@@ -721,6 +721,34 @@ npm run screenshots
 
 See **[docs/DASHBOARD.md](docs/DASHBOARD.md)** for complete dashboard documentation including authentication setup, API endpoints, and reverse proxy configuration.
 
+#### Editing from the dashboard
+
+The dashboard is read-only for configuration by default. State-changing requests (sync, dismiss, reset, test notification) are refused when they come from another browser origin.
+
+```json
+"dashboard": { "enabled": true }
+```
+
+Enable writes only with authentication:
+
+```json
+"dashboard": {
+  "enabled": true,
+  "allowConfigWrites": true,
+  "auth": { "type": "basic", "username": "admin", "password": "change-me" }
+}
+```
+
+Behind a reverse proxy that serves the page under another origin, list it (this also authorizes POSTs from it):
+
+```json
+"dashboard": { "allowedOrigins": ["https://budget.example.com"] }
+```
+
+Every configuration change is listed, with secrets redacted, in the Settings tab:
+
+![Configuration changes](docs/screenshots/dashboard-settings-audit.png)
+
 ### Health Check Endpoints
 
 Actual-sync exposes HTTP endpoints for monitoring:

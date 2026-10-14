@@ -713,6 +713,19 @@
                 </div>
             </div>
 
+            <div class="card" style="margin-top: 20px;" id="config-audit-card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2>Configuration changes</h2>
+                    <button data-action="reloadConfigAudit" class="secondary" style="padding: 6px 12px; font-size: 0.85rem;">Refresh</button>
+                </div>
+                <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
+                    The most recent configuration changes and history resets, with the address each came from. Secrets are never shown.
+                </p>
+                <div id="config-audit-list">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+
             <div class="card" style="margin-top: 20px;">
                 <h2>Date Format Preferences</h2>
                 <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 15px;">
