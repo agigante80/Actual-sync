@@ -421,6 +421,8 @@ throttle), all against fixture states under
 
 `.github/workflows/scorecard.yml` runs [OpenSSF Scorecard](https://github.com/ossf/scorecard) every Monday 03:30 UTC and on manual dispatch (`gh workflow run scorecard.yml`), and uploads SARIF to the Security tab (code scanning, category `scorecard`) beside CodeQL and Trivy (#255). It measures; it fixes nothing. Its value is that a regression, such as someone adding a tag-pinned action, shows up without anyone having to remember the rule.
 
+The first Scorecard run on `main` sets the baseline score; Scorecard analyses the default branch, so no earlier run is meaningful.
+
 - **Permissions**: top level `contents: read`; the single job adds `security-events: write` (SARIF upload) and `actions: read`. No `id-token`.
 - **`publish_results: false`, deliberately.** `true` publishes the score to the OpenSSF public dataset and enables a public badge. That is the maintainer's decision, not a default. To opt in, set it to `true` and add `id-token: write` to the job.
 - **Baseline**: not recorded by this PR, because it needs a first run on GitHub. After merge, run the workflow once and note the score and failing checks on #255, then again once the rest of the hardening batch lands to confirm the number moved.
