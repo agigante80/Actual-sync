@@ -1782,8 +1782,8 @@ module.exports = [
         id: '258-r2-m5-resolved-resent-after-already-resolved-here', ticket: '#258',
         desc: 'a resolved event goes back to being resendable to a destination that already has its own resolved row recorded, resending indefinitely instead of once per destination',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: 'due: !resolvedRow,',
-        mutant: 'due: true,',
+        anchor: 'due: !resolvedRow ||',
+        mutant: 'due: true ||',
         tests: 'scheduleAlertDelivery'
     },
     {
@@ -2542,7 +2542,7 @@ module.exports = [
         id: '296-resolved-sent-every-sync', ticket: '#296',
         desc: 'a resolved alert is not de-duplicated, so it repeats on every later sync',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "    return { due: !resolvedRow, lastSentAt: null };",
+        anchor: "    return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };",
         mutant: "    return { due: true, lastSentAt: null };",
         tests: 'scheduleAlertsSync'
     },
