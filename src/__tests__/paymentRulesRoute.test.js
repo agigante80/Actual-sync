@@ -483,6 +483,17 @@ describe('history reset and dashboard rules (#262 review L1)', () => {
     expect(res.json.orphaned).toEqual([{ server_name: 'Old', sync_count: 0, last_sync: null }]);
   });
 
+  test('reset all deletes rules of removed servers only, counted in the audit (#372)', async () => {
+    await h.boot();
+    h.state.history.insertRule('Main', 'moto', RENT);
+    h.state.history.insertRule('Old', 'moto', RENT);
+    expect((await reset('all')).status).toBe(200);
+    expect(h.state.history.countRules('Main')).toBe(1);
+    expect(h.state.history.countRules('Old')).toBe(0);
+    const row = h.state.history.getConfigAudit().find((a) => a.action === 'history_reset');
+    expect(row.changes.deleted.payment_alert_rule).toBe(1);
+  });
+
   test('a server removed from the config loses its rules on reset, counted in the audit', async () => {
     await h.boot();
     h.state.history.insertRule('Old', 'moto', RENT);

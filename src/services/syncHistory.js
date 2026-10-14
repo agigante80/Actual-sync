@@ -1325,9 +1325,12 @@ class SyncHistoryService {
 
   /**
    * Reset all sync history
-   * @param {{remoteAddr?: string}} [options] - recorded on the history_reset audit row (#259)
+   * @param {{remoteAddr?: string, configuredServers?: ?string[]}} [options] -
+   *   remoteAddr is recorded on the history_reset audit row (#259).
+   *   configuredServers, when given, also deletes the dashboard rules of every
+   *   server not in it (#372), as resetServerHistory's purgeRules does for one.
    */
-  async resetAllHistory({ remoteAddr } = {}) {
+  async resetAllHistory({ remoteAddr, configuredServers = null } = {}) {
     try {
       // Clear all sync history, all account snapshots and the whole schedule
       // alert ledger atomically. (#99, #258)
@@ -1338,6 +1341,10 @@ class SyncHistoryService {
       const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');
       const delOverrides = this.db.prepare('DELETE FROM payment_alert_override');
       const delScheduleSnapshot = this.db.prepare('DELETE FROM actual_schedule_snapshot');
+      // Rules of configured servers are kept (see resetServerHistory).
+      const delOrphanRules = this.db.prepare(
+        'DELETE FROM payment_alert_rule WHERE server NOT IN (SELECT value FROM json_each(?))'
+      );
       // config_audit is kept and gets one history_reset row (see resetServerHistory).
       const reset = this.db.transaction(() => {
         const r = delHistory.run();
@@ -1350,6 +1357,9 @@ class SyncHistoryService {
           payment_alert_override: delOverrides.run().changes,
           actual_schedule_snapshot: delScheduleSnapshot.run().changes
         };
+        if (configuredServers) {
+          deleted.payment_alert_rule = delOrphanRules.run(JSON.stringify(configuredServers)).changes;
+        }
         this.insertConfigAudit({
           server: null, remoteAddr, action: 'history_reset', target: null, changes: { deleted }
         });

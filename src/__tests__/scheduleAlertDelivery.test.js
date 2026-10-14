@@ -207,6 +207,42 @@ describe('deliver: de-duplication and reminders', () => {
   });
 });
 
+describe('deliver: retargeted rule close (#373)', () => {
+  const setup = () => {
+    const history = makeFakeHistory();
+    history.rows.push({ server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05', event: 'missing', delivery: 'sent', channel: 'telegram', recordedAt: '2026-01-06T00:00:00.000Z' });
+    history.listMissingScheduleAlertSchedules = async () => [{ scheduleId: 's1', occurrenceDate: '2026-01-05' }];
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const args = {
+      evaluations: [], ruleState: enabledState, history, sender, now: '2026-01-11T00:00:00.000Z',
+      server: 'Main', rules: rentRules(), timezone: 'UTC', logger: quietLogger,
+      existingScheduleIds: new Set(['s1', 's2'])
+    };
+    return { history, sender, args };
+  };
+
+  test('without a matched-schedule map an existing schedule is never closed', async () => {
+    const { sender, args } = setup();
+    await deliver([], args);
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  test('an existing schedule outside its rule\'s matched set is closed once with the live name', async () => {
+    const { sender, args } = setup();
+    const extra = { ...args, matchedScheduleIds: new Map([['rent', new Set(['s2'])]]), scheduleNameById: new Map([['s1', 'Old rent']]) };
+    await deliver([], extra);
+    await deliver([], extra);
+    expect(sender.calls).toHaveLength(1);
+    expect(JSON.stringify(sender.calls[0])).toMatch(/Old rent/);
+  });
+
+  test('an existing schedule inside the matched set is left open', async () => {
+    const { sender, args } = setup();
+    await deliver([], { ...args, matchedScheduleIds: new Map([['rent', new Set(['s1'])]]) });
+    expect(sender.calls).toHaveLength(0);
+  });
+});
+
 describe('deliver: rule state', () => {
   test('a disabled rule is skipped entirely', async () => {
     const history = makeFakeHistory();
