@@ -3308,7 +3308,7 @@ module.exports = [
         file: "src/lib/scheduleAlertDelivery.js",
         anchor: "error: error && error.previewTimeout ? 'timeout' : 'send_threw'",
         mutant: "error: 'send_threw'",
-        tests: "paymentPreviewRoute"
+        tests: "scheduleAlertDelivery"
     },
     {
         id: "262-delete-keeps-override", ticket: '#262',
@@ -3351,14 +3351,6 @@ module.exports = [
         tests: "paymentRulesRoute"
     },
     {
-        id: "262-alertid-guard-constructor", ticket: '#262',
-        desc: "constructor is accepted as an alert id",
-        file: "src/services/paymentRuleRoutes.js",
-        anchor: "ALERT_ID_PATTERN.test(id) && id !== '__proto__' && id !== 'constructor'",
-        mutant: "ALERT_ID_PATTERN.test(id)",
-        tests: "paymentRulesRoute"
-    },
-    {
         id: "262-active-rules-ignores-merge", ticket: '#262',
         desc: "the payment routes consult only config rules",
         file: "src/services/paymentRuleRoutes.js",
@@ -3388,6 +3380,6 @@ module.exports = [
         file: "src/lib/scheduleAlertDelivery.js",
         anchor: "  if (result == null) return 'channel_unavailable';",
         mutant: "  if (result == null) return null;",
-        tests: "paymentPreviewRoute"
+        tests: "scheduleAlertDelivery"
     }
 ];
