@@ -148,6 +148,70 @@ describe('SyncHistoryService', () => {
       sh.close();
       fs.unlinkSync(fixedDbPath);
     });
+
+    // The test above covers the constructor and recordSync. These move the
+    // clock after rows exist, so a cutoff computed from the real clock instead
+    // of this.now() selects or deletes the wrong rows. (#289)
+    describe('now() seam at cutoff sites (#289)', () => {
+      const dbPath = path.join(__dirname, 'test-now-cutoffs.db');
+      let sh;
+      let current;
+
+      const record = (iso, serverName = 'Server1') => {
+        current = new Date(iso);
+        sh.recordSync({ serverName, status: 'success', durationMs: 1000, accountsProcessed: 1 });
+      };
+
+      beforeEach(() => {
+        if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+        current = new Date('2026-01-01T00:00:00.000Z'); // the constructor runs cleanup() once
+        sh = new SyncHistoryService({
+          dbPath, retentionDays: 30, now: () => new Date(current), loggerConfig: { level: 'ERROR' }
+        });
+        record('2026-01-10T12:00:00.000Z');
+        record('2026-01-14T12:00:00.000Z');
+        current = new Date('2026-01-15T12:00:00.000Z');
+      });
+
+      afterEach(() => {
+        sh.close();
+        fs.unlinkSync(dbPath);
+      });
+
+      test('getHistory days cutoff is measured from now()', () => {
+        const rows = sh.getHistory({ days: 2 });
+        expect(rows.map(r => r.timestamp)).toEqual(['2026-01-14T12:00:00.000Z']);
+      });
+
+      test('getStatistics days cutoff is measured from now()', () => {
+        expect(sh.getStatistics({ days: 2 }).total_syncs).toBe(1);
+      });
+
+      test('getStatisticsByServer days cutoff is measured from now()', () => {
+        const stats = sh.getStatisticsByServer(2);
+        expect(stats).toHaveLength(1);
+        expect(stats[0].total_syncs).toBe(1);
+      });
+
+      test('cleanup retention cutoff is measured from now()', () => {
+        record('2025-12-01T12:00:00.000Z');
+        current = new Date('2026-01-15T12:00:00.000Z');
+        expect(sh.cleanup()).toBe(1);
+        expect(sh.db.prepare('SELECT COUNT(*) AS n FROM sync_history').get().n).toBe(2);
+      });
+
+      test('cleanup purges schedule alert rows older than 120 days from now()', async () => {
+        current = new Date('2025-08-01T00:00:00.000Z');
+        await sh.recordScheduleAlert({ server: 'Server1', alertId: 'a1', event: 'missing', delivery: 'sent' });
+        current = new Date('2025-12-01T00:00:00.000Z');
+        await sh.recordScheduleAlert({ server: 'Server1', alertId: 'a2', event: 'missing', delivery: 'sent' });
+        current = new Date('2026-01-15T12:00:00.000Z');
+
+        sh.cleanup();
+        const ids = sh.db.prepare('SELECT alert_id FROM schedule_alerts').all().map(r => r.alert_id);
+        expect(ids).toEqual(['a2']);
+      });
+    });
   });
 
   describe('getHistory', () => {

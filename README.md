@@ -410,7 +410,7 @@ See **[docs/CONFIG.md](docs/CONFIG.md)** for complete configuration reference in
 | `npm test` | `jest` | Run test suite |
 | `npm run test:watch` | `jest --watch` | Run tests in watch mode |
 | `npm run test:coverage` | `jest --coverage` | Generate coverage report |
-| `npm run test:e2e` | `jest --config jest.e2e.config.js` | Run the browser E2E suite (see [TESTING.md](docs/TESTING.md#-browser-e2e-tests-263)) |
+| `npm run test:e2e` | `node --experimental-vm-modules node_modules/.bin/jest --config jest.e2e.config.js --runInBand` | Run the browser E2E suite (see [TESTING.md](docs/TESTING.md#-browser-e2e-tests-263)) |
 
 ### Command Line Examples
 

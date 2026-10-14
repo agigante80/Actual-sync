@@ -241,14 +241,15 @@ curl http://localhost:3000/metrics
 2. Setup Node.js
 3. Install dependencies (Chromium download included, unlike the other jobs -
    see the Chromium note above)
-4. Run `npm run test:e2e`
+4. Run `npm run test:e2e` (job `timeout-minutes: 15`; `~/.cache/puppeteer` is cached by `package-lock.json` hash so Chrome is not re-downloaded each run)
 5. On failure, upload each failing spec's screenshot and console log from
    `tests/e2e/artifacts/` (kept 7 days)
 
-**Duration**: ~30 seconds
+**Duration**: about 90 seconds
 
 **What It Checks**: dashboard rendering, tab switching, manual sync, error
-dismissal, and the login rate limit, all against fixture states under
+dismissal, and the general 60/min rate limiter (not the login failure
+throttle), all against fixture states under
 `tests/e2e/fixtures/states/` rather than a live sync target.
 
 ---
