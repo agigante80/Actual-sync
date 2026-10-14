@@ -160,20 +160,43 @@ describe('deliver: de-duplication and reminders', () => {
     expect(sender.calls).toHaveLength(2);
   });
 
-  test('ruleUnmatched reminders use a fixed 1-day interval regardless of remindEveryDays', async () => {
+  test('ruleUnmatched is sent once per destination while unmatched, never as a reminder (#356)', async () => {
     const history = makeFakeHistory();
     const sender = makeFakeSender({ telegram: { enabled: true } });
     const unmatchedEvent = { event: 'ruleUnmatched', alertId: 'rent', scheduleId: null, occurrence: null, deadline: null };
     const args = {
       evaluations: [], ruleState: enabledState, history, sender,
-      server: 'Main', rules: rentRules(), timezone: 'UTC', logger: quietLogger
+      server: 'Main', rules: rentRules({ remindEveryDays: 1 }), timezone: 'UTC', logger: quietLogger
     };
 
     history.clock = '2026-01-10T00:00:00.000Z';
     await deliver([unmatchedEvent], { ...args, now: '2026-01-10T00:00:00.000Z' });
-    const nextDay = await deliver([unmatchedEvent], { ...args, now: '2026-01-11T00:00:00.000Z' });
+    const later = await deliver([unmatchedEvent], { ...args, now: '2026-02-10T00:00:00.000Z' });
 
-    expect(nextDay).toEqual({ sent: 1, skipped: 0 });
+    expect(later).toEqual({ sent: 0, skipped: 1 });
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  test('a rule matching again records one ruleMatched marker, which re-arms ruleUnmatched (#356)', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const unmatchedEvent = { event: 'ruleUnmatched', alertId: 'rent', scheduleId: null, occurrence: null, deadline: null };
+    const args = {
+      ruleState: enabledState, history, sender, now: '2026-01-10T00:00:00.000Z',
+      server: 'Main', rules: rentRules(), timezone: 'UTC', logger: quietLogger
+    };
+
+    history.clock = '2026-01-10T00:00:00.000Z';
+    await deliver([unmatchedEvent], { ...args, evaluations: [] });
+    history.clock = '2026-01-11T00:00:00.000Z';
+    await deliver([], { ...args, evaluations: [rentEvaluation({ occurrences: [] })] });
+    await deliver([], { ...args, evaluations: [rentEvaluation({ occurrences: [] })] });
+    expect(history.rows.filter((r) => r.event === 'ruleMatched')).toHaveLength(1);
+
+    history.clock = '2026-01-12T00:00:00.000Z';
+    const again = await deliver([unmatchedEvent], { ...args, evaluations: [] });
+    expect(again).toEqual({ sent: 1, skipped: 0 });
+    expect(sender.calls).toHaveLength(2);
   });
 });
 

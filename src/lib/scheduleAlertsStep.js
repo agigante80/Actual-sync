@@ -220,7 +220,16 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
         logger.warn(warning.message, { ruleId: warning.ruleId, scheduleId: warning.scheduleId });
     }
 
-    return { events, evaluations, warnings, skipDecisions, completedSchedules, scheduleAlertRules, timezone, serverName, now: alertNow };
+    // #356: every schedule id Actual still has (completed and unbound ones
+    // too), so delivery can tell a deleted schedule from one that is merely
+    // not bound. An empty or non-array list is not trusted as "everything was
+    // deleted" (a transient empty read would otherwise close every open
+    // `missing`), so it is reported as null and no deletion is inferred.
+    const existingScheduleIds = Array.isArray(rawSchedules) && rawSchedules.length > 0
+        ? new Set(rawSchedules.map((s) => s.id))
+        : null;
+
+    return { events, evaluations, warnings, skipDecisions, completedSchedules, existingScheduleIds, scheduleAlertRules, timezone, serverName, now: alertNow };
 }
 
 /**
@@ -243,7 +252,7 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
  * @returns {Promise<{events: number, sent: number, skipped: number}>}
  */
 async function deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger, deliverBudgetMs }) {
-    const { events, evaluations, skipDecisions, completedSchedules, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    const { events, evaluations, skipDecisions, completedSchedules, existingScheduleIds, scheduleAlertRules, timezone, serverName, now } = evaluated;
     // #297 F1: persist newly inferred skips FIRST and independently of the
     // delivery budget and of delivery itself: a failed write only means the
     // skip is inferred again next sync, it must never block the alerts.
@@ -263,6 +272,7 @@ async function deliverScheduleAlerts(evaluated, { syncHistory, notificationServi
     const deliverResult = await deliver(events, {
         evaluations,
         completedSchedules,
+        existingScheduleIds,
         ruleState: scheduleAlertRuleState,
         history: syncHistory,
         sender: notificationService,

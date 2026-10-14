@@ -1510,11 +1510,11 @@ module.exports = [
     },
     {
         id: '258-ruleUnmatched-reminder-uses-configured-interval', ticket: '#258',
-        desc: 'ruleUnmatched reminders stop using the fixed 1-day interval and instead honor (or skip, when unset) the rule\'s own remindEveryDays',
+        desc: 'ruleUnmatched is treated like a missing reminder again and honors the rule\'s own remindEveryDays (superseded by #356: it is sent once per destination)',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "  const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;",
-        mutant: '  const remindEveryDays = rule.remindEveryDays;',
-        tests: 'scheduleAlertDelivery'
+        anchor: "  if (event.event !== 'missing') return { due: false, lastSentAt: null }; // one row per destination, ever",
+        mutant: "  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return { due: false, lastSentAt: null };",
+        tests: 'scheduleAlert'
     },
     {
         id: '258-disabled-webhook-not-skipped', ticket: '#258',
@@ -2766,8 +2766,8 @@ module.exports = [
         id: '296-redelivery-after-restart', ticket: '#296',
         desc: 'a sent missing alert is considered due again (no de-duplication across syncs and restarts)',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "  if (!latest) return { due: true, lastSentAt: null };\n  if (event.event !== 'missing'",
-        mutant: "  if (!latest || true) return { due: true, lastSentAt: null };\n  if (event.event !== 'missing'",
+        anchor: "  if (!latest) return { due: true, lastSentAt: null };\n  if (event.event === 'ruleUnmatched')",
+        mutant: "  if (!latest || true) return { due: true, lastSentAt: null };\n  if (event.event === 'ruleUnmatched')",
         tests: 'scheduleAlertsSync'
     },
     {
@@ -3026,16 +3026,16 @@ module.exports = [
         id: '326-completed-custom-template-used', ticket: '#326',
         desc: 'a custom resolved template without closed_by is used for a completed one-off, claiming a payment arrived',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
-        mutant: "if (false && event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
+        anchor: "    if (!handled) templates.resolved = DEFAULT_TEMPLATES.resolved;",
+        mutant: "    if (false && !handled) templates.resolved = DEFAULT_TEMPLATES.resolved;",
         tests: 'scheduleAlert'
     },
     {
         id: '326-payment-resolved-loses-custom-template', ticket: '#326',
         desc: 'the built-in resolved replaces every custom template without closed_by, including ordinary payments',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
-        mutant: "if (!/\\bclosed_by\\b/.test(templates.resolved))",
+        anchor: "  if (event.closedBy) {",
+        mutant: "  if (true) {",
         tests: 'scheduleAlert'
     },
     {
@@ -3060,6 +3060,95 @@ module.exports = [
         file: 'src/lib/scheduleAlertDelivery.js',
         anchor: ".subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
         mutant: ".subtract(MAX_LOOKBACK_DAYS - 1, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
+        tests: 'scheduleAlert'
+    },
+    // ---- #356: deleted schedule closes its open missing; ruleUnmatched once ---
+    {
+        id: '356-deleted-never-inferred', ticket: '#356',
+        desc: "a schedule missing from Actual's list is not detected, so its open missing never closes",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        if (existingScheduleIds.has(row.scheduleId)) continue;",
+        mutant: "        if (true) continue;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-existing-schedule-closed', ticket: '#356',
+        desc: "a schedule still present in Actual is closed as deleted too",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        if (existingScheduleIds.has(row.scheduleId)) continue;",
+        mutant: "        if (false) continue;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-deleted-no-list-guard', ticket: '#356',
+        desc: "deletion is inferred even when the schedule list is unusable (null), risking a mass resolve",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "  if (existingScheduleIds) {\n    const sinceDate",
+        mutant: "  if (true) {\n    existingScheduleIds = existingScheduleIds || new Set();\n    const sinceDate",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-empty-list-trusted', ticket: '#356',
+        desc: "an empty schedule list is trusted as everything deleted instead of ignored",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "Array.isArray(rawSchedules) && rawSchedules.length > 0",
+        mutant: "Array.isArray(rawSchedules)",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-deleted-wording-lost', ticket: '#356',
+        desc: "the deleted branch is dropped from the built-in resolved, so a deleted schedule is reported as a payment",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "{{else if (eq closed_by \"deleted\")}}",
+        mutant: "{{else if (eq closed_by \"never\")}}",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-deleted-custom-template-used', ticket: '#356',
+        desc: "a custom resolved without closed_by is used for a deleted schedule, claiming a payment arrived",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "const handled = /\\bclosed_by\\b/.test(custom) && (literals.length === 0 || literals.includes(event.closedBy));",
+        mutant: "const handled = /\\bclosed_by\\b/.test(custom);",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-ruleUnmatched-repeats', ticket: '#356',
+        desc: "ruleUnmatched is due again on every sync after it was sent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !!matchedRow && matchedRow.recordedAt > latest.recordedAt, lastSentAt: latest.recordedAt };",
+        mutant: "return { due: true, lastSentAt: latest.recordedAt };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-ruleUnmatched-never-rearms', ticket: '#356',
+        desc: "ruleUnmatched never fires again after the rule matched and later unmatched",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !!matchedRow && matchedRow.recordedAt > latest.recordedAt, lastSentAt: latest.recordedAt };",
+        mutant: "return { due: false, lastSentAt: latest.recordedAt };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-rematch-not-recorded', ticket: '#356',
+        desc: "a rule matching again leaves no ruleMatched marker, so a later unmatch stays silent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      await history.recordScheduleAlert({ ...key, event: 'ruleMatched', delivery: 'inferred' });",
+        mutant: "      void key;",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-reversed-eq-order-ignored', ticket: '#356',
+        desc: 'a template written as (eq "completed" closed_by) is honoured for a deleted schedule and claims a payment arrived',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "|[\"']([^\"']*)[\"']\\s+closed_by\\b/g)]",
+        mutant: "/g)]",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '356-matched-from-evaluations-only', ticket: '#356',
+        desc: "a rule is only counted as matched when it has an evaluation, so a cannotCheck-only rule never re-arms ruleUnmatched",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: ".filter((id) => !unmatchedIds.has(id))",
+        mutant: ".filter((id) => !unmatchedIds.has(id) && (evaluations || []).some((e) => e.alertId === id))",
         tests: 'scheduleAlert'
     }
 ];

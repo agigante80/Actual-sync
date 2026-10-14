@@ -993,7 +993,7 @@ schedule in Actual was renamed to `"Rent - Apartment"` (or deleted). The rule's 
 
 > ❓ Payment alert "rent" matches no schedule in Main. Check the schedule name in Actual.
 
-This repeats once per day while unmatched (a fixed interval, independent of `remindEveryDays`).
+This is sent once per destination while the rule stays unmatched, not on every sync. It is sent again only after the rule matches a schedule again and later stops matching.
 
 **9. Overlapping windows** - a *weekly* schedule (7-day interval between occurrences) with
 `graceDays: 5, earlyDays: 3` (5 + 3 = 8, greater than or equal to the 7-day interval): a late
@@ -1060,7 +1060,7 @@ Every template (built-in or an override under `templates`) can reference these; 
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
 | `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events) |
-| `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual (empty otherwise) |
+| `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual, `deleted` when the schedule was removed in Actual (empty otherwise) |
 | `budget` | The server name |
 | `alert_id` | The rule's `id` |
 
