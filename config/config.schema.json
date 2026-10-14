@@ -20,7 +20,8 @@
         "wrongAmount": { "$ref": "#/$defs/messageTemplate" },
         "resolved": { "$ref": "#/$defs/messageTemplate" },
         "cannotCheck": { "$ref": "#/$defs/messageTemplate" },
-        "ruleUnmatched": { "$ref": "#/$defs/messageTemplate" }
+        "ruleUnmatched": { "$ref": "#/$defs/messageTemplate" },
+        "muteEnded": { "$ref": "#/$defs/messageTemplate" }
       }
     },
     "scheduleAlert": {
@@ -36,6 +37,11 @@
           "type": "string",
           "pattern": "^[a-z0-9-]{1,64}$",
           "description": "Stable alert id, used by the schedule_alerts ledger and the dashboard (#261/#262). Defaults to a slug of schedule/schedulePrefix. Must be unique per server (checked at startup, since a JSON Schema cannot enforce uniqueness across array items)."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Set to false to switch this alert rule off in the config (#261). A rule disabled here cannot be switched on from the dashboard; it shows as Disabled in config."
         },
         "schedule": {
           "type": "string",

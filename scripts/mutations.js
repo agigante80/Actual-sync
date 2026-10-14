@@ -2766,8 +2766,8 @@ module.exports = [
         id: '296-redelivery-after-restart', ticket: '#296',
         desc: 'a sent missing alert is considered due again (no de-duplication across syncs and restarts)',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "  if (!latest) return { due: true, lastSentAt: null };\n  if (event.event !== 'missing'",
-        mutant: "  if (!latest || true) return { due: true, lastSentAt: null };\n  if (event.event !== 'missing'",
+        anchor: "  if (!latest) return { due: true, lastSentAt: null };\n  // #261: held back by a mute.",
+        mutant: "  if (!latest || true) return { due: true, lastSentAt: null };\n  // #261: held back by a mute.",
         tests: 'scheduleAlertsSync'
     },
     {

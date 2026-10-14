@@ -41,7 +41,7 @@
  */
 
 const moment = require('moment-timezone');
-const { getRules } = require('./scheduleAlertRules');
+const { getRules, ruleState } = require('./scheduleAlertRules');
 const { evaluate, skipKey, MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS } = require('./scheduleAlerts');
 const { deliver } = require('./scheduleAlertDelivery');
 
@@ -90,14 +90,23 @@ function paymentErrorCode(error) {
 }
 
 /**
- * #261 (rule enable/mute) is not implemented yet: every rule is enabled and
- * never muted, so `scheduleAlertDelivery.deliver` behaves as if that feature
- * did not exist. #261 wires real per-rule state in without changing this
- * call site, per #258's "single merge point" design.
- * @returns {{enabled: boolean, mutedUntil: null}}
+ * The per-rule state for one delivery run (#261): config `enabled`, then the
+ * dashboard override, then the default. The overrides are loaded once per run
+ * (`listOverrides`), so a change made mid-run takes effect on the next run.
+ * A history stand-in without `listOverrides` yields the default state for
+ * every rule that config does not switch off.
+ *
+ * @returns {(alertId: string) => Object} `scheduleAlertRules.ruleState` output
  */
-function scheduleAlertRuleState() {
-    return { enabled: true, mutedUntil: null };
+function makeRuleStateLookup({ syncHistory, serverName, rules, now, timezone }) {
+    const overrides = new Map();
+    if (typeof syncHistory.listOverrides === 'function') {
+        for (const override of syncHistory.listOverrides(serverName)) overrides.set(override.alertId, override);
+    }
+    const byId = new Map((rules || []).map((rule) => [rule.id, rule]));
+    return (alertId) => ruleState({
+        rule: byId.get(alertId), override: overrides.get(alertId) || null, now: new Date(now), timezone
+    });
 }
 
 /**
@@ -262,7 +271,7 @@ async function deliverScheduleAlerts(evaluated, { syncHistory, notificationServi
     const deadline = Date.now() + (deliverBudgetMs != null ? deliverBudgetMs : DELIVER_BUDGET_MS);
     const deliverResult = await deliver(events, {
         evaluations,
-        ruleState: scheduleAlertRuleState,
+        ruleState: makeRuleStateLookup({ syncHistory, serverName, rules: scheduleAlertRules, now, timezone }),
         history: syncHistory,
         sender: notificationService,
         now,

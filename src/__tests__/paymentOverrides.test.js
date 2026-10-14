@@ -257,3 +257,74 @@ describe('payment_alert_override storage (#261)', () => {
     });
   });
 });
+
+describe('deliverScheduleAlerts reads the overrides (#261)', () => {
+  const { maybeDeliverScheduleAlerts: deliverScheduleAlerts } = require('../lib/scheduleAlertsStep');
+  const { getRules } = require('../lib/scheduleAlertRules');
+  let syncHistory;
+  let dbDir;
+  const now = new Date('2026-10-12T09:00:00.000Z');
+  const notificationService = {
+    config: { telegram: { enabled: true } },
+    calls: [],
+    async sendTemplated(outputs) { this.calls.push(outputs); return { telegram: { success: true } }; }
+  };
+  const logger = { warn() {}, info() {}, debug() {}, error() {} };
+  const evaluated = (alertOverrides = {}) => ({
+    events: [{ event: 'missing', alertId: 'rent', scheduleId: 's1', occurrence: '2026-10-05', deadline: '2026-10-08', daysOverdue: 2, expectedAmount: -50000 }],
+    evaluations: [{ alertId: 'rent', scheduleId: 's1', name: 'Rent', account: 'A', payee: 'P', expectedAmount: -50000, occurrences: [] }],
+    skipDecisions: [],
+    scheduleAlertRules: getRules({ alerts: [{ id: 'rent', schedule: 'Rent', ...alertOverrides }] }),
+    timezone: 'UTC', serverName: 'Main', now
+  });
+
+  beforeEach(() => {
+    dbDir = createTempDir();
+    syncHistory = new SyncHistoryService({
+      dbPath: path.join(dbDir, 'h.db'), loggerConfig: { level: 'ERROR' }, now: () => new Date(now)
+    });
+    notificationService.calls.length = 0;
+  });
+  afterEach(() => { syncHistory.close(); cleanupTempDir(dbDir); });
+
+  const deliver = (ev) => deliverScheduleAlerts(ev, { syncHistory, notificationService, logger });
+
+  test('no override: the event is sent', async () => {
+    await deliver(evaluated());
+    expect(notificationService.calls).toHaveLength(1);
+  });
+
+  test('switched off: nothing is sent and no row is written, and the event list is untouched', async () => {
+    syncHistory.setOverride({ server: 'Main', alertId: 'rent', enabled: false });
+    const result = await deliver(evaluated());
+    expect(result).toEqual({ events: 1, sent: 0, skipped: 1 });
+    expect(notificationService.calls).toHaveLength(0);
+    expect(syncHistory.db.prepare('SELECT COUNT(*) AS n FROM schedule_alerts').get().n).toBe(0);
+  });
+
+  test('muted: nothing is sent and one muted row is written', async () => {
+    syncHistory.setOverride({ server: 'Main', alertId: 'rent', enabled: true, mutedFrom: '2026-10-01T00:00:00.000Z', mutedUntil: '2026-10-20', reason: 'x' });
+    await deliver(evaluated());
+    expect(notificationService.calls).toHaveLength(0);
+    expect(syncHistory.db.prepare("SELECT delivery FROM schedule_alerts").all()).toEqual([{ delivery: 'muted' }]);
+  });
+
+  test('config enabled false wins over an enabling override', async () => {
+    syncHistory.setOverride({ server: 'Main', alertId: 'rent', enabled: false });
+    syncHistory.setOverride({ server: 'Main', alertId: 'rent', enabled: true, mutedFrom: '2026-10-01T00:00:00.000Z', mutedUntil: '2026-10-02', reason: 'x' });
+    await deliver(evaluated({ enabled: false }));
+    expect(notificationService.calls).toHaveLength(0);
+  });
+
+  test('an override of another server is ignored', async () => {
+    syncHistory.setOverride({ server: 'Other', alertId: 'rent', enabled: false });
+    await deliver(evaluated());
+    expect(notificationService.calls).toHaveLength(1);
+  });
+
+  test('an orphaned override (no such rule) is ignored without error', async () => {
+    syncHistory.setOverride({ server: 'Main', alertId: 'old', enabled: false });
+    await deliver(evaluated());
+    expect(notificationService.calls).toHaveLength(1);
+  });
+});

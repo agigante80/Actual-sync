@@ -373,14 +373,14 @@ class SyncHistoryService {
    * @param {string} [key.delivery] - #261: only rows with this `delivery`
    *   (`deriveResolvedEvents` counts `sent` rows only, so a `muted` row never
    *   makes a destination look told). Omitted: any delivery.
-   * @returns {Promise<{recordedAt:string}|null>}
+   * @returns {Promise<{recordedAt:string, delivery:string}|null>}
    */
   async findLatestScheduleAlert({ server, alertId, scheduleId, occurrenceDate, event, channel, delivery }) {
     try {
       const filterChannel = channel !== undefined;
       const filterDelivery = delivery !== undefined;
       const row = this.db.prepare(`
-        SELECT recorded_at AS recordedAt FROM schedule_alerts
+        SELECT recorded_at AS recordedAt, delivery FROM schedule_alerts
         WHERE server = ? AND alert_id = ?
           AND schedule_id IS ? AND occurrence_date IS ? AND event = ?
           ${filterChannel ? "AND (channel IS ? OR (channel IS NULL AND delivery = 'sent'))" : ''}
