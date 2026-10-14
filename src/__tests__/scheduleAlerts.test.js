@@ -183,6 +183,20 @@ describe('evaluate: received / late / wrongAmount', () => {
     expect(evaluations[0].occurrences[0]).toMatchObject({ state: 'late', receivedDate: '2026-01-09' });
   });
 
+  test('#296: an outgoing refund of the same size is not the incoming payment (sign must match)', () => {
+    const run = (amount) => evaluate({
+      rules: rentRule({ amountTolerancePct: 0 }),
+      schedules: [rentSchedule({ amount: 6000 })],
+      transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount, date: '2026-01-05', schedule: null }],
+      accounts: [account()],
+      now: '2026-01-10',
+      timezone: TZ
+    });
+    expect(run(6000).evaluations[0].state).toBe('received');
+    expect(run(-6000).evaluations[0].state).not.toBe('received');
+    expect(run(-6000).events.map((e) => e.event)).not.toContain('resolved');
+  });
+
   test('a transaction linked via transaction.schedule counts regardless of amount', () => {
     const { evaluations } = evaluate({
       rules: rentRule(),

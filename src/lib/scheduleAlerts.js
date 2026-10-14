@@ -209,6 +209,8 @@ function resolveTolerancePct(rule, schedule) {
  * @returns {boolean}
  */
 function amountWithinTolerance(amount, expected, tolerancePct) {
+  // #296: a refund (opposite sign) of the same size is not the payment.
+  if (Math.sign(amount) !== Math.sign(expected)) return false;
   const allowed = Math.abs(expected) * (tolerancePct / 100);
   return Math.abs(Math.abs(amount) - Math.abs(expected)) <= allowed;
 }
