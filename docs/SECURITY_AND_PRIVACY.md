@@ -239,7 +239,7 @@ USER node
 npm audit --audit-level=high
 ```
 
-**Enforcement** (#250): CI runs `npm audit --audit-level=high` on every push and pull request and fails the build on any high or critical advisory. Pull requests also run `actions/dependency-review-action` (`fail-on-severity: high`), which blocks a PR that introduces a vulnerable dependency. There is no audit allowlist today; see [CI/CD, Dependency checks](CI_CD.md#dependency-checks) for when and how to add one.
+**Enforcement** (#250): CI runs `node scripts/auditGate.js` (a wrapper over `npm audit` at the high level, with an expiring allowlist) on every push and pull request and fails the build on any high or critical advisory. Pull requests also run `actions/dependency-review-action` (`fail-on-severity: high`), which blocks a PR that introduces a vulnerable dependency. An unfixable advisory can be accepted for a limited time in `.github/audit-allowlist.json`; see [CI/CD, Dependency checks](CI_CD.md#dependency-checks).
 
 **Response Protocol**:
 1. **Critical/High**: Patch within 7 days

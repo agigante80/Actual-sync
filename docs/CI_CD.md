@@ -427,7 +427,26 @@ Two checks look at dependency advisories. Both block a merge when they find a hi
 
 Trivy (job 8) is a separate image scan and is still advisory (`exit-code: 0`).
 
-There is no audit allowlist today because the tree is clean at the `high` threshold (the one remaining advisory, `sprintf-js` via jest's istanbul chain, is moderate and dev-only). The step used to end in `|| echo "continuing..."`, which swallowed every failure; do not restore that. If an advisory with no available fix ever blocks the build, add an allowlist with `better-npm-audit` where each entry carries the advisory ID, a reason and a review date, and make an expired date fail the step.
+The `npm audit` step runs `node scripts/auditGate.js`, which wraps `npm audit --json` and fails on any high or critical advisory that a live allowlist entry does not cover. The step used to end in `|| echo "continuing..."`, which swallowed every failure; do not restore that.
+
+#### Audit allowlist
+
+When an advisory has no available fix (for example an in-range transitive waiting on an upstream parent bump), accept it explicitly in `.github/audit-allowlist.json`:
+
+```json
+{
+  "entries": [
+    { "id": "GHSA-xxxx-xxxx-xxxx", "reason": "no upstream fix; not reachable from our code", "expires": "2026-12-31" }
+  ]
+}
+```
+
+- `id` is the GHSA id (the last part of the advisory URL that `npm audit` prints), `reason` is required, `expires` is a `YYYY-MM-DD` date.
+- An entry suppresses its advisory through the whole `expires` day (UTC). From the next day the advisory fails the gate again, so the decision is remade on a date. Re-decide by fixing the dependency, or by extending the date with a new reason in a reviewed commit.
+- A malformed entry (bad id, empty reason, bad date) fails the gate instead of being ignored. The file is empty today because the tree is clean at the `high` threshold.
+- Run it locally with `node scripts/auditGate.js`. `src/__tests__/auditGate.test.js` proves that a live entry suppresses and an expired one does not.
+
+Why a small script and not `better-npm-audit`: the gate needs an expiry that fails the build, a rule the project wants to own and test in jest, and nothing new to install, pin and keep patched in a job that guards the supply chain. The script is about 100 lines over the stable `npm audit --json` v2 report. Alternatives rejected: `better-npm-audit` (extra dependency, and its exception format would need a wrapper to enforce our expiry rule and be testable here), a `jq` filter in the workflow (untestable inline, no validation), Snyk (account and token, overlaps Dependabot and Trivy).
 
 To make `dependency-review` a required check, add "Dependency review" to the branch protection rules (a repository setting, not something the workflow can do).
 

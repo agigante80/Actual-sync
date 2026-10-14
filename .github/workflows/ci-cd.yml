@@ -202,15 +202,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Blocking gate (#250): exits non-zero on any high or critical advisory.
-      # Moderate and low advisories are reported but do not fail the build; they
-      # are triaged through Dependabot alerts. There is deliberately no
-      # allowlist yet: the tree is clean at this level. If an advisory with no
-      # available fix ever blocks the build, add one with `better-npm-audit`
-      # (advisory ID, reason and review date per entry) rather than restoring
-      # a `|| true`. See docs/CI_CD.md, "Dependency checks".
+      # Blocking gate (#250): fails on any high or critical advisory that is not
+      # covered by a live entry in .github/audit-allowlist.json. Entries carry an
+      # advisory id, a reason and an expiry date; an expired entry fails the
+      # gate again. Moderate and low advisories are reported but do not fail the
+      # build; they are triaged through Dependabot alerts. Never restore a
+      # `|| true`. See docs/CI_CD.md, "Dependency checks".
       - name: Run npm audit
-        run: npm audit --audit-level=high
+        run: node scripts/auditGate.js
 
       - name: Run unit tests
         run: npm test -- --coverage --ci
