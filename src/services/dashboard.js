@@ -1726,14 +1726,8 @@ function paymentWritesTip() {
     return 'Could not read what the dashboard may change.';
 }
 
-function todayLocalYmd() {
-    const d = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
 function paymentRuleState(item) {
-    return item.ruleState || { enabled: true, mutedUntil: null, reason: null, lockedByConfig: false };
+    return item.ruleState || { enabled: true, mutedUntil: null, reason: null, lockedByConfig: false, muteEndDue: false };
 }
 
 function paymentAlertCount(group, alertId) {
@@ -1755,7 +1749,7 @@ function buildPaymentOverrideBadge(item) {
         text = 'Disabled in config';
         extra = ' pay-override-config';
     } else if (st.mutedUntil) {
-        if (st.mutedUntil < todayLocalYmd()) {
+        if (st.muteEndDue) {
             text = 'Mute ended, summary pending';
             extra = ' pay-override-ended';
         } else {

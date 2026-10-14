@@ -378,7 +378,9 @@ class HealthCheckService {
   /** The rule state the dashboard shows and the PUT returns (#261). */
   publicRuleState(rule, override, now, timezone) {
     const st = ruleState({ rule, override: override || null, now, timezone });
-    return { enabled: st.enabled, mutedUntil: st.mutedUntil, reason: st.reason, lockedByConfig: st.lockedByConfig };
+    // muteEndDue is decided here, in the server timezone delivery uses, so the
+    // client never compares the mute date with the browser's own date.
+    return { enabled: st.enabled, mutedUntil: st.mutedUntil, reason: st.reason, lockedByConfig: st.lockedByConfig, muteEndDue: st.muteEndDue };
   }
 
   /**

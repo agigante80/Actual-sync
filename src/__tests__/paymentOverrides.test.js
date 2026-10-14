@@ -405,7 +405,7 @@ describe('payment alert state routes (#261)', () => {
       await boot();
       const res = await put('parking-a', { mutedUntil: '2026-12-01', reason: 'vacant' });
       expect(res.status).toBe(200);
-      expect(res.json).toEqual({ ruleState: { enabled: true, mutedUntil: '2026-12-01', reason: 'vacant', lockedByConfig: false } });
+      expect(res.json).toEqual({ ruleState: { enabled: true, mutedUntil: '2026-12-01', reason: 'vacant', lockedByConfig: false, muteEndDue: false } });
       expect(history.getOverride('Main', 'parking-a')).toMatchObject({ mutedFrom: NOW.toISOString(), mutedUntil: '2026-12-01' });
       const rows = audit();
       expect(rows).toHaveLength(1);
@@ -638,7 +638,17 @@ describe('payment alert state routes (#261)', () => {
     const res = await call('GET', '/api/dashboard/payments?server=Main');
     expect(res.status).toBe(200);
     const byId = Object.fromEntries(res.json.servers[0].items.map((i) => [i.alertId, i.ruleState]));
-    expect(byId['parking-a']).toEqual({ enabled: true, mutedUntil: '2026-12-01', reason: 'vacant', lockedByConfig: false });
-    expect(byId.legacy).toEqual({ enabled: false, mutedUntil: null, reason: null, lockedByConfig: true });
+    expect(byId['parking-a']).toEqual({ enabled: true, mutedUntil: '2026-12-01', reason: 'vacant', lockedByConfig: false, muteEndDue: false });
+    expect(byId.legacy).toEqual({ enabled: false, mutedUntil: null, reason: null, lockedByConfig: true, muteEndDue: false });
+  });
+
+  test('GET /payments reports muteEndDue once the mute day is over in the server timezone (#261)', async () => {
+    await boot();
+    history.replacePaymentSnapshot('Main', [
+      { alertId: 'parking-a', scheduleId: 's1', name: 'Rent', cadenceText: 'x', account: 'Main', payee: 'T', expectedAmount: 1, nextDate: '2026-11-05', deadline: '2026-10-11', state: 'missing', occurrences: [] }
+    ]);
+    history.setOverride({ server: 'Main', alertId: 'parking-a', mutedFrom: '2026-09-01T00:00:00.000Z', mutedUntil: '2026-09-20', reason: 'vacant' });
+    const res = await call('GET', '/api/dashboard/payments?server=Main');
+    expect(res.json.servers[0].items[0].ruleState).toMatchObject({ mutedUntil: '2026-09-20', muteEndDue: true });
   });
 });

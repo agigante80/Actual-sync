@@ -190,7 +190,7 @@ auth when `scheduleAlerts` is used (it exposes schedule, payee and account names
           "cadenceText": "Every month on the 5th", "account": "Main", "payee": "Tenant A",
           "expectedAmount": 6000, "nextDate": "2026-02-05", "deadline": "2026-01-11",
           "state": "missing", "lastAlertAt": "2026-01-12T08:01:00Z", "source": "config",
-          "ruleState": { "enabled": true, "mutedUntil": null, "reason": null, "lockedByConfig": false },
+          "ruleState": { "enabled": true, "mutedUntil": null, "reason": null, "lockedByConfig": false, "muteEndDue": false },
           "occurrences": [ { "date": "2026-01-05", "deadline": "2026-01-11", "state": "missing", "receivedDate": null, "receivedAmount": null, "daysLate": null } ]
         }
       ]
@@ -208,12 +208,14 @@ auth when `scheduleAlerts` is used (it exposes schedule, payee and account names
   from the `schedule_alerts` ledger, computed at request time; `null` when none was sent or the
   last one is older than the ledger retention.
 - `source` is always `"config"` until rule editing (#262) lands.
-- `ruleState` is `{ enabled, mutedUntil, reason, lockedByConfig }`, computed per request from the
+- `ruleState` is `{ enabled, mutedUntil, reason, lockedByConfig, muteEndDue }`, computed per request from the
   stored override (#261) and the rule: `enabled` is `false` when the rule has `enabled: false` in
   the config (`lockedByConfig: true`) or the operator switched it off; `mutedUntil` is a
   `YYYY-MM-DD` date (or `null`) and `reason` its reason. `mutedUntil` stays set, in the past, from the
-  end of the mute until the summary has been sent. Without an override it is
-  `{ "enabled": true, "mutedUntil": null, "reason": null, "lockedByConfig": false }`. The `state` of an
+  end of the mute until the summary has been sent. `muteEndDue` is `true` in that period (the mute day
+  is over in the server timezone); the dashboard uses it, not the browser date, for the "summary pending" badge.
+  Without an override it is
+  `{ "enabled": true, "mutedUntil": null, "reason": null, "lockedByConfig": false, "muteEndDue": false }`. The `state` of an
   item is always the real evaluation result: a switch or a mute never changes it.
 - `configured: false` (no `scheduleAlerts` block) gives `items: []` and `lastRun: null`; a
   configured server has `lastRun: null` before its first run. `lastRun.at` is the latest attempt,
