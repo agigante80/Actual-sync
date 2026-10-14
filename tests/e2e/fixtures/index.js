@@ -131,6 +131,25 @@ function seeder(clock, hc, history) {
     override(override, minutesAgo = 0) {
       at(minutesAgo, () => history.setOverride(override));
     },
+    /**
+     * The schedule snapshot the sync captures (#262), as the schedule picker reads it.
+     * @param {string} serverName
+     * @param {Object[]} schedules - `{ id, name, cadenceText, amount, amountMin, amountMax,
+     *   amountOp, account, payee, nextDate, completed }`
+     * @param {number} [minutesAgo=0] - the capture time
+     */
+    scheduleSnapshot(serverName, schedules, minutesAgo = 0) {
+      at(minutesAgo, () => history.replaceScheduleSnapshot(serverName, schedules));
+    },
+    /**
+     * A stored dashboard payment rule (#262), written the way the rule route writes it.
+     * @param {string} serverName
+     * @param {Object} definition - one `scheduleAlerts.alerts[]` entry; `id` is required
+     * @param {number} [minutesAgo=0]
+     */
+    dashboardRule(serverName, definition, minutesAgo = 0) {
+      at(minutesAgo, () => history.insertRule(serverName, definition.id, definition));
+    },
     /** A delivered alert in the ledger, which the route joins as "Last alert". */
     scheduleAlert(alert, minutesAgo = 0) {
       at(minutesAgo, () => {
@@ -181,7 +200,12 @@ async function startFixtureServer(stateName, overrides = {}) {
     // The test-notification route calls these per channel; capture instead of sending.
     sendDiscord: async (msg) => { sentNotifications.push({ channel: 'discord', msg }); },
     sendSlack: async (msg) => { sentNotifications.push({ channel: 'slack', msg }); },
-    sendEmail: async (msg) => { sentNotifications.push({ channel: 'email', msg }); }
+    sendEmail: async (msg) => { sentNotifications.push({ channel: 'email', msg }); },
+    // The payment preview test send (#262): one call per destination, captured.
+    sendTemplated: async (outputs) => {
+      sentNotifications.push({ channel: 'templated', outputs });
+      return Object.fromEntries(Object.keys(outputs).map((key) => [key, { success: true }]));
+    }
   };
 
   let seed = null;
