@@ -2456,5 +2456,37 @@ module.exports = [
         anchor: 'if (liveEl.textContent !== liveText) liveEl.textContent',
         mutant: 'if (true) liveEl.textContent',
         tests: 'dashboardPayments'
+    },
+    {
+        id: '332-digest-lookup-failure-rejects-batch', ticket: '#332',
+        desc: "a failing per-destination ledger read in digest mode rejects the whole deliver() batch again instead of withholding only that channel",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "      logger.warn('Schedule alert ledger lookup failed; destination withheld until the next sync', {",
+        mutant: "      throw error;\n      logger.warn('Schedule alert ledger lookup failed; destination withheld until the next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-lookup-failure-sends-anyway', ticket: '#332',
+        desc: "a failing digest ledger read no longer skips the channel, so the loop carries on with nothing due or a stale state",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        server, channel, error: error.message\n      });\n      continue;\n    }\n    if (dueItems.length === 0) continue;",
+        mutant: "        server, channel, error: error.message\n      });\n    }\n    if (dueItems.length === 0) continue;",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-record-failure-rejects-batch', ticket: '#332',
+        desc: "a failing ledger write after a successful digest send rejects deliver() again and stops the remaining channels",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {",
+        mutant: "        throw error;\n        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-unrecorded-item-counted-sent', ticket: '#332',
+        desc: "an item whose ledger write failed is still reported as sent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "        sentKeys.add(eventKey(item.event));\n      } catch (error) {",
+        mutant: "        sentKeys.add(eventKey(item.event));\n      } catch (error) {\n        sentKeys.add(eventKey(item.event));",
+        tests: 'scheduleAlertDelivery'
     }
 ];

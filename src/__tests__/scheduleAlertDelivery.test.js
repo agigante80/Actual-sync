@@ -857,6 +857,70 @@ describe('deliver: a failing ledger lookup withholds only that event (#297 round
   });
 });
 
+describe('deliver: digest guards each destination like immediate mode (#332)', () => {
+  // A transient ledger error (for example SQLITE_BUSY) on one channel must
+  // withhold only that channel, never reject deliver() and starve the others.
+  function setup(server) {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      webhooks: {
+        slack: [{ name: 'a', url: 'https://slack/a', enabled: true }],
+        discord: [{ name: 'd', url: 'https://discord/x', enabled: true }]
+      }
+    });
+    const warnings = [];
+    const logger = { warn: (message, meta) => warnings.push({ message, meta }) };
+    const rules = getRules({ digest: true, alerts: [{ id: 'rent', schedule: 'Rent', channels: ['slack', 'discord'] }] });
+    const run = () => deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender, server, rules,
+      timezone: 'UTC', logger, now: '2026-01-10'
+    });
+    return { history, sender, warnings, run };
+  }
+
+  test('isDestinationDue throwing for one channel withholds only that channel, with a WARN', async () => {
+    const { history, sender, warnings, run } = setup('guard-332-due');
+    const realFind = history.findLatestScheduleAlert.bind(history);
+    let armed = false;
+    let discordReads = 0;
+    history.findLatestScheduleAlert = async (key) => {
+      // A one-off error: the mayRecord pre-check (first discord read) succeeds,
+      // then the digest's own read of the discord destination (second) throws.
+      if (String(key.channel).startsWith('discord')) {
+        discordReads += 1;
+        if (discordReads === 2) { armed = true; throw new Error('SQLITE_BUSY'); }
+      }
+      return realFind(key);
+    };
+    const result = await run();
+    expect(armed).toBe(true);
+    expect(result).toEqual({ sent: 1, skipped: 0 });
+    expect(sender.calls).toHaveLength(1);
+    expect(sender.calls[0].slack).toBeDefined();
+    expect(history.rows.map((r) => r.channel.split(':')[0])).toEqual(['slack']);
+    const warn = warnings.find((w) => /ledger lookup failed/i.test(w.message));
+    expect(warn).toBeDefined();
+    expect(warn.meta).toMatchObject({ server: 'guard-332-due', channel: 'discord', error: 'SQLITE_BUSY' });
+  });
+
+  test('recordScheduleAlert throwing after a send does not stop the other channels, and WARNs that the row may be resent', async () => {
+    const { history, sender, warnings, run } = setup('guard-332-record');
+    const realRecord = history.recordScheduleAlert.bind(history);
+    history.recordScheduleAlert = async (row) => {
+      if (String(row.channel).startsWith('slack')) throw new Error('SQLITE_BUSY');
+      return realRecord(row);
+    };
+    const result = await run();
+    expect(sender.calls).toHaveLength(2); // both channels were sent to
+    expect(result).toEqual({ sent: 1, skipped: 0 });
+    expect(history.rows.map((r) => r.channel.split(':')[0])).toEqual(['discord']);
+    const warn = warnings.find((w) => /ledger write failed/i.test(w.message));
+    expect(warn).toBeDefined();
+    expect(warn.message).toMatch(/resent next sync/i);
+    expect(warn.meta).toMatchObject({ server: 'guard-332-record', channel: 'slack', alertId: 'rent', error: 'SQLITE_BUSY' });
+  });
+});
+
 describe('destinationKey (#295 review round 2, M8)', () => {
   test('a named webhook target is keyed by its name plus a URL hash, never its URL', () => {
     const key = destinationKey('slack', { name: 'ops-alerts', url: 'https://hooks.example/services/T00/B00/secret' });
