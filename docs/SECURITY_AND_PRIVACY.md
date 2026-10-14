@@ -600,6 +600,8 @@ docker scout cves actual-sync:latest
    trivy image actual-sync:latest
    ```
 
+6. **OpenSSF Scorecard** - Weekly supply chain posture check (workflow `scorecard.yml`, results in the Security tab next to CodeQL and Trivy). It measures rather than fixes; the checks the project acts on and the ones it ignores on purpose are listed in [CI/CD: OpenSSF Scorecard](CI_CD.md#openssf-scorecard).
+
 ---
 
 ## 🔍 Automated Security Scanning
