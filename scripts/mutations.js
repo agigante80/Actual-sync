@@ -1816,7 +1816,8 @@ module.exports = [
         id: '258-r2-m7-startup-template-check-ignores-rule-channels', ticket: '#258',
         desc: 'startup template validation goes back to compiling every rule against every channel mode, so a Telegram-only literal-markup restriction rejects a valid template for a rule that can only ever reach slack/email',
         file: 'src/lib/scheduleAlertValidation.js',
-        anchor: "  const channels = schemaOnly ? (rule.channels && rule.channels.length ? rule.channels : ALL_CHANNELS) : resolved;",
+        // #262 review F1 split this into `requested` plus a save-mode branch.
+        anchor: "  const channels = schemaOnly || dashboard ? requested : resolved;",
         mutant: "  const channels = ALL_CHANNELS;",
         tests: 'scheduleAlertValidation'
     },
@@ -3263,11 +3264,51 @@ module.exports = [
         tests: "scheduleAlertsSync"
     },
     {
+        id: "262-r1-save-compiles-resolved-only", ticket: '#262',
+        desc: "a dashboard save compiles templates only for configured channels, so the sync later drops a 201 rule",
+        file: "src/lib/scheduleAlertValidation.js",
+        anchor: "  const channels = schemaOnly || dashboard ? requested : resolved;",
+        mutant: "  const channels = schemaOnly ? requested : resolved;",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-r1-list-config-schema-only", ticket: '#262',
+        desc: "the list checks a config rule against every channel, flagging one the sync evaluates",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "    schemaOnly: dashboard,",
+        mutant: "    schemaOnly: true,",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-r1-empty-block-templates-unchecked", ticket: '#262',
+        desc: "block templates of a block with no config rules are not checked at startup",
+        file: "src/lib/configLoader.js",
+        anchor: "if (server.scheduleAlerts && alerts.length === 0) {",
+        mutant: "if (false) {",
+        tests: "configLoader"
+    },
+    {
+        id: "262-r1-orphan-rules-kept", ticket: '#262',
+        desc: "a reset of a server removed from the config keeps its dashboard rules",
+        file: "src/services/healthCheck.js",
+        anchor: "const purgeRules = configured !== null && !configured.includes(server);",
+        mutant: "const purgeRules = false;",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-r1-configured-rules-purged", ticket: '#262',
+        desc: "a reset of a configured server deletes its dashboard rules",
+        file: "src/services/healthCheck.js",
+        anchor: "const purgeRules = configured !== null && !configured.includes(server);",
+        mutant: "const purgeRules = true;",
+        tests: "paymentRulesRoute"
+    },
+    {
         id: "262-reset-server-deletes-rules", ticket: '#262',
         desc: "a per-server history reset also deletes the dashboard payment rules",
         file: "src/services/syncHistory.js",
-        anchor: "      // payment_alert_rule is deliberately NOT deleted either (#262)",
-        mutant: "      this.db.prepare('DELETE FROM payment_alert_rule WHERE server = ?').run(server);\n      // payment_alert_rule is deliberately NOT deleted either (#262)",
+        anchor: "        if (purgeRules) deleted.payment_alert_rule = delRules.run(s).changes;",
+        mutant: "        deleted.payment_alert_rule = delRules.run(s).changes;",
         tests: "syncHistory"
     },
     {

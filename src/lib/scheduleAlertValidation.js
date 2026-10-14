@@ -115,7 +115,13 @@ function validateScheduleAlert(rule, opts = {}) {
   };
   const sender = { config: notificationsConfig || {} };
   const resolved = schemaOnly ? null : resolveChannels(rule, sender);
-  const channels = schemaOnly ? (rule.channels && rule.channels.length ? rule.channels : ALL_CHANNELS) : resolved;
+  // A dashboard rule is re-checked at every sync in schemaOnly mode, against
+  // the rule's requested channels (or all of them), not only the configured
+  // ones. Saving and previewing compile against that same set, so a rule the
+  // API accepts is never dropped at the next sync (#262 review F1). Config
+  // rules keep the startup behaviour: only the channels that resolve.
+  const requested = rule.channels && rule.channels.length ? rule.channels : ALL_CHANNELS;
+  const channels = schemaOnly || dashboard ? requested : resolved;
   const modes = channels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
   try {
     compileTemplateSet({ templates, variables: VARIABLES, channels: modes });

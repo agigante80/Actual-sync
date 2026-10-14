@@ -572,6 +572,20 @@ class ConfigLoader {
             const alerts = server.scheduleAlerts && Array.isArray(server.scheduleAlerts.alerts)
                 ? server.scheduleAlerts.alerts
                 : [];
+            // #262 review F2: block templates are otherwise compiled only
+            // through a rule, so a block with no config rules (dashboard rules
+            // only) must be checked on its own, or a typo there drops every
+            // dashboard rule at each sync.
+            if (server.scheduleAlerts && alerts.length === 0) {
+                const blockCheck = validateScheduleAlert({ schedule: '_' }, {
+                    block: server.scheduleAlerts, notificationsConfig, skipSchema: true
+                });
+                if (blockCheck.code === 'invalid_template') {
+                    throw new Error(
+                        `Invalid scheduleAlerts template (server "${server.name}"): ${blockCheck.template.message}`
+                    );
+                }
+            }
             for (const alert of alerts) {
                 const id = deriveRuleId(alert);
                 const result = validateScheduleAlert(alert, {

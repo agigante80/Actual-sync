@@ -1259,9 +1259,11 @@ class SyncHistoryService {
   /**
    * Reset sync history for a specific server
    * @param {string} serverName - Name of the server
-   * @param {{remoteAddr?: string}} [options] - recorded on the history_reset audit row (#259)
+   * @param {{remoteAddr?: string, purgeRules?: boolean}} [options] - remoteAddr is
+   *   recorded on the history_reset audit row (#259); purgeRules also deletes
+   *   the server's dashboard rules (#262), for a server no longer in the config
    */
-  async resetServerHistory(serverName, { remoteAddr } = {}) {
+  async resetServerHistory(serverName, { remoteAddr, purgeRules = false } = {}) {
     try {
       // Clear sync history, the dashboard account snapshot and the schedule
       // alert ledger atomically, so a reset never leaves orphaned account
@@ -1275,7 +1277,10 @@ class SyncHistoryService {
       const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');
       const delScheduleSnapshot = this.db.prepare('DELETE FROM actual_schedule_snapshot WHERE server = ?');
       // payment_alert_rule is deliberately NOT deleted either (#262): rules are
-      // configuration, so a history reset keeps them.
+      // configuration, so a history reset keeps them. The exception is a
+      // server removed from the config (purgeRules): there is no other way to
+      // erase its rules, since the rule routes only accept configured servers.
+      const delRules = this.db.prepare('DELETE FROM payment_alert_rule WHERE server = ?');
       // config_audit is deliberately NOT deleted (#259): a reset must not erase
       // the record of earlier configuration changes. It appends one
       // history_reset row, in this transaction, with the deleted counts.
@@ -1290,6 +1295,7 @@ class SyncHistoryService {
           payment_alert_override: delOverrides.run(s).changes,
           actual_schedule_snapshot: delScheduleSnapshot.run(s).changes
         };
+        if (purgeRules) deleted.payment_alert_rule = delRules.run(s).changes;
         this.insertConfigAudit({
           server: s, remoteAddr, action: 'history_reset', target: null, changes: { deleted }
         });

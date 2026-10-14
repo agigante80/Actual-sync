@@ -540,6 +540,14 @@ describe('ConfigLoader', () => {
                 notifications
             });
 
+            test('#262 F2: a block with no config rules still has its templates checked at startup', () => {
+                const tg = { telegram: { enabled: true, botToken: '1:AAAA', chatId: '1' } };
+                const bad = baseConfig({ templates: { missing: '{{nmae}}' }, alerts: [] }, tg);
+                expect(() => new ConfigLoader().validateLogic(bad)).toThrow(/Invalid scheduleAlerts template \(server "Test"\)/);
+                const good = baseConfig({ templates: { missing: '{{name}}' }, alerts: [] }, tg);
+                expect(() => new ConfigLoader().validateLogic(good)).not.toThrow();
+            });
+
             test('H6: a rule with an invalid template throws at startup, naming the rule and server', () => {
                 const config = baseConfig(
                     { alerts: [{ id: 'rent', schedule: 'Rent', templates: { missing: '{{#if broken' } }] },
