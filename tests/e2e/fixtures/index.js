@@ -113,6 +113,15 @@ function seeder(clock, hc, history) {
     paymentRunFailure(serverName, errorCode, minutesAgo = 0) {
       at(minutesAgo, () => history.recordPaymentRunFailure(serverName, errorCode));
     },
+    /**
+     * One configuration change in the audit trail (#259), recorded the way a
+     * config route will record it.
+     * @param {{ server?: string, remoteAddr?: string, action: string, target?: string, changes?: Object }} change
+     * @param {number} [minutesAgo=0]
+     */
+    configChange(change, minutesAgo = 0) {
+      at(minutesAgo, () => history.recordConfigChange(change));
+    },
     /** A delivered alert in the ledger, which the route joins as "Last alert". */
     scheduleAlert(alert, minutesAgo = 0) {
       at(minutesAgo, () => {
@@ -177,7 +186,12 @@ async function startFixtureServer(stateName, overrides = {}) {
     // /api/dashboard/metrics only checks that a Prometheus service exists.
     prometheusService: { getMetrics: async () => '', recordSync: () => {} },
     notificationService,
-    dashboardConfig: { enabled: true, auth: state.auth || { type: 'none' } },
+    dashboardConfig: {
+      enabled: true,
+      auth: state.auth || { type: 'none' },
+      allowConfigWrites: state.allowConfigWrites,
+      allowedOrigins: state.allowedOrigins
+    },
     getServers: () => servers,
     getCronSchedules: () => (state.schedules || []).map(s => ({
       ...s,
