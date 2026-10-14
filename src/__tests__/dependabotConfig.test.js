@@ -17,6 +17,7 @@ const npm = config.updates.filter(u => u['package-ecosystem'] === 'npm');
 const versionEntry = npm.find(u => u['target-branch'] === 'development');
 const securityEntry = npm.find(u => u['open-pull-requests-limit'] === 0);
 const actionsEntry = config.updates.find(u => u['package-ecosystem'] === 'github-actions');
+const dockerEntry = config.updates.find(u => u['package-ecosystem'] === 'docker');
 
 describe('dependabot cooldown (#251)', () => {
     it('locates the three entries', () => {
@@ -39,5 +40,28 @@ describe('dependabot cooldown (#251)', () => {
 
     it('never delays npm security updates', () => {
         expect(securityEntry.cooldown).toBeUndefined();
+    });
+});
+
+describe('dependabot docker base image (#362)', () => {
+    const dockerfile = fs.readFileSync(path.join(__dirname, '..', '..', 'Dockerfile'), 'utf8');
+
+    it('tracks the Dockerfile on development with a cooldown', () => {
+        expect(dockerEntry).toBeDefined();
+        expect(dockerEntry.directory).toBe('/');
+        expect(dockerEntry['target-branch']).toBe('development');
+        expect(dockerEntry.cooldown['default-days']).toBeGreaterThanOrEqual(1);
+    });
+
+    it('never proposes a new Node major', () => {
+        expect(dockerEntry.ignore).toEqual(expect.arrayContaining([
+            { 'dependency-name': 'node', 'update-types': ['version-update:semver-major'] }
+        ]));
+    });
+
+    it('pins every base image by digest so there is something to bump', () => {
+        const froms = dockerfile.split('\n').filter(l => /^\s*FROM\s/i.test(l));
+        expect(froms.length).toBeGreaterThan(0);
+        for (const line of froms) expect(line).toMatch(/node:22-alpine@sha256:[0-9a-f]{64}(\s|$)/);
     });
 });
