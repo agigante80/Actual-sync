@@ -1182,10 +1182,10 @@ describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356
     expect(texts().join('\n')).not.toMatch(/arrived/);
   });
 
-  test('ruleUnmatched re-arms when the rule only matches a schedule that yields cannotCheck', async () => {
+  test('ruleUnmatched re-arms when the rule only matches a schedule that throws on evaluation (cannotCheck, no evaluation row)', async () => {
     const srv = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'], graceDays: 5 }] } };
     const daily = makeFakeApi({
-      schedules: [rentSchedule({ date: { frequency: 'daily', start: '2026-01-01', endMode: 'never', interval: 1, patterns: [] } }), other()],
+      schedules: [rentSchedule({ date: { frequency: 'bogus', start: 'not-a-date', endMode: 'never', interval: 1, patterns: [] } }), other()],
       payees: [{ id: 'pay1', name: 'Landlord' }],
       accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
     });
