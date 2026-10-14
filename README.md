@@ -1039,7 +1039,7 @@ A variable that does not apply to the current event type is always present as `n
 
 ### Timezone
 
-Every date in this feature - an occurrence date, a deadline, "today", account staleness - is computed in one timezone: `timezone` from the top-level config, falling back to the host machine's own local IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`) when unset. A global `timezone` config key does not exist yet (tracked separately); until it does, every server's alerts use the sync process's own local zone.
+Every date in this feature - an occurrence date, a deadline, "today", account staleness - is computed in one timezone: the top-level `timezone` config key (see [CONFIG.md](docs/CONFIG.md#timezone-optional)), falling back to the process timezone (`TZ`, else the system zone), and to `UTC` when that is blank or not a valid IANA name. All servers share it.
 
 See **[docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md)** for the full configuration reference, the algorithm's edge cases, and message-template overrides.
 
