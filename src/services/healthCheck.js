@@ -923,7 +923,7 @@ class HealthCheckService {
           const configured = this.getServers ? (this.getServers() || []).map(sv => sv.name) : null;
           const known = configured === null ||
             configured.includes(server) ||
-            this.syncHistory.getAllServerNames().some(h => h.server_name === server);
+            this.syncHistory.hasServerData(server);
           if (!known) {
             return res.status(404).json({ error: 'server_not_found' });
           }

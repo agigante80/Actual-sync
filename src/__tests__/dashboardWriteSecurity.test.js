@@ -284,6 +284,14 @@ describe('Origin check on the existing POST routes (#259)', () => {
       expect(ctx.history.getConfigAudit({ limit: 1 })[0].action).toBe('history_reset');
     });
 
+    test('a retired server whose sync_history aged out but has other rows can be reset (#259)', async () => {
+      const ctx = await makeService();
+      ctx.history.replaceAccountMetadata('Retired', [{ id: 'a1', name: 'A', classification: 'syncable' }]);
+      const res = await post(ctx.svc, 'reset-history', { server: 'Retired' });
+      expect(res.status).toBe(200);
+      expect(ctx.history.hasServerData('Retired')).toBe(false);
+    });
+
     test('a server name over 200 characters is 400 before anything is stored (#259)', async () => {
       const ctx = await makeService();
       const res = await post(ctx.svc, 'reset-history', { server: 'x'.repeat(201) });

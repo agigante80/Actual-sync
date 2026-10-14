@@ -162,7 +162,7 @@ match the code, not as an integration surface:
 | GET  | `/api/dashboard/config-audit` | Configuration change audit trail, newest first (`?limit=N`, 1 to 200, default 50; otherwise 400 `invalid_limit`). 503 `Sync history not available` without history, 500 `Failed to retrieve configuration changes` on a read error |
 | POST | `/api/dashboard/sync` | Trigger a manual sync |
 | POST | `/api/dashboard/dismiss-error` | Clear a server's last error |
-| POST | `/api/dashboard/reset-history` | Reset stored sync history. 404 `server_not_found` for a name that is neither configured nor in history, 400 `server_name_too_long` above 200 characters |
+| POST | `/api/dashboard/reset-history` | Reset stored sync history. 404 `server_not_found` for a name that is neither configured nor present in any history table, 400 `server_name_too_long` above 200 characters |
 | POST | `/api/dashboard/test-notification` | Send a test notification (`email`, `discord`, `slack`, `telegram`, `ntfy`, `generic`) |
 
 All four POSTs run the dashboard auth first and then an Origin check: a cross-origin browser request is refused with 403 `{"error":"origin_rejected"}`. Configuration-changing routes additionally return 403 `config_writes_disabled` unless `dashboard.allowConfigWrites` is true and auth is not `none`, 415 `invalid_content_type` for a non-JSON body, 413 `payload_too_large` above 16 KB and 400 `invalid_json` for a malformed body. Any other unreadable body (for example a corrupt gzip body) is 400 `invalid_body`, a 4xx raised by a route keeps its status with `request_error`, and an unexpected server error is 500 `internal_error`; none shows a stack trace.

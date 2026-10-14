@@ -2672,5 +2672,13 @@ module.exports = [
         anchor: "if (status >= 400 && status < 500) {\n        return res.status(status).json({ error: 'request_error' });",
         mutant: "if (false) {\n        return res.status(status).json({ error: 'request_error' });",
         tests: "dashboardWriteSecurity"
+    },
+    {
+        id: "259-reset-known-history-only", ticket: '#259',
+        desc: "a retired server with only non-history rows is 404 again",
+        file: "src/services/syncHistory.js",
+        anchor: "OR EXISTS (SELECT 1 FROM account_metadata WHERE server_name = @s)",
+        mutant: "OR 0",
+        tests: "dashboardWriteSecurity"
     }
 ];

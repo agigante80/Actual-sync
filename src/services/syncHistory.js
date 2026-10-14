@@ -1106,6 +1106,24 @@ class SyncHistoryService {
   }
 
   /**
+   * True when any table resetServerHistory clears has a row for this name.
+   * sync_history ages out after 90 days but the other tables do not, so a
+   * retired server can still be known without any history rows. (#259)
+   * @param {string} serverName
+   * @returns {boolean}
+   */
+  hasServerData(serverName) {
+    const row = this.db.prepare(`
+      SELECT EXISTS (SELECT 1 FROM sync_history WHERE server_name = @s)
+          OR EXISTS (SELECT 1 FROM account_metadata WHERE server_name = @s)
+          OR EXISTS (SELECT 1 FROM schedule_alerts WHERE server = @s)
+          OR EXISTS (SELECT 1 FROM payment_alert_status WHERE server = @s)
+          OR EXISTS (SELECT 1 FROM payment_alert_run WHERE server = @s) AS known
+    `).get({ s: serverName });
+    return row.known === 1;
+  }
+
+  /**
    * Reset sync history for a specific server
    * @param {string} serverName - Name of the server
    * @param {{remoteAddr?: string}} [options] - recorded on the history_reset audit row (#259)
