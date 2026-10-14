@@ -2519,7 +2519,7 @@ module.exports = [
         file: "src/services/syncHistory.js",
         anchor: "const text = JSON.stringify(redactValue(source, []));",
         mutant: "const text = JSON.stringify(source);",
-        tests: "dashboardWriteSecurity"
+        tests: "syncHistory"
     },
     {
         id: "259-redaction-exact-match", ticket: '#259',
@@ -2527,7 +2527,7 @@ module.exports = [
         file: "src/services/syncHistory.js",
         anchor: "CONFIG_AUDIT_REDACT_SUBSTRINGS.some(sub => full.includes(sub))",
         mutant: "CONFIG_AUDIT_REDACT_SUBSTRINGS.some(sub => full === sub)",
-        tests: "dashboardWriteSecurity"
+        tests: "syncHistory"
     },
     {
         id: "259-audit-size-uncapped", ticket: '#259',
@@ -2535,7 +2535,7 @@ module.exports = [
         file: "src/services/syncHistory.js",
         anchor: "if (Buffer.byteLength(text) <= CONFIG_AUDIT_MAX_BYTES) return text;",
         mutant: "return text;",
-        tests: "dashboardWriteSecurity"
+        tests: "syncHistory"
     },
     {
         id: "259-reset-server-deletes-audit", ticket: '#259',
@@ -2543,7 +2543,7 @@ module.exports = [
         file: "src/services/syncHistory.js",
         anchor: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');\n      // config_audit is deliberately",
         mutant: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run WHERE server = ?');\n      this.db.prepare('DELETE FROM config_audit').run();\n      // config_audit is deliberately",
-        tests: "dashboardWriteSecurity"
+        tests: "syncHistory"
     },
     {
         id: "259-reset-all-deletes-audit", ticket: '#259',
@@ -2551,7 +2551,7 @@ module.exports = [
         file: "src/services/syncHistory.js",
         anchor: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');\n",
         mutant: "      const delPaymentRun = this.db.prepare('DELETE FROM payment_alert_run');\n      this.db.prepare('DELETE FROM config_audit').run();\n",
-        tests: "dashboardWriteSecurity"
+        tests: "syncHistory"
     },
     {
         id: "259-audit-never-purged", ticket: '#259',
@@ -2559,7 +2559,7 @@ module.exports = [
         file: "src/services/syncHistory.js",
         anchor: "DELETE FROM config_audit WHERE at < ?",
         mutant: "DELETE FROM config_audit WHERE 0 AND at < ?",
-        tests: "dashboardWriteSecurity"
+        tests: "syncHistory"
     },
     {
         id: "259-limit-unvalidated", ticket: '#259',
