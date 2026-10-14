@@ -934,6 +934,15 @@ describe('scheduleAlertsSync: completed one-off schedule closes its open missing
     expect(requests).toHaveLength(1);
   });
 
+  test('completed one-off whose missing is exactly MAX_LOOKBACK_DAYS old is still resolved', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+    const edge = moment.utc('2026-01-05').add(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');
+    await run(apiFor({ completed: true, lastSync: edge }), `${edge}T00:00:00.000Z`);
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.text).toMatch(/marked completed in Actual/);
+  });
+
   test('a completed recurring schedule with an open missing is not touched', async () => {
     await run(apiFor(), '2026-01-10T00:00:00.000Z');
     const api = makeFakeApi({

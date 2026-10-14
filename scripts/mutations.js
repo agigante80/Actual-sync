@@ -2667,5 +2667,13 @@ module.exports = [
         anchor: "return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };",
         mutant: "return { due: !resolvedRow, lastSentAt: null };",
         tests: 'scheduleAlert'
+    },
+    {
+        id: '326-completed-lookback-off-by-one', ticket: '#326',
+        desc: 'the look-back cutoff is one day short, so a missing exactly MAX_LOOKBACK_DAYS old is no longer resolved',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: ".subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
+        mutant: ".subtract(MAX_LOOKBACK_DAYS - 1, 'days').format('YYYY-MM-DD');\n    for (const schedule of completedSchedules)",
+        tests: 'scheduleAlert'
     }
 ];
