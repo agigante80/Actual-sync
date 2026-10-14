@@ -575,11 +575,22 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
         });
       }
       if (ok) {
-        await history.recordScheduleAlert({
-          server, alertId: event.alertId, scheduleId: event.scheduleId, occurrenceDate: event.occurrence,
-          event: event.event, delivery: 'sent', channel: destination.key
-        });
-        sentAny = true;
+        // #332: the message already went out, so a failed ledger write must not
+        // abort the remaining destinations or turn the event into "skipped"
+        // when an earlier destination has a row. Same rule as the digest path:
+        // this destination has no row (may be resent next sync) and does not
+        // count as sent.
+        try {
+          await history.recordScheduleAlert({
+            server, alertId: event.alertId, scheduleId: event.scheduleId, occurrenceDate: event.occurrence,
+            event: event.event, delivery: 'sent', channel: destination.key
+          });
+          sentAny = true;
+        } catch (error) {
+          logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {
+            server, alertId: event.alertId, event: event.event, channel: destination.channel, error: error.message
+          });
+        }
       }
     }
     return sentAny;

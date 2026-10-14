@@ -2496,5 +2496,21 @@ module.exports = [
         anchor: "          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n      }",
         mutant: "          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n        break;\n      }",
         tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-immediate-write-failure-aborts-destinations', ticket: '#332',
+        desc: "a ledger write failure after a successful immediate send goes to the outer catch again and stops the remaining destinations",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {\n            server, alertId: event.alertId, event: event.event, channel: destination.channel",
+        mutant: "          throw error;\n          logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {\n            server, alertId: event.alertId, event: event.event, channel: destination.channel",
+        tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-immediate-unrecorded-destination-counted-sent', ticket: '#332',
+        desc: "an immediate destination whose ledger write failed still makes the event count as sent",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          sentAny = true;\n        } catch (error) {",
+        mutant: "          sentAny = true;\n        } catch (error) {\n          sentAny = true;",
+        tests: 'scheduleAlertDelivery'
     }
 ];

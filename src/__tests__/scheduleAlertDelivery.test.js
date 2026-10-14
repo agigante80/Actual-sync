@@ -965,6 +965,51 @@ describe('deliver: digest guards each destination like immediate mode (#332)', (
   });
 });
 
+describe('deliver: immediate mode survives a ledger write failure after a send (#332)', () => {
+  test('a failing write for one destination does not stop the others and the event still counts as sent', async () => {
+    const history = makeFakeHistory();
+    const sender = makeFakeSender({
+      telegram: { enabled: true },
+      webhooks: {
+        slack: [{ name: 'a', url: 'https://slack/a', enabled: true }],
+        discord: [{ name: 'd', url: 'https://discord/x', enabled: true }]
+      }
+    });
+    const warnings = [];
+    const logger = { warn: (message, meta) => warnings.push({ message, meta }) };
+    const realRecord = history.recordScheduleAlert.bind(history);
+    history.recordScheduleAlert = async (row) => {
+      if (String(row.channel).startsWith('slack')) throw new Error('SQLITE_BUSY');
+      return realRecord(row);
+    };
+    const result = await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender,
+      now: '2026-01-10', server: 'imm-332',
+      rules: rentRules({ channels: ['telegram', 'slack', 'discord'] }),
+      timezone: 'UTC', logger
+    });
+    expect(sender.calls).toHaveLength(3);
+    expect(result).toEqual({ sent: 1, skipped: 0 });
+    expect(history.rows.map((r) => r.channel.split(':')[0]).sort()).toEqual(['discord', 'telegram']);
+    const warn = warnings.find((w) => /ledger write failed/i.test(w.message));
+    expect(warn).toBeDefined();
+    expect(warn.message).toMatch(/resent next sync/i);
+    expect(warn.meta).toMatchObject({ server: 'imm-332', channel: 'slack', alertId: 'rent', error: 'SQLITE_BUSY' });
+    expect(warnings.some((w) => /send threw/i.test(w.message))).toBe(false);
+  });
+
+  test('when every write fails the event is not counted as sent', async () => {
+    const history = makeFakeHistory();
+    history.recordScheduleAlert = async () => { throw new Error('SQLITE_BUSY'); };
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const result = await deliver([missingEvent()], {
+      evaluations: [rentEvaluation()], ruleState: enabledState, history, sender,
+      now: '2026-01-10', server: 'imm-332b', rules: rentRules(), timezone: 'UTC', logger: quietLogger
+    });
+    expect(result).toEqual({ sent: 0, skipped: 1 });
+  });
+});
+
 describe('destinationKey (#295 review round 2, M8)', () => {
   test('a named webhook target is keyed by its name plus a URL hash, never its URL', () => {
     const key = destinationKey('slack', { name: 'ops-alerts', url: 'https://hooks.example/services/T00/B00/secret' });
