@@ -944,4 +944,41 @@ describe('scheduleAlertsSync: completed one-off schedule closes its open missing
     await run(api, '2026-01-11T00:00:00.000Z');
     expect(requests).toHaveLength(1);
   });
+
+  describe('custom resolved templates (review M1)', () => {
+    const withTemplate = (resolved) => ({ scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'], templates: { resolved }
+    }] } });
+    const runWith = (srv, api, now) => runScheduleAlertsStep({
+      api, server: srv, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+      notificationService: notifier(), logger: quietLogger, now: new Date(now)
+    });
+    const legacy = '{{name}}: {{received_amount}} arrived {{received_date}}, {{days_overdue}} day(s) late';
+
+    test('a custom resolved without closed_by gets the built-in completed text for a completed one-off', async () => {
+      const srv = withTemplate(legacy);
+      await runWith(srv, apiFor(), '2026-01-10T00:00:00.000Z');
+      await runWith(srv, apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].body.text).toMatch(/marked completed in Actual/);
+      expect(requests[1].body.text).not.toMatch(/arrived/);
+    });
+
+    test('a custom resolved that uses closed_by is honoured for a completed one-off', async () => {
+      const srv = withTemplate('{{#if closed_by}}CUSTOM-DONE {{name}}{{else}}CUSTOM-PAID{{/if}}');
+      await runWith(srv, apiFor(), '2026-01-10T00:00:00.000Z');
+      await runWith(srv, apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests[1].body.text).toMatch(/CUSTOM-DONE Rent/);
+    });
+
+    test('a normal payment resolved still uses the custom template', async () => {
+      const srv = withTemplate(legacy);
+      await runWith(srv, apiFor(), '2026-01-10T00:00:00.000Z');
+      const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }];
+      await runWith(srv, apiFor({ transactions: paid, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].body.text).toMatch(/arrived 2026-01-10|arrived .*2026/);
+      expect(requests[1].body.text).not.toMatch(/marked completed/);
+    });
+  });
 });

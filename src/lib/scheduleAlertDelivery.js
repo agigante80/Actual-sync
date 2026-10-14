@@ -549,7 +549,7 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
       return false;
     }
 
-    const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+    const templates = templatesFor(event, rule);
     const channels = Array.from(new Set(destinations.map((d) => d.channel)));
     const modes = channels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
     const context = buildContext(event, evaluation, rule, { server, timezone });
@@ -789,7 +789,7 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     const rendered = [];
     for (const { item } of dueItems) {
       try {
-        const templates = { ...DEFAULT_TEMPLATES, ...(item.rule.templates || {}) };
+        const templates = templatesFor(item.event, item.rule);
         const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
         const context = buildContext(item.event, item.evaluation, item.rule, { server, timezone });
         const lines = {};
@@ -952,6 +952,21 @@ async function deriveResolvedEvents(evaluations, history, server, logger, { comp
     }
   }
   return resolved;
+}
+
+/**
+ * The template set for one event: the built-ins overlaid with the rule's own
+ * (block-level templates are already merged into `rule.templates`). #326: a
+ * custom `resolved` written before `closed_by` existed would render
+ * "arrived ," with empty amount and date for a completed one-off, falsely
+ * saying money arrived. So when the event is closed by completion and the
+ * custom `resolved` never mentions `closed_by`, the built-in `resolved` is
+ * used for that event. A template that mentions it is honoured as written.
+ */
+function templatesFor(event, rule) {
+  const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
+  if (event.closedBy && !/\bclosed_by\b/.test(templates.resolved)) templates.resolved = DEFAULT_TEMPLATES.resolved;
+  return templates;
 }
 
 /**

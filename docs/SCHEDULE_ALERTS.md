@@ -132,8 +132,10 @@ thread closes instead of staying open forever:
   stays as it is.
 - After it is delivered nothing more is sent for that occurrence. A completed one-off that never had a
   `missing` sends nothing, and a completed recurring schedule is unaffected.
-- A custom `resolved` template that does not branch on `closed_by` will say "arrived" with empty
-  amount and date for this case; add `{{#if (eq closed_by "completed")}}` to word it.
+- A custom `resolved` template that never mentions `closed_by` is not used for this case: the built-in
+  "marked completed in Actual" text is sent instead, so an older template cannot claim a payment
+  arrived. A template that mentions `closed_by` is used as written. A normal payment `resolved` always
+  uses your template.
 
 ## De-duplication and reminders
 

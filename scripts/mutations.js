@@ -2645,6 +2645,14 @@ module.exports = [
         tests: 'scheduleAlert'
     },
     {
+        id: '326-completed-custom-template-used', ticket: '#326',
+        desc: 'a custom resolved template without closed_by is used for a completed one-off, claiming a payment arrived',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "if (event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
+        mutant: "if (false && event.closedBy && !/\\bclosed_by\\b/.test(templates.resolved))",
+        tests: 'scheduleAlert'
+    },
+    {
         id: '326-completed-resolved-repeats', ticket: '#326',
         desc: 'the per-destination already-resolved check is skipped, so resolved repeats every sync',
         file: 'src/lib/scheduleAlertDelivery.js',
