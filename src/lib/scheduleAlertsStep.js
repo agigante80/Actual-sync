@@ -206,7 +206,7 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
         }
     }
 
-    const { events, evaluations, warnings, skipDecisions } = evaluate({
+    const { events, evaluations, warnings, skipDecisions, completedSchedules } = evaluate({
         rules: scheduleAlertRules,
         schedules: hydratedSchedules,
         transactions: alertTransactions,
@@ -220,7 +220,7 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
         logger.warn(warning.message, { ruleId: warning.ruleId, scheduleId: warning.scheduleId });
     }
 
-    return { events, evaluations, warnings, skipDecisions, scheduleAlertRules, timezone, serverName, now: alertNow };
+    return { events, evaluations, warnings, skipDecisions, completedSchedules, scheduleAlertRules, timezone, serverName, now: alertNow };
 }
 
 /**
@@ -243,7 +243,7 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
  * @returns {Promise<{events: number, sent: number, skipped: number}>}
  */
 async function deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger, deliverBudgetMs }) {
-    const { events, evaluations, skipDecisions, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    const { events, evaluations, skipDecisions, completedSchedules, scheduleAlertRules, timezone, serverName, now } = evaluated;
     // #297 F1: persist newly inferred skips FIRST and independently of the
     // delivery budget and of delivery itself: a failed write only means the
     // skip is inferred again next sync, it must never block the alerts.
@@ -262,6 +262,7 @@ async function deliverScheduleAlerts(evaluated, { syncHistory, notificationServi
     const deadline = Date.now() + (deliverBudgetMs != null ? deliverBudgetMs : DELIVER_BUDGET_MS);
     const deliverResult = await deliver(events, {
         evaluations,
+        completedSchedules,
         ruleState: scheduleAlertRuleState,
         history: syncHistory,
         sender: notificationService,
