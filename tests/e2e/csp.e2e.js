@@ -20,19 +20,10 @@ describe('dashboard under its Content-Security-Policy (#243)', () => {
     await closeBrowser();
   });
 
-  // Registered before any page script runs, so nothing can be missed.
-  const trackViolations = (page) => page.evaluateOnNewDocument(() => {
-    window.__cspViolations = [];
-    document.addEventListener('securitypolicyviolation', (e) => {
-      window.__cspViolations.push(`${e.violatedDirective} blocked ${e.blockedURI || e.sample || 'inline'}`);
-    });
-  });
-
   const refusedMessages = (page) => page.__consoleLog.filter((l) => /Refused to|Content Security Policy/i.test(l));
 
   test('every tab, the charts, the log stream and the buttons work with no violation', async () => {
     await withFixture('settings', async ({ page, fixture }) => {
-      await trackViolations(page);
       const response = await page.goto(`${fixture.url}/dashboard`, { waitUntil: 'networkidle0' });
 
       // The policy really is on the document being tested.
@@ -76,9 +67,24 @@ describe('dashboard under its Content-Security-Policy (#243)', () => {
     });
   });
 
+  // withFixture's guard against a spec reaching the network (#289). Both layers
+  // are exercised: interception (no CSP on about:blank) and the CSP refusal.
+  test('withFixture rejects a spec that fetches an external URL on a page without a CSP', async () => {
+    await expect(withFixture('healthy', async ({ page }) => {
+      await page.evaluate(() => fetch('https://cdn.example.com/x').catch(() => {}));
+    })).rejects.toThrow(/left the fixture server and were blocked[\s\S]*cdn\.example\.com\/x/);
+  });
+
+  test('withFixture rejects a dashboard spec that fetches an external URL (CSP path)', async () => {
+    await expect(withFixture('healthy', async ({ page, fixture }) => {
+      await page.goto(`${fixture.url}/dashboard`, { waitUntil: 'networkidle0' });
+      await page.evaluate(() => fetch('https://cdn.example.com/x.js').catch(() => {}));
+      await page.waitForFunction(() => window.__cspViolations.length > 0);
+    })).rejects.toThrow(/CSP violation[\s\S]*cdn\.example\.com/);
+  });
+
   test('the detector works: an injected inline script is blocked and reported', async () => {
     await withFixture('healthy', async ({ page, fixture }) => {
-      await trackViolations(page);
       await page.goto(`${fixture.url}/dashboard`, { waitUntil: 'networkidle0' });
 
       await page.evaluate(() => {
@@ -91,6 +97,10 @@ describe('dashboard under its Content-Security-Policy (#243)', () => {
 
       expect(await page.evaluate(() => window.__injectedRan)).toBe(false);
       expect((await page.evaluate(() => window.__cspViolations))[0]).toContain('script-src');
+
+      // The violation was provoked on purpose; clear it so withFixture's
+      // leftover-violation guard (#289) does not fail this test.
+      await page.evaluate(() => { window.__cspViolations = []; });
     });
   });
 });

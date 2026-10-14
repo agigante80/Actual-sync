@@ -2845,6 +2845,22 @@ module.exports = [
 
     // ---- #289: now() seam at per-call sites, port read-back ----------------------
     {
+        id: '289-e2e-external-request-guard-dropped', ticket: '#289',
+        desc: "withFixture no longer fails when a spec's request was blocked by interception",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "    if (page.__externalRequests.length) {\n      throw new Error(",
+        mutant: "    if (false && page.__externalRequests.length) {\n      throw new Error(",
+        tests: 'e2eHarnessGuard'
+    },
+    {
+        id: '289-e2e-csp-violation-guard-dropped', ticket: '#289',
+        desc: "withFixture no longer fails when a CSP violation was recorded on the page",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "    if (violations.length) {\n      throw new Error(",
+        mutant: "    if (false && violations.length) {\n      throw new Error(",
+        tests: 'e2eHarnessGuard'
+    },
+    {
         id: '289-port-readback-dropped', ticket: '#289',
         desc: "start() no longer reads the OS-assigned port back, so service.port stays 0 after port: 0",
         file: 'src/services/healthCheck.js',

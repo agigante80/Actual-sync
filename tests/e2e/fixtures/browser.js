@@ -115,6 +115,14 @@ async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
       if (i !== -1) overrides.splice(i, 1);
     };
   };
+  // Record every CSP violation on every page, registered before any page
+  // script runs so none is missed. withFixture fails on a leftover one. (#289)
+  await page.evaluateOnNewDocument(() => {
+    window.__cspViolations = [];
+    document.addEventListener('securitypolicyviolation', (e) => {
+      window.__cspViolations.push(`${e.violatedDirective} blocked ${e.blockedURI || e.sample || 'inline'}`);
+    });
+  });
   await page.setRequestInterception(true);
   page.on('request', (req) => {
     const url = req.url();
@@ -254,14 +262,29 @@ async function withFixture(stateName, fn, options = {}) {
 
     const result = await fn({ page, fixture });
 
-    // openPage aborts and records every request outside the fixture server;
-    // without this check a spec that quietly reaches for the network passes.
-    // A spec that expects blocked requests can assert and clear the list
-    // itself before returning. (#289)
+    // A spec must only talk to its own fixture server. Two layers catch a
+    // request that leaves it: (1) openPage's interception aborts and records
+    // any foreign request (pages without a CSP, e.g. about:blank), and (2) on
+    // dashboard pages the CSP (default-src/connect-src 'self') makes Chrome
+    // refuse the request before interception sees it, so it shows up as a
+    // recorded securitypolicyviolation instead. Both fail the spec here. A spec
+    // that expects either can assert and clear the list (page.__externalRequests
+    // or window.__cspViolations) before returning. (#289)
     if (page.__externalRequests.length) {
       throw new Error(
         `withFixture: ${page.__externalRequests.length} request(s) left the fixture server and were blocked:\n`
         + page.__externalRequests.map((u) => `  ${u}`).join('\n')
+      );
+    }
+    // The page may have been closed or navigated away by the spec; then there
+    // is nothing left to read.
+    const violations = page.isClosed()
+      ? []
+      : await page.evaluate(() => window.__cspViolations || []).catch(() => []);
+    if (violations.length) {
+      throw new Error(
+        `withFixture: ${violations.length} CSP violation(s) were recorded on the page:\n`
+        + violations.map((v) => `  ${v}`).join('\n')
       );
     }
     return result;
