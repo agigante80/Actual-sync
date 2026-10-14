@@ -1,0 +1,49 @@
+name: OpenSSF Scorecard
+
+# Measures the repository's supply chain posture and uploads the findings to the
+# Security tab next to CodeQL and Trivy (#255). It measures, it does not fix.
+# Which checks the project cares about, and which it ignores on purpose, is
+# recorded in docs/CI_CD.md ("OpenSSF Scorecard") so the score does not become
+# a number to chase.
+#
+# `publish_results` is false ON PURPOSE. true would publish the score to the
+# OpenSSF public dataset (and needs `id-token: write`). That is a maintainer
+# decision, not a default; flip it here and add `id-token: write` to the job
+# if a public badge is wanted.
+on:
+  schedule:
+    # Mondays 03:30 UTC (CodeQL runs Mondays 02:00 UTC)
+    - cron: '30 3 * * 1'
+  workflow_dispatch:
+
+# Read-only by default; the one job below grants only what it needs.
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload the SARIF results to the Security tab.
+      security-events: write
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: false
+
+      - name: Upload results to the Security tab
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: results.sarif
+          category: scorecard

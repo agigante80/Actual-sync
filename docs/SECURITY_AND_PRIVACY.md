@@ -278,8 +278,10 @@ USER node
 
 **Implementation**:
 ```bash
-npm audit
+npm audit --audit-level=high
 ```
+
+**Enforcement** (#250): CI runs `node scripts/auditGate.js` (a wrapper over `npm audit` at the high level, with an expiring allowlist) on every push and pull request and fails the build on any high or critical advisory. Pull requests also run `actions/dependency-review-action` (`fail-on-severity: high`), which blocks a PR that introduces a vulnerable dependency. An unfixable advisory can be accepted for a limited time in `.github/audit-allowlist.json`; see [CI/CD, Dependency checks](CI_CD.md#dependency-checks).
 
 **Response Protocol**:
 1. **Critical/High**: Patch within 7 days
@@ -292,6 +294,8 @@ npm audit
 - Dependabot (GitHub)
 - Renovate Bot
 - Snyk
+
+**Cooldown (#251)**: Dependabot version updates wait before proposing a new release: 5 days for npm patch and minor, 7 days for npm major, 5 days for GitHub Actions. Malicious package versions are usually detected and unpublished within hours to a couple of days, so a short wait skips most of them. It is a probabilistic control, not a guarantee. Security updates are exempt on purpose: they respond to a known advisory, where waiting only increases exposure. The policy and its rationale live in `.github/dependabot.yml`, and `src/__tests__/dependabotConfig.test.js` fails if a cooldown is added to the security entry.
 
 **Manual Process**:
 1. Review `npm audit` output
@@ -605,6 +609,8 @@ docker scout cves actual-sync:latest
    trivy image actual-sync:latest
    ```
 
+6. **OpenSSF Scorecard** - Weekly supply chain posture check (workflow `scorecard.yml`, results in the Security tab next to CodeQL and Trivy). It measures rather than fixes; the checks the project acts on and the ones it ignores on purpose are listed in [CI/CD: OpenSSF Scorecard](CI_CD.md#openssf-scorecard).
+
 ---
 
 ## 🔍 Automated Security Scanning
@@ -647,7 +653,7 @@ npm audit --audit-level=high
 
 **Runs**: After Docker test build completes
 
-**Supply chain** (#249): every GitHub Action in every workflow is pinned to a full commit SHA with a version comment, so a repointed tag or compromised upstream branch cannot run new code in CI, where Docker Hub, GitHub App and Codecov credentials are in scope. `scripts/check-action-pins.sh` fails CI on any unpinned reference, and Dependabot's `github-actions` entry keeps the pins current. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions).
+**Supply chain** (#249): every GitHub Action in every workflow is pinned to a full commit SHA with a version comment, so a repointed tag or compromised upstream branch cannot run new code in CI, where Docker Hub, GitHub App and Codecov credentials are in scope. `scripts/check-action-pins.sh` fails CI on any unpinned reference, and Dependabot's `github-actions` entry keeps the pins current. See [CI/CD: Pinning third-party actions](CI_CD.md#pinning-third-party-actions). The Docker base image is pinned the same way (`node:22-alpine` by digest), and Dependabot's `docker` entry proposes a digest bump when a patched base is published (#362).
 
 **Location**: `security-scan` job in CI/CD workflow
 

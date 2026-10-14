@@ -208,7 +208,7 @@ curl http://localhost:3000/metrics
 1. Checkout code
 2. Setup Node.js
 3. Install dependencies
-4. Run npm audit for vulnerabilities
+4. Run `npm audit --audit-level=high` (blocking: fails on any high or critical advisory)
 5. Execute Jest tests with coverage
 6. Upload coverage to Codecov
 
@@ -417,6 +417,54 @@ throttle), all against fixture states under
 - Manual review recommended
 - Automatic fixes suggested when available
 
+### Dependency checks
+
+Two checks look at dependency advisories. Both block a merge when they find a high or critical advisory:
+
+| Check | Where | Blocks? | What it covers |
+|-------|-------|---------|----------------|
+| `npm audit --audit-level=high` | `test` job in `ci-cd.yml` | Yes, on high or critical | The whole installed tree, on every push and PR. Moderate and low advisories are reported but do not fail the build. |
+| `actions/dependency-review-action` (`fail-on-severity: high`) | `dependency-review.yml`, pull requests only | Yes, on high or critical | Only what the PR adds or changes, compared with its base. Catches a vulnerable package introduced by the PR itself. |
+
+Trivy (job 8) is a separate image scan and is still advisory (`exit-code: 0`).
+
+The `npm audit` step runs `node scripts/auditGate.js`, which wraps `npm audit --json` and fails on any high or critical advisory that a live allowlist entry does not cover. The step used to end in `|| echo "continuing..."`, which swallowed every failure; do not restore that.
+
+#### Audit allowlist
+
+When an advisory has no available fix (for example an in-range transitive waiting on an upstream parent bump), accept it explicitly in `.github/audit-allowlist.json`:
+
+```json
+{
+  "entries": [
+    { "id": "GHSA-xxxx-xxxx-xxxx", "reason": "no upstream fix; not reachable from our code", "expires": "2026-12-31" }
+  ]
+}
+```
+
+- `id` is the GHSA id (the last part of the advisory URL that `npm audit` prints), `reason` is required, `expires` is a `YYYY-MM-DD` date.
+- An entry suppresses its advisory through the whole `expires` day (UTC). From the next day the advisory fails the gate again, so the decision is remade on a date. Re-decide by fixing the dependency, or by extending the date with a new reason in a reviewed commit.
+- A malformed entry (bad id, empty reason, bad date) fails the gate instead of being ignored. The file is empty today because the tree is clean at the `high` threshold.
+- Run it locally with `node scripts/auditGate.js`. `src/__tests__/auditGate.test.js` proves that a live entry suppresses and an expired one does not.
+
+Why a small script and not `better-npm-audit`: the gate needs an expiry that fails the build, a rule the project wants to own and test in jest, and nothing new to install, pin and keep patched in a job that guards the supply chain. The script is about 100 lines over the stable `npm audit --json` v2 report. Alternatives rejected: `better-npm-audit` (extra dependency, and its exception format would need a wrapper to enforce our expiry rule and be testable here), a `jq` filter in the workflow (untestable inline, no validation), Snyk (account and token, overlaps Dependabot and Trivy).
+
+To make `dependency-review` a required check, add "Dependency review" to the branch protection rules (a repository setting, not something the workflow can do).
+
+### OpenSSF Scorecard
+
+`.github/workflows/scorecard.yml` runs [OpenSSF Scorecard](https://github.com/ossf/scorecard) every Monday 03:30 UTC and on manual dispatch (`gh workflow run scorecard.yml`), and uploads SARIF to the Security tab (code scanning, category `scorecard`) beside CodeQL and Trivy (#255). It measures; it fixes nothing. Its value is that a regression, such as someone adding a tag-pinned action, shows up without anyone having to remember the rule.
+
+The first Scorecard run on `main` sets the baseline score; Scorecard analyses the default branch, so no earlier run is meaningful.
+
+- **Permissions**: top level `contents: read`; the single job adds `security-events: write` (SARIF upload) and `actions: read`. No `id-token`.
+- **`publish_results: false`, deliberately.** `true` publishes the score to the OpenSSF public dataset and enables a public badge. That is the maintainer's decision, not a default. To opt in, set it to `true` and add `id-token: write` to the job.
+- **Baseline**: not recorded by this PR, because it needs a first run on GitHub. After merge, run the workflow once and note the score and failing checks on #255, then again once the rest of the hardening batch lands to confirm the number moved.
+
+**Checks the project cares about** (act on a drop): `Pinned-Dependencies`, `Token-Permissions`, `Dangerous-Workflow`, `Security-Policy`, `Vulnerabilities`, `Dependency-Update-Tool`, `SAST`, `Signed-Releases`, `Binary-Artifacts`, `Branch-Protection` (within what a single maintainer can enable), `Packaging`.
+
+**Checks deliberately out of scope** (a low score is accepted, do not chase it): `Contributors` (wants contributors from several organisations), `Code-Review` (a single maintainer cannot have a second approver on every PR), `CII-Best-Practices` (a badge programme this project has not applied to), `Fuzzing` (no fuzz targets worth maintaining for a sync service), `Maintained` and `CI-Tests` heuristics where they simply reflect repository age or PR volume.
+
 ### Pinning third-party actions
 
 A `uses:` line that points at a tag or branch runs whatever that ref holds at the moment the job starts, with the job's token and secrets. Tags are mutable: in March 2025 `tj-actions/changed-files` had its tags repointed to a credential-dumping commit, and every workflow tracking it ran the payload. So (#249):
@@ -561,6 +609,9 @@ returns the tag, not the highest published version).
 | Direct dependency — **security** update | Dependabot entry 2 | opens on **`main`**, retargeted hourly to `development` |
 | **Transitive** dependency (either kind) | nobody — **no PR is opened** | see below |
 | GitHub Actions versions | Dependabot, `github-actions` entry | PR to `development`, promoted manually |
+| Docker base image (`node:22-alpine` digest) | Dependabot, `docker` entry | PR to `development`, promoted manually |
+
+**Cooldown (#251).** Dependabot version updates are deliberately delayed: npm patch and minor wait 5 days after a release is published, npm major 7 days, GitHub Actions 5 days. A Dependabot PR that "has not appeared yet" for a fresh release is this, not a bug. To take a fix sooner, bump it by hand. Security updates are not delayed (the security entry has no cooldown). The `docker` entry (#362) tracks the Dockerfile base image: both stages pin `node:22-alpine` by digest, Dependabot proposes digest bumps weekly after the same 5 day cooldown, and Node major versions are ignored (the major moves by hand, together with `NODE_VERSION` and `engines.node`).
 
 `dependabot.yml` carries a bare `dependency-name: "@actual-app/api"` ignore rule
 with **no** `update-types` filter, in **both** npm entries (entry 1's `ignore` does
@@ -1311,7 +1362,7 @@ nvm use 20
 npm test
 
 # Run tests in Docker (same as CI)
-docker run --rm -v $(pwd):/app -w /app node:20-alpine npm test
+docker run --rm -v $(pwd):/app -w /app node:22-alpine npm test
 
 # Check for hardcoded paths
 grep -r "$(pwd)" src/

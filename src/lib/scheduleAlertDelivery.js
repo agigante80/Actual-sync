@@ -149,8 +149,9 @@ const DEFAULT_TEMPLATES = {
     + '(difference {{difference}}).',
   // #326: `closed_by` is "completed" when the one-off schedule was marked
   // completed in Actual instead of a payment arriving; the other branch is the
-  // original text, unchanged.
-  resolved: '{{#if (eq closed_by "completed")}}✅ {{name}}: marked completed in Actual. Alert closed.{{else}}'
+  // original text, unchanged. #356: "deleted" is the schedule removed from Actual.
+  resolved: '{{#if (eq closed_by "completed")}}✅ {{name}}: marked completed in Actual. Alert closed.'
+    + '{{else if (eq closed_by "deleted")}}✅ {{name}} ({{expected_date}}): removed in Actual. Alert closed.{{else}}'
     + '✅ {{name}}: {{received_amount}} arrived {{received_date}}, {{#if (eq days_overdue 0)}}on time'
     + '{{else}}{{days_overdue}} day(s) after the deadline{{/if}}. Alert closed.{{/if}}',
   // One wording per `reason` (#296): only stale / not-synced are about the bank
@@ -241,7 +242,7 @@ function buildContext(event, evaluation, rule, { server, timezone }) {
   const daysOverdue = event.daysOverdue != null ? event.daysOverdue : null;
 
   return {
-    name: (evaluation && evaluation.name) || rule.scheduleName || rule.id,
+    name: (evaluation && evaluation.name) || event.scheduleName || rule.scheduleName || rule.id,
     payee: evaluation ? evaluation.payee : null,
     account: evaluation ? evaluation.account : null,
     direction,
@@ -356,9 +357,11 @@ function destinationsForRule(rule, sender) {
  * - `resolved`: due only if this destination holds its own `missing` row and
  *   no `resolved` row yet (#295 review round 2, M5).
  * - any other event: due if the destination has no row for it yet (#295
- *   review, H5); `missing` and `ruleUnmatched` are additionally due again once
- *   `remindEveryDays` calendar days (M7) have passed since the latest row
- *   (`ruleUnmatched` always uses a 1-day interval).
+ *   review, H5); `missing` is additionally due again once `remindEveryDays`
+ *   calendar days (M7) have passed since the latest row. `ruleUnmatched` (#356)
+ *   is sent once per destination while the rule stays unmatched, and is due
+ *   again only after a `ruleMatched` row (see `markRulesMatched`) is newer
+ *   than its latest row.
  *
  * @returns {Promise<boolean>}
  */
@@ -407,8 +410,16 @@ async function destinationDueState(event, rule, destinationKey, history, server,
   // #261: held back by a mute. The mute-end summary covers it; a reminder
   // here would send an individual message while the summary is pending.
   if (latest.delivery === 'muted') return { due: false, lastSentAt: null };
-  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return { due: false, lastSentAt: null }; // one row per destination, ever
-  const remindEveryDays = event.event === 'ruleUnmatched' ? 1 : rule.remindEveryDays;
+  if (event.event === 'ruleUnmatched') {
+    // #356: no reminder interval. The rule matching again (a `ruleMatched`
+    // marker newer than this destination's row) re-arms it.
+    const matchedRow = await history.findLatestScheduleAlert({
+      server, alertId: event.alertId, scheduleId: null, occurrenceDate: null, event: 'ruleMatched'
+    });
+    return { due: !!matchedRow && matchedRow.recordedAt > latest.recordedAt, lastSentAt: latest.recordedAt };
+  }
+  if (event.event !== 'missing') return { due: false, lastSentAt: null }; // one row per destination, ever
+  const remindEveryDays = rule.remindEveryDays;
   if (!remindEveryDays) return { due: false, lastSentAt: null };
   return { due: calendarDaysBetween(now, latest.recordedAt, timezone) >= remindEveryDays, lastSentAt: latest.recordedAt };
 }
@@ -900,8 +911,45 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
  * @param {string} server
  * @returns {Promise<Object[]>} synthesized `resolved` events, shaped like `evaluate()`'s AlertEvent
  */
-async function deriveResolvedEvents(evaluations, history, server, logger, { completedSchedules, now, timezone } = {}) {
+async function deriveResolvedEvents(evaluations, history, server, logger, { completedSchedules, existingScheduleIds, rules, now, timezone } = {}) {
   const resolved = [];
+  // #356: a schedule deleted in Actual is gone from the schedule list, so its
+  // open `missing` rows (same look-back window) are closed with a `resolved`
+  // carrying `closedBy: 'deleted'`, from the ledger alone: the name, payee and
+  // account are not stored there, so the text uses the rule's exact
+  // `schedule` name, or its id for a prefix rule. `existingScheduleIds` is null
+  // when the schedule list could not be trusted (see evaluateScheduleAlerts);
+  // nothing is inferred then.
+  if (existingScheduleIds) {
+    const sinceDate = moment.tz(now, timezone).startOf('day').subtract(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');
+    for (const rule of rules || []) {
+      let rows;
+      try {
+        rows = await history.listMissingScheduleAlertSchedules({ server, alertId: rule.id, sinceDate });
+      } catch (error) {
+        logger.warn('Schedule alert ledger lookup failed; deleted-schedule check withheld until the next sync', {
+          server, alertId: rule.id, event: 'resolved', error: error.message
+        });
+        continue;
+      }
+      for (const row of rows) {
+        if (existingScheduleIds.has(row.scheduleId)) continue;
+        resolved.push({
+          event: 'resolved',
+          closedBy: 'deleted',
+          scheduleName: rule.schedule || null, // exact-name rules only; a prefix rule falls back to its id
+          alertId: rule.id,
+          scheduleId: row.scheduleId,
+          occurrence: row.occurrenceDate,
+          deadline: null,
+          daysOverdue: null,
+          receivedAmount: null,
+          receivedDate: null,
+          expectedAmount: null
+        });
+      }
+    }
+  }
   // #326: a one-off schedule marked completed in Actual is no longer
   // evaluated, so close any `missing` it left open (within the same look-back
   // window evaluation uses) with a `resolved` carrying `closedBy: 'completed'`.
@@ -974,17 +1022,56 @@ async function deriveResolvedEvents(evaluations, history, server, logger, { comp
 }
 
 /**
+ * #356: `ruleUnmatched` is sent once per destination, so the ledger must also
+ * remember when the rule matched a schedule again, or a later unmatch could
+ * never be told apart from the same ongoing one. For every rule that matched
+ * this sync and has a `ruleUnmatched` row not yet followed by a `ruleMatched`
+ * marker, record one (`delivery: 'inferred'`, no destination: it is a state
+ * change of the rule, not a message). A failure only delays the re-arm to the
+ * next sync, so it is logged and never blocks delivery.
+ */
+async function markRulesMatched(matchedAlertIds, history, server, now, logger) {
+  for (const alertId of matchedAlertIds) {
+    try {
+      const key = { server, alertId, scheduleId: null, occurrenceDate: null };
+      const unmatched = await history.findLatestScheduleAlert({ ...key, event: 'ruleUnmatched' });
+      if (!unmatched) continue;
+      const matched = await history.findLatestScheduleAlert({ ...key, event: 'ruleMatched' });
+      if (matched && matched.recordedAt >= unmatched.recordedAt) continue;
+      await history.recordScheduleAlert({ ...key, event: 'ruleMatched', delivery: 'inferred' });
+    } catch (error) {
+      logger.warn('Could not record that a schedule alert rule matches again; ruleUnmatched re-arm withheld until the next sync', {
+        server, alertId, error: error.message
+      });
+    }
+  }
+}
+
+/**
  * The template set for one event: the built-ins overlaid with the rule's own
  * (block-level templates are already merged into `rule.templates`). #326: a
  * custom `resolved` written before `closed_by` existed would render
  * "arrived ," with empty amount and date for a completed one-off, falsely
  * saying money arrived. So when the event is closed by completion and the
  * custom `resolved` never mentions `closed_by`, the built-in `resolved` is
- * used for that event. A template that mentions it is honoured as written.
+ * used for that event. #356: the same holds for `closedBy: 'deleted'`.
+ * A custom `resolved` is honoured only when it mentions `closed_by` and, if
+ * it compares `closed_by` to quoted literals, one of them is this event's
+ * value: a #326-style template that branches on `(eq closed_by "completed")`
+ * and sends the payment text otherwise would render "arrived ." for a deleted
+ * schedule, so it gets the built-in text for the value it does not handle. A
+ * bare `{{#if closed_by}}` has no literals and is honoured as written.
  */
 function templatesFor(event, rule) {
   const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
-  if (event.closedBy && !/\bclosed_by\b/.test(templates.resolved)) templates.resolved = DEFAULT_TEMPLATES.resolved;
+  if (event.closedBy) {
+    const custom = templates.resolved;
+    // Both argument orders: `eq` is symmetric, so `(eq "completed" closed_by)` is the same branch.
+    const literals = [...custom.matchAll(/\bclosed_by\s+["']([^"']*)["']|["']([^"']*)["']\s+closed_by\b/g)]
+      .map((m) => m[1] ?? m[2]);
+    const handled = /\bclosed_by\b/.test(custom) && (literals.length === 0 || literals.includes(event.closedBy));
+    if (!handled) templates.resolved = DEFAULT_TEMPLATES.resolved;
+  }
   return templates;
 }
 
@@ -1231,7 +1318,7 @@ async function runMuteEndPhase({ rules, evaluations, stateOf, history, sender, s
  *   this promise settles (see `sendEvent`'s doc comment).
  * @returns {Promise<{sent: number, skipped: number}>}
  */
-async function deliver(events, { evaluations, completedSchedules, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
+async function deliver(events, { evaluations, completedSchedules, existingScheduleIds, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
   const log = logger || { warn() {} };
   const rulesById = new Map((rules || []).map((r) => [r.id, r]));
   let sent = 0;
@@ -1250,7 +1337,16 @@ async function deliver(events, { evaluations, completedSchedules, ruleState, his
   dropPaidMutedRows({ evaluations: evaluations || [], rulesById, stateOf, history, sender, server, log });
   await runMuteEndPhase({ rules: rules || [], evaluations: evaluations || [], stateOf, history, sender, server, timezone, log, now, deadline });
 
-  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log, { completedSchedules, now, timezone });
+  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log, { completedSchedules, existingScheduleIds, rules, now, timezone });
+  // #356 L2: a rule matched this sync unless it produced a `ruleUnmatched`
+  // event. Deriving it from evaluations missed rules whose schedule only
+  // yields cannotCheck or is a completed recurring one, leaving the
+  // ruleUnmatched re-arm marker unwritten.
+  const unmatchedIds = new Set((events || []).filter((e) => e.event === 'ruleUnmatched').map((e) => e.alertId));
+  await markRulesMatched(
+    new Set((rules || []).map((r) => r.id).filter((id) => !unmatchedIds.has(id))),
+    history, server, now, log
+  );
   const allEvents = [...(events || []), ...resolvedEvents];
   // Render context for the #326 completed-schedule `resolved` events: name,
   // payee and account come from the same lookup as for any other event.
