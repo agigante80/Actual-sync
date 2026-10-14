@@ -37,7 +37,7 @@ For each server with a `scheduleAlerts` block:
 3. For every occurrence of a watched schedule, a matching transaction is looked for by two means:
    Actual's own transaction-to-schedule link (authoritative, regardless of amount) or an
    account + payee match within an early/grace window around the occurrence date.
-4. What happened for each occurrence in the look-back window (90 days) becomes zero or one event
+4. What happened for each occurrence in the look-back window (up to 90 days: twice the schedule's longest interval, at least 7) becomes zero or one event
    of its own, so several overdue occurrences can each produce one: `missing`,
    `wrongAmount`, `cannotCheck`, `resolved`, or (for a rule matching no schedule) `ruleUnmatched`.
    See [Event types](#event-types).
