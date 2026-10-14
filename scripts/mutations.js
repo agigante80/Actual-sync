@@ -3004,5 +3004,39 @@ module.exports = [
         anchor: ".filter((id) => !unmatchedIds.has(id))",
         mutant: ".filter((id) => !unmatchedIds.has(id) && (evaluations || []).some((e) => e.alertId === id))",
         tests: 'scheduleAlert'
+    },
+
+    // ---- #359: an empty schedule list skips rule matching ------------------
+    {
+        id: '359-empty-list-evaluated', ticket: '#359',
+        desc: "an empty schedule list is evaluated, so every rule raises ruleUnmatched",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "if (!scheduleListReliable && scheduleAlertRules.length > 0) {",
+        mutant: "if (false) {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '359-skip-without-rules-warns', ticket: '#359',
+        desc: "the skip also fires (and warns) when no rule is configured",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "if (!scheduleListReliable && scheduleAlertRules.length > 0) {",
+        mutant: "if (!scheduleListReliable) {",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '359-skipped-still-delivered', ticket: '#359',
+        desc: "a skipped sync still runs delivery, marking every rule matched and re-arming ruleUnmatched",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "if (evaluated.skipped) return { events: 0, sent: 0, skipped: 0 };",
+        mutant: "",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '359-skipped-snapshot-replaced', ticket: '#359',
+        desc: "a skipped sync replaces the dashboard snapshot with an empty one",
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "} else if (evaluated && evaluated.skipped) {",
+        mutant: "} else if (evaluated && evaluated.skipped && false) {",
+        tests: 'scheduleAlert'
     }
 ];
