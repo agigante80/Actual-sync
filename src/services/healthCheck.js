@@ -24,13 +24,26 @@ class AuthFailureCounter {
   constructor(windowMs) {
     this.windowMs = windowMs;
     this.entries = new Map();
+    this.sweeper = null;
+    this.arm();
+  }
+
+  /** Start the sweep timer (unref'd, so it never keeps the process alive). */
+  arm() {
+    if (this.sweeper) return;
     this.sweeper = setInterval(() => {
       const now = Date.now();
       for (const [key, entry] of this.entries) {
         if (entry.resetTime <= now) this.entries.delete(key);
       }
-    }, windowMs);
+    }, this.windowMs);
     this.sweeper.unref();
+  }
+
+  /** Stop the sweep timer. A later increment() re-arms it, so a restarted service still sweeps. (#286) */
+  shutdown() {
+    if (this.sweeper) clearInterval(this.sweeper);
+    this.sweeper = null;
   }
 
   get(key) {
@@ -38,6 +51,7 @@ class AuthFailureCounter {
   }
 
   increment(key) {
+    this.arm();
     const now = Date.now();
     let entry = this.entries.get(key);
     if (!entry || entry.resetTime <= now) {
@@ -98,6 +112,21 @@ class HealthCheckService {
     // unless configured. express-rate-limit's own validation stays enabled.
     if (options.trustProxy !== undefined && options.trustProxy !== false) {
       this.app.set('trust proxy', options.trustProxy);
+    } else {
+      // Without trustProxy every request through a proxy shares the proxy's
+      // address, so one guesser burns the dashboard login budget for everyone.
+      // The header is the only sign of that, so warn once, on the first
+      // request that carries it. (#286)
+      let warned = false;
+      this.app.use((req, res, next) => {
+        if (!warned && req.headers['x-forwarded-for']) {
+          warned = true;
+          this.logger.warn('Request carries X-Forwarded-For but healthCheck.trustProxy is not set: all clients behind a proxy share one rate limit and one dashboard login failure budget. Set healthCheck.trustProxy if a reverse proxy you control is in front.', {
+            remoteAddress: req.ip
+          });
+        }
+        next();
+      });
     }
     this.server = null;
     this.wsClients = new Set();
@@ -254,8 +283,8 @@ class HealthCheckService {
         return res.status(401).json({ error: 'Authentication required' });
       }
       res.locals.authFailed = true;
+      // Never log the username: users paste passwords into that field. (#286)
       this.logger.warn('Dashboard authentication failed', {
-        username: result.username,
         remoteAddress: req.ip
       });
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -1375,8 +1404,10 @@ This test verifies that notifications are configured correctly and can reach the
    *   to the credential check.
    * - more than maxWsConnectionsPerIp open sockets from one address (the
    *   trustProxy-resolved client address): 429
-   * - auth type basic/token: a valid ?ticket= from /api/dashboard/ws-ticket.
-   *   Otherwise 401. The ticket is consumed first, so it dies with any refusal.
+   * - auth type basic/token: a valid single-use ?ticket= from
+   *   /api/dashboard/ws-ticket. Otherwise 401. The ticket is consumed first,
+   *   so it dies with any refusal. An Authorization header is not accepted on
+   *   the handshake (it would be an unthrottled password oracle).
    * @param {{origin?: string, req: import('http').IncomingMessage}} info
    * @param {Function} done - ws callback (result, code, message)
    */
@@ -1672,6 +1703,7 @@ This test verifies that notifications are configured correctly and can reach the
    * @returns {Promise<void>}
    */
   async stop() {
+    if (this.authFailures) this.authFailures.shutdown();
     return new Promise((resolve, reject) => {
       if (!this.server) {
         resolve();

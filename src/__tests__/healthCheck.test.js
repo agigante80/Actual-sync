@@ -1026,6 +1026,12 @@ describe('HealthCheckService', () => {
       });
       await hc.start();
       try {
+        // Auth none never counts a failure, so a passing run alone proves nothing.
+        // Seed the client over the limit: only a throttle that ignores auth none
+        // answers 429. (#286)
+        const key = require('express-rate-limit').ipKeyGenerator('127.0.0.1');
+        hc.authFailures.increment(key);
+        hc.authFailures.increment(key);
         for (let i = 0; i < 3; i++) {
           expect((await getWithAuth('/api/dashboard/status', 'Bearer anything')).statusCode).toBe(200);
         }
@@ -1044,42 +1050,143 @@ describe('HealthCheckService', () => {
         const burst = await Promise.all(Array.from({ length: 12 }, () =>
           getWithAuth('/api/dashboard/status', 'Bearer correct-token')));
         expect(burst.map(r => r.statusCode)).toEqual(Array(12).fill(200));
-        expect((await hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1'))).totalHits).toBe(4);
+        expect(hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1')).totalHits).toBe(4);
       } finally {
         await hc.stop();
       }
     });
 
-    test('a correct request the client aborts is not counted', async () => {
+    test('a correct request the client aborts while the handler is pending is not counted', async () => {
       const hc = tokenService();
+      // A handler that stays pending until released, behind the same auth middleware,
+      // moved to the front of the router so no earlier route or catch-all answers it.
+      // The old destroy-on-connect test aborted before the server read the request.
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      let entered = 0;
+      let enteredResolve;
+      const allEntered = new Promise((r) => { enteredResolve = r; });
+      hc.app.get('/api/dashboard/slow-test', hc.dashboardAuth(), async (req, res) => {
+        if (++entered === 8) enteredResolve();
+        await gate;
+        if (!res.destroyed) res.json({ ok: true });
+      });
+      const stack = hc.app.router.stack;
+      stack.unshift(stack.pop());
       await hc.start();
       try {
-        await Promise.all(Array.from({ length: 8 }, () => new Promise((resolve) => {
+        const reqs = Array.from({ length: 8 }, () => {
           const req = http.get({
-            hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/status',
+            hostname: '127.0.0.1', port: testPort, path: '/api/dashboard/slow-test',
             headers: { Authorization: 'Bearer correct-token' }
           });
-          req.on('error', resolve);
-          req.on('socket', (sock) => sock.on('connect', () => { req.destroy(); resolve(); }));
-        })));
+          req.on('error', () => {});
+          return req;
+        });
+        await allEntered;
+        reqs.forEach((req) => req.destroy());
+        await new Promise((r) => setTimeout(r, 50));
+        release();
+        await new Promise((r) => setTimeout(r, 50));
+        expect(hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1'))).toBeUndefined();
         expect((await getWithAuth('/api/dashboard/status', 'Bearer correct-token')).statusCode).toBe(200);
-        expect(await hc.authFailures.get(require('express-rate-limit').ipKeyGenerator('127.0.0.1'))).toBeUndefined();
       } finally {
+        release();
         await hc.stop();
       }
     });
 
     test('access comes back once the window ends', async () => {
-      const hc = tokenService({ authFailureLimit: 1, authFailureWindowMs: 300 });
+      // Mocked clock, long window: deterministic, and the lockout cannot end by
+      // the sweep timer or by two slow loopback round trips. (#286)
+      const realNow = Date.now();
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(realNow);
+      const hc = tokenService({ authFailureLimit: 1, authFailureWindowMs: 600000 });
       await hc.start();
       try {
         expect((await getWithAuth('/dashboard', 'Bearer wrong-token')).statusCode).toBe(401);
         expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(429);
-        await new Promise(r => setTimeout(r, 400));
+        nowSpy.mockReturnValue(realNow + 599999);
+        expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(429);
+        nowSpy.mockReturnValue(realNow + 600001);
         expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(200);
+      } finally {
+        nowSpy.mockRestore();
+        await hc.stop();
+      }
+    });
+
+    test('stop() clears the failure sweep timer, and a restart re-arms it (#286)', async () => {
+      const hc = tokenService();
+      expect(hc.authFailures.sweeper).not.toBeNull();
+      const timer = hc.authFailures.sweeper;
+      const clearSpy = jest.spyOn(global, 'clearInterval');
+      await hc.start();
+      await hc.stop();
+      // Nulling the field alone would leak the interval on every restart.
+      // Compare by identity: a Timeout object in a failure diff is ~20k lines.
+      expect(clearSpy.mock.calls.some(([t]) => t === timer)).toBe(true);
+      clearSpy.mockRestore();
+      expect(hc.authFailures.sweeper).toBeNull();
+      hc.authFailures.increment('k');
+      expect(hc.authFailures.sweeper).not.toBeNull();
+    });
+
+    test('a failed basic login never logs the username, which may be a pasted password (#286)', async () => {
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'test-password' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      const warn = jest.spyOn(hc.logger, 'warn').mockImplementation(() => {});
+      await hc.start();
+      try {
+        const header = 'Basic ' + Buffer.from('my-pasted-secret:x').toString('base64');
+        expect((await getWithAuth('/dashboard', header)).statusCode).toBe(401);
+        expect(JSON.stringify(warn.mock.calls)).not.toContain('my-pasted-secret');
+        expect(warn).toHaveBeenCalledWith('Dashboard authentication failed', expect.any(Object));
       } finally {
         await hc.stop();
       }
+    });
+
+    describe('X-Forwarded-For without trustProxy (#286)', () => {
+      const withXff = () => new Promise((resolve, reject) => {
+        http.get({
+          hostname: '127.0.0.1', port: testPort, path: '/health',
+          headers: { 'X-Forwarded-For': '203.0.113.7' }
+        }, (res) => { res.resume(); res.on('end', resolve); }).on('error', reject);
+      });
+      const misconfigWarns = (warn) =>
+        warn.mock.calls.filter(([msg]) => /X-Forwarded-For/.test(msg));
+
+      test('warns once, on the first request that carries the header', async () => {
+        const hc = tokenService();
+        const warn = jest.spyOn(hc.logger, 'warn').mockImplementation(() => {});
+        await hc.start();
+        try {
+          await getWithAuth('/health', 'Bearer x');
+          expect(misconfigWarns(warn)).toHaveLength(0);
+          await withXff();
+          await withXff();
+          expect(misconfigWarns(warn)).toHaveLength(1);
+        } finally {
+          await hc.stop();
+        }
+      });
+
+      test('does not warn when trustProxy is set', async () => {
+        const hc = tokenService({ trustProxy: 1 });
+        const warn = jest.spyOn(hc.logger, 'warn').mockImplementation(() => {});
+        await hc.start();
+        try {
+          await withXff();
+          expect(misconfigWarns(warn)).toHaveLength(0);
+        } finally {
+          await hc.stop();
+        }
+      });
     });
 
     test('behind a trusted proxy each client has its own budget', async () => {

@@ -1294,6 +1294,55 @@ module.exports = [
     },
 
     {
+        id: '286-none-auth-throttled', ticket: '#286',
+        desc: 'auth type none goes through the failure throttle, so a client with recorded failures is refused',
+        file: 'src/services/healthCheck.js',
+        anchor: "      if (authType === 'none') return next();\n\n      try {",
+        mutant: '      try {',
+        tests: 'healthCheck'
+    },
+    {
+        id: '286-username-logged', ticket: '#286',
+        desc: 'a failed basic login logs the typed username again, which may be a pasted password',
+        file: 'src/services/healthCheck.js',
+        anchor: "      this.logger.warn('Dashboard authentication failed', {\n        remoteAddress",
+        mutant: "      this.logger.warn('Dashboard authentication failed', {\n        username: Buffer.from((req.headers.authorization || '').slice(6), 'base64').toString('utf8'),\n        remoteAddress",
+        tests: 'healthCheck'
+    },
+    {
+        id: '286-xff-warning-every-request', ticket: '#286',
+        desc: 'the X-Forwarded-For misconfiguration warning repeats on every request',
+        file: 'src/services/healthCheck.js',
+        anchor: '          warned = true;\n',
+        mutant: '',
+        tests: 'healthCheck'
+    },
+    {
+        id: '286-xff-warning-never', ticket: '#286',
+        desc: 'no warning when requests carry X-Forwarded-For and trustProxy is off',
+        file: 'src/services/healthCheck.js',
+        anchor: "if (!warned && req.headers['x-forwarded-for']) {",
+        mutant: 'if (false) {',
+        tests: 'healthCheck'
+    },
+    {
+        id: '286-sweeper-not-cleared', ticket: '#286',
+        desc: 'shutdown() leaves the failure sweep timer running',
+        file: 'src/services/healthCheck.js',
+        anchor: '    if (this.sweeper) clearInterval(this.sweeper);\n',
+        mutant: '',
+        tests: 'healthCheck'
+    },
+    {
+        id: '286-stop-keeps-sweeper', ticket: '#286',
+        desc: 'stop() no longer shuts the failure counter down',
+        file: 'src/services/healthCheck.js',
+        anchor: '    if (this.authFailures) this.authFailures.shutdown();\n',
+        mutant: '',
+        tests: 'healthCheck'
+    },
+
+    {
         id: '263-metrics-echoes-error', ticket: '#263',
         desc: 'the unauthenticated /metrics shows the sync error text',
         file: 'src/services/healthCheck.js',
