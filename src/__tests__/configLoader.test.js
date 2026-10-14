@@ -164,6 +164,15 @@ describe('ConfigLoader', () => {
             }
         );
 
+        test('an empty scheduleAlerts.alerts array is valid (#262)', () => {
+            const realSchemaPath = path.join(__dirname, '..', '..', 'config', 'config.schema.json');
+            const schema = JSON.parse(fs.readFileSync(realSchemaPath, 'utf8'));
+            const loader = new ConfigLoader('x', realSchemaPath);
+            const config = createMockConfig({});
+            config.servers[0].scheduleAlerts = { alerts: [] };
+            expect(loader.collectSchemaErrors(config, schema)).toEqual({ hard: [], unknownKeys: [] });
+        });
+
         test('the hard-fail message omits AJV combinator noise (anyOf / if-then) (#121)', () => {
             // telegram enabled but missing botToken/chatId triggers if-then + anyOf
             // meta-errors alongside the real "missing required property" leaves.

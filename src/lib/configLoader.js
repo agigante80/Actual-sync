@@ -5,9 +5,8 @@ const Ajv = require('ajv');
 const { isValidTimezone } = require('./timezone');
 const addFormats = require('ajv-formats');
 const { resolveSchemaPath } = require('./configBootstrap');
-const { checkUniqueIds, getRules } = require('./scheduleAlertRules');
-const { DEFAULT_TEMPLATES, VARIABLES, CHANNEL_TO_MODES, resolveChannels } = require('./scheduleAlertDelivery');
-const { compileTemplateSet } = require('./templateRenderer');
+const { checkUniqueIds, deriveRuleId } = require('./scheduleAlertRules');
+const { validateScheduleAlert } = require('./scheduleAlertValidation');
 
 // AJV combinator keywords whose failures are pure structural noise: when an
 // allOf/if-then/anyOf branch fails, AJV (allErrors:true) ALSO emits the concrete
@@ -569,26 +568,24 @@ class ConfigLoader {
      * @throws {Error}
      */
     validateScheduleAlerts(servers, notificationsConfig) {
-        const sender = { config: notificationsConfig || {} };
-
         for (const server of servers || []) {
-            const rules = getRules(server.scheduleAlerts);
-            for (const rule of rules) {
-                const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
-                const ruleChannels = resolveChannels(rule, sender);
-                const modes = ruleChannels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
-                try {
-                    compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
-                } catch (error) {
+            const alerts = server.scheduleAlerts && Array.isArray(server.scheduleAlerts.alerts)
+                ? server.scheduleAlerts.alerts
+                : [];
+            for (const alert of alerts) {
+                const id = deriveRuleId(alert);
+                const result = validateScheduleAlert(alert, {
+                    block: server.scheduleAlerts, notificationsConfig, skipSchema: true
+                });
+                if (result.code === 'invalid_template') {
                     throw new Error(
-                        `Invalid scheduleAlerts template for rule "${rule.id}" (server "${server.name}"): ${error.message}`
+                        `Invalid scheduleAlerts template for rule "${id}" (server "${server.name}"): ${result.template.message}`
                     );
                 }
-
-                if (rule.channels && rule.channels.length && ruleChannels.length === 0) {
+                if (result.code === 'no_configured_destination') {
                     throw new Error(
-                        `scheduleAlerts rule "${rule.id}" (server "${server.name}") restricts channels to `
-                        + `[${rule.channels.join(', ')}], but none of those channels have a configured destination `
+                        `scheduleAlerts rule "${id}" (server "${server.name}") restricts channels to `
+                        + `[${result.channelsRestricted.join(', ')}], but none of those channels have a configured destination `
                         + `in notifications. Configure at least one, or remove the channels restriction.`
                     );
                 }

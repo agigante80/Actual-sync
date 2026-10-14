@@ -129,7 +129,7 @@
         "templates": { "$ref": "#/$defs/scheduleAlertTemplates" },
         "alerts": {
           "type": "array",
-          "minItems": 1,
+          "description": "Config-defined rules. May be empty: the block then only switches the feature on for this server, and rules are added from the dashboard (#262).",
           "items": { "$ref": "#/$defs/scheduleAlert" }
         }
       }
