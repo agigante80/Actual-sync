@@ -152,7 +152,10 @@ async function openPage(browser, { baseUrl, now = FIXTURE_NOW } = {}) {
       return;
     }
 
-    if (baseUrl && url.startsWith(baseUrl)) {
+    // A data: URL is decoded in the browser and never reaches the network,
+    // e.g. Chrome's own calendar icon for <input type="date">. Aborting it
+    // would report a page that made no external request at all. (#261)
+    if ((baseUrl && url.startsWith(baseUrl)) || url.startsWith('data:')) {
       req.continue();
       return;
     }

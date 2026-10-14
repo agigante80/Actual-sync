@@ -2997,6 +2997,14 @@ module.exports = [
         tests: 'e2eHarnessGuard'
     },
     {
+        id: '261-e2e-data-url-counted-external', ticket: '#261',
+        desc: "withFixture counts a data: URL as an external request and fails a page that used the date picker",
+        file: 'tests/e2e/fixtures/browser.js',
+        anchor: "url.startsWith(baseUrl)) || url.startsWith('data:')) {",
+        mutant: "url.startsWith(baseUrl)) || false) {",
+        tests: 'e2eHarnessGuard'
+    },
+    {
         id: '289-e2e-csp-violation-guard-dropped', ticket: '#289',
         desc: "withFixture no longer fails when a CSP violation was recorded on the page",
         file: 'tests/e2e/fixtures/browser.js',
