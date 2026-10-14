@@ -1124,9 +1124,10 @@ async function summarizeMute({ rule, override, evaluations, history, sender, ser
     clear();
     return;
   }
-  const mutedRows = history.listMutedRows({
-    server, alertId, since: override.mutedFrom || undefined, until: muteEndsAt(override.mutedUntil, timezone)
-  });
+  // No upper bound on purpose: rows are only written while muted, and a row
+  // recorded just after the mute day ends (evaluation started before midnight)
+  // must still be summarized, or it stays the latest row and blocks the alert.
+  const mutedRows = history.listMutedRows({ server, alertId, since: override.mutedFrom || undefined });
   const templates = { ...DEFAULT_TEMPLATES, ...(rule.templates || {}) };
   let complete = true;
 

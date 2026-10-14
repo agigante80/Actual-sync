@@ -2843,6 +2843,14 @@ module.exports = [
         tests: 'scheduleAlertDelivery'
     },
     {
+        id: "261-summary-bounded-by-mute-end", ticket: '#261',
+        desc: "the mute summary only covers rows recorded before the end of the mute day",
+        file: "src/lib/scheduleAlertDelivery.js",
+        anchor: "const mutedRows = history.listMutedRows({ server, alertId, since: override.mutedFrom || undefined });",
+        mutant: "const mutedRows = history.listMutedRows({ server, alertId, since: override.mutedFrom || undefined, until: muteEndsAt(override.mutedUntil, timezone) });",
+        tests: "scheduleAlertDelivery"
+    },
+    {
         id: "261-mute-ends-end-of-day", ticket: '#261',
         desc: "a mute ends at the start of the mutedUntil day instead of the end of it",
         file: "src/lib/scheduleAlertRules.js",

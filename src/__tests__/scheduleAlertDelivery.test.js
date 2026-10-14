@@ -1512,6 +1512,22 @@ describe('deliver: off, mute and mute end (#261)', () => {
       expect(sender.calls).toHaveLength(0);
     });
 
+    test('a muted row written just after midnight of the mute end still gets summarized (#261)', async () => {
+      setMute('2026-10-20');
+      // The evaluation started at 23:59:30 (still muted); its row is written at 00:00:10.
+      at('2026-10-21T00:00:10.000Z');
+      const started = new Date('2026-10-20T23:59:30.000Z');
+      const rules = slackRules();
+      await deliver([miss('2026-10-19')], {
+        evaluations: [evalOf('2026-10-19')], history, sender, now: started, server: 'Main', rules, timezone: 'UTC', logger,
+        ruleState: (alertId) => ruleState({ rule: rules[0], override: history.getOverride('Main', alertId), now: started, timezone: 'UTC' })
+      });
+      expect(rows("delivery = 'muted'")).toHaveLength(2);
+      at('2026-10-21T08:00:00.000Z');
+      await run([], { evaluations: [evalOf('2026-10-19')] });
+      expect(summaries()).toHaveLength(2);
+    });
+
     test('a mute that ends with zero muted rows: no message, fields cleared', async () => {
       setMute('2026-10-20');
       at('2026-10-21T08:00:00.000Z');
