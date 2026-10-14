@@ -239,6 +239,8 @@ shares the sync process's own local zone.
 
 ## Payment snapshot and the dashboard API
 
+The dashboard's **Payments** tab renders this snapshot: see [DASHBOARD.md](DASHBOARD.md#payments-tab).
+
 Each sync saves what the evaluation concluded, so `GET /api/dashboard/payments` (see
 [HEALTH_CHECK.md](HEALTH_CHECK.md)) can answer without a connection to Actual.
 

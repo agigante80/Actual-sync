@@ -2213,5 +2213,78 @@ module.exports = [
         anchor: '      if (bracketed || (requested !== undefined',
         mutant: '      if ((requested !== undefined',
         tests: 'paymentsRoute'
+    },
+    {
+        id: '341-group-title-innerhtml', ticket: '#341',
+        desc: 'server name written as HTML in the group heading',
+        file: 'src/services/dashboard.js',
+        anchor: "    head.appendChild(payEl('h3', 'pay-group-title', group.server));",
+        mutant: "    head.innerHTML = '<h3 class=\"pay-group-title\">' + group.server + '</h3>';",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-name-insert-html', ticket: '#341',
+        desc: 'schedule name inserted as HTML',
+        file: 'src/services/dashboard.js',
+        anchor: "        nameTd.appendChild(document.createTextNode(item.name || ''));",
+        mutant: "        nameTd.insertAdjacentHTML('beforeend', item.name || '');",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-sync-arg-all', ticket: '#341',
+        desc: 'Sync now button always targets all servers',
+        file: 'src/services/dashboard.js',
+        anchor: "    syncBtn.setAttribute('data-arg', group.server);",
+        mutant: "    syncBtn.setAttribute('data-arg', 'all');",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-error-banner-hidden', ticket: '#341',
+        desc: 'load-failure banner never shown',
+        file: 'src/services/dashboard.js',
+        anchor: "    errorEl.hidden = !paymentsLoadError;",
+        mutant: "    errorEl.hidden = true;",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-poll-cap-off-by-one', ticket: '#341',
+        desc: 'status poll runs one read too many',
+        file: 'src/services/dashboard.js',
+        anchor: "    for (let reads = 0; reads < PAYMENTS_SYNC_MAX_POLLS; reads++) {",
+        mutant: "    for (let reads = 0; reads <= PAYMENTS_SYNC_MAX_POLLS; reads++) {",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-failed-read-counts', ticket: '#341',
+        desc: 'a failed status read counts toward the two null reads',
+        file: 'src/services/dashboard.js',
+        anchor: "            nullStreak = 0; // a failed read never counts toward the two",
+        mutant: "        nullStreak += 1;",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-one-null-enough', ticket: '#341',
+        desc: 'one null status read ends the wait',
+        file: 'src/services/dashboard.js',
+        anchor: "        if (nullStreak >= 2) break;",
+        mutant: "        if (nullStreak >= 1) break;",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-date-local-tz', ticket: '#341',
+        desc: 'calendar dates formatted in the browser time zone',
+        file: 'src/services/dashboard.js',
+        anchor: "    const fmt = (locale, options) => date.toLocaleDateString(locale, { ...options, timeZone: 'UTC' });",
+        mutant: "    const fmt = (locale, options) => date.toLocaleDateString(locale, { ...options });",
+        tests: 'dashboardPayments'
+    },
+    {
+        id: '341-interval-ignores-tab', ticket: '#341',
+        desc: '60 s poll runs while another tab is active',
+        file: 'src/services/dashboard.js',
+        anchor: "    if (document.hidden || !paymentsTabActive()) return;",
+        mutant: "    if (document.hidden) return;",
+        tests: 'dashboardPayments'
     }
+
 ];

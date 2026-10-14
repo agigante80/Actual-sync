@@ -63,6 +63,44 @@ Served at `GET /api/dashboard/accounts` (subject to the dashboard's auth setting
 ![Account syncability badges](screenshots/dashboard-accounts.png)
 
 
+## Payments tab
+
+The **Payments** tab shows what the [missing-payment alerts](SCHEDULE_ALERTS.md) concluded for every watched schedule. It is read-only (toggling, muting and editing are separate features) and, like the account list, it renders **without a connection to Actual**: it reads the snapshot each sync saves, through `GET /api/dashboard/payments`. It is therefore as fresh as the last sync, and the "as of" line says when that was.
+
+![Payments tab, a server with alerts not configured](screenshots/dashboard-payments-empty.png)
+
+**Columns.** State, Name, Cadence (Actual's own wording), Account, expected Amount, Next due, Deadline, Last alert (the last alert actually sent) and Source. The button before a name opens the last 6 occurrences, each with its state, received date and amount, and "(+3d)" for a late one. Below 768 px rows become cards and Account, Last alert and Source move into that expanded view.
+
+**States.** The pill text is always shown, so colour is never the only signal.
+
+| State | Pill | Needs attention |
+|---|---|---|
+| `upcoming` | outline | no |
+| `received` | green | no |
+| `late` | amber | no |
+| `missing` | red | yes |
+| `wrongAmount` | amber | yes |
+| `cannotCheck` | grey | yes |
+| `skipped` | grey, dashed outline | no |
+
+Rows are sorted attention first, then late, upcoming, received, skipped; within a group by deadline (none last), then name. The state buttons filter to **Needs attention** or **OK** (everything else, including skipped), and the search box matches name, payee, account and cadence. "N watched · M need attention" counts every schedule of the servers shown, whatever the filters.
+
+**Amounts and dates.** Amounts are plain decimals with no currency symbol (`60.00`, a range as `50.00 to 70.00`), as in the notifications. Next due, Deadline and occurrence dates are calendar dates: they are never shifted by your time zone and never shown as "Just now", and they follow the date format chosen in Settings (the `relative` format shows `YYYY-MM-DD` for them). Last alert and the "as of" and failure times are instants and follow the Settings format like the rest of the dashboard.
+
+**Several servers.** With "All" selected the rows are grouped per server, each group with its own heading, "as of" line and failure line. Every server with alerts configured has one **Sync now** button in its heading, which syncs that server only; a server without `scheduleAlerts` shows a note linking to the README instead. The server select shows a single group.
+
+**Refresh and Sync now.** The tab refreshes every 60 seconds while it is the active tab and the page is visible, and at once when you open it or return to the page. After **Sync now** it watches `/api/dashboard/status` and refreshes once no sync has been running on two consecutive reads (it gives up after 120 seconds). If starting the sync fails, the group heading says "Could not start sync (HTTP 429)" or "(network error)" and the next click retries.
+
+**When something is wrong.**
+- *No successful evaluation yet*: the very first run failed, so there are no rows, only this line and the failure line.
+- *last evaluation failed at ... (error code)*: the latest run failed; the rows of the last good run stay, and "as of" is that run's time. When some rules could not be evaluated, the line also says how many and that their last values are shown.
+- *Runs after the next sync*: alerts are configured but no run has happened yet.
+- *Could not refresh payments (HTTP 503)* or *(network error)*, in a red banner above the table: any failed refresh keeps the last good rows and the next good refresh clears the banner.
+
+![Payments tab](screenshots/dashboard-payments.png)
+
+Enable dashboard auth when `scheduleAlerts` is used: with the default `auth.type: none` this tab and its data are open to anyone who can reach the port.
+
 ## Behind a reverse proxy
 
 If nginx, Traefik or Caddy sits in front of the dashboard, set `healthCheck.trustProxy` (usually `1`, one proxy) so the per-client rate limit and the auth-failure log see the real client IP instead of the proxy's. Keep `dashboard.auth` enabled, and do not also publish the port directly. See [CONFIG.md](CONFIG.md#healthcheck-optional) for the accepted values and [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#1-security) for an nginx example, including the `/ws/logs` location.
