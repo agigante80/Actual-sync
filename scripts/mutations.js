@@ -2488,5 +2488,13 @@ module.exports = [
         anchor: "        sentKeys.add(eventKey(item.event));\n      } catch (error) {",
         mutant: "        sentKeys.add(eventKey(item.event));\n      } catch (error) {\n        sentKeys.add(eventKey(item.event));",
         tests: 'scheduleAlertDelivery'
+    },
+    {
+        id: '332-digest-write-failure-stops-channel-items', ticket: '#332',
+        desc: "a ledger write failure in digest mode stops recording the remaining items on the same channel",
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n      }",
+        mutant: "          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message\n        });\n        break;\n      }",
+        tests: 'scheduleAlertDelivery'
     }
 ];

@@ -926,6 +926,25 @@ describe('deliver: digest guards each destination like immediate mode (#332)', (
     expect(warn.meta).toMatchObject({ server: 'guard-332-record', channel: 'slack', alertId: 'rent', error: 'SQLITE_BUSY' });
   });
 
+  test('a write failing for one item keeps processing the remaining items on the SAME channel', async () => {
+    // Guards the loop: a `break` after the write-failure WARN would leave
+    // salary unrecorded although the digest already went out.
+    const { history, sender, warnings, run } = setup('guard-332-same-channel', [
+      { id: 'rent', schedule: 'Rent', channels: ['slack'] },
+      { ...SALARY, channels: ['slack'] }
+    ]);
+    const realRecord = history.recordScheduleAlert.bind(history);
+    history.recordScheduleAlert = async (row) => {
+      if (row.alertId === 'rent') throw new Error('SQLITE_BUSY');
+      return realRecord(row);
+    };
+    const result = await run();
+    expect(sender.calls).toHaveLength(1);
+    expect(result).toEqual({ sent: 1, skipped: 1 });
+    expect(history.rows.map((r) => r.alertId)).toEqual(['salary']);
+    expect(warnings.filter((w) => /ledger write failed/i.test(w.message))).toHaveLength(1);
+  });
+
   test('a read failing on a later item withholds the whole channel instead of sending a partial digest', async () => {
     const { history, sender, run } = setup('guard-332-partial', [
       { id: 'rent', schedule: 'Rent', channels: ['discord'] },
