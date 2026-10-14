@@ -245,7 +245,7 @@ curl http://localhost:3000/metrics
 5. On failure, upload each failing spec's screenshot and console log from
    `tests/e2e/artifacts/` (kept 7 days)
 
-**Duration**: ~30 seconds
+**Duration**: about 90 seconds
 
 **What It Checks**: dashboard rendering, tab switching, manual sync, error
 dismissal, and the general 60/min rate limiter (not the login failure
