@@ -2656,8 +2656,16 @@ module.exports = [
         id: '326-completed-resolved-repeats', ticket: '#326',
         desc: 'the per-destination already-resolved check is skipped, so resolved repeats every sync',
         file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "return { due: !resolvedRow, lastSentAt: null };",
+        anchor: "return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };",
         mutant: "return { due: true, lastSentAt: null };",
+        tests: 'scheduleAlert'
+    },
+    {
+        id: '326-resolved-final-after-later-missing', ticket: '#326',
+        desc: 'any resolved row is final, so a completed-then-uncompleted (or unlinked-then-relinked) schedule never closes again',
+        file: 'src/lib/scheduleAlertDelivery.js',
+        anchor: "return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };",
+        mutant: "return { due: !resolvedRow, lastSentAt: null };",
         tests: 'scheduleAlert'
     }
 ];

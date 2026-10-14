@@ -381,7 +381,11 @@ async function destinationDueState(event, rule, destinationKey, history, server,
       server, alertId: event.alertId, scheduleId: event.scheduleId,
       occurrenceDate: event.occurrence, event: 'resolved', channel: destinationKey
     });
-    return { due: !resolvedRow, lastSentAt: null };
+    // #326 review M2: a resolved is final only if no `missing` was recorded after
+    // it. A schedule completed (resolved), then uncompleted, restarts its
+    // reminders; the next close (payment or completion) must be delivered
+    // again. Same for a transaction unlinked after a resolved and relinked.
+    return { due: !resolvedRow || resolvedRow.recordedAt < missingRow.recordedAt, lastSentAt: null };
   }
 
   const latest = await history.findLatestScheduleAlert({

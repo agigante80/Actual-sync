@@ -981,4 +981,53 @@ describe('scheduleAlertsSync: completed one-off schedule closes its open missing
       expect(requests[1].body.text).not.toMatch(/marked completed/);
     });
   });
+
+  describe('resolved is final only until a later missing (review M2)', () => {
+    const remind = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'], remindEveryDays: 1 }] } };
+    // The ledger stamps rows with the wall clock, so fake only Date and move it
+    // together with `now`; reminder spacing is measured against recorded_at.
+    beforeEach(() => {
+      jest.useFakeTimers({
+        doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate',
+          'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout']
+      });
+    });
+    afterEach(() => { jest.useRealTimers(); });
+    const runR = (api, now) => {
+      jest.setSystemTime(new Date(now));
+      return runScheduleAlertsStep({
+      api, server: remind, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+      notificationService: notifier(), logger: quietLogger, now: new Date(now)
+      });
+    };
+    const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }];
+
+    test('completed, resolved, uncompleted: reminders restart and the next payment closes it again', async () => {
+      await runR(apiFor({ lastSync: '2026-01-10' }), '2026-01-10T00:00:00.000Z');
+      expect(requests).toHaveLength(1);
+      await runR(apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].body.text).toMatch(/marked completed/);
+      await runR(apiFor({ lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+      await runR(apiFor({ lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
+      expect(requests).toHaveLength(4);
+      expect(requests[3].body.text).not.toMatch(/arrived|marked completed/);
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-13' }), '2026-01-14T00:00:00.000Z');
+      expect(requests).toHaveLength(5);
+      expect(requests[4].body.text).toMatch(/arrived/);
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-14' }), '2026-01-15T00:00:00.000Z');
+      expect(requests).toHaveLength(5);
+    });
+
+    test('payment resolved, transaction unlinked, then relinked: resolved is delivered again', async () => {
+      await runR(apiFor({ lastSync: '2026-01-10' }), '2026-01-10T00:00:00.000Z');
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      await runR(apiFor({ lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+      expect(requests).toHaveLength(3);
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
+      expect(requests).toHaveLength(4);
+      expect(requests[3].body.text).toMatch(/arrived/);
+    });
+  });
 });

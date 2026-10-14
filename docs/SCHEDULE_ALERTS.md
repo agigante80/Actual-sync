@@ -130,8 +130,10 @@ thread closes instead of staying open forever:
   looked for.
 - Only a `missing` whose occurrence date is inside the 90-day look-back window is closed. An older one
   stays as it is.
-- After it is delivered nothing more is sent for that occurrence. A completed one-off that never had a
-  `missing` sends nothing, and a completed recurring schedule is unaffected.
+- After it is delivered nothing more is sent for that occurrence, unless the schedule is uncompleted (or a
+  payment unlinked) and a new `missing` is recorded for it; then the reminders restart and the next close
+  is delivered again. A completed one-off that never had a `missing` sends nothing, and a completed
+  recurring schedule is unaffected.
 - A custom `resolved` template that never mentions `closed_by` is not used for this case: the built-in
   "marked completed in Actual" text is sent instead, so an older template cannot claim a payment
   arrived. A template that mentions `closed_by` is used as written. A normal payment `resolved` always
