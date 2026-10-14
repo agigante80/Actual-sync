@@ -297,6 +297,21 @@ describe('Payments tab client (#341)', () => {
       expect(buttons.map((b) => b.textContent)).toEqual(['Sync now', 'Sync now']);
     });
 
+    test('two servers clicked together read the status at most the cap in total, not per click', async () => {
+      const env = makeEnv({
+        windowGlobals: { __paymentsSyncMaxPolls: 3 },
+        route: (url, opts) => {
+          if (opts.method === 'POST') return ok({ success: true });
+          if (url.includes('/api/dashboard/status')) return ok({ runningSync: BUSY });
+          return payments(group({ server: 'Main' }), group({ server: 'Other' }));
+        }
+      });
+      await env.api.loadPaymentsTab();
+      await Promise.all([env.api.paymentsSyncNow('Main'), env.api.paymentsSyncNow('Other')]);
+      await flush();
+      expect(env.calls.filter((c) => c.url.includes('/status'))).toHaveLength(3);
+    });
+
     test('a double-click sends one POST and disables the button before the fetch resolves', async () => {
       let release;
       const env = makeEnv({

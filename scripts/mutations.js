@@ -2250,24 +2250,24 @@ module.exports = [
         id: '341-poll-cap-off-by-one', ticket: '#341',
         desc: 'status poll runs one read too many',
         file: 'src/services/dashboard.js',
-        anchor: "    for (let reads = 0; reads < PAYMENTS_SYNC_MAX_POLLS; reads++) {",
-        mutant: "    for (let reads = 0; reads <= PAYMENTS_SYNC_MAX_POLLS; reads++) {",
+        anchor: 'reads < PAYMENTS_SYNC_MAX_POLLS',
+        mutant: 'reads <= PAYMENTS_SYNC_MAX_POLLS',
         tests: 'dashboardPayments'
     },
     {
         id: '341-failed-read-counts', ticket: '#341',
         desc: 'a failed status read counts toward the two null reads',
         file: 'src/services/dashboard.js',
-        anchor: "            nullStreak = 0; // a failed read never counts toward the two",
-        mutant: "        nullStreak += 1;",
+        anchor: '            paymentsNullStreak = 0; // a failed read never counts toward the two',
+        mutant: '            paymentsNullStreak += 1;',
         tests: 'dashboardPayments'
     },
     {
         id: '341-one-null-enough', ticket: '#341',
         desc: 'one null status read ends the wait',
         file: 'src/services/dashboard.js',
-        anchor: "        if (nullStreak >= 2) break;",
-        mutant: "        if (nullStreak >= 1) break;",
+        anchor: 'paymentsNullStreak >= 2',
+        mutant: 'paymentsNullStreak >= 1',
         tests: 'dashboardPayments'
     },
     {
