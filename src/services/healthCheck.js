@@ -1084,7 +1084,9 @@ class HealthCheckService {
             return res.status(404).json({ error: 'server_not_found' });
           }
           // Reset history for specific server
-          await this.syncHistory.resetServerHistory(server, { remoteAddr: req.ip });
+          // A server no longer in the config also loses its dashboard rules (#262).
+          const purgeRules = configured !== null && !configured.includes(server);
+          await this.syncHistory.resetServerHistory(server, { remoteAddr: req.ip, purgeRules });
           
           this.logger.info('Sync history reset for server via dashboard', {
             server: server,

@@ -50,11 +50,15 @@ describe('validateScheduleAlert', () => {
     expect(dash({ id: 'a', schedule: 'x', templates: { missing: 'fine' } }, { block }).valid).toBe(true);
   });
 
-  it('compiles only against the rule\'s resolved channels (a Telegram-only markup char needs a Telegram destination)', () => {
+  it('config mode compiles only against the rule\'s resolved channels (a Telegram-only markup char needs a Telegram destination)', () => {
     const rule = { id: 'a', schedule: 'x', templates: { missing: 'a & b' } };
     expect(dash(rule).code).toBe('invalid_template');
     const slack = { webhooks: { slack: [{ url: 'https://hooks.slack.test/x' }] } };
-    expect(validateScheduleAlert(rule, { notificationsConfig: slack, dashboard: true }).valid).toBe(true);
+    expect(validateScheduleAlert(rule, { notificationsConfig: slack, skipSchema: true }).valid).toBe(true);
+    // #262 review F1: a dashboard save compiles against every requested
+    // channel, because the sync checks dashboard rules that way and would
+    // otherwise drop a rule the save accepted.
+    expect(validateScheduleAlert(rule, { notificationsConfig: slack, dashboard: true }).code).toBe('invalid_template');
   });
 
   it('dashboard mode fails with no_configured_destination when nothing resolves', () => {

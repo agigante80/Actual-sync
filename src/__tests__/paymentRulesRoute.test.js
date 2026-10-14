@@ -126,6 +126,16 @@ describe('GET /api/dashboard/payment-rules/:server (#262)', () => {
     expect(listed.invalid).toBe(!syncMode.valid);
   });
 
+  test('F1b: a config rule startup accepts is listed valid, even with markup only Telegram rejects', async () => {
+    const slackOnly = { webhooks: { slack: [{ name: 's', url: 'https://hooks.slack.com/x' }] } };
+    await h.boot({
+      config: slackOnly,
+      servers: [{ name: 'Main', scheduleAlerts: { alerts: [{ id: 'cfg', schedule: 'X', templates: { missing: '<div>{{name}}</div>' } }] } }]
+    });
+    const listed = (await call('GET', rulesUrl())).json.rules.find((r) => r.id === 'cfg');
+    expect(listed.invalid).toBe(false);
+  });
+
   test('without a block: configured false and the stored rows, dormant', async () => {
     await h.boot({ servers: [{ name: 'Main' }] });
     h.state.history.insertRule('Main', 'moto', RENT);
@@ -178,6 +188,19 @@ describe('POST /api/dashboard/payment-rules/:server (#262)', () => {
     expect(res.json.details.map((d) => d.path)).toContain(path);
     expect(h.state.history.countRules('Main')).toBe(0);
     expect(audit()).toHaveLength(0);
+  });
+
+  test('F1: a template the sync would reject is refused at save time, so a 201 rule is never dropped', async () => {
+    const slackOnly = { webhooks: { slack: [{ name: 's', url: 'https://hooks.slack.com/x' }] } };
+    await h.boot({ config: slackOnly });
+    const body = { id: 'div', schedule: 'X', templates: { missing: '<div>{{name}}</div>' } };
+    const res = await call('POST', rulesUrl(), { body });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toBe('invalid_template');
+    const block = h.state.servers[0].scheduleAlerts;
+    const syncMode = validateScheduleAlert(body, { block, notificationsConfig: h.state.sender.config, dashboard: true, schemaOnly: true });
+    expect(syncMode.valid).toBe(false);
+    expect(h.state.history.countRules('Main')).toBe(0);
   });
 
   test('a non-object body is invalid_rule', async () => {
@@ -439,6 +462,34 @@ describe('DELETE /api/dashboard/payment-rules/:server/:alertId (#262)', () => {
     expect(h.state.history.getRule('Main', 'moto')).not.toBeNull();
     expect(h.state.history.getOverride('Main', 'moto')).not.toBeNull();
     expect(h.state.history.getPaymentSnapshot('Main').items).toHaveLength(1);
+  });
+});
+
+describe('history reset and dashboard rules (#262 review L1)', () => {
+  const reset = (server) => call('POST', '/api/dashboard/reset-history', { body: { server } });
+
+  test('a configured server keeps its rules on reset', async () => {
+    await h.boot();
+    h.state.history.insertRule('Main', 'moto', RENT);
+    expect((await reset('Main')).status).toBe(200);
+    expect(h.state.history.countRules('Main')).toBe(1);
+  });
+
+  test('a removed server with rules but no sync rows is listed as orphaned (round 2 L1)', async () => {
+    await h.boot();
+    h.state.history.insertRule('Old', 'moto', RENT);
+    const res = await call('GET', '/api/dashboard/orphaned-servers');
+    expect(res.status).toBe(200);
+    expect(res.json.orphaned).toEqual([{ server_name: 'Old', sync_count: 0, last_sync: null }]);
+  });
+
+  test('a server removed from the config loses its rules on reset, counted in the audit', async () => {
+    await h.boot();
+    h.state.history.insertRule('Old', 'moto', RENT);
+    expect((await reset('Old')).status).toBe(200);
+    expect(h.state.history.countRules('Old')).toBe(0);
+    const row = h.state.history.getConfigAudit().find((a) => a.action === 'history_reset');
+    expect(row.changes.deleted.payment_alert_rule).toBe(1);
   });
 });
 

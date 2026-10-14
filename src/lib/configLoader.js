@@ -572,6 +572,37 @@ class ConfigLoader {
             const alerts = server.scheduleAlerts && Array.isArray(server.scheduleAlerts.alerts)
                 ? server.scheduleAlerts.alerts
                 : [];
+            // #262 review F2: block templates are otherwise compiled only
+            // through a rule, so a block with no config rules (dashboard rules
+            // only) must be checked on its own, or a typo there drops every
+            // dashboard rule at each sync.
+            if (server.scheduleAlerts && alerts.length === 0) {
+                const blockCheck = validateScheduleAlert({ schedule: '_' }, {
+                    block: server.scheduleAlerts, notificationsConfig, skipSchema: true
+                });
+                if (blockCheck.code === 'invalid_template') {
+                    throw new Error(
+                        `Invalid scheduleAlerts template (server "${server.name}"): ${blockCheck.template.message}`
+                    );
+                }
+            }
+            // #262 round 2 M1: the sync checks dashboard rules against every
+            // channel they could use, configured or not, so a block template
+            // only an unconfigured channel rejects (Telegram markup on a
+            // Slack-only setup) still drops them. Startup only warns here: a
+            // config-rules setup without that channel is valid, and failing it
+            // would undo #258 R2-M7.
+            if (server.scheduleAlerts) {
+                const allChannels = validateScheduleAlert({ schedule: '_' }, {
+                    block: server.scheduleAlerts, notificationsConfig, skipSchema: true, schemaOnly: true
+                });
+                if (allChannels.code === 'invalid_template') {
+                    console.warn(
+                        `scheduleAlerts template (server "${server.name}") fails on a channel that is not configured; ` +
+                        `dashboard rules without a channels restriction will be skipped at sync: ${allChannels.template.message}`
+                    );
+                }
+            }
             for (const alert of alerts) {
                 const id = deriveRuleId(alert);
                 const result = validateScheduleAlert(alert, {

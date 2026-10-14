@@ -1508,14 +1508,10 @@ module.exports = [
         mutant: 'due: true,',
         tests: 'scheduleAlertDelivery'
     },
-    {
-        id: '258-ruleUnmatched-reminder-uses-configured-interval', ticket: '#258',
-        desc: 'ruleUnmatched is treated like a missing reminder again and honors the rule\'s own remindEveryDays (superseded by #356: it is sent once per destination)',
-        file: 'src/lib/scheduleAlertDelivery.js',
-        anchor: "  if (event.event !== 'missing') return { due: false, lastSentAt: null }; // one row per destination, ever",
-        mutant: "  if (event.event !== 'missing' && event.event !== 'ruleUnmatched') return { due: false, lastSentAt: null };",
-        tests: 'scheduleAlert'
-    },
+    // '258-ruleUnmatched-reminder-uses-configured-interval' was removed: since
+    // #356, ruleUnmatched returns early in the dueness check, so a mutant on
+    // the reminder line below it is unreachable and always survives.
+    // '356-ruleUnmatched-repeats' guards that once-per-destination rule.
     {
         id: '258-disabled-webhook-not-skipped', ticket: '#258',
         desc: 'a generic webhook with enabled:false is sent to anyway, since the enabled check is dropped from resolveTargets',
@@ -1816,7 +1812,8 @@ module.exports = [
         id: '258-r2-m7-startup-template-check-ignores-rule-channels', ticket: '#258',
         desc: 'startup template validation goes back to compiling every rule against every channel mode, so a Telegram-only literal-markup restriction rejects a valid template for a rule that can only ever reach slack/email',
         file: 'src/lib/scheduleAlertValidation.js',
-        anchor: "  const channels = schemaOnly ? (rule.channels && rule.channels.length ? rule.channels : ALL_CHANNELS) : resolved;",
+        // #262 review F1 split this into `requested` plus a save-mode branch.
+        anchor: "  const channels = schemaOnly || dashboard ? requested : resolved;",
         mutant: "  const channels = ALL_CHANNELS;",
         tests: 'scheduleAlertValidation'
     },
@@ -3263,12 +3260,68 @@ module.exports = [
         tests: "scheduleAlertsSync"
     },
     {
+        id: "262-r1-save-compiles-resolved-only", ticket: '#262',
+        desc: "a dashboard save compiles templates only for configured channels, so the sync later drops a 201 rule",
+        file: "src/lib/scheduleAlertValidation.js",
+        anchor: "  const channels = schemaOnly || dashboard ? requested : resolved;",
+        mutant: "  const channels = schemaOnly ? requested : resolved;",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-r1-list-config-schema-only", ticket: '#262',
+        desc: "the list checks a config rule against every channel, flagging one the sync evaluates",
+        file: "src/services/paymentRuleRoutes.js",
+        anchor: "    schemaOnly: dashboard,",
+        mutant: "    schemaOnly: true,",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-r1-empty-block-templates-unchecked", ticket: '#262',
+        desc: "block templates of a block with no config rules are not checked at startup",
+        file: "src/lib/configLoader.js",
+        anchor: "if (server.scheduleAlerts && alerts.length === 0) {",
+        mutant: "if (false) {",
+        tests: "configLoader"
+    },
+    {
+        id: "262-r2-block-unconfigured-channel-silent", ticket: '#262',
+        desc: "a block template only an unconfigured channel rejects passes startup with no warning",
+        file: "src/lib/configLoader.js",
+        anchor: "                if (allChannels.code === 'invalid_template') {",
+        mutant: "                if (false) {",
+        tests: "configLoader"
+    },
+    {
+        id: "262-r2-rule-only-server-not-orphaned", ticket: '#262',
+        desc: "a removed server with dashboard rules but no sync rows is missing from the orphaned list",
+        file: "src/services/syncHistory.js",
+        anchor: "          SELECT DISTINCT server, 0, NULL FROM payment_alert_rule",
+        mutant: "          SELECT DISTINCT server, 0, NULL FROM payment_alert_rule WHERE 0",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-r1-orphan-rules-kept", ticket: '#262',
+        desc: "a reset of a server removed from the config keeps its dashboard rules",
+        file: "src/services/healthCheck.js",
+        anchor: "const purgeRules = configured !== null && !configured.includes(server);",
+        mutant: "const purgeRules = false;",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "262-r1-configured-rules-purged", ticket: '#262',
+        desc: "a reset of a configured server deletes its dashboard rules",
+        file: "src/services/healthCheck.js",
+        anchor: "const purgeRules = configured !== null && !configured.includes(server);",
+        mutant: "const purgeRules = true;",
+        tests: "paymentRulesRoute"
+    },
+    {
         id: "262-reset-server-deletes-rules", ticket: '#262',
         desc: "a per-server history reset also deletes the dashboard payment rules",
         file: "src/services/syncHistory.js",
-        anchor: "      // payment_alert_rule is deliberately NOT deleted either (#262)",
-        mutant: "      this.db.prepare('DELETE FROM payment_alert_rule WHERE server = ?').run(server);\n      // payment_alert_rule is deliberately NOT deleted either (#262)",
-        tests: "syncHistory"
+        anchor: "        if (purgeRules) deleted.payment_alert_rule = delRules.run(s).changes;",
+        mutant: "        deleted.payment_alert_rule = delRules.run(s).changes;",
+        tests: "paymentRulesRoute"
     },
     {
         id: "262-config-wins-on-id-clash", ticket: '#262',

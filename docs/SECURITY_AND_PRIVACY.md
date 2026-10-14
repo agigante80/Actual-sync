@@ -103,7 +103,7 @@ The dashboard's alert switch and mute are stored in the sync-history SQLite data
 - **Dashboard rules** are stored in `payment_alert_rule` as the JSON of one `scheduleAlerts.alerts[]` entry (schedule name or prefix, thresholds, channels, templates). Do not put secrets in a rule or a template.
 - **Audit rows carry the definition.** Creating, replacing or deleting a rule writes a configuration audit row with the field values (`payment_alert_rule_create|update|delete`), in the same transaction as the change. Only the mute reason of a deleted rule's override is redacted.
 - **Test sends** go to your configured channels and write nothing to the alert history. The response shows a webhook's name or an opaque destination key, never a URL, and failures as fixed codes, never exception text. Test sends are limited to 5 per minute.
-- **Erasure.** A history reset (one server or all) deletes the schedule snapshot but not the rules, which are configuration; delete a rule with `DELETE /api/dashboard/payment-rules/:server/:alertId`. Rules and snapshot rows of a server that was removed from the config entirely stay until deleted or reset by the typed server name; audit rows are purged after `retentionDays`.
+- **Erasure.** A history reset (one server or all) deletes the schedule snapshot but not the rules, which are configuration; delete a rule with `DELETE /api/dashboard/payment-rules/:server/:alertId`. For a server removed from the config entirely, a reset by the typed server name deletes its rules too (the rule routes no longer accept that server); audit rows are purged after `retentionDays`.
 
 ### HTTP security headers (#243)
 

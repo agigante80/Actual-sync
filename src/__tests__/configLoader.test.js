@@ -540,6 +540,30 @@ describe('ConfigLoader', () => {
                 notifications
             });
 
+            test('#262 F2: a block with no config rules still has its templates checked at startup', () => {
+                const tg = { telegram: { enabled: true, botToken: '1:AAAA', chatId: '1' } };
+                const bad = baseConfig({ templates: { missing: '{{nmae}}' }, alerts: [] }, tg);
+                expect(() => new ConfigLoader().validateLogic(bad)).toThrow(/Invalid scheduleAlerts template \(server "Test"\)/);
+                const good = baseConfig({ templates: { missing: '{{name}}' }, alerts: [] }, tg);
+                expect(() => new ConfigLoader().validateLogic(good)).not.toThrow();
+            });
+
+            test('#262 round 2 M1: a block template only an unconfigured channel rejects warns at startup', () => {
+                const slack = { webhooks: { slack: [{ name: 's', url: 'https://hooks.slack.com/x' }] } };
+                const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+                try {
+                    const cfg = baseConfig({ templates: { missing: 'Rent & bills {{name}}' }, alerts: [] }, slack);
+                    expect(() => new ConfigLoader().validateLogic(cfg)).not.toThrow();
+                    expect(warn.mock.calls.some(([m]) => /fails on a channel that is not configured/.test(m))).toBe(true);
+                    warn.mockClear();
+                    const fine = baseConfig({ templates: { missing: 'Rent {{name}}' }, alerts: [] }, slack);
+                    new ConfigLoader().validateLogic(fine);
+                    expect(warn.mock.calls.some(([m]) => /fails on a channel that is not configured/.test(m))).toBe(false);
+                } finally {
+                    warn.mockRestore();
+                }
+            });
+
             test('H6: a rule with an invalid template throws at startup, naming the rule and server', () => {
                 const config = baseConfig(
                     { alerts: [{ id: 'rent', schedule: 'Rent', templates: { missing: '{{#if broken' } }] },

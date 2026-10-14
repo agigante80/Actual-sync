@@ -83,13 +83,20 @@ function publicRule(entry, validation) {
   };
 }
 
-/** Validate a stored or config rule the way the sync does (schema-only). */
+/**
+ * Validate a rule the way the sync treats it: a dashboard rule in the
+ * schema-only mode the sync filter uses, a config rule the way startup checks
+ * it (resolved channels only), so the list never flags a config rule the sync
+ * evaluates (#262 review F1b).
+ */
 function listingValidation(svc, entry, server) {
+  const dashboard = entry.source === 'dashboard';
   const result = validateScheduleAlert(entry.definition, {
     block: server.scheduleAlerts || undefined,
     notificationsConfig: notificationsConfig(svc),
-    dashboard: entry.source === 'dashboard',
-    schemaOnly: true
+    dashboard,
+    schemaOnly: dashboard,
+    skipSchema: !dashboard
   });
   const errors = result.errors.slice();
   if (result.template) errors.push({ path: `/templates/${result.template.template}`, message: result.template.message });
