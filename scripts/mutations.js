@@ -2629,7 +2629,7 @@ module.exports = [
         id: "259-unmapped-4xx-html", ticket: '#259',
         desc: "an unmapped 4xx body-parser error falls through to Express's HTML stack page",
         file: "src/services/healthCheck.js",
-        anchor: "if (status >= 400 && status < 500 && !res.headersSent) {",
+        anchor: "if (err && err.fromBodyParser && status >= 400 && status < 500 && !res.headersSent) {",
         mutant: "if (false) {",
         tests: "dashboardWriteSecurity"
     },
@@ -2637,8 +2637,8 @@ module.exports = [
         id: "259-final-handler-leaks", ticket: '#259',
         desc: "the final error handler passes the error on, so Express renders the stack",
         file: "src/services/healthCheck.js",
-        anchor: "if (res.headersSent) return next(err);\n      return res.status(500)",
-        mutant: "return next(err);\n      return res.status(500)",
+        anchor: "if (res.headersSent) return next(err);\n      // A 4xx",
+        mutant: "return next(err);\n      // A 4xx",
         tests: "dashboardWriteSecurity"
     },
     {
