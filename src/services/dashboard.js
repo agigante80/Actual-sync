@@ -41,6 +41,8 @@ function switchTab(tabName, button) {
         loadAnalyticsTab();
     } else if (tabName === 'history') {
         loadHistoryTab();
+    } else if (tabName === 'payments') {
+        loadPaymentsTab();
     } else if (tabName === 'settings') {
         loadSettingsTab();
     }
@@ -50,6 +52,7 @@ function switchTab(tabName, button) {
 // Page visibility handling - pause log streaming when tab is hidden
 document.addEventListener('visibilitychange', () => {
     isPageVisible = !document.hidden;
+    if (isPageVisible && paymentsTabActive()) loadPaymentsTab();
     // One loop only: skip while a socket is open or still connecting, or a
     // ticket request is in flight. A pending retry is replaced, not doubled. (#280)
     const busy = wsConnecting || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING));
@@ -1426,6 +1429,513 @@ async function testNotification(channel) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Payments tab (#341). Renders GET /api/dashboard/payments (#260), a persisted
+// snapshot, so it needs no connection to Actual. Everything is built with
+// textContent / setAttribute / className, never innerHTML: schedule, payee,
+// account and server names are shown literally. No inline styles (CSP, #243).
+// ---------------------------------------------------------------------------
+
+// Intervals are read ONCE when this script loads, so an E2E spec can inject
+// short ones with evaluateOnNewDocument. Defaults: 60 s refresh, 2 s status
+// poll after "Sync now", capped by an iteration count (not Date.now(), which a
+// frozen page clock would never advance) at 120 s worth of reads.
+function readPositiveNumber(value, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+const PAYMENTS_POLL_MS = readPositiveNumber(window.__paymentsPollMs, 60000);
+const PAYMENTS_SYNC_POLL_MS = readPositiveNumber(window.__paymentsSyncPollMs, 2000);
+const PAYMENTS_SYNC_MAX_POLLS = Math.floor(readPositiveNumber(
+    window.__paymentsSyncMaxPolls, Math.ceil(120000 / PAYMENTS_SYNC_POLL_MS)
+));
+
+// Needs attention: the user must look at it. Order: attention first, then the rest.
+const PAYMENT_ATTENTION_STATES = ['missing', 'wrongAmount', 'cannotCheck'];
+const PAYMENT_STATE_ORDER = ['missing', 'wrongAmount', 'cannotCheck', 'late', 'upcoming', 'received', 'skipped'];
+const PAYMENT_STATE_LABELS = {
+    upcoming: 'Upcoming', received: 'Received', late: 'Late', missing: 'Missing',
+    wrongAmount: 'Wrong amount', cannotCheck: 'Cannot check', skipped: 'Skipped'
+};
+const PAYMENTS_README_URL = 'https://github.com/agigante80/Actual-sync#-missing-payment-alerts';
+
+let paymentsServers = null;       // last good response: [{ server, configured, lastRun, items }]
+let paymentsServerNames = [];     // names for the select, from the last unfiltered response
+let paymentsLoadError = '';       // '' when the last refresh worked
+let paymentsStateFilter = 'all';  // all | attention | ok
+let paymentsSearch = '';
+let paymentsInFlight = false;
+let paymentsRequestSeq = 0;
+const paymentsExpanded = new Set();   // row keys whose occurrence strip is open
+const paymentsSyncing = new Set();    // server names with a started sync being watched
+const paymentsSyncErrors = new Map(); // server name -> "Could not start sync (...)"
+let paymentsReads = 0;                // status reads of the shared loop since a server was last queued
+const paymentsQueued = new Set();     // subset of paymentsSyncing whose POST succeeded
+let paymentsWatching = false;         // one shared status loop for every server in paymentsSyncing
+let paymentsNullStreak = 0;           // consecutive successful null runningSync reads of that loop
+
+function paymentsTabActive() {
+    const tab = document.getElementById('payments-tab');
+    return !!tab && tab.classList.contains('active');
+}
+
+// A calendar date (YYYY-MM-DD) is not an instant: new Date('2026-01-11') is UTC
+// midnight and shows the previous day west of UTC, and formatTime would call a
+// future date "Just now". So split the string, build the date in UTC and format
+// with timeZone 'UTC', date fields only, following the same dateFormat setting.
+function formatCalendarDate(ymd) {
+    if (ymd == null || ymd === '') return '';
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd));
+    if (!m) return String(ymd);
+    const date = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+    const format = localStorage.getItem('dateFormat') || 'relative';
+    const fmt = (locale, options) => date.toLocaleDateString(locale, { ...options, timeZone: 'UTC' });
+    switch (format) {
+        case 'iso':
+        case 'relative': // relative makes no sense for a due date
+            return `${m[1]}-${m[2]}-${m[3]}`;
+        case 'us':
+            return fmt('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
+        case 'us-short':
+            return fmt('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        case 'us-long':
+            return fmt('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        case 'eu':
+            return fmt('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+        case 'eu-short':
+            return fmt('en-GB', { year: 'numeric', month: 'short', day: 'numeric' });
+        case 'eu-long':
+            return fmt('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
+        case 'full':
+            return fmt('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        default: // 'locale' and any unknown stored value, as formatTime's default
+            return fmt(undefined, {});
+    }
+}
+
+// Cents as a plain decimal, no currency symbol (as the notifications print it).
+function formatPaymentAmount(amount) {
+    const dec = (cents) => (cents / 100).toFixed(2);
+    if (amount == null) return '';
+    if (typeof amount === 'number') return dec(amount);
+    if (typeof amount === 'object') return `${dec(amount.num1)} to ${dec(amount.num2)}`;
+    return '';
+}
+
+function paymentNeedsAttention(item) {
+    return PAYMENT_ATTENTION_STATES.includes(item.state);
+}
+
+function paymentStateRank(state) {
+    const i = PAYMENT_STATE_ORDER.indexOf(state);
+    return i === -1 ? PAYMENT_STATE_ORDER.length : i;
+}
+
+// Attention first, then late, upcoming, received, skipped; within a group by
+// deadline ascending (null last), then name.
+function sortPaymentItems(items) {
+    return items.slice().sort((a, b) => {
+        const byState = paymentStateRank(a.state) - paymentStateRank(b.state);
+        if (byState) return byState;
+        if (a.deadline !== b.deadline) {
+            if (a.deadline == null) return 1;
+            if (b.deadline == null) return -1;
+            return a.deadline < b.deadline ? -1 : 1;
+        }
+        return String(a.name || '').localeCompare(String(b.name || ''));
+    });
+}
+
+function paymentMatchesFilters(item) {
+    if (paymentsStateFilter === 'attention' && !paymentNeedsAttention(item)) return false;
+    if (paymentsStateFilter === 'ok' && paymentNeedsAttention(item)) return false;
+    const q = paymentsSearch.trim().toLowerCase();
+    if (!q) return true;
+    return [item.name, item.payee, item.account, item.cadenceText]
+        .some((v) => v != null && String(v).toLowerCase().includes(q));
+}
+
+function payEl(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+}
+
+function payPill(state) {
+    const known = Object.prototype.hasOwnProperty.call(PAYMENT_STATE_LABELS, state);
+    return payEl('span', `pay-pill pay-${known ? state : 'unknown'}`, known ? PAYMENT_STATE_LABELS[state] : String(state));
+}
+
+function payCell(label, text, extraClass) {
+    const td = payEl('td', extraClass || '', text);
+    td.setAttribute('data-label', label);
+    return td;
+}
+
+function paymentOccurrenceList(item) {
+    const list = payEl('ul', 'pay-occ');
+    for (const o of item.occurrences || []) {
+        const li = document.createElement('li');
+        li.appendChild(payEl('span', '', `${formatCalendarDate(o.date)} `));
+        li.appendChild(payPill(o.state));
+        const parts = [];
+        if (o.receivedDate) parts.push(`received ${formatCalendarDate(o.receivedDate)}`);
+        if (o.state === 'late' && o.daysLate != null) parts.push(`(+${o.daysLate}d)`);
+        if (o.receivedAmount != null) parts.push(formatPaymentAmount(o.receivedAmount));
+        if (parts.length) li.appendChild(payEl('span', '', ` ${parts.join(' ')}`));
+        list.appendChild(li);
+    }
+    return list;
+}
+
+function paymentRowKey(server, item) {
+    return JSON.stringify([server, item.alertId, item.scheduleId]);
+}
+
+function appendPaymentRows(tbody, group, items, groupIndex) {
+    items.forEach((item, rowIndex) => {
+        const key = paymentRowKey(group.server, item);
+        const stripId = `pay-strip-${groupIndex}-${rowIndex}`;
+        const open = paymentsExpanded.has(key);
+
+        const tr = payEl('tr', 'pay-row');
+        const stateTd = payCell('State', null);
+        stateTd.appendChild(payPill(item.state));
+        tr.appendChild(stateTd);
+
+        const nameTd = payCell('Name', null);
+        const toggle = payEl('button', 'pay-expand', open ? '▾' : '▸');
+        toggle.type = 'button';
+        toggle.setAttribute('data-action', 'togglePaymentRow');
+        toggle.setAttribute('data-arg', stripId);
+        toggle.setAttribute('data-key', key);
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        toggle.setAttribute('aria-controls', stripId);
+        toggle.setAttribute('aria-label', `Show occurrences of ${item.name || ''}`);
+        nameTd.appendChild(toggle);
+        nameTd.appendChild(document.createTextNode(item.name || ''));
+        tr.appendChild(nameTd);
+
+        tr.appendChild(payCell('Cadence', item.cadenceText || ''));
+        tr.appendChild(payCell('Account', item.account || '', 'pay-extra'));
+        tr.appendChild(payCell('Amount', formatPaymentAmount(item.expectedAmount), 'pay-num'));
+        tr.appendChild(payCell('Next due', formatCalendarDate(item.nextDate)));
+        tr.appendChild(payCell('Deadline', formatCalendarDate(item.deadline)));
+        tr.appendChild(payCell('Last alert', item.lastAlertAt ? formatTime(item.lastAlertAt) : '', 'pay-extra'));
+        tr.appendChild(payCell('Source', item.source || '', 'pay-extra'));
+        tbody.appendChild(tr);
+
+        const strip = payEl('tr', 'pay-strip-row');
+        strip.id = stripId;
+        strip.hidden = !open;
+        const td = payEl('td', 'pay-strip-cell');
+        td.colSpan = 9;
+        // Below 768 px the Account, Last alert and Source cells are hidden;
+        // this list is where they live then (hidden by CSS above that width).
+        const details = payEl('dl', 'pay-details');
+        [['Account', item.account || ''], ['Last alert', item.lastAlertAt ? formatTime(item.lastAlertAt) : ''],
+            ['Source', item.source || '']].forEach(([label, value]) => {
+            const row = document.createElement('div');
+            row.appendChild(payEl('dt', '', label));
+            row.appendChild(payEl('dd', '', value));
+            details.appendChild(row);
+        });
+        td.appendChild(details);
+        td.appendChild(paymentOccurrenceList(item));
+        strip.appendChild(td);
+        tbody.appendChild(strip);
+    });
+}
+
+function buildPaymentsTable(group, groupIndex) {
+    const table = payEl('table', 'pay-table');
+    const headRow = document.createElement('tr');
+    ['State', 'Name', 'Cadence', 'Account', 'Amount', 'Next due', 'Deadline', 'Last alert', 'Source']
+        .forEach((h) => headRow.appendChild(payEl('th', '', h)));
+    const thead = document.createElement('thead');
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    table.appendChild(tbody);
+
+    const shown = sortPaymentItems(group.items.filter(paymentMatchesFilters));
+    if (shown.length === 0) {
+        const tr = document.createElement('tr');
+        const td = payEl('td', 'pay-empty', group.items.length === 0 ? 'No watched schedules' : 'No matching schedules');
+        td.colSpan = 9;
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+    } else {
+        appendPaymentRows(tbody, group, shown, groupIndex);
+    }
+    const wrap = payEl('div', 'pay-table-wrap');
+    wrap.appendChild(table);
+    return wrap;
+}
+
+function buildPaymentsGroup(group, groupIndex) {
+    const section = payEl('section', 'pay-group');
+    const head = payEl('div', 'pay-group-head');
+    head.appendChild(payEl('h3', 'pay-group-title', group.server));
+    const run = group.lastRun;
+
+    if (!group.configured) {
+        section.appendChild(head);
+        const note = payEl('p', 'pay-note', 'Missing-payment alerts are not configured for this server. ');
+        const link = payEl('a', '', 'README');
+        link.href = PAYMENTS_README_URL;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        note.appendChild(link);
+        section.appendChild(note);
+        return section;
+    }
+
+    // As-of line: lastSuccessAt, an instant, so formatTime.
+    if (run && run.lastSuccessAt) {
+        head.appendChild(payEl('span', 'pay-asof', `as of ${formatTime(run.lastSuccessAt)}`));
+    } else {
+        // A configured server that has never evaluated: the as-of line says so.
+        head.appendChild(payEl('span', 'pay-asof', run ? 'No successful evaluation yet' : ''));
+    }
+
+    // Exactly one Sync now per configured group, whatever its lastRun.
+    const syncing = paymentsSyncing.has(group.server);
+    const syncBtn = payEl('button', '', syncing ? 'Syncing...' : 'Sync now');
+    syncBtn.type = 'button';
+    syncBtn.setAttribute('data-action', 'paymentsSyncNow');
+    syncBtn.setAttribute('data-arg', group.server);
+    syncBtn.disabled = syncing;
+    head.appendChild(syncBtn);
+
+    const syncError = paymentsSyncErrors.get(group.server);
+    if (syncError) {
+        // Plain visible text, deliberately NOT role=alert: renderPayments rebuilds
+        // #payments-content on every keystroke and poll, and a rebuilt (or
+        // re-appended) alert node is announced again by Chromium and Firefox.
+        // The announcement comes from the persistent #payments-sync-status live
+        // region instead. Do not put the role back on this node (round 2, L1).
+        head.appendChild(payEl('div', 'pay-sync-error', syncError));
+    }
+    section.appendChild(head);
+
+    if (!run) {
+        section.appendChild(payEl('p', 'pay-note', 'Runs after the next sync'));
+        return section;
+    }
+
+    const failureParts = [];
+    if (!run.ok) failureParts.push(`last evaluation failed at ${formatTime(run.at)} (${run.errorCode})`);
+    if (run.rulesErrored > 0) {
+        failureParts.push(`${run.rulesErrored} rule(s) could not be evaluated; their last values are shown`);
+    }
+    if (failureParts.length) section.appendChild(payEl('p', 'pay-failure', failureParts.join('. ')));
+
+    if (run.lastSuccessAt) section.appendChild(buildPaymentsTable(group, groupIndex));
+    return section;
+}
+
+function renderPayments() {
+    const content = document.getElementById('payments-content');
+    const summary = document.getElementById('payments-summary');
+    const errorEl = document.getElementById('payments-error');
+    if (!content) return;
+
+    if (errorEl.textContent !== paymentsLoadError) errorEl.textContent = paymentsLoadError;
+    errorEl.hidden = !paymentsLoadError;
+
+    // Sync-start errors are announced through one live region that lives outside
+    // #payments-content, so it survives re-renders, and is written only when its
+    // text changes (an unchanged rewrite can still re-announce).
+    const liveEl = document.getElementById('payments-sync-status');
+    if (liveEl) {
+        const liveText = [...paymentsSyncErrors].map(([name, msg]) => `${name}: ${msg}`).join('. ');
+        if (liveEl.textContent !== liveText) liveEl.textContent = liveText;
+    }
+
+    // Keep the server select in step with the configured servers.
+    const select = document.getElementById('payments-server');
+    const wanted = ['', ...paymentsServerNames];
+    const have = [...select.options].map((o) => o.value);
+    if (wanted.length !== have.length || wanted.some((v, i) => v !== have[i])) {
+        const current = select.value;
+        select.textContent = '';
+        wanted.forEach((name) => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name === '' ? 'All' : name;
+            select.appendChild(opt);
+        });
+        select.value = wanted.includes(current) ? current : '';
+    }
+
+    document.querySelectorAll('[data-action="setPaymentStateFilter"]').forEach((btn) => {
+        btn.setAttribute('aria-pressed', btn.dataset.arg === paymentsStateFilter ? 'true' : 'false');
+    });
+
+    content.textContent = '';
+    if (!paymentsServers) {
+        summary.textContent = '';
+        // No data yet: an error shows with an empty table, otherwise we are loading.
+        if (paymentsLoadError) {
+            const empty = buildPaymentsTable({ server: '', items: [] }, 0);
+            empty.querySelector('tbody').textContent = '';
+            content.appendChild(empty);
+        }
+        else content.appendChild(payEl('div', 'loading', 'Loading payments...'));
+        return;
+    }
+
+    let watched = 0;
+    let attention = 0;
+    for (const group of paymentsServers) {
+        watched += group.items.length;
+        attention += group.items.filter(paymentNeedsAttention).length;
+    }
+    summary.textContent = `${watched} watched · ${attention} need attention`;
+    paymentsServers.forEach((group, i) => content.appendChild(buildPaymentsGroup(group, i)));
+}
+
+// Any non-2xx or a network error is a load failure: keep the last good rows and
+// say so above the table; the next successful refresh clears it.
+async function loadPaymentsTab(force) {
+    if (paymentsInFlight && !force) return;
+    const seq = ++paymentsRequestSeq;
+    paymentsInFlight = true;
+    try {
+        const select = document.getElementById('payments-server');
+        const server = select ? select.value : '';
+        const url = '/api/dashboard/payments' + (server ? `?server=${encodeURIComponent(server)}` : '');
+        let message = '';
+        let body = null;
+        try {
+            const response = await fetch(url, getFetchOptions());
+            if (!response.ok) message = `Could not refresh payments (HTTP ${response.status})`;
+            else body = await response.json();
+        } catch (e) {
+            message = 'Could not refresh payments (network error)';
+        }
+        if (seq !== paymentsRequestSeq) return; // a newer request owns the view
+        if (body && Array.isArray(body.servers)) {
+            paymentsServers = body.servers;
+            paymentsLoadError = '';
+            if (!server) paymentsServerNames = body.servers.map((g) => g.server);
+        } else if (!message) {
+            message = 'Could not refresh payments (invalid response)';
+        }
+        if (message) paymentsLoadError = message;
+        renderPayments();
+    } finally {
+        if (seq === paymentsRequestSeq) paymentsInFlight = false;
+    }
+}
+
+function togglePaymentRow(stripId, button) {
+    const strip = document.getElementById(stripId);
+    if (!strip) return;
+    const open = strip.hidden; // hidden now, so it is about to open
+    strip.hidden = !open;
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    button.textContent = open ? '▾' : '▸';
+    const key = button.getAttribute('data-key');
+    if (open) paymentsExpanded.add(key); else paymentsExpanded.delete(key);
+}
+
+function setPaymentStateFilter(value) {
+    paymentsStateFilter = ['attention', 'ok'].includes(value) ? value : 'all';
+    renderPayments();
+}
+
+function onPaymentsServerChange() {
+    loadPaymentsTab(true);
+}
+
+function onPaymentsSearch(arg, input) {
+    paymentsSearch = input.value;
+    renderPayments();
+}
+
+// "Sync now" for one server: POST, then poll /api/dashboard/status until
+// runningSync has been null on two CONSECUTIVE successful reads (a read before
+// the queue picks the job up is not "done"), then refresh once.
+async function paymentsSyncNow(serverName) {
+    if (!serverName || paymentsSyncing.has(serverName)) return;
+    // Mark the server busy before the fetch: the button is disabled at once, so
+    // a double-click cannot send a second POST or start a second loop.
+    paymentsSyncErrors.delete(serverName);
+    paymentsSyncing.add(serverName);
+    renderPayments();
+    let failure = '';
+    try {
+        const response = await fetch('/api/dashboard/sync', {
+            ...getFetchOptions(),
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ server: serverName })
+        });
+        if (!response.ok) failure = `Could not start sync (HTTP ${response.status})`;
+    } catch (e) {
+        failure = 'Could not start sync (network error)';
+    }
+    if (failure) {
+        paymentsSyncing.delete(serverName);
+        paymentsSyncErrors.set(serverName, failure);
+        renderPayments();
+        return; // no polling for this server; the next click retries
+    }
+    paymentsQueued.add(serverName);
+    paymentsNullStreak = 0; // a job was just queued: earlier null reads no longer count
+    // A newly queued server gets the full read budget, not what is left of an
+    // earlier server's run (else it could be marked done on 1 or 2 reads and the
+    // refresh would show pre-job data). Bounded: a server can be queued only once
+    // while busy, so the loop still ends. (round 2, L2)
+    paymentsReads = 0;
+    if (!paymentsWatching) await watchPaymentsSync();
+}
+
+// ONE status loop serves every server in paymentsSyncing (the per-IP limiter
+// is 60/min; a loop per click would exceed it and 429 its own reads).
+async function watchPaymentsSync() {
+    paymentsWatching = true;
+    let stopped = false;
+    try {
+        // Counted in iterations, not time: the E2E page clock is frozen.
+        paymentsReads = 0;
+        while (paymentsReads < PAYMENTS_SYNC_MAX_POLLS && paymentsSyncing.size > 0) {
+            await new Promise((resolve) => setTimeout(resolve, PAYMENTS_SYNC_POLL_MS));
+            paymentsReads += 1;
+            if (paymentsSyncing.size === 0) break;
+            if (document.hidden || !paymentsTabActive()) { stopped = true; break; }
+            try {
+                const response = await fetch('/api/dashboard/status', getFetchOptions());
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const status = await response.json();
+                paymentsNullStreak = status && status.runningSync ? 0 : paymentsNullStreak + 1;
+            } catch (e) {
+                paymentsNullStreak = 0; // a failed read never counts toward the two
+            }
+            if (paymentsNullStreak >= 2) break;
+        }
+    } finally {
+        paymentsWatching = false;
+    }
+    // Only servers whose POST succeeded are done; one still posting stays busy
+    // and gets a fresh loop when its POST resolves.
+    const hadSyncs = paymentsQueued.size > 0;
+    paymentsQueued.forEach((name) => paymentsSyncing.delete(name));
+    paymentsQueued.clear();
+    if (stopped) { renderPayments(); return; } // switching back refreshes
+    if (hadSyncs) await loadPaymentsTab(true);
+    else renderPayments();
+}
+
+// 60 s refresh: skipped while the page is hidden or another tab is showing.
+setInterval(() => {
+    if (document.hidden || !paymentsTabActive()) return;
+    loadPaymentsTab();
+}, PAYMENTS_POLL_MS);
+
 // Event wiring. The page's CSP forbids inline handler attributes, so
 // buttons carry data-action (+ optional data-arg) and selects carry
 // data-change; one delegated listener per event type dispatches them.
@@ -1443,12 +1953,19 @@ const CLICK_ACTIONS = {
     dismissErrorByName: (arg, el) => dismissErrorByName(el),
     triggerSync: (arg) => triggerSync(arg),
     triggerSyncByIndex: (arg) => triggerSyncByIndex(Number(arg)),
-    deleteOrphanedServerByIndex: (arg) => deleteOrphanedServerByIndex(Number(arg))
+    deleteOrphanedServerByIndex: (arg) => deleteOrphanedServerByIndex(Number(arg)),
+    togglePaymentRow: (arg, el) => togglePaymentRow(arg, el),
+    setPaymentStateFilter: (arg) => setPaymentStateFilter(arg),
+    paymentsSyncNow: (arg) => paymentsSyncNow(arg)
 };
 const CHANGE_ACTIONS = {
     renderAccounts: () => renderAccounts(),
     onDateFormatChange: () => onDateFormatChange(),
-    loadHistoryTab: () => loadHistoryTab()
+    loadHistoryTab: () => loadHistoryTab(),
+    onPaymentsServerChange: () => onPaymentsServerChange()
+};
+const INPUT_ACTIONS = {
+    onPaymentsSearch: (arg, el) => onPaymentsSearch(arg, el)
 };
 
 document.addEventListener('click', (e) => {
@@ -1459,6 +1976,11 @@ document.addEventListener('click', (e) => {
 document.addEventListener('change', (e) => {
     const el = e.target.closest && e.target.closest('[data-change]');
     const action = el && CHANGE_ACTIONS[el.dataset.change];
+    if (action) action(undefined, el);
+});
+document.addEventListener('input', (e) => {
+    const el = e.target.closest && e.target.closest('[data-input]');
+    const action = el && INPUT_ACTIONS[el.dataset.input];
     if (action) action(undefined, el);
 });
 

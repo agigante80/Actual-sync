@@ -139,6 +139,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate) applied to failures
 - ✅ **Rate Limiting** - Failure-notification spam prevention with configurable intervals
 - ✅ **Missing-Payment Alerts** - Compares Actual's own schedules against posted transactions per server and notifies when an expected payment is late, missing, wrong-amount, or cannot be checked (stale bank connection); see [Missing-Payment Alerts](#-missing-payment-alerts)
+- ✅ **Payments Tab** - Read-only dashboard view of every watched schedule: state, expected amount, next due date, deadline, the last 6 occurrences and the last alert sent; works without a connection to Actual; see [Payments tab](#payments-tab)
 
 ### 🛡️ Reliability & Security
 
@@ -667,6 +668,26 @@ Access the interactive dashboard at `http://localhost:3000/dashboard`:
 ![Dashboard Multi-Server](docs/screenshots/dashboard-overview-multi-server.png)
 
 *Managing multiple budget instances with per-server status and consolidated metrics*
+
+---
+
+#### Payments tab
+
+The **Payments** tab lists every schedule watched by [Missing-Payment Alerts](#-missing-payment-alerts), grouped per server, with a "Sync now" button per server. It reads the snapshot saved by each sync, so it works even when Actual is unreachable.
+
+![Payments tab](docs/screenshots/dashboard-payments.png)
+
+| Pill | Meaning | Needs attention |
+|---|---|---|
+| Upcoming (outline) | not due yet | no |
+| Received (green) | paid on time, right amount | no |
+| Late (amber) | paid after the deadline | no |
+| Missing (red) | deadline passed, no payment | yes |
+| Wrong amount (amber) | paid, but not the expected amount | yes |
+| Cannot check (grey) | the bank connection is too stale to tell | yes |
+| Skipped (grey, dashed) | skipped in Actual | no |
+
+See [docs/DASHBOARD.md](docs/DASHBOARD.md#payments-tab) for dates, refresh and failure messages.
 
 ---
 

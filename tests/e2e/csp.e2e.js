@@ -54,7 +54,7 @@ describe('dashboard under its Content-Security-Policy (#243)', () => {
       await page.waitForFunction(() => document.getElementById('logs').textContent.includes('csp-e2e-marker'));
 
       // Tabs are wired by delegated listeners, not onclick attributes.
-      for (const label of ['Analytics', 'History', 'Settings', 'Overview']) {
+      for (const label of ['Analytics', 'History', 'Payments', 'Settings', 'Overview']) {
         await clickTab(page, label);
         const active = await page.$eval('.tab.active', (el) => el.textContent);
         expect(active).toContain(label);
