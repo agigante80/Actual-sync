@@ -32,6 +32,13 @@ function jsonBodyErrors(err, req, res, next) {
   if (err && (err.type === 'charset.unsupported' || err.type === 'encoding.unsupported')) {
     return res.status(400).json({ error: 'invalid_body_encoding' });
   }
+  // Any other 4xx body-parser failure (a corrupt gzip body, an aborted
+  // request, a bad Content-Length) gets a JSON body, never Express's HTML page
+  // with a stack trace. Anything else goes on to the final error handler.
+  const status = err && (err.status || err.statusCode);
+  if (status >= 400 && status < 500 && !res.headersSent) {
+    return res.status(status).json({ error: 'invalid_body' });
+  }
   return next(err);
 }
 
@@ -1426,6 +1433,18 @@ This test verifies that notifications are configured correctly and can reach the
         error: 'Not Found',
         availableEndpoints: endpoints
       });
+    });
+
+    // Final error handler (#259): a thrown or passed error is logged and answered
+    // as JSON. Express's default handler would render the stack trace as HTML.
+    this.app.use((err, req, res, next) => {
+      this.logger.error('Unhandled request error', {
+        error: err && err.message,
+        path: req.path,
+        method: req.method
+      });
+      if (res.headersSent) return next(err);
+      return res.status(500).json({ error: 'internal_error' });
     });
   }
 

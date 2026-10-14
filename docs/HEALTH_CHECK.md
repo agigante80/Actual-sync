@@ -165,7 +165,7 @@ match the code, not as an integration surface:
 | POST | `/api/dashboard/reset-history` | Reset stored sync history |
 | POST | `/api/dashboard/test-notification` | Send a test notification (`email`, `discord`, `slack`, `telegram`, `ntfy`, `generic`) |
 
-All four POSTs run the dashboard auth first and then an Origin check: a cross-origin browser request is refused with 403 `{"error":"origin_rejected"}`. Configuration-changing routes additionally return 403 `config_writes_disabled` unless `dashboard.allowConfigWrites` is true and auth is not `none`, 415 `invalid_content_type` for a non-JSON body, 413 `payload_too_large` above 16 KB and 400 `invalid_json` for a malformed body.
+All four POSTs run the dashboard auth first and then an Origin check: a cross-origin browser request is refused with 403 `{"error":"origin_rejected"}`. Configuration-changing routes additionally return 403 `config_writes_disabled` unless `dashboard.allowConfigWrites` is true and auth is not `none`, 415 `invalid_content_type` for a non-JSON body, 413 `payload_too_large` above 16 KB and 400 `invalid_json` for a malformed body. Any other unreadable body (for example a corrupt gzip body) is 400 `invalid_body`, and an unexpected server error is 500 `internal_error`; neither shows a stack trace.
 
 `GET /api/dashboard/payments` serves the snapshot of the last missing-payment evaluation
 (#258) that a sync persists after evaluating (#260), so a dashboard can list every watched schedule without

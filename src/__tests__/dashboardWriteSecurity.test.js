@@ -746,3 +746,42 @@ describe('GET /api/dashboard/config-audit (#259)', () => {
     expect(Object.keys(changes).sort()).toEqual(['discord', 'email', 'password', 'reason', 'smtp', 'token']);
   });
 });
+
+describe('unmapped body-parser errors and the final error handler (#259)', () => {
+  const gzipHeaders = { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' };
+
+  test('a corrupt gzip body is a JSON 400 with no stack (authenticated)', async () => {
+    const ctx = await makeService();
+    const res = await request(ctx.svc, {
+      method: 'POST', path: '/api/dashboard/sync', headers: gzipHeaders, body: 'abcde'
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers['content-type']).toMatch(/application\/json/);
+    expect(res.json).toEqual({ error: 'invalid_body' });
+    expect(res.text).not.toMatch(/\bat \S+/);
+    expect(res.text).not.toMatch(/<html/i);
+  });
+
+  test('an unauthenticated POST gets the same JSON 400', async () => {
+    const ctx = await makeService({ dashboard: { auth: BASIC } });
+    const res = await request(ctx.svc, {
+      method: 'POST', path: '/api/dashboard/sync', headers: gzipHeaders, body: 'abcde'
+    });
+    expect(res.status).toBe(400);
+    expect(res.json).toEqual({ error: 'invalid_body' });
+    expect(res.text).not.toMatch(/\bat \S+/);
+  });
+
+  test('a thrown route error is a JSON 500 internal_error, logged, with no stack', async () => {
+    const ctx = await makeService();
+    const logged = [];
+    ctx.svc.logger = { debug() {}, info() {}, warn() {}, error: (...a) => logged.push(a) };
+    // configRouter is mounted before the final handler, so a throw reaches it.
+    ctx.svc.configRouter.get('/__boom', () => { throw new Error('kaboom at secret/path.js'); });
+    const res = await request(ctx.svc, { path: '/__boom' });
+    expect(res.status).toBe(500);
+    expect(res.json).toEqual({ error: 'internal_error' });
+    expect(res.text).not.toContain('kaboom');
+    expect(logged.length).toBeGreaterThan(0);
+  });
+});
