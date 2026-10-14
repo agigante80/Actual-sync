@@ -449,9 +449,10 @@ A server with a `scheduleAlerts` block can also have rules created in the dashbo
   skipped with one warning per sync and shown as invalid in the list; the run does not fail.
 - **Reading the rules fails** (a database error): the run records `evaluation_failed` and keeps the
   previous snapshot, rather than quietly evaluating config rules only.
-- **Erasure.** The history reset deletes the schedule snapshot but never the rules, which are
-  configuration; delete them with the rule `DELETE` route. Rows of a removed server linger until deleted
-  (a known limit). Rule values appear in the configuration audit trail.
+- **Erasure.** A history reset deletes the schedule snapshot but keeps the rules, which are
+  configuration; delete them with the rule `DELETE` route. The exception is a server removed from the
+  config: a reset of that server, or of all history, deletes its rules too (#262, #372). Rule values
+  appear in the configuration audit trail.
 
 ## Design notes and known limitations
 
