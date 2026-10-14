@@ -34,9 +34,11 @@ const {
   runScheduleAlertsStep,
   evaluateScheduleAlerts,
   maybeRunScheduleAlerts,
-  maybeDeliverScheduleAlerts
+  maybeDeliverScheduleAlerts,
+  persistPaymentSnapshot
 } = require('../lib/scheduleAlertsStep');
 const { MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS } = require('../lib/scheduleAlerts');
+const { destinationKey } = require('../lib/scheduleAlertDelivery');
 const { SyncHistoryService } = require('../services/syncHistory');
 const { NotificationService } = require('../services/notificationService');
 const { createTempDir, cleanupTempDir } = require('./helpers/testHelpers');
@@ -187,6 +189,91 @@ describe('scheduleAlertsSync: end-to-end delivery (#258)', () => {
 
     expect(second).toEqual({ events: 1, sent: 0, skipped: 1 });
     expect(received).toHaveLength(1); // still just the first sync's send
+  });
+});
+
+describe('scheduleAlertsSync: #297 F1 remembered skip across syncs', () => {
+  let syncHistory;
+  let dbDir;
+  const sender = { config: { webhooks: { generic: [{ url: 'http://127.0.0.1:1/hook', enabled: true }] } }, sendTemplated: jest.fn(async () => ({ webhook: { success: true } })) };
+
+  beforeEach(() => {
+    dbDir = createTempDir();
+    syncHistory = new SyncHistoryService({ dbPath: path.join(dbDir, 'sync-history.db'), loggerConfig: { level: 'ERROR' } });
+    sender.sendTemplated.mockClear();
+  });
+  afterEach(() => {
+    syncHistory.close();
+    cleanupTempDir(dbDir);
+  });
+
+  const monthly = (nextDate) => rentSchedule({ date: { start: '2026-01-01', frequency: 'monthly' }, next_date: nextDate });
+  const server_ = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'] }] } };
+  const run = (api, now) => runScheduleAlertsStep({
+    api, server: server_, serverName: 'Main', timezone: 'UTC', syncHistory, notificationService: sender, logger: quietLogger, now: new Date(now)
+  });
+
+  test('January skipped in Actual, February paid and linked: January is never reported missing', async () => {
+    // Sync 1 (Jan 10): user skipped January, so next_date is already 2026-02-01.
+    const first = await run(makeFakeApi({
+      schedules: [monthly('2026-02-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-09') }]
+    }), '2026-01-10T00:00:00.000Z');
+    expect(first).toEqual({ events: 0, sent: 0, skipped: 0 });
+    expect(await syncHistory.listScheduleAlertSkips({ server: 'Main' }))
+      .toEqual([{ scheduleId: 's1', occurrenceDate: '2026-01-01' }]);
+
+    // Sync 2 (Feb 10): February paid and linked on 02-01, next_date advanced to 03-01.
+    const second = await run(makeFakeApi({
+      schedules: [monthly('2026-03-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-02-09') }],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }]
+    }), '2026-02-10T00:00:00.000Z');
+    expect(second.events).toBe(0);
+    expect(sender.sendTemplated).not.toHaveBeenCalled();
+  });
+
+  test('without the first observation (no ledger row) the same February state still reports January missing', async () => {
+    const result = await run(makeFakeApi({
+      schedules: [monthly('2026-03-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-02-09') }],
+      transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }]
+    }), '2026-02-10T00:00:00.000Z');
+    expect(result.events).toBe(1);
+  });
+
+  test('a skip decision is recorded once, not again on every sync', async () => {
+    const api = makeFakeApi({
+      schedules: [monthly('2026-02-01')],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-20') }]
+    });
+    await run(api, '2026-01-25T00:00:00.000Z');
+    await run(api, '2026-01-26T00:00:00.000Z');
+    const rows = syncHistory.db.prepare("SELECT * FROM schedule_alerts WHERE event = 'skipped'").all();
+    expect(rows).toHaveLength(1);
+  });
+
+  test('a failure while recording the skip does not stop the alerts from being delivered', async () => {
+    jest.spyOn(syncHistory, 'recordScheduleAlert');
+    syncHistory.recordScheduleAlert.mockImplementationOnce(async () => { throw new Error('disk full'); });
+    const result = await runScheduleAlertsStep({
+      api: makeFakeApi({
+        schedules: [monthly('2026-02-01'), rentSchedule({ id: 's2', name: 'Gym', payee: 'pay2', date: '2026-01-05' })],
+        payees: [{ id: 'pay1', name: 'Landlord' }, { id: 'pay2', name: 'Gym Ltd' }],
+        accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-20') }]
+      }),
+      server: { scheduleAlerts: { alerts: [
+        { id: 'rent', schedule: 'Rent', channels: ['webhook'] },
+        { id: 'gym', schedule: 'Gym', channels: ['webhook'] }
+      ] } },
+      serverName: 'Main', timezone: 'UTC', syncHistory, notificationService: sender, logger: quietLogger,
+      now: new Date('2026-01-25T00:00:00.000Z')
+    });
+    expect(result.sent).toBe(1); // Gym's missing alert still went out
   });
 });
 
@@ -408,7 +495,7 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
   });
 
   /** Never actually dials out (no real network), just fakes latency. */
-  function makeSlowSender(delayMs) {
+  function makeSlowSender(delayMs, { onSend } = {}) {
     const calls = [];
     return {
       calls,
@@ -422,6 +509,7 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
       },
       sendTemplated: jest.fn(async (channelOutputs) => {
         calls.push({ at: Date.now(), url: channelOutputs.webhook && channelOutputs.webhook.url });
+        if (onSend) onSend(calls.length);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         return { webhook: { ok: true } };
       })
@@ -436,19 +524,30 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
       transactions: []
     });
     const server_ = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'] }] } };
-    const SEND_DELAY_MS = 60;
-    const sender = makeSlowSender(SEND_DELAY_MS);
+    // Deterministic clock (#297 round 2 L-a): the budget is far longer than
+    // any pre-send overhead, and the clock jumps past it the moment the first
+    // send starts. So the first destination is always in flight when the
+    // budget expires, and the second is never started, however slow the host.
+    const SEND_DELAY_MS = 100;
+    const DELIVER_BUDGET_MS = 60000;
+    const realNow = Date.now.bind(Date);
+    let skewMs = 0;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + skewMs);
+    const sender = makeSlowSender(SEND_DELAY_MS, {
+      onSend: (count) => { if (count === 1) skewMs += DELIVER_BUDGET_MS + 1; }
+    });
+    try {
 
     const evaluated = await maybeRunScheduleAlerts(server_, {
       api, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-10T00:00:00.000Z'), logger: quietLogger
     });
 
-    // The budget (10ms) is far shorter than one send's latency (60ms): the
-    // first destination is already in flight when the budget expires, so it
+    // The budget expires while the first send is in flight (the clock jumps
+    // inside the sender): the first destination is already in flight, so it
     // must still be awaited to completion; the second destination must never
     // be started this sync.
     const result = await maybeDeliverScheduleAlerts(evaluated, {
-      syncHistory, notificationService: sender, logger: quietLogger, deliverBudgetMs: 10
+      syncHistory, notificationService: sender, logger: quietLogger, deliverBudgetMs: DELIVER_BUDGET_MS
     });
 
     const callsRightAfterReturn = sender.calls.length;
@@ -468,11 +567,11 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
     // The destination that was actually sent is recorded; the deferred one is not.
     const firstRow = await syncHistory.findLatestScheduleAlert({
       server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05',
-      event: 'missing', channel: 'webhook:#first'
+      event: 'missing', channel: destinationKey('webhook', { name: 'first', url: 'http://127.0.0.1:1/first' })
     });
     const secondRow = await syncHistory.findLatestScheduleAlert({
       server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05',
-      event: 'missing', channel: 'webhook:#second'
+      event: 'missing', channel: destinationKey('webhook', { name: 'second', url: 'http://127.0.0.1:1/second' })
     });
     expect(firstRow).not.toBeNull();
     expect(secondRow).toBeNull();
@@ -490,5 +589,720 @@ describe('maybeDeliverScheduleAlerts: a short budget defers a send without aband
     expect(sender.calls.length).toBe(callsBeforeSecondSync + 1);
     expect(sender.calls[sender.calls.length - 1].url).toBe('http://127.0.0.1:1/second');
     expect(result2).toEqual({ events: 1, sent: 1, skipped: 0 });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }, 20000);
+});
+
+describe('persistPaymentSnapshot and error codes (#260)', () => {
+  let syncHistory;
+  let dbDir;
+  let warnings;
+  const logger = { info() {}, error() {}, warn(message, meta) { warnings.push({ message, meta }); } };
+  const NOW = new Date('2026-01-10T00:00:00.000Z');
+  const configured = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'] }] } };
+
+  beforeEach(() => {
+    warnings = [];
+    dbDir = createTempDir();
+    syncHistory = new SyncHistoryService({
+      dbPath: path.join(dbDir, 'sync-history.db'),
+      loggerConfig: { level: 'ERROR' }
+    });
+  });
+
+  afterEach(() => {
+    syncHistory.close();
+    cleanupTempDir(dbDir);
+  });
+
+  const fakeApi = (extra = {}) => makeFakeApi({
+    schedules: [rentSchedule()],
+    payees: [{ id: 'pay1', name: 'Landlord' }],
+    accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-09') }],
+    ...extra
+  });
+
+  /** The production sequence: evaluate with an outcome, then persist. */
+  async function syncOnce(server_, api, now = NOW, hist = syncHistory) {
+    const outcome = {};
+    const evaluated = await maybeRunScheduleAlerts(server_, {
+      api, serverName: 'Main', timezone: 'UTC', now, logger, syncHistory: hist, outcome
+    });
+    persistPaymentSnapshot(server_, evaluated, { syncHistory: hist, serverName: 'Main', outcome, logger });
+    return { evaluated, outcome };
+  }
+
+  const evalRow = (overrides = {}) => ({
+    alertId: 'r1', scheduleId: 's1', name: 'N', cadenceText: null, account: 'A', payee: 'P',
+    expectedAmount: 100, nextDate: null, deadline: null, state: 'missing', occurrences: [], ...overrides
+  });
+
+  test('a real evaluation is stored with the state the notifications use', async () => {
+    await syncOnce(configured, fakeApi());
+    const { items, run } = syncHistory.getPaymentSnapshot('Main');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ alertId: 'rent', scheduleId: 's1', name: 'Rent', state: 'missing', expectedAmount: -50000 });
+    expect(run.ok).toBe(true);
+  });
+
+  test('removing the scheduleAlerts block deletes both tables rows for the server', async () => {
+    await syncOnce(configured, fakeApi());
+    expect(syncHistory.getPaymentSnapshot('Main').run).not.toBeNull();
+    await syncOnce({}, fakeApi());
+    expect(syncHistory.getPaymentSnapshot('Main')).toEqual({ items: [], run: null });
+  });
+
+  test('a getRules failure tagged rules_invalid records only the run row', async () => {
+    await syncOnce(configured, fakeApi());
+    const before = syncHistory.getPaymentSnapshot('Main');
+    // getRules throws (a TypeError in normalizeRule) on a null alert entry; a sync
+    // cannot normally reach this because startup validation rejects it first.
+    const bad = { scheduleAlerts: { alerts: [null] } };
+    const { outcome } = await syncOnce(bad, fakeApi());
+    expect(outcome).toEqual({ failed: true, errorCode: 'rules_invalid' });
+    const after = syncHistory.getPaymentSnapshot('Main');
+    expect(after.items).toEqual(before.items);
+    expect(after.run).toMatchObject({ ok: false, errorCode: 'rules_invalid', lastSuccessAt: before.run.lastSuccessAt });
+  });
+
+  test('an untagged error from evaluate() maps to evaluation_failed', async () => {
+    const api = fakeApi({ schedules: [null] }); // evaluate() throws a plain TypeError outside its per-rule catch
+    const { evaluated, outcome } = await syncOnce(configured, api);
+    expect(evaluated).toBeNull();
+    expect(outcome).toEqual({ failed: true, errorCode: 'evaluation_failed' });
+  });
+
+  test('getSchedules rejecting with an error already tagged actual_read_failed keeps that code', async () => {
+    const err = Object.assign(new Error('read'), { code: 'actual_read_failed' });
+    const api = fakeApi({ getSchedules: jest.fn().mockRejectedValue(err) });
+    const { outcome } = await syncOnce(configured, api);
+    expect(outcome.errorCode).toBe('actual_read_failed');
+  });
+
+  test('an untagged Actual read error is tagged actual_read_failed', async () => {
+    const api = fakeApi({ getSchedules: jest.fn().mockRejectedValue(new Error('down')) });
+    const { outcome } = await syncOnce(configured, api);
+    expect(outcome.errorCode).toBe('actual_read_failed');
+  });
+
+  test.each(['PHASE_TIMEOUT', 'ECONNRESET'])('a foreign code %s is not stored (allowlist)', async (code) => {
+    const api = fakeApi({ getSchedules: jest.fn().mockRejectedValue(Object.assign(new Error('x'), { code })) });
+    const { outcome } = await syncOnce(configured, api);
+    expect(outcome.errorCode).toBe('evaluation_failed');
+  });
+
+  test('a failed run leaves previous items and records the code, never the message', async () => {
+    await syncOnce(configured, fakeApi());
+    const api = fakeApi({ getSchedules: jest.fn().mockRejectedValue(new Error('secret detail')) });
+    await syncOnce(configured, api);
+    const { items, run } = syncHistory.getPaymentSnapshot('Main');
+    expect(items).toHaveLength(1);
+    expect(JSON.stringify(run)).not.toMatch(/secret detail/);
+    expect(run.errorCode).toBe('actual_read_failed');
+  });
+
+  test('a rule that threw keeps its previous row and counts as errored; the others upsert', () => {
+    syncHistory.replacePaymentSnapshot('Main', [evalRow({ alertId: 'r1' }), evalRow({ alertId: 'r2', state: 'upcoming' })]);
+    persistPaymentSnapshot(configured, {
+      evaluations: [evalRow({ alertId: 'r2', state: 'received' })],
+      warnings: [{ ruleId: 'r1', scheduleId: 's1', message: 'threw' }]
+    }, { syncHistory, serverName: 'Main', outcome: {}, logger });
+    const { items, run } = syncHistory.getPaymentSnapshot('Main');
+    expect(items.map((i) => [i.alertId, i.state])).toEqual([['r1', 'missing'], ['r2', 'received']]);
+    expect(run.rulesErrored).toBe(1);
+  });
+
+  test('an interval-violation rule (warning plus cannotCheck evaluation) is upserted and not errored', () => {
+    persistPaymentSnapshot(configured, {
+      evaluations: [evalRow({ state: 'cannotCheck' })],
+      warnings: [{ ruleId: 'r1', scheduleId: 's1', message: 'overlap' }]
+    }, { syncHistory, serverName: 'Main', outcome: {}, logger });
+    const { items, run } = syncHistory.getPaymentSnapshot('Main');
+    expect(items[0].state).toBe('cannotCheck');
+    expect(run.rulesErrored).toBe(0);
+  });
+
+  test('a real interval-violation rule flows through the step as cannotCheck, not errored', async () => {
+    const api = fakeApi({ schedules: [rentSchedule({ date: { frequency: 'daily', start: '2026-01-01', endMode: 'never', interval: 1, patterns: [] } })] });
+    await syncOnce({ scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['webhook'], graceDays: 5 }] } }, api);
+    const { items, run } = syncHistory.getPaymentSnapshot('Main');
+    expect(items[0].state).toBe('cannotCheck');
+    expect(run.rulesErrored).toBe(0);
+  });
+
+  test('a SQLite failure mid-transaction leaves no partial rows, logs WARN and does not throw', () => {
+    syncHistory.replacePaymentSnapshot('Main', [evalRow({ alertId: 'keep' })]);
+    // Fail inside the transaction (second row hits NOT NULL on state after the
+    // first upserted), so only a real rollback leaves ['keep'] (#343 review, M1).
+    expect(() => persistPaymentSnapshot(configured, {
+      evaluations: [evalRow({ alertId: 'new' }), evalRow({ alertId: 'bad', state: null })], warnings: []
+    }, { syncHistory, serverName: 'Main', outcome: {}, logger })).not.toThrow();
+    const ids = syncHistory.db.prepare('SELECT alert_id FROM payment_alert_status').all().map((r) => r.alert_id);
+    expect(ids).toEqual(['keep']);
+    expect(warnings.some((w) => /payment alert snapshot/.test(w.message))).toBe(true);
+  });
+
+  test('is a no-op without syncHistory', () => {
+    expect(() => persistPaymentSnapshot(configured, { evaluations: [], warnings: [] }, { serverName: 'Main', outcome: {}, logger })).not.toThrow();
+    // Without the guard it would throw on syncHistory.deletePaymentSnapshot/replace
+    // and be swallowed into a WARN, so assert nothing is logged (#343 review, L1).
+    expect(warnings).toEqual([]);
+  });
+});
+
+describe('scheduleAlertsSync: Telegram requests across syncs and restarts (#296)', () => {
+  let fake;
+  let baseUrl;
+  let requests;
+  let dbDir;
+  let dbPath;
+  let history;
+
+  beforeEach((done) => {
+    requests = [];
+    fake = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        requests.push({ url: req.url, body: JSON.parse(body || '{}') });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    fake.listen(0, '127.0.0.1', () => {
+      baseUrl = `http://127.0.0.1:${fake.address().port}`;
+      dbDir = createTempDir();
+      dbPath = path.join(dbDir, 'sync-history.db');
+      history = new SyncHistoryService({ dbPath, loggerConfig: { level: 'ERROR' } });
+      done();
+    });
+  });
+
+  afterEach((done) => {
+    history.close();
+    cleanupTempDir(dbDir);
+    fake.close(done);
+  });
+
+  const notifier = () => new NotificationService(
+    { telegram: { enabled: true, botToken: 'TOKEN', chatId: '42' } },
+    { level: 'ERROR' },
+    { telegramApiBaseUrl: baseUrl }
+  );
+  const block = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'] }] } };
+  const apiFor = (transactions, lastSync) => makeFakeApi({
+    schedules: [rentSchedule()],
+    payees: [{ id: 'pay1', name: 'Landlord' }],
+    accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs(lastSync) }],
+    transactions
+  });
+  const run = (api, now, syncHistory = history) => runScheduleAlertsStep({
+    api, server: block, serverName: 'Main', timezone: 'UTC', syncHistory,
+    notificationService: notifier(), logger: quietLogger, now: new Date(now)
+  });
+
+  test('two syncs of the same missing payment give exactly one Telegram request', async () => {
+    await run(apiFor([], '2026-01-09'), '2026-01-10T00:00:00.000Z');
+    await run(apiFor([], '2026-01-10'), '2026-01-10T12:00:00.000Z');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe('/botTOKEN/sendMessage');
+    expect(requests[0].body.text).toMatch(/Rent/);
+  });
+
+  test('a restart (database reopened from the same file) does not send the alert again', async () => {
+    await run(apiFor([], '2026-01-09'), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+
+    history.close();
+    history = new SyncHistoryService({ dbPath, loggerConfig: { level: 'ERROR' } });
+
+    const second = await run(apiFor([], '2026-01-10'), '2026-01-10T12:00:00.000Z');
+    expect(second).toEqual({ events: 1, sent: 0, skipped: 1 });
+    expect(requests).toHaveLength(1);
+  });
+
+  test('late payment: missing, then resolved once, then silence on later syncs', async () => {
+    await run(apiFor([], '2026-01-09'), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body.text).toMatch(/not received|did not go out/);
+
+    const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: null }];
+    await run(apiFor(paid, '2026-01-11'), '2026-01-11T00:00:00.000Z');
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.text).toMatch(/arrived/);
+
+    const third = await run(apiFor(paid, '2026-01-12'), '2026-01-12T00:00:00.000Z');
+    expect(third.events).toBe(0);
+    expect(requests).toHaveLength(2);
+    const fourth = await run(apiFor(paid, '2026-01-13'), '2026-01-13T00:00:00.000Z');
+    expect(fourth.events).toBe(0);
+    expect(requests).toHaveLength(2);
+  });
+});
+
+// #326: a one-off schedule that raised `missing` and is then marked completed
+// in Actual drops out of the active set; it must still get one `resolved`.
+describe('scheduleAlertsSync: completed one-off schedule closes its open missing (#326)', () => {
+  let fake;
+  let requests;
+  let baseUrl;
+  let dbDir;
+  let history;
+
+  beforeEach((done) => {
+    requests = [];
+    fake = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        requests.push({ url: req.url, body: JSON.parse(body || '{}') });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    fake.listen(0, '127.0.0.1', () => {
+      baseUrl = `http://127.0.0.1:${fake.address().port}`;
+      dbDir = createTempDir();
+      history = new SyncHistoryService({ dbPath: path.join(dbDir, 'sync-history.db'), loggerConfig: { level: 'ERROR' } });
+      done();
+    });
+  });
+
+  afterEach((done) => {
+    history.close();
+    cleanupTempDir(dbDir);
+    fake.close(done);
+  });
+
+  const notifier = () => new NotificationService(
+    { telegram: { enabled: true, botToken: 'TOKEN', chatId: '42' } },
+    { level: 'ERROR' },
+    { telegramApiBaseUrl: baseUrl }
+  );
+  const block = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'] }] } };
+  const apiFor = ({ completed = false, transactions = [], lastSync = '2026-01-09' } = {}) => makeFakeApi({
+    schedules: [rentSchedule(completed ? { completed: true } : {})],
+    payees: [{ id: 'pay1', name: 'Landlord' }],
+    accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs(lastSync) }],
+    transactions
+  });
+  const run = (api, now) => runScheduleAlertsStep({
+    api, server: block, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+    notificationService: notifier(), logger: quietLogger, now: new Date(now)
+  });
+
+  test('missing sent, then completed with no transaction: resolved once with completed wording, then silence', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+
+    const second = await run(apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+    expect(second.sent).toBe(1);
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.text).toMatch(/Rent/);
+    expect(requests[1].body.text).toMatch(/marked completed in Actual/);
+    expect(requests[1].body.text).not.toMatch(/arrived/);
+
+    await run(apiFor({ completed: true, lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+    await run(apiFor({ completed: true, lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
+    expect(requests).toHaveLength(2);
+  });
+
+  test('completed with a matching transaction: resolved with the completed wording (pinned), once', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }];
+    await run(apiFor({ completed: true, transactions: paid, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.text).toMatch(/marked completed in Actual/);
+    await run(apiFor({ completed: true, transactions: paid, lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+    expect(requests).toHaveLength(2);
+  });
+
+  test('completed one-off that never raised a missing sends nothing', async () => {
+    const result = await run(apiFor({ completed: true }), '2026-01-10T00:00:00.000Z');
+    expect(result.sent).toBe(0);
+    expect(requests).toHaveLength(0);
+  });
+
+  test('completed one-off whose missing is older than the look-back window sends nothing', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+    // occurrence 2026-01-05 is MAX_LOOKBACK_DAYS + 1 days before this run
+    const later = moment.utc('2026-01-05').add(MAX_LOOKBACK_DAYS + 1, 'days').format('YYYY-MM-DD');
+    await run(apiFor({ completed: true, lastSync: later }), `${later}T00:00:00.000Z`);
+    expect(requests).toHaveLength(1);
+  });
+
+  test('completed one-off whose missing is exactly MAX_LOOKBACK_DAYS old is still resolved', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+    const edge = moment.utc('2026-01-05').add(MAX_LOOKBACK_DAYS, 'days').format('YYYY-MM-DD');
+    await run(apiFor({ completed: true, lastSync: edge }), `${edge}T00:00:00.000Z`);
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body.text).toMatch(/marked completed in Actual/);
+  });
+
+  test('a completed recurring schedule with an open missing is not touched', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const api = makeFakeApi({
+      schedules: [rentSchedule({ completed: true, date: { start: '2026-01-05', frequency: 'monthly' } })],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(api, '2026-01-11T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+  });
+
+  describe('custom resolved templates (review M1)', () => {
+    const withTemplate = (resolved) => ({ scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'], templates: { resolved }
+    }] } });
+    const runWith = (srv, api, now) => runScheduleAlertsStep({
+      api, server: srv, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+      notificationService: notifier(), logger: quietLogger, now: new Date(now)
+    });
+    const legacy = '{{name}}: {{received_amount}} arrived {{received_date}}, {{days_overdue}} day(s) late';
+
+    test('a custom resolved without closed_by gets the built-in completed text for a completed one-off', async () => {
+      const srv = withTemplate(legacy);
+      await runWith(srv, apiFor(), '2026-01-10T00:00:00.000Z');
+      await runWith(srv, apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].body.text).toMatch(/marked completed in Actual/);
+      expect(requests[1].body.text).not.toMatch(/arrived/);
+    });
+
+    test('a custom resolved that uses closed_by is honoured for a completed one-off', async () => {
+      const srv = withTemplate('{{#if closed_by}}CUSTOM-DONE {{name}}{{else}}CUSTOM-PAID{{/if}}');
+      await runWith(srv, apiFor(), '2026-01-10T00:00:00.000Z');
+      await runWith(srv, apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests[1].body.text).toMatch(/CUSTOM-DONE Rent/);
+    });
+
+    test('a normal payment resolved still uses the custom template', async () => {
+      // A sentinel only the custom template produces: the built-in payment
+      // text also says "arrived", so matching on it cannot tell them apart.
+      const srv = withTemplate('CUSTOM-PAID {{name}} {{received_date}}');
+      await runWith(srv, apiFor(), '2026-01-10T00:00:00.000Z');
+      const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }];
+      await runWith(srv, apiFor({ transactions: paid, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].body.text).toMatch(/^CUSTOM-PAID Rent 10 Jan 2026$/);
+      expect(requests[1].body.text).not.toMatch(/Alert closed/);
+    });
+  });
+
+  describe('resolved is final only until a later missing (review M2)', () => {
+    const remind = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'], remindEveryDays: 1 }] } };
+    // The ledger stamps rows with the wall clock, so fake only Date and move it
+    // together with `now`; reminder spacing is measured against recorded_at.
+    beforeEach(() => {
+      jest.useFakeTimers({
+        doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate',
+          'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout']
+      });
+    });
+    afterEach(() => { jest.useRealTimers(); });
+    const runR = (api, now) => {
+      jest.setSystemTime(new Date(now));
+      return runScheduleAlertsStep({
+      api, server: remind, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+      notificationService: notifier(), logger: quietLogger, now: new Date(now)
+      });
+    };
+    const paid = [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }];
+
+    test('completed, resolved, uncompleted: reminders restart and the next payment closes it again', async () => {
+      await runR(apiFor({ lastSync: '2026-01-10' }), '2026-01-10T00:00:00.000Z');
+      expect(requests).toHaveLength(1);
+      await runR(apiFor({ completed: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].body.text).toMatch(/marked completed/);
+      await runR(apiFor({ lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+      await runR(apiFor({ lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
+      expect(requests).toHaveLength(4);
+      expect(requests[3].body.text).not.toMatch(/arrived|marked completed/);
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-13' }), '2026-01-14T00:00:00.000Z');
+      expect(requests).toHaveLength(5);
+      expect(requests[4].body.text).toMatch(/arrived/);
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-14' }), '2026-01-15T00:00:00.000Z');
+      expect(requests).toHaveLength(5);
+    });
+
+    test('payment resolved, transaction unlinked, then relinked: resolved is delivered again', async () => {
+      await runR(apiFor({ lastSync: '2026-01-10' }), '2026-01-10T00:00:00.000Z');
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+      expect(requests).toHaveLength(2);
+      await runR(apiFor({ lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+      expect(requests).toHaveLength(3);
+      await runR(apiFor({ transactions: paid, lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
+      expect(requests).toHaveLength(4);
+      expect(requests[3].body.text).toMatch(/arrived/);
+    });
+  });
+});
+
+// #356: a schedule deleted in Actual while its `missing` is open is closed with
+// a `resolved` (closed_by "deleted"), and `ruleUnmatched` is sent once per
+// destination, not on every sync.
+describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356)', () => {
+  let fake;
+  let requests;
+  let baseUrl;
+  let dbDir;
+  let history;
+
+  beforeEach((done) => {
+    requests = [];
+    // The ledger stamps rows with the wall clock; fake only Date and move it
+    // together with `now` so ordering between syncs is deterministic.
+    jest.useFakeTimers({
+      doNotFake: ['hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate',
+        'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout']
+    });
+    fake = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        requests.push({ url: req.url, body: JSON.parse(body || '{}') });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    fake.listen(0, '127.0.0.1', () => {
+      baseUrl = `http://127.0.0.1:${fake.address().port}`;
+      dbDir = createTempDir();
+      history = new SyncHistoryService({ dbPath: path.join(dbDir, 'sync-history.db'), loggerConfig: { level: 'ERROR' } });
+      done();
+    });
+  });
+
+  afterEach((done) => {
+    jest.useRealTimers();
+    history.close();
+    cleanupTempDir(dbDir);
+    fake.close(done);
+  });
+
+  const notifier = () => new NotificationService(
+    { telegram: { enabled: true, botToken: 'TOKEN', chatId: '42' } },
+    { level: 'ERROR' },
+    { telegramApiBaseUrl: baseUrl }
+  );
+  const block = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'] }] } };
+  // `Rent` present or deleted; an unrelated schedule always remains, so the
+  // list is never empty.
+  const other = () => rentSchedule({ id: 's2', name: 'Gym', date: '2026-02-01' });
+  const apiFor = ({ deleted = false, lastSync = '2026-01-09', getSchedules } = {}) => makeFakeApi({
+    schedules: deleted ? [other()] : [rentSchedule(), other()],
+    payees: [{ id: 'pay1', name: 'Landlord' }],
+    accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs(lastSync) }],
+    getSchedules
+  });
+  const run = (api, now, srv = block) => {
+    jest.setSystemTime(new Date(now));
+    return runScheduleAlertsStep({
+      api, server: srv, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+      notificationService: notifier(), logger: quietLogger, now: new Date(now)
+    });
+  };
+  const texts = () => requests.map((r) => r.body.text);
+  const unmatched = () => texts().filter((t) => /matches no schedule/.test(t));
+  const closed = () => texts().filter((t) => /removed in Actual/.test(t));
+
+  test('deleted with an open missing: one resolved with deleted wording, no repeat', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+    expect(closed()).toHaveLength(1);
+    expect(closed()[0]).toMatch(/Rent \(5 Jan 2026\): removed in Actual\. Alert closed\./);
+    expect(closed()[0]).not.toMatch(/arrived/);
+
+    await run(apiFor({ deleted: true, lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+    await run(apiFor({ deleted: true, lastSync: '2026-01-12' }), '2026-01-13T00:00:00.000Z');
+    expect(closed()).toHaveLength(1);
+  });
+
+  test('a fetch failure never closes anything, and the close is delivered once the fetch works again', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const failing = apiFor({ deleted: true, getSchedules: jest.fn().mockRejectedValue(new Error('boom')) });
+    await expect(run(failing, '2026-01-11T00:00:00.000Z')).rejects.toThrow('boom');
+    expect(closed()).toHaveLength(0);
+
+    await run(apiFor({ deleted: true, lastSync: '2026-01-11' }), '2026-01-12T00:00:00.000Z');
+    expect(closed()).toHaveLength(1);
+  });
+
+  test('an empty schedule list is not read as "everything was deleted"', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const empty = makeFakeApi({
+      schedules: [], payees: [], accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(empty, '2026-01-11T00:00:00.000Z');
+    expect(closed()).toHaveLength(0);
+  });
+
+  test('a schedule that is still there (renamed away from the rule) is not treated as deleted', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const renamed = makeFakeApi({
+      schedules: [rentSchedule({ name: 'Rent 2' }), other()],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(renamed, '2026-01-11T00:00:00.000Z');
+    expect(closed()).toHaveLength(0);
+  });
+
+  test('a deleted schedule that never raised a missing sends no close', async () => {
+    await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z');
+    expect(closed()).toHaveLength(0);
+  });
+
+  test('a custom resolved without closed_by gets the built-in deleted text', async () => {
+    const srv = { scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'],
+      templates: { resolved: '{{name}}: {{received_amount}} arrived {{received_date}}' }
+    }] } };
+    await run(apiFor(), '2026-01-10T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z', srv);
+    expect(closed()).toHaveLength(1);
+    expect(texts().join('\n')).not.toMatch(/arrived/);
+  });
+
+  test('a #326-style template handling only "completed" gets the built-in text for a deleted schedule', async () => {
+    const srv = { scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'],
+      templates: { resolved: '{{#if (eq closed_by "completed")}}{{name}} completed.{{else}}{{name}}: {{received_amount}} arrived {{received_date}}.{{/if}}' }
+    }] } };
+    await run(apiFor(), '2026-01-10T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z', srv);
+    expect(closed()).toHaveLength(1);
+    expect(texts().join('\n')).not.toMatch(/arrived/);
+  });
+
+  test('the same template with eq arguments reversed also gets the built-in text for a deleted schedule', async () => {
+    const srv = { scheduleAlerts: { alerts: [{
+      id: 'rent', schedule: 'Rent', channels: ['telegram'],
+      templates: { resolved: '{{#if (eq "completed" closed_by)}}{{name}} completed.{{else}}{{name}}: {{received_amount}} arrived {{received_date}}.{{/if}}' }
+    }] } };
+    await run(apiFor(), '2026-01-10T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z', srv);
+    expect(closed()).toHaveLength(1);
+    expect(texts().join('\n')).not.toMatch(/arrived/);
+    expect(texts().join('\n')).toMatch(/removed in Actual/);
+  });
+
+  test('ruleUnmatched re-arms when the rule only matches a schedule that throws on evaluation (cannotCheck, no evaluation row)', async () => {
+    const srv = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent', channels: ['telegram'], graceDays: 5 }] } };
+    const daily = makeFakeApi({
+      schedules: [rentSchedule({ date: { frequency: 'bogus', start: 'not-a-date', endMode: 'never', interval: 1, patterns: [] } }), other()],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z', srv);
+    expect(unmatched()).toHaveLength(1);
+    await run(daily, '2026-01-11T00:00:00.000Z', srv);
+    await run(apiFor({ deleted: true }), '2026-01-12T00:00:00.000Z', srv);
+    expect(unmatched()).toHaveLength(2);
+  });
+
+  test('ruleUnmatched is sent once while unmatched, then silent', async () => {
+    await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z');
+    await run(apiFor({ deleted: true }), '2026-01-11T00:00:00.000Z');
+    await run(apiFor({ deleted: true }), '2026-01-15T00:00:00.000Z');
+    expect(unmatched()).toHaveLength(1);
+  });
+
+  test('ruleUnmatched fires again after the rule matches and later unmatches again', async () => {
+    await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z');
+    expect(unmatched()).toHaveLength(1);
+    await run(apiFor({ deleted: true }), '2026-01-11T00:00:00.000Z');
+    expect(unmatched()).toHaveLength(1);
+
+    await run(apiFor(), '2026-01-12T00:00:00.000Z');
+    await run(apiFor({ deleted: true }), '2026-01-13T00:00:00.000Z');
+    expect(unmatched()).toHaveLength(2);
+    await run(apiFor({ deleted: true }), '2026-01-14T00:00:00.000Z');
+    expect(unmatched()).toHaveLength(2);
+  });
+  describe('an empty schedule list skips rule matching (#359)', () => {
+    const emptyApi = (lastSync = '2026-01-10') => makeFakeApi({
+      schedules: [], payees: [], accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs(lastSync) }]
+    });
+    const ledgerRows = () => history.db.prepare('SELECT event FROM schedule_alerts').all().map((r) => r.event);
+    const warnLogger = () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() });
+    const runLogged = (api, now, logger, srv = block) => {
+      jest.setSystemTime(new Date(now));
+      return runScheduleAlertsStep({
+        api, server: srv, serverName: 'Main', timezone: 'UTC', syncHistory: history,
+        notificationService: notifier(), logger, now: new Date(now)
+      });
+    };
+
+    test('rules configured: nothing is sent or recorded, and one WARN says the evaluation was skipped', async () => {
+      const logger = warnLogger();
+      const result = await runLogged(emptyApi(), '2026-01-10T00:00:00.000Z', logger);
+      expect(result).toEqual({ events: 0, sent: 0, skipped: 0 });
+      expect(requests).toHaveLength(0);
+      expect(ledgerRows()).toEqual([]);
+      const warns = logger.warn.mock.calls.filter(([m]) => /empty schedule list/.test(m));
+      expect(warns).toHaveLength(1);
+      expect(warns[0][0]).toMatch(/evaluation skipped/);
+    });
+
+    test('a non-array schedule list is treated the same way', async () => {
+      const api = emptyApi();
+      api.getSchedules = jest.fn().mockResolvedValue(undefined);
+      const logger = warnLogger();
+      await runLogged(api, '2026-01-10T00:00:00.000Z', logger);
+      expect(requests).toHaveLength(0);
+      expect(ledgerRows()).toEqual([]);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+    });
+
+    test('an empty sync between two unmatched syncs writes no ruleMatched marker, so the earlier ruleUnmatched stays deduped', async () => {
+      await run(apiFor({ deleted: true }), '2026-01-10T00:00:00.000Z');
+      expect(unmatched()).toHaveLength(1);
+      const before = ledgerRows();
+
+      await runLogged(emptyApi(), '2026-01-11T00:00:00.000Z', warnLogger());
+      expect(ledgerRows()).toEqual(before);
+
+      await run(apiFor({ deleted: true }), '2026-01-12T00:00:00.000Z');
+      expect(unmatched()).toHaveLength(1);
+      expect(ledgerRows()).not.toContain('ruleMatched');
+    });
+
+    test('the next sync with a real list behaves normally after an empty one', async () => {
+      await runLogged(emptyApi(), '2026-01-10T00:00:00.000Z', warnLogger());
+      expect(requests).toHaveLength(0);
+      await run(apiFor({ deleted: true }), '2026-01-11T00:00:00.000Z');
+      expect(unmatched()).toHaveLength(1);
+    });
+
+    test('zero rules: an empty list is a no-op without a WARN', async () => {
+      const logger = warnLogger();
+      const result = await runLogged(emptyApi(), '2026-01-10T00:00:00.000Z', logger, { scheduleAlerts: { alerts: [] } });
+      expect(result).toEqual({ events: 0, sent: 0, skipped: 0 });
+      expect(requests).toHaveLength(0);
+      expect(ledgerRows()).toEqual([]);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    test('the dashboard snapshot from the last good sync is kept', async () => {
+      const server_ = { scheduleAlerts: block.scheduleAlerts };
+      const logger = warnLogger();
+      const good = await evaluateScheduleAlerts({ api: apiFor(), server: server_, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-10T00:00:00.000Z'), logger });
+      persistPaymentSnapshot(server_, good, { syncHistory: history, serverName: 'Main', outcome: {}, logger });
+      const snapshot = () => JSON.stringify(history.db.prepare('SELECT * FROM payment_alert_status').all());
+      const kept = snapshot();
+      expect(JSON.parse(kept).length).toBeGreaterThan(0);
+
+      const skipped = await evaluateScheduleAlerts({ api: emptyApi(), server: server_, serverName: 'Main', timezone: 'UTC', now: new Date('2026-01-11T00:00:00.000Z'), logger });
+      persistPaymentSnapshot(server_, skipped, { syncHistory: history, serverName: 'Main', outcome: {}, logger });
+      expect(snapshot()).toBe(kept);
+    });
   });
 });

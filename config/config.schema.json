@@ -134,6 +134,12 @@
       "type": "string",
       "description": "Optional JSON Schema reference for editor autocomplete/validation. Ignored at runtime."
     },
+    "timezone": {
+      "type": "string",
+      "minLength": 1,
+      "description": "IANA timezone name (e.g. \"Europe/Madrid\", \"America/New_York\") used for cron schedules and for every time shown in logs and notifications. Defaults to the process timezone (TZ, else the system zone). Checked at config load.",
+      "examples": ["Europe/Madrid", "America/New_York", "UTC"]
+    },
     "servers": {
       "type": "array",
       "description": "Array of Actual Budget server configurations",
@@ -483,6 +489,11 @@
           ],
           "examples": [false, 1, "172.18.0.2", ["loopback", "172.18.0.2"]]
         },
+        "hsts": {
+          "type": "boolean",
+          "description": "Send the Strict-Transport-Security header (max-age 180 days, no includeSubDomains). Off by default because the service is plain HTTP in most deployments; enable it only when browsers reach it over HTTPS (normally TLS and HSTS are the reverse proxy's job).",
+          "default": false
+        },
         "dashboard": {
           "type": "object",
           "additionalProperties": false,
@@ -495,9 +506,14 @@
             },
             "allowedOrigins": {
               "type": "array",
-              "description": "Extra browser origins (scheme://host[:port]) allowed to open the /ws/logs live log stream. Same-origin is always allowed. Needed only when the dashboard is served under a different origin than the one the browser connects to, e.g. behind some reverse proxies.",
+              "description": "Extra browser origins (scheme://host[:port]) allowed to open the /ws/logs live log stream and to submit state-changing requests (POST and other writes) to the dashboard API. Same-origin is always allowed. Needed only when the dashboard is served under a different origin than the one the browser connects to, e.g. behind some reverse proxies. Review this list before enabling allowConfigWrites.",
               "items": { "type": "string", "pattern": "^https?://[^/\\s]+$" },
               "default": []
+            },
+            "allowConfigWrites": {
+              "type": "boolean",
+              "description": "Allow the dashboard to change configuration (alert settings). Off by default; also refused while auth.type is none.",
+              "default": false
             },
             "auth": {
               "type": "object",

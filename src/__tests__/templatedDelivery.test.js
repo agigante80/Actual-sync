@@ -200,6 +200,56 @@ describe('sendTemplated delivery (#257)', () => {
     expect(discordBody.allowed_mentions).toEqual({ parse: [] });
   });
 
+  // L7 (#294): structured fields must never override the rendered text.
+  test('a webhook field named text cannot override the rendered text', async () => {
+    const service = makeService();
+    const results = await service.sendTemplated({
+      webhook: { url: `${baseUrl}/webhook`, text: 'rendered', fields: { text: 'evil', extra: 1 } }
+    });
+
+    expect(results.webhook).toEqual({ success: true });
+    const body = JSON.parse(received.find((r) => r.url === '/webhook').body);
+    expect(body.text).toBe('rendered');
+    expect(body.extra).toBe(1);
+  });
+
+  // L8 (#294): Discord rejects content over 2000 characters with a 400, and
+  // Slack truncates messages over 40000 characters.
+  test('templated Discord content over 2000 characters is truncated with an ellipsis', async () => {
+    const service = makeService();
+    await service.sendTemplated({ discord: { url: `${baseUrl}/discord`, text: 'x'.repeat(2500) } });
+
+    const body = JSON.parse(received.find((r) => r.url === '/discord').body);
+    expect([...body.content]).toHaveLength(2000);
+    expect(body.content.endsWith('\u2026')).toBe(true);
+    expect(body.allowed_mentions).toEqual({ parse: [] });
+  });
+
+  test('templated Discord content within 2000 characters is sent unchanged', async () => {
+    const service = makeService();
+    const text = 'y'.repeat(2000);
+    await service.sendTemplated({ discord: { url: `${baseUrl}/discord`, text } });
+
+    expect(JSON.parse(received.find((r) => r.url === '/discord').body).content).toBe(text);
+  });
+
+  test('templated Slack text over 40000 characters is truncated with an ellipsis', async () => {
+    const service = makeService();
+    await service.sendTemplated({ slack: { url: `${baseUrl}/slack`, text: 'z'.repeat(45000) } });
+
+    const body = JSON.parse(received.find((r) => r.url === '/slack').body);
+    expect([...body.text]).toHaveLength(40000);
+    expect(body.text.endsWith('\u2026')).toBe(true);
+  });
+
+  test('templated Slack text within 40000 characters is sent unchanged', async () => {
+    const service = makeService();
+    const text = 'z'.repeat(40000);
+    await service.sendTemplated({ slack: { url: `${baseUrl}/slack`, text } });
+
+    expect(JSON.parse(received.find((r) => r.url === '/slack').body).text).toBe(text);
+  });
+
   test('an existing caller using sendTelegramMessage still gets false on a fake 500', async () => {
     telegramStatusQueue = [500];
     const service = makeService();

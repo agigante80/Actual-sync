@@ -202,7 +202,7 @@ Add your own keys (the defaults always apply):
 - INFO: live log stream (`/ws/logs`) connections.
 - DEBUG: `/health`, `/metrics` and Prometheus scrapes.
 
-Behind a reverse proxy the HTTP lines show the real client IP only when `healthCheck.trustProxy` is set; otherwise they show the proxy's address. The `/ws/logs` lines always show the TCP peer, which behind a proxy is the proxy. Log files follow the file retention (`rotation.maxFiles`, 30 days by default). Console output is kept by whatever collects it: under Docker, stdout is kept until the container is removed unless you set log rotation on the container (for example `logging: { driver: json-file, options: { max-size: 10m, max-file: "3" } }` in Compose).
+Behind a reverse proxy the HTTP lines show the real client IP only when `healthCheck.trustProxy` is set; otherwise they show the proxy's address. The `/ws/logs` lines follow the same rule: the forwarded client with `healthCheck.trustProxy`, otherwise the TCP peer, which behind a proxy is the proxy. Log files follow the file retention (`rotation.maxFiles`, 30 days by default). Console output is kept by whatever collects it: under Docker, stdout is kept until the container is removed unless you set log rotation on the container (for example `logging: { driver: json-file, options: { max-size: 10m, max-file: "3" } }` in Compose).
 
 Notes:
 - Non-secret data is preserved, including `Date`, `Buffer`, and `Error` values (an `Error` keeps its `message`, `stack`, `code`, `cause`, and custom fields such as `statusCode`, all redacted).
@@ -357,7 +357,7 @@ These WARN lines are worth an alert rule in your log pipeline:
 
 | Message | Meaning |
 |---|---|
-| `Dashboard authentication failed` / `Dashboard token authentication failed` | One wrong dashboard credential, with `remoteAddress` (and `username` for basic auth) |
+| `Dashboard authentication failed` / `Dashboard token authentication failed` | One wrong dashboard credential, with `remoteAddress` only (the typed username is never logged, since users paste passwords into it) |
 | `Dashboard authentication throttled after repeated failures` | A client already has 10 failed logins in the current 15 minute window and is refused with 429 (#246). It is written for every refused request, not once per lockout, so a burst of these is a guessing attempt or a stale tab still polling with an old credential |
 | `WebSocket handshake refused` | A `/ws/logs` connection was refused, with the status and reason |
 

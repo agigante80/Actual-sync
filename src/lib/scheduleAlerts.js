@@ -174,6 +174,18 @@ function computeIntervalStats(dateConfig, today, timezone) {
 }
 
 /**
+ * Key of one remembered skip decision (#297 F1): a skip belongs to a schedule
+ * occurrence, not to an alert rule, so two rules bound to one schedule agree.
+ *
+ * @param {string} scheduleId
+ * @param {string} occurrence - `YYYY-MM-DD`
+ * @returns {string}
+ */
+function skipKey(scheduleId, occurrence) {
+  return `${scheduleId}|${occurrence}`;
+}
+
+/**
  * Resolve the effective amount-tolerance percentage for a rule: the rule's
  * own `amountTolerancePct` if set, otherwise Actual's own schedule amount
  * mode ("approximately" -> 7.5%, an exact amount -> 0%).
@@ -197,8 +209,28 @@ function resolveTolerancePct(rule, schedule) {
  * @returns {boolean}
  */
 function amountWithinTolerance(amount, expected, tolerancePct) {
+  // #296: a refund (opposite sign) of the same size is not the payment.
+  if (!signCompatible(amount, expected)) return false;
   const allowed = Math.abs(expected) * (tolerancePct / 100);
   return Math.abs(Math.abs(amount) - Math.abs(expected)) <= allowed;
+}
+
+/**
+ * Whether a transaction's sign can belong to a schedule's expected amount
+ * (#296). An opposite-sign transaction (a refund) is never the payment.
+ * Rules: a null amount or a zero amount (sign is undefined, so any
+ * transaction is compatible and the amount check reports wrongAmount); a
+ * range (`{num1, num2}`) accepts the sign of either bound, which also covers
+ * a range spanning zero, and any range with a zero bound.
+ *
+ * @param {number} txAmount
+ * @param {number|{num1: number, num2: number}|null} scheduleAmount
+ * @returns {boolean}
+ */
+function signCompatible(txAmount, scheduleAmount) {
+  if (scheduleAmount == null) return true;
+  const bounds = typeof scheduleAmount === 'object' ? [scheduleAmount.num1, scheduleAmount.num2] : [scheduleAmount];
+  return bounds.some((b) => b === 0 || Math.sign(txAmount) === Math.sign(b));
 }
 
 /**
@@ -298,6 +330,20 @@ function betterMatchedElsewhere(tx, currentSchedule, currentTolerancePct, bindin
 }
 
 /**
+ * Whether `tx` also fits the amount of some OTHER bound schedule sharing its
+ * account and payee (#297 round 1, M1). Unlike `betterMatchedElsewhere`, this
+ * does not care whether it also fits `currentSchedule`.
+ */
+function fitsSiblingSchedule(tx, currentSchedule, bindings) {
+  return bindings.some((other) => {
+    if (other.unmatched || !other.schedule || other.scheduleId === currentSchedule.id) return false;
+    const otherSchedule = other.schedule;
+    if (tx.account !== otherSchedule.account || !otherSchedule.payee || tx.payee !== otherSchedule.payee) return false;
+    return amountMatchesSchedule(tx.amount, otherSchedule, resolveTolerancePct(other, otherSchedule));
+  });
+}
+
+/**
  * Normalize `account.last_sync` into a calendar-day moment in `timezone`, or
  * `null` when absent/unparseable. In production Actual, `last_sync` is an
  * epoch-millisecond string (e.g. `"1736380800000"`); `moment.tz(value, zone)`
@@ -339,12 +385,23 @@ function parseLastSync(lastSync, timezone) {
  * @param {Array<{id:string,last_sync:?string}>} args.accounts
  * @param {Date|string} args.now
  * @param {string} args.timezone - IANA zone, e.g. `Europe/Madrid`
- * @returns {{ events: Object[], evaluations: Object[], warnings: Object[] }}
+ * @param {Iterable<string>} [args.skips] - #297 F1: remembered skip decisions,
+ *   each `${scheduleId}|${occurrence}` (see `skipKey`). An unpaid occurrence in
+ *   this set is `skipped` regardless of what `next_date` says now.
+ * @returns {{ events: Object[], evaluations: Object[], warnings: Object[], skipDecisions: Object[] }}
+ *   `skipDecisions` lists the skips inferred for the FIRST time in this call
+ *   (`{alertId, scheduleId, occurrence}`); the caller persists them so the
+ *   next call can pass them back in as `skips`.
  */
-function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
+function evaluate({ rules, schedules, transactions, accounts, now, timezone, skips }) {
   const events = [];
+  const skipDecisions = [];
+  const rememberedSkips = new Set(skips || []);
   const evaluations = [];
   const warnings = [];
+  // #326: completed one-off schedules bound to a rule. Not evaluated; the
+  // delivery layer checks the ledger for an open `missing` and closes it.
+  const completedSchedules = [];
 
   const today = moment.tz(now, timezone).startOf('day');
   const accountsById = new Map((accounts || []).map((a) => [a.id, a]));
@@ -376,6 +433,17 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
     }
 
     const schedule = binding.schedule;
+    if (binding.completedOneOff) {
+      completedSchedules.push({
+        alertId: binding.id,
+        scheduleId: binding.scheduleId,
+        name: binding.scheduleName,
+        account: schedule.accountName || schedule.account,
+        payee: schedule.payeeName || schedule.payee,
+        expectedAmount: schedule.amount != null ? schedule.amount : null
+      });
+      continue;
+    }
     const dateConfig = schedule.date;
 
     // #295 review, H2: one bad schedule (a malformed recurrence config, or
@@ -387,25 +455,29 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
     try {
       const { shortestIntervalDays, longestIntervalDays } = computeIntervalStats(dateConfig, today, timezone);
 
-      // The overlap check must use the SAME early boundary the window math
-      // below actually uses for a linked candidate - max(earlyDays,
-      // LINKED_EARLY_WINDOW_DAYS), not the rule's own earlyDays alone.
-      // Otherwise a rule could pass this guard (graceDays + earlyDays <
-      // interval) while its *linked* window (widened to
-      // LINKED_EARLY_WINDOW_DAYS by M12) still reached back far enough to
-      // overlap the previous occurrence's deadline, letting a linked payment
-      // meant for occurrence N+1 be claimed by occurrence N instead (#295
-      // review round 2, M3).
-      const effectiveEarlyDays = Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS);
+      // The overlap check counts the linked-transaction early allowance
+      // (LINKED_EARLY_WINDOW_DAYS) as well as the rule's own earlyDays, but
+      // only while the interval is longer than the allowance itself (#295
+      // round 2 M3; #297 F4 + round 1 M2). Without it, weekly graceDays 5 would
+      // let an occurrence's on-time window swallow the NEXT occurrence's early
+      // linked payment. With it unconditionally, every daily schedule
+      // (interval 1 <= 2) was a permanent interval violation; for such short
+      // intervals the linked early start is clamped per occurrence instead
+      // (see earlyStartLinked below).
+      const linkedOverlap = shortestIntervalDays !== null && shortestIntervalDays > LINKED_EARLY_WINDOW_DAYS
+        && binding.graceDays + LINKED_EARLY_WINDOW_DAYS >= shortestIntervalDays;
+      const effectiveEarlyDays = linkedOverlap ? Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS) : binding.earlyDays;
       if (shortestIntervalDays !== null && binding.graceDays + effectiveEarlyDays >= shortestIntervalDays) {
         warnings.push({
           ruleId: binding.id,
           scheduleId: binding.scheduleId,
-          // Reports the EFFECTIVE earlyDays (after the linked-early floor),
-          // not the rule's raw earlyDays: that is the value the check above
-          // actually used, and keeps this message accurate for a rule whose
-          // configured earlyDays is below LINKED_EARLY_WINDOW_DAYS.
-          message: `Rule "${binding.id}": graceDays (${binding.graceDays}) + earlyDays (${effectiveEarlyDays}) >= `
+          // Print the operator's own earlyDays, plus the allowance when it is
+          // what tipped the sum over (#297 round 2 L-b): the effective value
+          // is never a setting they can find in config.json.
+          message: `Rule "${binding.id}": graceDays (${binding.graceDays}) + earlyDays (${binding.earlyDays}`
+            + (effectiveEarlyDays !== binding.earlyDays
+              ? `, raised to the ${LINKED_EARLY_WINDOW_DAYS}-day linked-payment allowance) >= `
+              : ') >= ')
             + `the schedule's shortest interval between occurrences (${shortestIntervalDays} days); `
             + 'the on-time and late windows of consecutive occurrences would overlap, so this rule was skipped.'
         });
@@ -466,6 +538,11 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
       const candidateTx = (transactions || [])
         .map((tx) => ({ tx, match: matches(tx, schedule) }))
         .filter((c) => c.match.eligible && (!globallyUsedTx.has(c.tx) || globallyUsedTx.get(c.tx) === schedule.id))
+        // #296 round 1, M1: an UNLINKED opposite-sign transaction (a refund) is
+        // never a candidate, so neither the wrong-amount fallback nor the late
+        // pass can take it. A linked one stays authoritative (#295 M11).
+        // See signCompatible for the zero-amount and range rules.
+        .filter((c) => c.match.linked || signCompatible(c.tx.amount, schedule.amount))
         .map((c) => ({ tx: c.tx, linked: c.match.linked, date: moment.tz(c.tx.date, timezone).startOf('day'), used: false }))
         .sort((a, b) => a.date.valueOf() - b.date.valueOf());
 
@@ -475,7 +552,16 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
         // Widened early boundary for a *linked* candidate only (M12, see
         // LINKED_EARLY_WINDOW_DAYS above); an unlinked candidate keeps using
         // the rule's own, possibly narrower, `earlyDays`.
-        const earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');
+        // Clamped to the day after the previous occurrence's deadline, so a
+        // linked payment inside the previous occurrence's grace is never
+        // pulled forward onto this one (#297 F4). Only matters for intervals
+        // of 2 days or less: longer intervals are rejected by the guard above
+        // (#297 round 1 M2), so the clamp can never kick in for them.
+        let earlyStartLinked = day.clone().subtract(Math.max(binding.earlyDays, LINKED_EARLY_WINDOW_DAYS), 'days');
+        if (index > 0) {
+          const afterPrevDeadline = occurrenceDays[index - 1].clone().add(binding.graceDays + 1, 'days');
+          if (earlyStartLinked.isBefore(afterPrevDeadline, 'day')) earlyStartLinked = afterPrevDeadline;
+        }
         const next = occurrenceDays[index + 1] || null;
         const lateEnd = next
           ? next.clone().subtract(binding.earlyDays, 'days').subtract(1, 'day')
@@ -513,8 +599,20 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
         const closestLinked = linkedInWindow.length
           ? [...linkedInWindow].sort((a, b) => Math.abs(a.date.diff(occ.day, 'days')) - Math.abs(b.date.diff(occ.day, 'days')))[0]
           : null;
+        // #297 F2: Actual's own link is authoritative, so an unlinked
+        // exact-amount lookalike must not be taken while a payment linked to
+        // THIS schedule exists, when a sibling schedule sharing account+payee
+        // also fits that lookalike (the sibling would lose it and report a
+        // false `missing`). #297 round 1, M1: without such a sibling, the
+        // 2-day linked allowance (closestLinked, dated before this
+        // occurrence's own early window) must NOT beat an in-window
+        // exact-amount payment, or a late linked payment for the PREVIOUS
+        // occurrence steals this one's payment and reports a false `missing`.
+        const amountMatch = inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct));
+        const linkedBeatsAmount = closestLinked && (!amountMatch || fitsSiblingSchedule(amountMatch.tx, schedule, bindings));
         const candidate = strictLinked
-          || inWindow.find((c) => amountMatchesSchedule(c.tx.amount, schedule, tolerancePct))
+          || (linkedBeatsAmount ? closestLinked : null)
+          || amountMatch
           || closestLinked
           // Wrong-amount fallback (M11): only take a candidate that is not a
           // better, correctly-amounted match for some OTHER bound schedule
@@ -538,12 +636,16 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
       // since `matches()` already ties it exclusively to this schedule.
       for (const occ of occurrenceResults) {
         if (occ.state || !occ.lateEnd) continue;
-        const candidate = candidateTx.find(
+        const lateCandidates = candidateTx.filter(
           (c) => !c.used
             && !c.date.isBefore(occ.lateStart, 'day')
             && !c.date.isAfter(occ.lateEnd, 'day')
             && (c.linked || !betterMatchedElsewhere(c.tx, schedule, tolerancePct, bindings))
         );
+        // #297 F2b: a payment linked to this schedule is preferred over an
+        // earlier unlinked lookalike (candidateTx is date-ordered, so a plain
+        // find() took the lookalike and starved the sibling that owns it).
+        const candidate = lateCandidates.find((c) => c.linked) || lateCandidates[0];
         if (candidate) {
           candidate.used = true;
           globallyUsedTx.set(candidate.tx, schedule.id);
@@ -564,6 +666,15 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
           occ.state = 'upcoming';
           continue;
         }
+        const occurrenceKey = occ.day.format('YYYY-MM-DD');
+        // #297 F1: a skip decision remembered from an earlier sync wins over
+        // re-inference. Once a later payment advances next_date, Actual's data
+        // can no longer tell a skip from a miss, so the first observation is
+        // the only reliable one and it is persisted by the caller.
+        if (rememberedSkips.has(skipKey(binding.scheduleId, occurrenceKey))) {
+          occ.state = 'skipped';
+          continue;
+        }
         if (nextDateMoment && occ.day.isBefore(nextDateMoment, 'day')) {
           // #295 review round 2, H2: only infer "skipped" when no
           // transaction LINKED TO THIS SCHEDULE falls strictly between this
@@ -574,18 +685,23 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
           // through to the normal missing/cannotCheck check below instead of
           // being hidden as "skipped".
           //
-          // Trade-off (documented in docs/SCHEDULE_ALERTS.md): a genuine
-          // explicit skip whose next payment happens to post early - dated
-          // between this occurrence's deadline and next_date - looks
-          // identical to the case above and will also fall through to
-          // missing/cannotCheck rather than skipped. This is accepted:
-          // hiding a real miss is worse than an occasional false missing on
-          // an explicitly-skipped occurrence, which the operator can dismiss.
+          // Remaining trade-off (documented in docs/SCHEDULE_ALERTS.md): a
+          // skip that is FIRST observed only after a later payment already
+          // advanced next_date (no sync ran between the skip and that
+          // payment, or the feature was enabled afterwards) cannot be told
+          // from a miss and falls through to missing/cannotCheck. Skips
+          // observed in time are remembered (#297 F1, see rememberedSkips).
           const hasInterveningLinkedPayment = linkedTxDates.some(
             (d) => d.isAfter(occ.deadline, 'day') && d.isBefore(nextDateMoment, 'day')
           );
           if (!hasInterveningLinkedPayment) {
             occ.state = 'skipped';
+            // First time this skip is inferred (not remembered, else caught
+            // above): report it so it is written to the ledger (#297 F1).
+            // Added to the set too, so a second rule bound to the same schedule
+            // does not report (and the caller does not record) it twice.
+            rememberedSkips.add(skipKey(binding.scheduleId, occurrenceKey));
+            skipDecisions.push({ alertId: binding.id, scheduleId: binding.scheduleId, occurrence: occurrenceKey });
             continue;
           }
         }
@@ -683,7 +799,7 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone }) {
     }
   }
 
-  return { events, evaluations, warnings };
+  return { events, evaluations, warnings, skipDecisions, completedSchedules };
 }
 
-module.exports = { evaluate, MAX_LOOKBACK_DAYS, MAX_OCCURRENCES, LINKED_EARLY_WINDOW_DAYS };
+module.exports = { evaluate, skipKey, MAX_LOOKBACK_DAYS, MAX_OCCURRENCES, LINKED_EARLY_WINDOW_DAYS };

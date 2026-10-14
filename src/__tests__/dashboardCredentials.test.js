@@ -24,7 +24,7 @@ describe('checkCredentials (#242, #246)', () => {
 
   test('basic: wrong username with correct password fails', () => {
     expect(checkCredentials(basicHeader('root', 'test-password'), basic))
-      .toEqual({ ok: false, reason: 'invalid', username: 'root' });
+      .toEqual({ ok: false, reason: 'invalid' });
   });
 
   test('basic: wrong username still runs the password comparison', () => {
@@ -45,13 +45,13 @@ describe('checkCredentials (#242, #246)', () => {
     const colon = { type: 'basic', username: 'admin', password: 'a:b::c' };
     expect(checkCredentials(basicHeader('admin', 'a:b::c'), colon)).toEqual({ ok: true });
     expect(checkCredentials(basicHeader('admin', 'a'), colon))
-      .toEqual({ ok: false, reason: 'invalid', username: 'admin' });
+      .toEqual({ ok: false, reason: 'invalid' });
   });
 
   test('basic: credentials with no colon at all fail as invalid (#281)', () => {
     const header = { authorization: 'Basic ' + Buffer.from('admintest-password').toString('base64') };
     expect(checkCredentials(header, basic))
-      .toEqual({ ok: false, reason: 'invalid', username: 'admintest-password' });
+      .toEqual({ ok: false, reason: 'invalid' });
   });
 
   test('token: correct token passes, same-length wrong token fails', () => {

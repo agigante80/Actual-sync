@@ -31,6 +31,7 @@ const TAB_LABELS = {
   overview: 'Overview',
   analytics: 'Analytics',
   history: 'History',
+  payments: 'Payments',
   settings: 'Settings'
 };
 

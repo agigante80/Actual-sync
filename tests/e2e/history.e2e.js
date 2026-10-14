@@ -1,11 +1,8 @@
 /**
  * History tab rendering (#263).
  *
- * The dashboard's history-tab filter select sends `serverName` to
- * /api/dashboard/history, but the route ignores that query parameter and
- * always returns the unfiltered set (pre-existing bug, not fixed here). This
- * spec therefore checks the table against the fixture's known total row count
- * and failure count rather than any server-scoped filtering.
+ * Checks the table against the fixture's known total row count and failure
+ * count, then that the server filter narrows it to one server's rows (#288).
  */
 const { launchBrowser, closeBrowser, withDashboard, clickTab } = require('./fixtures/browser');
 
@@ -33,6 +30,57 @@ describe('dashboard history tab (#263)', () => {
       expect(rows).toHaveLength(fixture.state.totalRows);
       const failures = rows.filter((r) => r.status.includes('failure'));
       expect(failures).toHaveLength(fixture.state.failureCount);
+    });
+  });
+
+  test('the server filter shows only that server\'s rows (#288)', async () => {
+    await withDashboard('history-errors', async ({ page, fixture }) => {
+      await clickTab(page, 'History');
+      await page.waitForSelector('#history-body tr td:nth-child(2)');
+
+      const name = fixture.state.servers[0].name;
+      const expected = fixture.state.rowsFor(name);
+      expect(expected).toBeLessThan(fixture.state.totalRows);
+      await page.waitForSelector(`#history-server-filter option[value="${name}"]`);
+      await page.select('#history-server-filter', name);
+      await page.waitForFunction(
+        (n) => document.querySelectorAll('#history-body tr').length === n,
+        {}, expected
+      );
+
+      const servers = await page.$$eval('#history-body tr', (trs) => trs.map((tr) => tr.children[1]?.textContent || ''));
+      expect(servers).toHaveLength(expected);
+      expect(servers.every((s) => s.includes(name))).toBe(true);
+    });
+  });
+
+  test('a quoted server name filters correctly and error markup renders as text (#288)', async () => {
+    await withDashboard('history-markup', async ({ page, fixture }) => {
+      await clickTab(page, 'History');
+      await page.waitForSelector('#history-body tr td:nth-child(2)');
+
+      expect(await page.$('#injected')).toBeNull();
+      const errorText = await page.$eval('#history-body tr td:last-child span', (el) => el.textContent);
+      expect(errorText).toBe(fixture.state.markupError);
+
+      const name = fixture.state.quoted;
+      await page.select('#history-server-filter', name);
+      await page.waitForFunction(() => document.querySelectorAll('#history-body tr').length === 1);
+      const server = await page.$eval('#history-body tr td:nth-child(2)', (el) => el.textContent);
+      expect(server).toBe(name);
+    });
+  });
+
+  test('the Reset History select keeps a quoted server name intact (#288)', async () => {
+    await withDashboard('history-markup', async ({ page, fixture }) => {
+      await clickTab(page, 'Settings');
+      const name = fixture.state.quoted;
+      await page.waitForFunction(
+        (n) => [...document.querySelectorAll('#reset-server-select option')].some((o) => o.value === n),
+        {}, name
+      );
+      await page.select('#reset-server-select', name);
+      expect(await page.$eval('#reset-server-select', (el) => el.value)).toBe(name);
     });
   });
 });
