@@ -134,7 +134,7 @@ describe('GET /api/dashboard/payments (#260)', () => {
       const byId = Object.fromEntries(items.map((i) => [i.alertId, i]));
       expect(byId['cfg-rule'].source).toBe('config');
       expect(byId['dash-rule'].source).toBe('dashboard');
-      expect(byId['dash-rule'].ruleState).toEqual({ enabled: false, mutedUntil: null, reason: null, lockedByConfig: false });
+      expect(byId['dash-rule'].ruleState).toEqual({ enabled: false, mutedUntil: null, reason: null, lockedByConfig: false, muteEndDue: false });
       expect(byId['cfg-rule'].ruleState.enabled).toBe(true);
     } finally {
       servers[0] = { name: 'Main', scheduleAlerts: { alerts: [] } };
