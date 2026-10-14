@@ -581,11 +581,22 @@ async function sendEvent({ event, evaluation, rule, sender, server, timezone, lo
         });
       }
       if (ok) {
-        await history.recordScheduleAlert({
-          server, alertId: event.alertId, scheduleId: event.scheduleId, occurrenceDate: event.occurrence,
-          event: event.event, delivery: 'sent', channel: destination.key
-        });
-        sentAny = true;
+        // #332: the message already went out, so a failed ledger write must not
+        // abort the remaining destinations or turn the event into "skipped"
+        // when an earlier destination has a row. Same rule as the digest path:
+        // this destination has no row (may be resent next sync) and does not
+        // count as sent.
+        try {
+          await history.recordScheduleAlert({
+            server, alertId: event.alertId, scheduleId: event.scheduleId, occurrenceDate: event.occurrence,
+            event: event.event, delivery: 'sent', channel: destination.key
+          });
+          sentAny = true;
+        } catch (error) {
+          logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {
+            server, alertId: event.alertId, event: event.event, channel: destination.channel, error: error.message
+          });
+        }
       }
     }
     return sentAny;
@@ -739,10 +750,20 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     if (!target) continue; // resolveChannels already guarantees this, defensive only
     const key = destinationKey(channel, target);
 
+    // #332: same guard as `sendEvent` (#297 round 1, L1). A ledger read that
+    // fails (e.g. SQLITE_BUSY) withholds only this channel's digest this sync
+    // (WARN, no send, no row; retried next sync), never the other channels.
     const dueItems = [];
-    for (const item of channelItems) {
-      const state = await destinationDueState(item.event, item.rule, key, history, server, now, timezone);
-      if (state.due) dueItems.push({ item, lastSentAt: state.lastSentAt });
+    try {
+      for (const item of channelItems) {
+        const state = await destinationDueState(item.event, item.rule, key, history, server, now, timezone);
+        if (state.due) dueItems.push({ item, lastSentAt: state.lastSentAt });
+      }
+    } catch (error) {
+      logger.warn('Schedule alert ledger lookup failed; destination withheld until the next sync', {
+        server, channel, error: error.message
+      });
+      continue;
     }
     if (dueItems.length === 0) continue;
 
@@ -813,12 +834,21 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
     if (!ok) continue; // H5: withhold only this channel's rows; other channels are unaffected
 
     for (const item of included) {
-      await history.recordScheduleAlert({
-        server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
-        occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent',
-        channel: key
-      });
-      sentKeys.add(eventKey(item.event));
+      // #332: the digest already went out, so a failed ledger write must not
+      // stop the remaining items or channels. That item has no row and may be
+      // resent next sync; it is not counted as sent.
+      try {
+        await history.recordScheduleAlert({
+          server, alertId: item.event.alertId, scheduleId: item.event.scheduleId,
+          occurrenceDate: item.event.occurrence, event: item.event.event, delivery: 'sent',
+          channel: key
+        });
+        sentKeys.add(eventKey(item.event));
+      } catch (error) {
+        logger.warn('Schedule alert ledger write failed after a successful send; the row may be resent next sync', {
+          server, alertId: item.event.alertId, event: item.event.event, channel, error: error.message
+        });
+      }
     }
   }
 
