@@ -188,7 +188,7 @@ async function startFixtureServer(stateName, overrides = {}) {
   const notificationService = {
     config: {
       rateLimit: { minIntervalMinutes: 15, maxPerHour: 4 },
-      webhooks: { discord: [{ url: 'https://discord.invalid/fixture' }], slack: [] }
+      webhooks: state.webhooks || { discord: [{ url: 'https://discord.invalid/fixture' }], slack: [] }
     },
     getStats: () => state.notificationStats || {
       notificationsSentLastHour: 0,
