@@ -426,8 +426,8 @@ holds for the schedule snapshot described below.
 
 ## Rules from the dashboard
 
-A server with a `scheduleAlerts` block can also have rules created in the dashboard (the editor is
-#268; the API is in [HEALTH_CHECK.md](HEALTH_CHECK.md#payment-rules-262)). An empty block
+A server with a `scheduleAlerts` block can also have rules created in the dashboard (the editor is described in
+[DASHBOARD.md](DASHBOARD.md#managing-alerts-from-the-dashboard); the API is in [HEALTH_CHECK.md](HEALTH_CHECK.md#payment-rules-262)). An empty block
 (`"scheduleAlerts": { "alerts": [] }`) is enough to opt a server in.
 
 - **Same engine.** A dashboard rule is one `alerts[]` entry stored as JSON, validated by the same
