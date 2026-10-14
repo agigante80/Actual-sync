@@ -249,6 +249,26 @@ describe('payments alert controls (#261)', () => {
       });
     });
 
+    test('a retry after a network error sends the PUT again and saves (#261)', async () => {
+      await withFixture('payments-writes-enabled', async ({ page, fixture }) => {
+        await openPayments(page, fixture);
+        await clickBtn(page, 'openPaymentMute', 'parking-a');
+        await page.waitForSelector('.pay-mute-form');
+        await setField(page, '.pay-mute-date', '2026-03-01');
+        await setField(page, '.pay-mute-reason', 'vacant');
+        const seen = countStateRequests(page);
+        const restore = page.overrideRoute(STATE_ROUTE, (req) => req.abort('failed'));
+        await page.click('.pay-mute-form button[type="submit"]');
+        await page.waitForSelector('.pay-field-error');
+        expect(seen).toHaveLength(1);
+        restore();
+        await page.click('.pay-mute-form button[type="submit"]');
+        await page.waitForSelector('button[data-action="unmutePaymentAlert"][data-alert="parking-a"]');
+        expect(seen).toHaveLength(2);
+        expect(history(fixture).getOverride('Main', 'parking-a').mutedUntil).toBe('2026-03-01');
+      });
+    });
+
     test('invalid_muted_until keeps the form open with the message beside the date field', async () => {
       await withFixture('payments-writes-enabled', async ({ page, fixture }) => {
         await openPayments(page, fixture);

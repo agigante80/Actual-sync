@@ -1958,6 +1958,8 @@ async function savePaymentMute(form) {
     const key = paymentFormKey(server, alertId);
     const state = paymentMuteForms.get(key);
     if (!state || state.busy) return;
+    // A message from an earlier attempt (network, server) has no field to clear it by typing.
+    state.error = null;
     if (!paymentWritesAllowed()) {
         state.error = { field: '', message: paymentWritesTip() };
         renderPayments();
