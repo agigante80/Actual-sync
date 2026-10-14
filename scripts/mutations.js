@@ -2250,8 +2250,8 @@ module.exports = [
         id: '341-poll-cap-off-by-one', ticket: '#341',
         desc: 'status poll runs one read too many',
         file: 'src/services/dashboard.js',
-        anchor: 'reads < PAYMENTS_SYNC_MAX_POLLS',
-        mutant: 'reads <= PAYMENTS_SYNC_MAX_POLLS',
+        anchor: 'paymentsReads < PAYMENTS_SYNC_MAX_POLLS',
+        mutant: 'paymentsReads <= PAYMENTS_SYNC_MAX_POLLS',
         tests: 'dashboardPayments'
     },
     {

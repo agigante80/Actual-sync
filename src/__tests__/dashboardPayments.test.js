@@ -313,6 +313,29 @@ describe('Payments tab client (#341)', () => {
       expect(env.calls.filter((c) => c.url.includes('/status'))).toHaveLength(3);
     });
 
+    test('two servers clicked together never have two status reads in flight at once', async () => {
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const env = makeEnv({
+        windowGlobals: { __paymentsSyncMaxPolls: 4 },
+        route: async (url, opts) => {
+          if (opts.method === 'POST') return ok({ success: true });
+          if (url.includes('/api/dashboard/status')) {
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            await new Promise((r) => setTimeout(r, 4)); // slower than the 1 ms poll interval
+            inFlight -= 1;
+            return ok({ runningSync: { key: 'x' } });
+          }
+          return payments(group({ server: 'Main' }), group({ server: 'Other' }));
+        }
+      });
+      await env.api.loadPaymentsTab();
+      await Promise.all([env.api.paymentsSyncNow('Main'), env.api.paymentsSyncNow('Other')]);
+      await flush(60);
+      expect(maxInFlight).toBe(1);
+    });
+
     test('a double-click sends one POST and disables the button before the fetch resolves', async () => {
       let release;
       const env = makeEnv({
