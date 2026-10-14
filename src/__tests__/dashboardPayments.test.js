@@ -335,6 +335,20 @@ describe('Payments tab client (#341)', () => {
       }
     });
 
+    test('every locale format asks for timeZone UTC', () => {
+      // Runtime TZ changes are not reliable inside a Jest worker, so pin the option itself.
+      const seen = [];
+      for (const f of ['us', 'us-short', 'us-long', 'eu', 'eu-short', 'eu-long', 'full', 'locale', 'bogus']) {
+        const env = makeEnv({ route: () => ok({}), dateFormat: f });
+        env.ctx.Date = class extends Date {
+          toLocaleDateString(locale, options) { seen.push(options && options.timeZone); return super.toLocaleDateString(locale, options); }
+        };
+        env.api.formatCalendarDate('2026-02-05');
+      }
+      expect(seen).toHaveLength(9);
+      expect(new Set(seen)).toEqual(new Set(['UTC']));
+    });
+
     test('iso and relative give YYYY-MM-DD, and a bad value passes through unchanged', () => {
       for (const f of ['iso', 'relative', null]) {
         expect(makeEnv({ route: () => ok({}), dateFormat: f }).api.formatCalendarDate('2026-02-05')).toBe('2026-02-05');
