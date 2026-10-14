@@ -294,7 +294,8 @@ CommonJS runtime refuses unless Node itself starts with
 
 ### What is covered
 
-Login and the login rate limit, manual sync triggering and error dismissal,
+Login, the general 60-requests-per-minute rate limiter (the separate login
+failure throttle from #246 has no E2E spec), manual sync triggering and error dismissal,
 and the Overview, History, Analytics, Settings and Accounts tabs - each
 against a fixture state built for that scenario. See the spec files under
 `tests/e2e/*.e2e.js` for the exact assertions.
