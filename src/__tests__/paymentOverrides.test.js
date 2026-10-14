@@ -521,6 +521,19 @@ describe('payment alert state routes (#261)', () => {
       expect((await put('parking-a', { mutedUntil: '2026-12-01', reason: 'x'.repeat(200) })).status).toBe(200);
     });
 
+    test('a reason-only PUT on a muted alert is rejected when too long or blank, never cut (#261)', async () => {
+      await boot();
+      await put('parking-a', { mutedUntil: '2026-12-01', reason: 'vacant' });
+      const long = await put('parking-a', { reason: 'y'.repeat(300) });
+      expect(long.status).toBe(400);
+      expect(long.json).toEqual({ error: 'invalid_reason' });
+      expect((await put('parking-a', { reason: '   ' })).json).toEqual({ error: 'reason_required' });
+      expect(history.getOverride('Main', 'parking-a').reason).toBe('vacant');
+      const ok = await put('parking-a', { reason: '  new reason  ' });
+      expect(ok.status).toBe(200);
+      expect(history.getOverride('Main', 'parking-a').reason).toBe('new reason');
+    });
+
     test('404 for an unknown server, an unknown alert and __proto__', async () => {
       await boot();
       const server = await call('PUT', STATE('Nope', 'parking-a'), { body: { enabled: false } });

@@ -2851,6 +2851,14 @@ module.exports = [
         tests: "scheduleAlertDelivery"
     },
     {
+        id: "261-reason-only-unvalidated", ticket: '#261',
+        desc: "a reason-only PUT skips the trim, required and length check",
+        file: "src/services/healthCheck.js",
+        anchor: "if (typeof body.mutedUntil === 'string' || (typeof body.reason === 'string' && body.mutedUntil !== null)) {",
+        mutant: "if (typeof body.mutedUntil === 'string') {",
+        tests: "paymentOverrides"
+    },
+    {
         id: "261-mute-ends-end-of-day", ticket: '#261',
         desc: "a mute ends at the start of the mutedUntil day instead of the end of it",
         file: "src/lib/scheduleAlertRules.js",

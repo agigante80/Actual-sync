@@ -408,6 +408,10 @@ class HealthCheckService {
       const today = moment.tz(now, timezone).startOf('day');
       const days = Math.round(m.clone().startOf('day').diff(today, 'days', true));
       if (days < 0 || days > 365) return bad('invalid_muted_until');
+    }
+    // A reason given with a date, or alone on a muted alert, passes the same
+    // trim, required and length check (a long reason is rejected, never cut).
+    if (typeof body.mutedUntil === 'string' || (typeof body.reason === 'string' && body.mutedUntil !== null)) {
       reason = typeof body.reason === 'string' ? body.reason.trim() : '';
       if (reason === '') return bad('reason_required');
       if (reason.length > 200) return bad('invalid_reason');
@@ -442,7 +446,7 @@ class HealthCheckService {
         next.mutedUntil = body.mutedUntil;
         next.reason = reason;
       } else if ('reason' in body && next.mutedUntil && typeof body.reason === 'string' && body.reason.trim() !== '') {
-        next.reason = body.reason.trim().slice(0, 200);
+        next.reason = reason;
       }
 
       if (before && before.mutedUntil && next.mutedUntil === null) {
