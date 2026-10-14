@@ -1507,9 +1507,16 @@ describe('deliver: off, mute and mute end (#261)', () => {
     });
 
     test('a destination with no sent missing row never gets a resolved after the mute', async () => {
+      // Only a muted missing row exists (nobody was told). deleteMutedRow is a
+      // no-op so the delivery: 'sent' filters (derive step and per-destination check, each masks the other) have to stop the resolved.
+      jest.spyOn(history, 'deleteMutedRow').mockReturnValue(0);
+      for (const channel of [KEY_A, KEY_B]) {
+        await history.recordScheduleAlert({ server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-10-12', event: 'missing', delivery: 'muted', channel });
+      }
       at('2026-10-25T08:00:00.000Z');
       await run([], { evaluations: [evalOf('2026-10-12', 'received')] });
       expect(sender.calls).toHaveLength(0);
+      expect(rows("event = 'resolved'")).toEqual([]);
     });
 
     test('a muted row written just after midnight of the mute end still gets summarized (#261)', async () => {
