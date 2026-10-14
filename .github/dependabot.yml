@@ -165,8 +165,31 @@ updates:
       prefix: "chore(ci)"
       include: "scope"
 
-  # DECISION (#251): no `docker` ecosystem entry yet. Tracking the Dockerfile
-  # base image would open PRs for new `node` major versions, and the Node
-  # version is a deliberate choice shared with CI (NODE_VERSION) and the
-  # engines field, so it needs an `ignore` policy decided first. Tracked as its
-  # own ticket rather than bundled here: #362.
+  # Dockerfile base image (#362). Both stages pin `node:22-alpine` by digest,
+  # so Dependabot has a digest to bump when Alpine or Node 22 ships a fix and a
+  # patched base arrives as a reviewable PR instead of on the next unrelated
+  # rebuild. Node MAJOR versions are ignored: the major is a deliberate choice
+  # shared with CI (NODE_VERSION) and engines.node, and moves by hand.
+  - package-ecosystem: "docker"
+    directory: "/"
+    target-branch: "development"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "01:00"
+      timezone: "Europe/Madrid"
+    # Same window as github-actions: an image tag can be repointed just like
+    # an action tag, and nothing needs a base image within hours.
+    cooldown:
+      default-days: 5
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+    reviewers:
+      - "agigante80"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(docker)"
+      include: "scope"

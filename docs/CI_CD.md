@@ -561,8 +561,9 @@ returns the tag, not the highest published version).
 | Direct dependency — **security** update | Dependabot entry 2 | opens on **`main`**, retargeted hourly to `development` |
 | **Transitive** dependency (either kind) | nobody — **no PR is opened** | see below |
 | GitHub Actions versions | Dependabot, `github-actions` entry | PR to `development`, promoted manually |
+| Docker base image (`node:22-alpine` digest) | Dependabot, `docker` entry | PR to `development`, promoted manually |
 
-**Cooldown (#251).** Dependabot version updates are deliberately delayed: npm patch and minor wait 5 days after a release is published, npm major 7 days, GitHub Actions 5 days. A Dependabot PR that "has not appeared yet" for a fresh release is this, not a bug. To take a fix sooner, bump it by hand. Security updates are not delayed (the security entry has no cooldown). There is no `docker` ecosystem entry yet; see the decision comment at the end of `.github/dependabot.yml`.
+**Cooldown (#251).** Dependabot version updates are deliberately delayed: npm patch and minor wait 5 days after a release is published, npm major 7 days, GitHub Actions 5 days. A Dependabot PR that "has not appeared yet" for a fresh release is this, not a bug. To take a fix sooner, bump it by hand. Security updates are not delayed (the security entry has no cooldown). The `docker` entry (#362) tracks the Dockerfile base image: both stages pin `node:22-alpine` by digest, Dependabot proposes digest bumps weekly after the same 5 day cooldown, and Node major versions are ignored (the major moves by hand, together with `NODE_VERSION` and `engines.node`).
 
 `dependabot.yml` carries a bare `dependency-name: "@actual-app/api"` ignore rule
 with **no** `update-types` filter, in **both** npm entries (entry 1's `ignore` does
