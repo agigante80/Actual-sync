@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# forge-lib-version: 47
+# forge-lib-version: 48
 # forge-lib.sh: host-aware forge operations (GitHub | Forgejo). Source it; governance components
 # call the forge_* functions instead of `gh` directly, so the same logic works whether a repo lives
 # on GitHub or a self-hosted Forgejo. ADDITIVE: a repo with no Forgejo config defaults to GitHub and
@@ -146,7 +146,7 @@
 #       "could not ask" answer and a caller acts on it (rc 2 with empty stdout would break that
 #       contract); the executed-directly `detect` CLI is top-level code, so it `exit 2`s with
 #       nothing on stdout.
-#       forge_tag_exists returns 2 under an invalid host (it hides stderr), which means "could
+#       forge_tag_exists returns 2 under an invalid host, which means "could
 #       not ask", NOT "tag absent". A caller that saw rc 0 from a write now sees rc 2; valid
 #       hosts are unchanged. forge_api_base already refused and is left alone.
 #   v32 No caller changes (#264). forge_issue_edit's dry-run line says `characters` where it said
@@ -199,6 +199,11 @@
 #       heading, 109 a duplicated one; 103 refuses content carrying a region marker line or a
 #       heading line or an unlabelled block, or ending inside an unclosed fence. Every existing
 #       function is unchanged.
+#   v48 forge_tag_exists (#452) no longer discards forge_api's stderr: a refused URL (an http
+#       FORGE_API_URL without FORGE_ALLOW_HTTP=1, or a non-https scheme) now prints its reason once
+#       on stderr, still rc 2, and an HTTP error prints forge_api's `HTTP <n>` line, still rc 22.
+#       Its return codes are unchanged (0, 44, 22, 2). On GitHub it now asks git/ref/tags/<tag>
+#       instead of the Forgejo-only tags/<tag>, so an existing tag answers 0 instead of rc 1.
 # Add a line here whenever a change alters what a caller must do, not merely what the library
 # does internally.
 
@@ -1474,7 +1479,6 @@ forge_issue_label() {
 
 # --- Release / tag operations ---
 
-# forge_tag_exists <tag>  -> exit 0 if the tag exists on the forge
 # --- milestones -------------------------------------------------------------------------------
 # A HOST capability, not a planning concept: dep-auditor already reads them, and a project using any
 # planning method at all still wants them. They live here rather than in the optional planning group
@@ -1607,7 +1611,21 @@ forge_issue_milestone_list() {
                   | {number, milestone: (.milestone.title // null)}]' || return 2
 }
 
-forge_tag_exists() { forge_api GET "/repos/$(forge_repo)/tags/$1" >/dev/null 2>&1; }
+# forge_tag_exists <tag>  -> exit 0 if the tag exists on the forge (#452).
+#   rc 0 present, 44 absent on Forgejo (a 404), 22 any other HTTP error, 2 "could not ask" (a refused
+#   URL, an invalid host, no token), curl's own code for a transport failure. GitHub's gh reports
+#   every error as rc 1, so absent and failed cannot be told apart there (a stated limit). stdout is
+#   empty; the reason reaches stderr exactly as forge_api prints it, once. GitHub is asked its own
+#   route, git/ref/tags/<tag>: /tags/<tag> is a Forgejo route and answered a 404 for a tag that exists.
+forge_tag_exists() {
+  local repo host
+  host="$(forge_host)" || return 2
+  repo="$(forge_repo)" || return 2
+  case "$host" in
+    github) forge_api GET "/repos/$repo/git/ref/tags/$1" >/dev/null ;;
+    *)      forge_api GET "/repos/$repo/tags/$1" >/dev/null ;;
+  esac
+}
 
 # forge_release_create <tag> [title] [notes]   (both hosts accept tag_name/name/body)
 forge_release_create() {

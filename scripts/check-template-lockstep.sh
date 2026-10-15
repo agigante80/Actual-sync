@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# check-template-lockstep-version: 1
 # Assert every work issue-template - and the canonical ticket-standards doc - share one
 # template-version marker (lockstep).
 #
@@ -21,12 +22,21 @@
 # template lockstep without having adopted the canonical-doc pattern, so an absent doc is a
 # vacuous pass for the doc portion, not a failure.
 #
+# Exit: 0 locked (or nothing to lock), 1 drift, 2 the repository root could not be entered (fails
+# closed: running from the wrong directory would report "nothing to check" as a pass).
+#
+# Where this lives (#506): forge-adapt's templates mode copies it into a project's scripts/, so it is
+# shipped as an asset of forge-kit-adapt, which gives it the version marker above and lets drift see
+# an installed copy that is behind. Its contract test, scripts/test-template-lockstep.sh, is kit-only
+# and is not copied downstream.
+#
 # Requires bash 4+ (associative arrays) and GNU grep (grep -P), same as the repo's other
 # marker guards.
 set -uo pipefail
 
 if [ "$#" -eq 0 ]; then
-  CDPATH= cd -- "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+  CDPATH= cd -- "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" \
+    || { echo "check-template-lockstep: cannot enter the repository root" >&2; exit 2; }
 fi
 
 resolve_dir() {
