@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# forge-lib-version: 48
+# forge-lib-version: 55
 # forge-lib.sh: host-aware forge operations (GitHub | Forgejo). Source it; governance components
 # call the forge_* functions instead of `gh` directly, so the same logic works whether a repo lives
 # on GitHub or a self-hosted Forgejo. ADDITIVE: a repo with no Forgejo config defaults to GitHub and
@@ -95,7 +95,8 @@
 #       matches what every caller that was redirecting the line away already saw.
 #       THE ANOMALY LINES ARE NOT GATED and must not be: the identical-page stop says the server
 #       is ignoring `page`, and the two rc-2 lines say the walk could not continue. A caller
-#       needs all three whether or not it asked for debugging.
+#       needs all three whether or not it asked for debugging. (v49 narrows this for ONE
+#       endpoint, the issue comments path: see the v49 entry, #524.)
 #       The test is `= 1`, matching every FORGE_DRY_RUN guard in this file; `!= 0` would have
 #       made `FORGE_DEBUG=no` turn debugging on.
 #   v24 forge_body_region_get / _set / _clear and forge_body_compose_preserving are NEW (#248):
@@ -204,6 +205,46 @@
 #       on stderr, still rc 2, and an HTTP error prints forge_api's `HTTP <n>` line, still rc 22.
 #       Its return codes are unchanged (0, 44, 22, 2). On GitHub it now asks git/ref/tags/<tag>
 #       instead of the Forgejo-only tags/<tag>, so an existing tag answers 0 instead of rc 1.
+#   v49 Two changes. (#524) The identical-page line is no longer printed on the issue comments path
+#       (`/repos/*/issues/*/comments`) unless FORGE_DEBUG=1. REASON, narrowing the v23 rule "the
+#       anomaly lines are never gated": Forgejo's ListIssueComments reads only since/before, takes
+#       no page or limit, and returns every comment on every page, so a repeated page there is the
+#       documented end of a complete list, not an anomaly. It is keyed on the endpoint and not on a
+#       row count: a 60-comment issue is as complete as a 4-comment one, and `rows < limit` is the
+#       inference #62 rejected on paged endpoints, where a clamped host would have its truncation
+#       silenced. Every other path still prints the line ungated; the stop itself (rc 0, two
+#       requests) and both rc-2 guards are unchanged. (#527) A dry run (FORGE_DRY_RUN=1) no longer
+#       refuses an http FORGE_API_URL without FORGE_ALLOW_HTTP=1: it prints one stderr NOTE saying
+#       a real run would refuse, then continues (rc 0, its `[dry-run]` line). This PARTLY REVERSES
+#       v38 (#449 item 6, "a dry run refuses what the real run refuses"), for one reason: a dry
+#       run sends nothing, so no token can leak over http, and the refusal only blocked tests that
+#       used a plain-http URL. Kept: any non-http scheme and an unset URL still return 2 in a dry
+#       run; the real send path, forge_url_check and every non-dry read still refuse. The dry-run
+#       sites call the new _forge_dry_url_check; nothing else changed.
+#   v50 SECURITY (#517). The routing keys of .forge.conf (FORGE_HOST, FORGE_API_URL, FORGE_REPO,
+#       FORGE_REMOTE) that come FROM THE FILE are pinned to the file's copy on the default branch.
+#       New _forge_pin_check (rc 0 or 2) runs, in its own shell, before any request, `gh` call or
+#       token read in forge_api (above the dry-run guard), forge_api_paginate, forge_url_check and
+#       _forge_dry_url_check, on BOTH hosts, so a checked-out pull request branch can no longer
+#       aim the token at a server or repository its author chose. An exported value still wins
+#       and is never compared. It refuses with rc 2, naming every differing key and the compared
+#       ref and never a value, and the message tells an automated agent to stop. The comparison
+#       ref is refs/remotes/<R>/HEAD, else main, else master, with <R> an EXPORTED FORGE_REMOTE or
+#       origin (never the working copy's). No usable ref fails open with one stderr note per load.
+#       The per-line parse of _forge_load_conf is now _forge_conf_line, shared with the
+#       default-branch scan. Not called from forge_host, forge_api_base or _forge_load_conf.
+#       Narrows #468's accepted risk to a hostile repository whose default branch is hostile too.
+#   v53 NEW RETURN CODE 110 (#539). When scanning is switched on (the #536 sentinel
+#       .claude/scan-forge-writes at the repository root, or FORGE_LEAK_SCAN=1; FORGE_LEAK_SCAN=0
+#       forces it off), the seven public writers (forge_issue_comment, forge_issue_edit,
+#       forge_issue_create, forge_release_create, forge_body_region_set,
+#       forge_body_compose_preserving, forge_body_section_append) run the leak-guard scanners over
+#       the text THE CALLER SUPPLIED, before the dry-run guard, and return 110 with nothing sent
+#       when a scanner reports a finding. Only exit 1 refuses: a scanner that is missing, exits
+#       any other code or times out lets the write through with one stderr note per shell. A
+#       caller that treats every non-zero as fatal (ticket-gate's `|| exit 2`, gate-status's
+#       mark) already does the right thing; one that retries on non-zero must not retry a 110.
+#       With neither switch on nothing changes: no scanner, no note, no new stderr.
 # Add a line here whenever a change alters what a caller must do, not merely what the library
 # does internally.
 
@@ -239,9 +280,43 @@ _forge_clear_file_vals() {
 # (#449 item 10). That is not a security boundary: whoever controls the environment can set or
 # unset the config keys directly, so the list grants nothing they did not already have.
 _forge_clear_file_vals
-unset _FORGE_TMPDIR _FORGE_CONF_PWD _FORGE_FROM_FILE
+unset _FORGE_TMPDIR _FORGE_CONF_PWD _FORGE_FROM_FILE _FORGE_PIN_PWD   # _FORGE_PIN_PWD: the pin memo (#517), never inherited
+unset _FORGE_LEAK_DIR _FORGE_LEAK_DONE _FORGE_LEAK_NOTED _FORGE_LEAK_ROOT _FORGE_LEAK_ROOT_PWD   # the leak-scan memos (#539), never inherited
+# This library's own directory, resolved to an ABSOLUTE physical path ONCE, here at load time
+# (#539): the documented `source scripts/forge-lib.sh` leaves BASH_SOURCE relative, so resolving it
+# at use time would, after a cd into another checkout, name THAT checkout's scripts/ and run its
+# scanners. CDPATH= and -- because an exported CDPATH would otherwise redirect the cd (and
+# scripts/check-cdpath-cd.sh requires them). An empty BASH_SOURCE[0] (an `eval` load) or a failed
+# resolution leaves it EMPTY, which the discovery below treats as "no own directory"; it never
+# falls back to `.`, the one value that would mean "wherever the caller is now". The file must also
+# carry this library's version marker: an `eval "$(cat forge-lib.sh)"` inside a WRAPPER script sets
+# BASH_SOURCE[0] to the wrapper, whose directory is not this library's (#539 review round 1).
+_FORGE_LIB_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && grep -q '^# forge-lib-version: [0-9]' -- "${BASH_SOURCE[0]}" 2>/dev/null; then
+  _FORGE_LIB_DIR="$(CDPATH= cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || _FORGE_LIB_DIR=""
+fi
 
 _forge_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
+
+# _forge_conf_line <line>: the ONE per-line parse of a .forge.conf line (#517), shared by the
+# working-copy loader below and the default-branch scan in _forge_pin_check, so the two cannot
+# drift: a second parser would let the pin compare a value the loader never used. rc 0 and
+# _FORGE_LK/_FORGE_LV set only for a line carrying one of the six known keys; rc 1 for a blank,
+# a comment, a line without '=' or an unknown key.
+_forge_conf_line() {
+  local line="$1" k v
+  line="${line%$'\r'}"                                    # tolerate CRLF line endings
+  case "$line" in ''|\#*) return 1 ;; esac                # skip blanks + comments
+  case "$line" in *=*) ;; *) return 1 ;; esac             # skip lines without '='
+  k="${line%%=*}"; v="${line#*=}"                          # split on FIRST '=' (values may contain '=')
+  k="${k//[[:space:]]/}"                                   # keys never contain spaces, so trim fully
+  v="${v%%#*}"; v="$(printf '%s' "$v" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//')"
+  case "$k" in
+    FORGE_HOST|FORGE_API_URL|FORGE_REPO|FORGE_TOKEN_ENV|FORGE_REMOTE|FORGE_NO_GIT_CREDENTIALS)
+      _FORGE_LK="$k"; _FORGE_LV="$v"; return 0 ;;
+  esac
+  return 1
+}
 
 # Load .forge.conf (KEY=value lines) if present. Env vars already set WIN over the file.
 # Memoized per process and per working directory (issue #78.1). Every page of a paginated call used
@@ -286,27 +361,119 @@ _forge_load_conf() {
   # Only clear a key that still holds exactly what the file put there. Anything else is the
   # caller's, and env wins.
   _forge_clear_file_vals
-  _FORGE_CONF_PWD="${PWD-}"
+  _FORGE_CONF_PWD="${PWD-}"; unset _FORGE_PIN_PWD   # every reload is a new load to pin (#517 round 1)
+  unset _FORGE_LEAK_NOTED   # #539: moving to another repository prints its own leak-scan notes. Only the NOTES memo resets here: _FORGE_LEAK_DIR is an absolute path that does not depend on the repository, and _FORGE_LEAK_ROOT_PWD is keyed on $PWD itself.
   f="$root/.forge.conf"
   [ -f "$f" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"                                  # tolerate CRLF line endings
-    case "$line" in ''|\#*) continue ;; esac              # skip blanks + comments
-    case "$line" in *=*) ;; *) continue ;; esac           # skip lines without '='
-    k="${line%%=*}"; v="${line#*=}"                        # split on FIRST '=' (values may contain '=')
-    k="${k//[[:space:]]/}"                                 # keys never contain spaces, so trim fully
-    v="${v%%#*}"; v="$(printf '%s' "$v" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//')"
-    case "$k" in
-      FORGE_HOST|FORGE_API_URL|FORGE_REPO|FORGE_TOKEN_ENV|FORGE_REMOTE|FORGE_NO_GIT_CREDENTIALS)
-        [ -n "${!k:-}" ] || { printf -v "$k" '%s' "$v"     # NOT exported: see the header note
-                              printf -v "_FORGE_FILEVAL_$k" '%s' "$v"   # what the file wrote (#131.1)
-                              # set -a, or an exported empty value, would export it anyway, and a
-                              # child would take it for the caller's own (#442 review)
-                              export -n "$k" "_FORGE_FILEVAL_$k"
-                              _FORGE_FROM_FILE="${_FORGE_FROM_FILE-} $k"
-                              export -n _FORGE_FROM_FILE; } ;;  # env wins; else file
-    esac
+    _forge_conf_line "$line" || continue                   # the SHARED parse (#517)
+    k="$_FORGE_LK"; v="$_FORGE_LV"
+    [ -n "${!k:-}" ] || { printf -v "$k" '%s' "$v"       # NOT exported: see the header note
+                          printf -v "_FORGE_FILEVAL_$k" '%s' "$v"   # what the file wrote (#131.1)
+                          # set -a, or an exported empty value, would export it anyway, and a
+                          # child would take it for the caller's own (#442 review)
+                          export -n "$k" "_FORGE_FILEVAL_$k"
+                          _FORGE_FROM_FILE="${_FORGE_FROM_FILE-} $k"
+                          export -n _FORGE_FROM_FILE; }    # env wins; else file
   done < "$f"
+}
+
+# _forge_pin_check: pin the ROUTING keys .forge.conf set (FORGE_HOST, FORGE_API_URL, FORGE_REPO,
+# FORGE_REMOTE) to the file's copy on the default branch (#517). rc 0, or rc 2 with ONE message
+# before any request, `gh` call or token read. WHY: a checked-out pull request branch can edit the
+# file, and the file chooses where the token goes (the server, the repository, the host); no code
+# from the branch needs to run. Renovate and pull_request_target take configuration from the
+# default branch for the same reason. Exported values are the user's own and are never compared
+# (env wins); only a key the LOADER took from the file is.
+#   - It loads the file itself, in ITS OWN shell: forge_api, forge_url_check and _forge_dry_url_check
+#     otherwise load only inside $(forge_host), so _FORGE_FROM_FILE would be empty here and a literal
+#     reading of "return at once unless a key is file-sourced" would never fire.
+#   - The working-copy side is _FORGE_FILEVAL_<key>, the value the loader set (first non-empty
+#     wins), NEVER a re-parse of the file: a duplicate key (evil line, then a matching one) would
+#     show the pin one value and the sender another. The default-branch side is scanned by the
+#     same _forge_conf_line with the same first-non-empty rule. Parsed values, not bytes.
+#   - The comparison remote <R> is an EXPORTED FORGE_REMOTE, else origin; never the working copy's
+#     (a fork remote added by `gh pr checkout` would otherwise vouch for its own file). One
+#     `git for-each-ref` picks refs/remotes/<R>/HEAD, else main, else master; `git cat-file` reads
+#     the blob with GIT_NO_LAZY_FETCH=1 so a partial clone never goes to the network; a failed
+#     read asks `git ls-tree` once: the file absent from the tree means "no keys" (first adoption),
+#     listed but not local fails open. No usable ref (shallow CI clone, no origin/HEAD, refs but
+#     none of the three names) also fails open with one note per load: the attacker controls the
+#     working copy, not the remote-tracking refs, so refusing there bought nothing (#517).
+#   - Zero git calls unless a routing key is file-sourced. A pass is memoized until the
+#     next reload of .forge.conf, which unsets it, so a pass in repo A is never carried to repo B. A refusal is not memoized.
+#   - NEVER call it from forge_host, forge_api_base or _forge_load_conf: the adapt Step 1 probe
+#     passes the sentinel FORGE_API_URL=x and `detect` runs them before the file is merged.
+# The message names the keys and the ref, never a value, and ends with the agent-stop sentence: it
+# is the one carrier every caller sees (ticket-gate, dep-auditor and health-check never load the
+# forge-host skill). FORGE_REMOTE is named in that sentence because exporting the remote a fork
+# added would make the attacker's own file the baseline.
+_forge_pin_check() {
+  _forge_load_conf || true
+  local IFS=$' \t\n'                         # a strict-mode caller's IFS must not glue the key list
+  [ -z "${_FORGE_PIN_PWD-}" ] || return 0   # set by a pass, cleared by every reload of the file
+  local k was keys="" remote=origin dv diff="" ref="" refs want blob="" listed cur lrc line
+  for k in FORGE_HOST FORGE_API_URL FORGE_REPO FORGE_REMOTE; do
+    case " ${_FORGE_FROM_FILE-} " in *" $k "*) ;; *) continue ;; esac
+    eval "was=\${_FORGE_FILEVAL_$k-}"
+    [ "${!k-}" = "$was" ] || continue          # the caller changed it after the load: theirs
+    keys="$keys $k"
+  done
+  [ -n "$keys" ] || return 0
+  case " $keys " in *" FORGE_REMOTE "*) ;; *) [ -z "${FORGE_REMOTE-}" ] || remote="$FORGE_REMOTE" ;; esac
+  case "$remote" in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) remote="" ;;
+  esac
+  if [ -n "$remote" ]; then
+    refs="$(git for-each-ref --format='%(refname)' "refs/remotes/$remote/" 2>/dev/null)"
+    for want in HEAD main master; do
+      case "
+$refs
+" in *"
+refs/remotes/$remote/$want
+"*) ref="refs/remotes/$remote/$want"; break ;; esac
+    done
+  fi
+  if [ -z "$ref" ]; then
+    _forge_pin_note "${remote:-?}"; _forge_pin_memo; return 0
+  fi
+  if ! blob="$(GIT_NO_LAZY_FETCH=1 git cat-file blob "$ref:.forge.conf" 2>/dev/null)"; then
+    blob=""
+    listed="$(GIT_NO_LAZY_FETCH=1 git ls-tree --full-tree "$ref" .forge.conf 2>/dev/null)"; lrc=$?
+    if [ "$lrc" -ne 0 ] || [ -n "$listed" ]; then   # listed but not local, or unreadable: fail open
+      _forge_pin_note "$remote"; _forge_pin_memo; return 0
+    fi                                              # absent from the tree: no keys
+  fi
+  for k in $keys; do unset "_forge_dv_$k"; done
+  while IFS= read -r line || [ -n "$line" ]; do
+    _forge_conf_line "$line" || continue            # the SAME parse as the loader
+    case " $keys " in *" $_FORGE_LK "*) ;; *) continue ;; esac
+    dv="_forge_dv_$_FORGE_LK"
+    [ -n "${!dv-}" ] || printf -v "$dv" '%s' "$_FORGE_LV"   # first non-empty wins, like the loader
+  done <<< "$blob"
+  for k in $keys; do
+    eval "was=\${_FORGE_FILEVAL_$k-}"
+    dv="_forge_dv_$k"; cur="${!dv-}"
+    [ "$was" = "$cur" ] || diff="${diff:+$diff, }$k"
+    unset "$dv"
+  done
+  if [ -n "$diff" ]; then
+    echo "forge-lib: refusing: .forge.conf sets $diff, which differs from the copy at $ref (the default branch), so a checked-out branch could aim your token at another server or repository. If the ref is stale or missing, run 'git fetch $remote' (or 'git remote set-head $remote -a'); if your remote is not origin, export FORGE_REMOTE=<name>; if you committed this change but have not pushed it, push it; export a key only if you authored this change, otherwise do not run forge commands on this checkout. An automated agent must stop and report this; never export a key or FORGE_REMOTE to proceed." >&2
+    return 2
+  fi
+  _forge_pin_memo
+}
+
+# The fail-open note of _forge_pin_check: fixed text, the remote's NAME only (an exported value or
+# origin), never a value read from the working copy.
+_forge_pin_note() {
+  echo "forge-lib: default-branch check skipped (no readable .forge.conf reference for remote $1); routing keys from .forge.conf are not verified" >&2
+}
+
+# Record a pass for this load. Valid until the next reload of .forge.conf, which unsets it.
+_forge_pin_memo() {
+  _FORGE_PIN_PWD="${_FORGE_CONF_PWD-}"; export -n _FORGE_PIN_PWD
+  return 0
 }
 
 # forge_host: print 'github' or 'forgejo'.
@@ -486,14 +653,41 @@ forge_token_available() {
 }
 
 # forge_url_check: would FORGE_API_URL be accepted? Silent rc 0 if so, else forge_api's own
-# refusal on stderr and rc 2. Forgejo only (a no-op on GitHub); reads no token. forge_api_base
+# refusal on stderr and rc 2. On GitHub it runs only the
+# default-branch pin of #517 (a differing FORGE_REPO or FORGE_HOST is refused there too); on Forgejo
+# it also checks the URL. Reads no token. The pin runs BEFORE the GitHub shortcut (#517). forge_api_base
 # is called inside $(...) because its ${FORGE_API_URL:?} would exit a non-interactive caller.
 forge_url_check() {
   local host base=""
+  _forge_pin_check || return 2
   host="$(forge_host)" || return 2
   [ "$host" = forgejo ] || return 0
   base="$(forge_api_base)" || return 2
   : "$base"
+  _forge_check_url
+}
+
+# _forge_dry_url_check: forge_url_check for the DRY-RUN branches (#527). It pins first too (#517). The same host, base and
+# scheme checks, except that an http URL without FORGE_ALLOW_HTTP=1 prints a NOTE and returns 0: a
+# dry run sends nothing, so no token can go over http. The note does not reuse the real refusal's
+# wording, so a counter of that phrase still counts only real refusals. An unset URL still returns
+# 2 from forge_api_base, before any caller's `$(forge_api_base)` printf; any other scheme still
+# returns 2. The check runs BEFORE the `[dry-run]` line at every site. The real send path keeps
+# _forge_check_url, and forge_url_check is unchanged.
+_forge_dry_url_check() {
+  local host base="" url
+  _forge_pin_check || return 2
+  host="$(forge_host)" || return 2
+  [ "$host" = forgejo ] || return 0
+  base="$(forge_api_base)" || return 2
+  : "$base"
+  _forge_load_conf
+  url="${FORGE_API_URL-}"
+  case "$url" in
+    http://*) [ "${FORGE_ALLOW_HTTP:-0}" = 1 ] || {
+      echo "forge-lib: note: dry run only; FORGE_API_URL is http, so a real run would refuse it unless FORGE_ALLOW_HTTP=1 is exported" >&2
+      return 0; } ;;
+  esac
   _forge_check_url
 }
 
@@ -553,9 +747,11 @@ _forge_token_impl() {
 # _forge_check_url: may the token be sent to FORGE_API_URL? rc 0 or rc 2 with a message (#442).
 # Every URL must be https, or http with FORGE_ALLOW_HTTP=1 exported (the file cannot set it, since
 # it is not a key _forge_load_conf reads). A URL from .forge.conf is trusted like an exported one
-# (#468): the host allowlist #442 added here was dropped by the maintainer, who accepted that a
-# cloned repository's .forge.conf can name the server that gets the token. Do not reintroduce a
-# per-machine trust file. The URL reaches curl only behind --url and only the token goes in the -K
+# (#468): the host allowlist #442 added here was dropped by the maintainer. Do not reintroduce a
+# per-machine trust file. What narrows that decision is #517: the routing keys the FILE set must
+# match the file on the default branch (_forge_pin_check), so a checked-out pull request branch
+# cannot redirect the token; a hostile repository whose default branch is hostile too remains the
+# accepted risk. The URL reaches curl only behind --url and only the token goes in the -K
 # config, so no URL content can inject curl options. The scheme check lives here and NOT in
 # forge_host or forge_api_base, which adapt/SKILL.md calls with a scheme-less sentinel URL.
 _forge_check_url() {
@@ -579,9 +775,10 @@ _forge_check_url() {
 forge_api() {
   local method="$1" path="$2" body="${3-}"
   local host
+  _forge_pin_check || return 2       # #517: ABOVE the dry-run guard and every request, `gh` call and token read, on both hosts
   host="$(forge_host)" || return 2   # forge_api-host-capture: ABOVE the dry-run guard, so a dry run refuses an invalid host too (#256)
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    forge_url_check || return 2   # #449: a dry run refuses what the real run refuses
+    _forge_dry_url_check || return 2   # #449, #527: a dry run refuses what the real run refuses, except plain http (a note)
     # to stderr, so it survives callers that redirect the JSON response to /dev/null
     printf '[dry-run] %s %s%s%s\n' "$method" "$(forge_api_base)" "$path" "${body:+  body=$body}" >&2
     return 0
@@ -662,6 +859,7 @@ forge_api_paginate() {
   _forge_load_conf || true   # ONCE, in this shell: the per-page $(forge_api ...) subshells and
                              # their own $(forge_host) / $(_forge_token) subshells inherit the
                              # memo from here. Loading it deeper would be discarded each time.
+  _forge_pin_check || return 2   # #517: beside the in-shell load, so the page subshells inherit the memo
   local path="$1" sep page=1 chunk n tmp rc host
   case "$path" in *\?*) sep='&' ;; *) sep='?' ;; esac
   host="$(forge_host)" || return 2   # above the dry-run guard (#256)
@@ -711,7 +909,15 @@ forge_api_paginate() {
     # page 1, page 3 then matches page 2, and page 1 is carried twice; the next read is correct.
     sig="$(printf '%s' "$chunk" | jq -c 'if all(.[]; type == "object" and (.id // .number) != null) then map(.id // .number) else . end' 2>/dev/null)"
     if [ -n "$prev" ] && [ "$sig" = "$prev" ]; then
-      echo "forge-lib: paginate: identical page: server ignores page (stopped at page ${page} of ${path})" >&2
+      # #524: Forgejo's ListIssueComments takes no page or limit and returns EVERY comment on every
+      # page, so on the issue comments path a repeat is the documented end of a complete list and
+      # the line is noise (a 60-comment issue is as complete as a 4-comment one, so no row count
+      # can tell them apart). The rule keys on the ENDPOINT. Every other path keeps the line
+      # ungated, as v23 decided: there a repeat is news. FORGE_DEBUG=1 prints it everywhere.
+      case "${path%%\?*}" in
+        /repos/*/issues/*/comments) [ "${FORGE_DEBUG:-0}" = 1 ] && echo "forge-lib: paginate: identical page: server ignores page (stopped at page ${page} of ${path})" >&2 ;;
+        *) echo "forge-lib: paginate: identical page: server ignores page (stopped at page ${page} of ${path})" >&2 ;;
+      esac
       break
     fi
     prev="$sig"
@@ -765,6 +971,187 @@ _forge_tmp_done() {
   [ -n "${_FORGE_TMPDIR-}" ] || return 0
   rmdir "$_FORGE_TMPDIR" 2>/dev/null && unset _FORGE_TMPDIR
   return 0
+}
+
+# --- #539: the leak scan of the text a caller hands to a public writer -----------------------------
+# The #536 hook sees only a body typed into a `gh` command line. Every body write in this file ends
+# in _forge_payload or _forge_body_write, which send JSON through `gh api --input -`, so a Bash hook
+# never sees that body; gate reviews and decision sections go out that way. _forge_leak_scan runs the
+# two leak-guard scanners over the CALLER-SUPPLIED text at the entry of the seven public writers,
+# BEFORE their FORGE_DRY_RUN guard (a dry run refuses what the real run refuses), in the caller's
+# shell (never inside $( ), so rc 110 and the memos survive). It never scans the recomposed body: a
+# leak already in an issue body must not block the write that removes it, and a clear supplies no text.
+#
+# OPT-IN, one switch for both layers: the #536 sentinel .claude/scan-forge-writes at the repository
+# root this library resolves for .forge.conf, or FORGE_LEAK_SCAN=1. FORGE_LEAK_SCAN=0 forces it off.
+# With neither: no scanner, no note, no new stderr. Any other value is treated as unset, with a note.
+# FAIL OPEN, uniformly (the #536 policy, even under an explicit FORGE_LEAK_SCAN=1): scanners not
+# found, a scanner exiting any code but 0 and 1, a timeout, a temp file that cannot be made, or a
+# field over 1 MiB all let the write through with ONE stderr note per shell. Only exit 1 refuses.
+# One exception, an explicit FORGE_LEAK_GUARD_DIR that does not hold both marked scanners: the
+# operator asked for those scanners, so it refuses (110) instead of silently scanning nothing.
+#
+# DISCOVERY is a soft probe, not a declared dependency (forge-kit-devops must install alone), and
+# is CONFINED: a directory counts only when it holds BOTH scanners, each with its version marker.
+# Order: FORGE_LEAK_GUARD_DIR; this library's own directory (_FORGE_LIB_DIR, absolute, resolved at
+# load); the sibling forge-kit-security group, ONLY when the library sits at
+# .../forge-kit-devops/skills/forge-host/assets (a source or marketplace checkout), so a project
+# scripts/ copy can never reach a directory above the project; then the highest
+# check-private-leaks-version under $HOME/.claude/plugins (ties: the lexically last path, #189).
+# The result is memoized absolute in _FORGE_LEAK_DIR; _FORGE_LEAK_DONE records the
+# FORGE_LEAK_GUARD_DIR value it was made for, so changing the variable re-resolves.
+#
+# SCANNER CALL: each field goes to its own 0600 temp file (under _forge_tmp_init's directory) named
+# *.txt, never to an argv. `bash check-private-leaks.sh -- <file>` and `bash check-public-leaks.sh
+# [--allow-file <root>/.leak-guard-allow] -- <file>` (the pair only when that file exists), under
+# `env -u GH_TOKEN -u GITHUB_TOKEN -u FORGEJO_TOKEN` plus the variable FORGE_TOKEN_ENV names when
+# that is a valid identifier (an empty or invalid name is never given to `env -u`, which exits 125
+# on ""), so a scanner never sees the forge token; the private one also under `-u ALLOW_FILE`, which
+# it would otherwise inherit. 4 s per scan and 8 s in all when `timeout` exists. Output is parsed for
+# the first `<file>:<line>: <rule>:` and discarded: check-public-leaks.sh prints evidence unredacted,
+# so the refusal message is built here and carries a rule and a line, never matched text.
+_forge_leak_note() {   # <memo key, no spaces> <text>: once per shell until the config reloads
+  case " ${_FORGE_LEAK_NOTED-} " in *" $1 "*) return 0 ;; esac
+  _FORGE_LEAK_NOTED="${_FORGE_LEAK_NOTED:+$_FORGE_LEAK_NOTED }$1"
+  echo "forge-lib: $2" >&2
+}
+
+_forge_leak_clean() {   # <value>: printable, bounded, for a message that names an operator's value
+  local v="${1-}"; v="${v//[![:print:]]/?}"; printf '%s' "${v:0:200}"
+}
+
+_forge_leak_bytes() {   # <text>: its length in BYTES. C only here: the scanners run under the caller's locale
+  local LC_ALL=C; printf '%s' "${#1}"
+}
+
+_forge_leak_phys() {   # <dir>: its absolute physical path, empty when it cannot be entered
+  ( CDPATH= cd -P -- "$1" 2>/dev/null && pwd -P )
+}
+
+_forge_leak_qualifies() {   # <dir>: both scanners present, each carrying its version marker
+  [ -f "$1/check-private-leaks.sh" ] && [ -f "$1/check-public-leaks.sh" ] \
+    && grep -q '^# check-private-leaks-version: [0-9]' "$1/check-private-leaks.sh" \
+    && grep -q '^# check-public-leaks-version: [0-9]' "$1/check-public-leaks.sh"
+}
+
+# rc 0 with _FORGE_LEAK_DIR set (or empty: not found), rc 110 for an invalid explicit directory.
+_forge_leak_discover() {
+  local LC_ALL=C gd="${FORGE_LEAK_GUARD_DIR-}" d="" cand f v best="" bestv=-1
+  if [ -n "$gd" ]; then
+    [ "${_FORGE_LEAK_DONE-}" = "g:$gd" ] && return 0
+    d="$(_forge_leak_phys "$gd")"
+    if [ -n "$d" ] && _forge_leak_qualifies "$d"; then
+      _FORGE_LEAK_DIR="$d"; _FORGE_LEAK_DONE="g:$gd"; return 0
+    fi
+    echo "forge-lib: FORGE_LEAK_GUARD_DIR=$(_forge_leak_clean "$gd") does not hold both marked leak-guard scanners; not sent" >&2
+    return 110
+  fi
+  [ "${_FORGE_LEAK_DONE-}" = "d:" ] && return 0
+  d=""
+  if [ -n "$_FORGE_LIB_DIR" ] && _forge_leak_qualifies "$_FORGE_LIB_DIR"; then
+    d="$_FORGE_LIB_DIR"
+  else
+    case "$_FORGE_LIB_DIR" in
+      */forge-kit-devops/skills/forge-host/assets)
+        cand="$(_forge_leak_phys "$_FORGE_LIB_DIR/../../../../forge-kit-security/skills/leak-guard/assets")"
+        if [ -n "$cand" ] && _forge_leak_qualifies "$cand"; then d="$cand"; fi ;;
+    esac
+  fi
+  if [ -z "$d" ] && [ -n "${HOME-}" ] && [ -d "$HOME/.claude/plugins" ]; then
+    while IFS= read -r -d '' f; do
+      cand="${f%/*}"
+      _forge_leak_qualifies "$cand" || continue
+      v="$(sed -n 's/^# check-private-leaks-version: \([0-9][0-9]*\)[[:space:]]*$/\1/p' "$cand/check-private-leaks.sh")"
+      v="${v%%$'\n'*}"; [ -n "$v" ] || continue
+      if [ "$v" -gt "$bestv" ] || { [ "$v" -eq "$bestv" ] && [[ "$cand" > "$best" ]]; }; then best="$cand"; bestv="$v"; fi
+    done < <(find "$HOME/.claude/plugins" -maxdepth 8 -name check-private-leaks.sh -type f -print0 2>/dev/null)
+    [ -z "$best" ] || d="$(_forge_leak_phys "$best")"
+  fi
+  _FORGE_LEAK_DIR="$d"; _FORGE_LEAK_DONE="d:"
+  return 0
+}
+
+# _forge_leak_scan <writer> <field>=<text>...   rc 0 (scanned clean, or fail-open, or switched off)
+# or 110 (a finding: nothing is sent). An empty text is skipped.
+_forge_leak_scan() {
+  local writer="$1"; shift   # never `local LC_ALL=C` here: an exported LC_ALL would hand C to the scanners, whose case folding is then ASCII only
+  [ "${FORGE_LEAK_SCAN-}" = 0 ] && return 0
+  _forge_load_conf || true   # in THIS shell (not $( )): moving repository resets the notes memo, and FORGE_TOKEN_ENV is read below
+  local on=0 root spec any=0
+  if [ "${_FORGE_LEAK_ROOT_PWD-}" != "${PWD-}" ] || [ -z "${_FORGE_LEAK_ROOT-}" ]; then
+    _FORGE_LEAK_ROOT="$(_forge_root)"; _FORGE_LEAK_ROOT_PWD="${PWD-}"
+  fi
+  root="$_FORGE_LEAK_ROOT"
+  case "${FORGE_LEAK_SCAN-}" in
+    1) on=1 ;;
+    '') ;;
+    *) _forge_leak_note badval "FORGE_LEAK_SCAN=$(_forge_leak_clean "$FORGE_LEAK_SCAN") is not 0 or 1; using the sentinel" ;;
+  esac
+  [ "$on" = 1 ] || { [ -n "$root" ] && [ -e "$root/.claude/scan-forge-writes" ] && on=1; }
+  [ "$on" = 1 ] || return 0
+  for spec in "$@"; do [ -z "${spec#*=}" ] || any=1; done
+  [ "$any" = 1 ] || return 0
+  _forge_leak_discover || return $?
+  if [ -z "${_FORGE_LEAK_DIR-}" ]; then
+    _forge_leak_note nf "leak-guard scanner not found; body not scanned"; return 0
+  fi
+  if ! _forge_tmp_init; then
+    _forge_leak_note norun "leak-guard could not run; body not scanned"; return 0
+  fi
+  local fname ftext f files=() fnames=() norun=0 result=0 i
+  for spec in "$@"; do
+    fname="${spec%%=*}"; ftext="${spec#*=}"
+    [ -n "$ftext" ] || continue
+    if [ "$(_forge_leak_bytes "$ftext")" -gt 1048576 ]; then
+      _forge_leak_note "over-$fname" "leak-guard: $fname over 1 MiB; not scanned"; continue
+    fi
+    f="$(mktemp "$_FORGE_TMPDIR/leak.XXXXXX" 2>/dev/null)" || { norun=1; continue; }
+    if mv -- "$f" "$f.txt" 2>/dev/null; then f="$f.txt"; fi
+    files+=("$f"); fnames+=("$fname")
+    case "$f" in *.txt) ;; *) norun=1; continue ;; esac
+    { printf '%s\n' "$ftext" >| "$f"; } 2>/dev/null || norun=1   # >|: mktemp made the file, so a caller's noclobber would refuse >
+  done
+  local envu=(-u GH_TOKEN -u GITHUB_TOKEN -u FORGEJO_TOKEN) tv="${FORGE_TOKEN_ENV-}" allow="" start="$SECONDS"
+  if [[ "$tv" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    case "$tv" in GH_TOKEN|GITHUB_TOKEN|FORGEJO_TOKEN) ;; *) envu+=(-u "$tv") ;; esac
+  fi
+  [ -n "$root" ] && [ -f "$root/.leak-guard-allow" ] && allow="$root/.leak-guard-allow"
+  local tool script out rc budget l r line rule re='^([0-9]+): ([a-z][a-z0-9-]*)(:|$)' tc=() xu=() xa=()
+  for ((i = 0; i < ${#files[@]}; i++)); do
+    f="${files[$i]}"; fname="${fnames[$i]}"
+    [ -s "$f" ] || { norun=1; continue; }
+    for tool in private public; do
+      script="$_FORGE_LEAK_DIR/check-$tool-leaks.sh"
+      xu=(); xa=()
+      if [ "$tool" = private ]; then xu=(-u ALLOW_FILE); elif [ -n "$allow" ]; then xa=(--allow-file "$allow"); fi
+      budget=$((8 - (SECONDS - start))); [ "$budget" -le 4 ] || budget=4
+      if [ "$budget" -le 0 ]; then norun=1; continue; fi
+      tc=()
+      if command -v timeout >/dev/null 2>&1; then tc=(timeout "$budget")
+      else _forge_leak_note nots "leak-guard: no timeout command; the scan is not time-bounded"; fi
+      rc=0
+      out="$("${tc[@]+"${tc[@]}"}" env "${envu[@]}" "${xu[@]+"${xu[@]}"}" bash "$script" "${xa[@]+"${xa[@]}"}" -- "$f" 2>/dev/null </dev/null)" || rc=$?
+      if [ "$rc" = 1 ]; then
+        line="?"; rule="finding"
+        while IFS= read -r l; do
+          case "$l" in
+            "$f":*) r="${l#"$f":}"
+                    if [[ "$r" =~ $re ]]; then line="${BASH_REMATCH[1]}"; rule="${BASH_REMATCH[2]}"; break; fi ;;
+          esac
+        done <<< "$out"
+        echo "forge-lib: $writer: leak-guard: $rule in $fname line $line; not sent. Stop and report this to the user; do not set FORGE_LEAK_SCAN=0 yourself." >&2
+        result=110; break 2
+      elif [ "$rc" != 0 ]; then
+        norun=1
+      fi
+    done
+  done
+  for f in ${files[@]+"${files[@]}"}; do _forge_tmp_done "$f"; done
+  [ "${#files[@]}" -gt 0 ] || _forge_tmp_done ""   # every field skipped (over 1 MiB): still drop the directory
+  if [ "$result" = 0 ] && [ "$norun" = 1 ]; then
+    _forge_leak_note norun "leak-guard could not run; body not scanned"
+  fi
+  return "$result"
 }
 
 
@@ -1053,11 +1440,13 @@ _forge_region_write() {
     return 103
   fi
   forge_host >/dev/null || return 2   # an invalid host refuses even under dry run (#256); stderr is the one line
+  # #539: the caller's text only (a clear supplies none), before the dry-run guard like every writer.
+  if [ "$mode" = set ]; then _forge_leak_scan "forge_body_region_$mode" "content=$content" || return $?; fi
   # THE DRY-RUN GUARD SITS HERE, BEFORE THE FETCH. forge_api short-circuits EVERY method including
   # GET under dry-run, returning 0 with an empty body, so a guard placed after the fetch would
   # splice against an empty string and report success.
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    forge_url_check || return 2
+    _forge_dry_url_check || return 2
     printf '[dry-run] %s region %s of issue %s on %s (%s characters)\n' "$mode" "$region" "$n" "$(forge_repo)" "${#content}" >&2
     return 0
   fi
@@ -1103,8 +1492,9 @@ forge_body_compose_preserving() {
   [ -n "$n" ] && [ -n "$new" ] || {
     echo "forge-lib: usage: forge_body_compose_preserving <issue> <new-body>" >&2; return 2; }
   forge_host >/dev/null || return 2   # above the dry-run guard (#256)
+  _forge_leak_scan forge_body_compose_preserving "body=$new" || return $?   # #539: the new text, not the recomposed body
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    forge_url_check || return 2
+    _forge_dry_url_check || return 2
     printf '[dry-run] compose body of issue %s on %s (%s characters)\n' "$n" "$(forge_repo)" "${#new}" >&2
     return 0
   fi
@@ -1239,11 +1629,12 @@ forge_body_section_append() {
     *) echo "forge-lib: could not check the content for '$label' (awk exited $rc); nothing was sent" >&2; return 2 ;;
   esac
   forge_host >/dev/null || return 2   # above the dry-run guard (#256)
+  _forge_leak_scan forge_body_section_append "content=$content" || return $?   # #539: before the dry-run guard
   # Before the fetch, as in _forge_region_write: forge_api answers a dry-run GET with an empty body,
   # which a guard after the fetch would read as a body with no heading. 107 to 109 are therefore
   # unreachable under dry run.
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    forge_url_check || return 2
+    _forge_dry_url_check || return 2
     printf '[dry-run] append to section %s of issue %s on %s (%s characters)\n' "$label" "$n" "$(forge_repo)" "${#content}" >&2
     return 0
   fi
@@ -1343,6 +1734,7 @@ _forge_payload() {
 
 forge_issue_comment() {
   local payload rc=0
+  _forge_leak_scan forge_issue_comment "body=${2-}" || return $?   # #539: before the payload and any dry-run guard
   payload="$(printf '%s' "$2" | _forge_payload forge_issue_comment '{body:$b}')" || return 2   # forge-lib: payload (comment)
   # `rc=0; ... || rc=$?`, never `...; rc=$?` (#237): under a `set -e` caller errexit fires on the
   # forge_api line before rc=$? runs, and the 404 line is never printed. The || form is the one
@@ -1374,9 +1766,10 @@ forge_issue_close() {
 forge_issue_edit() {
   [ -n "${2:-}" ] || { echo "forge_issue_edit: refusing to replace issue #${1:-?} with an empty body" >&2; return 2; }
   forge_host >/dev/null || return 2   # above the dry-run guard (#256): both hosts PATCH, but an invalid one must not dry-run clean
+  _forge_leak_scan forge_issue_edit "body=$2" || return $?   # #539: before the payload and the dry-run guard
   local payload; payload="$(printf '%s' "$2" | _forge_payload forge_issue_edit '{body:$b}')" || return 2   # forge-lib: payload (edit)
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    forge_url_check || return 2
+    _forge_dry_url_check || return 2
     printf '[dry-run] replace body of issue %s on %s (%s characters)\n' "$1" "$(forge_repo)" "${#2}" >&2
     return 0
   fi
@@ -1391,7 +1784,7 @@ forge_issue_list() {
   local repo state host; repo="$(forge_repo)" || return 2; state="${1:-open}"
   host="$(forge_host)" || return 2   # above the dry-run guard (#256)
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    forge_url_check || return 2
+    _forge_dry_url_check || return 2
     printf '[dry-run] GET %s/repos/%s/issues?state=%s (issues only, all pages)\n' "$(forge_api_base)" "$repo" "$state" >&2; return 0
   fi
   case "$host" in
@@ -1407,6 +1800,7 @@ forge_issue_list() {
 # add them in a follow-up host-specific step rather than risk a cross-host mismatch here.
 forge_issue_create() {
   local repo payload; repo="$(forge_repo)" || return 2
+  _forge_leak_scan forge_issue_create "title=${1-}" "body=${2-}" || return $?   # #539: before the payload
   payload="$(printf '%s' "$2" | _forge_payload forge_issue_create '{title:$t, body:$b}' --arg t "$1")" || return 2   # forge-lib: payload (create)
   forge_api POST "/repos/$repo/issues" "$payload"
 }
@@ -1424,7 +1818,7 @@ forge_issue_label() {
   local repo host; repo="$(forge_repo)" || return 2
   host="$(forge_host)" || return 2   # above the dry-run guard (#256)
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    forge_url_check || return 2
+    _forge_dry_url_check || return 2
     printf '[dry-run] label issue %s on %s with: %s\n' "$n" "$repo" "$*" >&2; return 0
   fi
   case "$host" in
@@ -1443,7 +1837,7 @@ forge_issue_label() {
       all="$(forge_api_paginate "/repos/$repo/labels")" || return 2
       _forge_tmp_init || return 2
       tmp="$(mktemp "$_FORGE_TMPDIR/labels.XXXXXX")" || { _forge_tmp_done ""; return 2; }
-      printf '%s\n' "$all" > "$tmp"
+      printf '%s\n' "$all" >| "$tmp"   # >|: mktemp made the file, so a caller's noclobber would refuse >
       resolved="$(_forge_resolve_names "$tmp" "$@")"
       if [ "$(printf '%s' "$resolved" | jq '[.[] | select(.id == null)] | length')" -gt 0 ]; then
         # With the status available (#78.2), a 404 is the ordinary "this owner is a user, or the
@@ -1453,7 +1847,7 @@ forge_issue_label() {
         # operator needs to know about.
         org="$(forge_api_paginate "/orgs/${repo%%/*}/labels" 2>/dev/null)" || {
           [ "$?" -eq 44 ] || org_failed=1; org='[]'; }
-        printf '%s\n%s\n' "$all" "$org" > "$tmp"
+        printf '%s\n%s\n' "$all" "$org" >| "$tmp"
         resolved="$(_forge_resolve_names "$tmp" "$@")"
       fi
       nlabels="$(jq -s 'add | length' "$tmp")"
@@ -1527,7 +1921,7 @@ forge_milestone_close() {
   # also prints the line and returns 0, because the caller already resolved it from a real read.
   forge_host >/dev/null || return 2   # above the dry-run guard: an invalid host must not dry-run clean (#256)
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    forge_url_check || return 2
+    _forge_dry_url_check || return 2
     printf '[dry-run] close milestone %s on %s\n' "$title" "$repo" >&2
     return 0
   fi
@@ -1569,7 +1963,7 @@ forge_issue_milestone() {
   # milestone cases (set and clear); the real-mode ones pin the refusal itself.
   host="$(forge_host)" || return 2
   if [ "${FORGE_DRY_RUN:-0}" = 1 ]; then
-    forge_url_check || return 2
+    _forge_dry_url_check || return 2
     if [ -n "$title" ]; then printf '[dry-run] set milestone of issue %s to %s on %s\n' "$n" "$title" "$repo" >&2
     else printf '[dry-run] clear the milestone of issue %s on %s\n' "$n" "$repo" >&2; fi
     return 0
@@ -1629,6 +2023,7 @@ forge_tag_exists() {
 
 # forge_release_create <tag> [title] [notes]   (both hosts accept tag_name/name/body)
 forge_release_create() {
+  _forge_leak_scan forge_release_create "tag=${1-}" "name=${2-}" "notes=${3-}" || return $?   # #539: before the payload; the tag is public text too, and the name defaults to it
   local payload; payload="$(printf '%s' "${3-}" | _forge_payload forge_release_create '{tag_name:$t,name:$n,body:$b}' --arg t "$1" --arg n "${2:-$1}")" || return 2   # forge-lib: payload (release)
   forge_api POST "/repos/$(forge_repo)/releases" "$payload" >/dev/null
 }

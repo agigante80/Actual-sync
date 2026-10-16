@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sync-labels-version: 14
+# sync-labels-version: 15
 # sync-labels.sh: make the host's labels match `.github/labels.yml`, or report that they do not.
 #
 # NO `awk -v` IN THIS FILE (#259). Its one site carried the compiled-in separator `$'\x1f'`, a
@@ -71,6 +71,12 @@ if [ -z "$LABELS_FILE" ]; then
 fi
 [ -n "$LABELS_FILE" ] && [ -f "$LABELS_FILE" ] || {
   echo "sync-labels: no labels file found (looked for .github/labels.yml)" >&2; exit 2; }
+# Messages name the file relative to the repository root when it sits inside one (#520): the
+# absolute path carries the home directory into CI logs, which on a public repo leaks it. A file
+# outside any repository, or given relative, is printed as given.
+LABELS_SHOWN="$LABELS_FILE"
+_sl_root="$(git rev-parse --show-toplevel 2>/dev/null)" || _sl_root=""
+case "$LABELS_FILE" in /*) [ -n "$_sl_root" ] && case "$LABELS_FILE" in "$_sl_root"/*) LABELS_SHOWN="${LABELS_FILE#"$_sl_root"/}" ;; esac ;; esac
 
 command -v jq >/dev/null 2>&1 || { echo "sync-labels: jq is required" >&2; exit 2; }
 # bash 4+ for the associative-array lookup. This IS a new floor (the pre-#121 version ran on the
@@ -169,10 +175,10 @@ declared=$(SL_US="$US" awk '
   { print "sync-labels: unparsable line " NR ": " $0 > "/dev/stderr"; bad = 1 }
   END { if (seen) print n US c US d US u; if (bad) exit 3 }
 ' < "$LABELS_FILE") || {
-  echo "sync-labels: $LABELS_FILE is not in the expected shape; refusing to sync a partial set" >&2
+  echo "sync-labels: $LABELS_SHOWN is not in the expected shape; refusing to sync a partial set" >&2
   exit 3; }
 
-[ -n "$declared" ] || { echo "sync-labels: $LABELS_FILE declares no labels" >&2; exit 3; }
+[ -n "$declared" ] || { echo "sync-labels: $LABELS_SHOWN declares no labels" >&2; exit 3; }
 
 # --- 2. validate EVERY entry before writing ANY of them ----------------------------------------
 # Validation is a separate pass on purpose: a bad entry halfway down the file must not be
@@ -207,7 +213,7 @@ while IFS="$US" read -r name color desc unterm; do
   esac
 done <<< "$declared"
 [ "$errs" -eq 0 ] || {
-  echo "sync-labels: $errs invalid entr(y|ies) in $LABELS_FILE; nothing was written" >&2; exit 3; }
+  echo "sync-labels: $errs invalid entr(y|ies) in $LABELS_SHOWN; nothing was written" >&2; exit 3; }
 
 # --- 3. read the host's current labels ---------------------------------------------------------
 # FORGE_DRY_RUN is cleared around the READ. forge-lib's paginate short-circuits to [] under dry
@@ -320,20 +326,20 @@ fi
 
 if [ "$MODE" = check ]; then
   if [ "$missing" -gt 0 ] || [ "$drifted" -gt 0 ]; then
-    echo "sync-labels: $REPO is out of sync with $LABELS_FILE"
+    echo "sync-labels: $REPO is out of sync with $LABELS_SHOWN"
     printf '%s' "$report"
     echo "Run: sync-labels.sh   (to create the missing labels and fix the drifted ones)"
     exit 1
   fi
-  echo "sync-labels: $REPO matches $LABELS_FILE (all declared labels present and current)."
+  echo "sync-labels: $REPO matches $LABELS_SHOWN (all declared labels present and current)."
   exit 0
 fi
 
 # Under a dry run the counters count what WOULD be written (#323): they are incremented on the
 # preview branches too, so the summary must not claim anything was created or updated.
 if [ "$_dry" = 1 ]; then
-  echo "sync-labels: dry run, nothing sent to $REPO; would create $created, would update $updated (from $LABELS_FILE)."
+  echo "sync-labels: dry run, nothing sent to $REPO; would create $created, would update $updated (from $LABELS_SHOWN)."
 else
-  echo "sync-labels: $REPO synced from $LABELS_FILE ($created created, $updated updated)."
+  echo "sync-labels: $REPO synced from $LABELS_SHOWN ($created created, $updated updated)."
 fi
 exit 0

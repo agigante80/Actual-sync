@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-template-lockstep-version: 1
+# check-template-lockstep-version: 2
 # Assert every work issue-template - and the canonical ticket-standards doc - share one
 # template-version marker (lockstep).
 #
@@ -30,8 +30,9 @@
 # an installed copy that is behind. Its contract test, scripts/test-template-lockstep.sh, is kit-only
 # and is not copied downstream.
 #
-# Requires bash 4+ (associative arrays) and GNU grep (grep -P), same as the repo's other
-# marker guards.
+# Portability (#538): runs under bash 3.2 (stock macOS /bin/bash) with BSD or GNU grep, sed and sort.
+# It needs no associative array and no PCRE, because either one made it print an error and then
+# exit 0 over drift on a stock Mac. Versions are kept in a newline list of version<TAB>path records.
 set -uo pipefail
 
 if [ "$#" -eq 0 ]; then
@@ -79,23 +80,27 @@ if [ "$#" -eq 0 ]; then
 fi
 
 # First template-version marker per file (positional-first, matching the ver_of discipline
-# the other guards use: the marker is the first template-version string in the file).
-tver() { grep -oP 'template-version: \K\d+' "$1" | head -1; }
+# the other guards use: the marker is the first template-version string in the file). Exactly one
+# space after the colon, as ticket-gate Step 0a and check-ticket-mechanics.sh read it.
+tver() { grep -o 'template-version: [0-9][0-9]*' "$1" | head -1 | sed 's/.*: //'; }
 
-declare -A versions=()
+TAB=$(printf '\t')
+NL='
+'
+recs=""          # newline-separated "version<TAB>path" records
 seen=0
 while IFS= read -r f; do
   [ -f "$f" ] || continue
   v=$(tver "$f")
   [ -n "$v" ] || continue          # no marker -> exempt (e.g. contribution.yml)
-  versions["$f"]=$v
+  recs="$recs$v$TAB$f$NL"
   seen=$((seen + 1))
 done < <(find "$DIR" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
 
 if [ -n "$DOC" ] && [ -f "$DOC" ]; then
   dv=$(tver "$DOC")
   if [ -n "$dv" ]; then
-    versions["$DOC"]=$dv
+    recs="$recs$dv$TAB$DOC$NL"
     seen=$((seen + 1))
   fi
 fi
@@ -105,16 +110,16 @@ if [ "$seen" -lt 2 ]; then
   exit 0
 fi
 
-uniq_vers=$(printf '%s\n' "${versions[@]}" | sort -un)
+uniq_vers=$(printf '%s' "$recs" | cut -f1 | sort -un)
 if [ "$(printf '%s\n' "$uniq_vers" | wc -l)" -eq 1 ]; then
   echo "check-template-lockstep: all $seen versioned files at template-version $uniq_vers."
   exit 0
 fi
 
 echo "check-template-lockstep: template-version DRIFT (expected one shared version):"
-while IFS= read -r f; do
-  echo "  v${versions[$f]}  $f"
-done < <(printf '%s\n' "${!versions[@]}" | sort)
+while IFS="$TAB" read -r v f; do
+  echo "  v$v  $f"
+done < <(printf '%s' "$recs" | sort -t "$TAB" -k2)
 echo ""
 echo "All work templates and the canonical ticket-standards doc must share one template-version."
 exit 1
