@@ -65,7 +65,7 @@ backlog: the npm audit gate (#250), Dependabot cooldown (#251), Scorecard (#255)
 Docker base image with Dependabot updates (#362).
 
 ## Phase: P4 v1.21 Alert editor
-state: open
+state: done
 plan: docs/plans/p4-v1-21-alert-editor.md
 
 Add and edit payment alerts from the dashboard with the Actual schedule picker, preview and test
@@ -73,9 +73,15 @@ send. Comes after P3 because it depends on every write guard from there. Also ca
 and dependency work that gathered since v1.20.0: the reset and retarget bugs (#372, #373), the
 CodeQL and dockerhub action bumps (#374, #375, #395) and the direct dependency bumps (#393, #394).
 
+Outcome: done. Released as v1.21.0 on 2026-10-26. The editor API and storage (#262) and the
+dialog (#268) landed, with the reset purge (#372) and the retarget close (#373). The CodeQL
+actions moved to v4.39.1 together (#374, #395) and dockerhub-description to v5 (#375); the direct
+runtime (#393) and dev (#394) dependencies are at their latest versions. Nothing was dropped or
+moved out.
+
 ## Phase: P5 v1.22 Hardening
-state: planned
-plan:
+state: open
+plan: docs/plans/p5-v1-22-hardening.md
 
 Opt-in auth for the metrics endpoints independent of the dashboard (#247), an SBOM and build
 provenance attestation for the Docker image (#252), and hardened compose and Unraid defaults:

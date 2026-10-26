@@ -245,7 +245,10 @@ describe('payments alert controls (#261)', () => {
         history(fixture).replacePaymentSnapshot('Main', controlEvaluations().filter((e) => e.alertId !== 'power'), {});
         await page.evaluate(() => { loadPaymentsTab(); });
         await page.waitForFunction(() => !document.querySelector('.pay-mute-form'));
-        expect(await rowInfo(page, 'Electricity')).toBeNull();
+        // The rule is still configured, so the row stays, now as a pending one with no mute control.
+        const row = await rowInfo(page, 'Electricity');
+        expect(row.pills).toEqual(['Not evaluated yet']);
+        expect(row.buttons).toEqual(['View', 'Copy as JSON']);
       });
     });
 
