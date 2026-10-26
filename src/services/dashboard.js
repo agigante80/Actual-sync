@@ -3165,7 +3165,15 @@ function renderEditor() {
 
     const errors = ed.errors;
     ['id', 'watch', 'graceDays', 'earlyDays', 'period', 'tolerance', 'reminders', 'channels'].forEach((k) => aeText(`ae-err-${k}`, errors[k] || ''));
-    EDITOR_EVENTS.forEach((event) => aeText(`ae-err-template-${event}`, errors[`template:${event}`] || ''));
+    EDITOR_EVENTS.forEach((event) => {
+        const message = errors[`template:${event}`] || '';
+        aeText(`ae-err-template-${event}`, message);
+        // A template error must be visible: a collapsed section would leave Save off with no
+        // reason on screen (#268 review), so the section with the error is opened.
+        const area = aeEl(`ae-tpl-${event}`);
+        const section = area && area.parentNode;
+        if (message && section && section.tagName === 'DETAILS') section.open = true;
+    });
 
     const schedMode = f.watch === 'schedule';
     const sel = aeEl('ae-schedule');
@@ -3205,7 +3213,8 @@ function renderEditor() {
 
     // Footer.
     const problems = editorProblems(ed);
-    const blocked = Object.keys(ed.invalid).length > 0;
+    // Same condition as editorCanSave: a shown server error blocks Save as much as a local one.
+    const blocked = Object.keys(ed.invalid).length > 0 || Object.values(ed.errors).some(Boolean);
     const canSave = editorCanSave(ed, ro, writes, problems);
     const hint = problems.channels || (blocked ? 'Fix the highlighted fields to save' : '') || (!writes && !ro ? paymentWritesTip() : '');
     aeText('ae-save-hint', hint);

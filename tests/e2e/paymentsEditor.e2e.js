@@ -174,6 +174,28 @@ describe('payments alert editor (#268)', () => {
       });
     });
 
+    test('a server error on a collapsed template opens that section and names the reason Save is off', async () => {
+      await withFixture('editor-new', async ({ page, fixture }) => {
+        await openPayments(page, fixture);
+        await openEditor(page, addBtn);
+        await pickSchedule(page, 'Electricity');
+        expect(await page.$eval('#ae-tpl-resolved', (el) => el.parentNode.open)).toBe(false);
+        page.overrideRoute(RULES_ROUTE, (req) => (req.method() === 'POST'
+          ? req.respond(json(400, { error: 'invalid_rule', details: [{ path: '/templates/resolved', message: 'unknown variable "nope"' }] }))
+          : req.continue()));
+        await page.click('#ae-save');
+        await page.waitForFunction(() => document.getElementById('ae-err-template-resolved').textContent !== '');
+        expect(await text(page, '#ae-err-template-resolved')).toBe('unknown variable "nope"');
+        expect(await page.$eval('#ae-tpl-resolved', (el) => el.parentNode.open)).toBe(true);
+        expect(await enabled(page, '#ae-save')).toBe(false);
+        expect(await text(page, '#ae-save-hint')).toBe('Fix the highlighted fields to save');
+        await setValue(page, '#ae-tpl-resolved', 'Paid, thanks');
+        await page.waitForFunction(() => document.getElementById('ae-err-template-resolved').textContent === '');
+        expect(await enabled(page, '#ae-save')).toBe(true);
+        expect(await text(page, '#ae-save-hint')).toBe('');
+      });
+    });
+
     test('the channel list follows what is configured and one must stay ticked', async () => {
       await withFixture('editor-new', async ({ page, fixture }) => {
         await openPayments(page, fixture);
