@@ -1,5 +1,5 @@
 <!-- template-version: 6 -->
-<!-- doc-rules-version: 20 -->
+<!-- doc-rules-version: 21 -->
 
 # Ticket standards (canonical)
 
@@ -170,94 +170,112 @@ domain, per the N/A rule below.
 `ticket-gate` restates parts of this doc so they hold in installs without it. Those restatements
 are sanctioned exceptions to the single-source rule above. forge-kit's `scripts/check-restatements.sh` verifies
 this list in forge-kit's own CI (issue #125); it is not installed in this repository. Each item carries one or more literal ANCHORS into the gate, and the
-build fails if an anchor no longer resolves (a stale entry) or if the gate references a rule in a
-section no anchor covers (an unlisted restatement). Editing a rule means editing every location its
+build fails if an anchor no longer resolves (a stale entry) or if the gate cites a section where no
+anchor covers it (an unlisted restatement). Editing a rule means editing every location its
 anchors name, in the same change. An item with no anchor fails too, because an unanchored entry is
 exactly the thing that rotted before.
 
-Coverage is per LOCATION, not per section: a rule reference must sit within two lines of an anchor
+Coverage is per LOCATION, not per section: a section citation must sit within two lines of an anchor
 that covers it. Per-section coverage was tried first and was shown to be worthless here, because
 once a big section like Step 3B was anchored for a rule anywhere, a brand-new bar for that rule
 elsewhere in the same section inherited the licence and passed.
 
+**Citations are by TITLE, never by number (#510).** A project that adapts this doc renumbers or
+inserts sections, so a gate review saying "rule 3" pointed at the wrong section there. The gate and
+its companion files therefore cite a section as `section "Title"`, the title exactly as the
+`### N. Title` heading spells it with any trailing parenthetical dropped (`section "GWT scenarios"`;
+inside a shell double-quoted string, `section \"GWT scenarios\"`). The guard resolves each title to
+this doc's own number through a map built from the headings, so renumbering cannot break it, and a
+bare `rule N`, `rule-N` or `rules N and M` in a scanned file is a hard error. The numbers survive
+only INSIDE this file, in the anchor scopes (`:: rules N`) and the allowlist entry below, which are
+never scanned and are edited with the headings they refer to.
+
 **What the guard does NOT prove, stated plainly, because overclaiming is this section's own bug.**
-Detection keys on the literal token `rule N` (or `rules N and M`), validated against the rule
-numbers this doc defines. A restatement that paraphrases a rule without naming it is invisible, and
-two listed entries are in that shape today: the security lens checklist, whose file contains no
-rule token at all, and rule 8's implementation concreteness in the critic's brief. So this list is
-complete with respect to everything the guard can see, which is a narrower claim than the one this
-section used to make and get wrong three review rounds running.
+Detection keys on the literal citation `section "Title"`, validated against the section titles this
+doc defines. A restatement that paraphrases a rule without citing it is invisible, and two listed
+entries are in that shape today: the security lens checklist, whose file contains no section
+citation at all, and the implementation concreteness of `section "Implementation and dependency
+concreteness"` in the critic's brief. So this list is complete with respect to everything the guard
+can see, which is a narrower claim than the one this section used to make and get wrong three
+review rounds running.
 
 Coverage used to be per ITEM rather than per anchor, so a new bar for one rule an item names could
 sit beside an anchor for another rule it names and pass. **#138 closed that**: an item naming more
-than one rule must scope each anchor (`:: rules N`), and an unscoped one is refused rather than
+than one section must scope each anchor (`:: rules N`), and an unscoped one is refused rather than
 silently generous. An anchor must also be on ONE line, because matching only its first line was a
-prefix match wearing an exact match's clothes, and an item that cites no rule number at all is
+prefix match wearing an exact match's clothes, and an item that cites no section title at all is
 refused, because it covers nothing while looking like it covers something.
 
-**Therefore: a restatement added to the gate MUST name its rule.** Writing `(rule 7)` beside the
-bar is what makes the next one detectable. A paraphrase citing no rule number is the one shape that
-can still fork silently, so do not create more of them.
+**Therefore: a restatement added to the gate MUST cite its section.** Writing
+`section "Documentation currency"` beside the bar is what makes the next one detectable. A
+paraphrase citing no section is the one shape that can still fork silently, so do not create more
+of them.
 
-1. The three hard-fail bars: UI E2E (rule 3), API endpoint coverage (rule 2), and the
-   personal-data judgment (rule 4), in the critic's brief.
-   <!-- anchor: "**UI E2E (rule 3):**" :: rules 3 -->
-   <!-- anchor: "**API endpoint coverage (rule 2):**" :: rules 2 -->
-   <!-- anchor: "**Personal-data judgment (rule 4):**" :: rules 4 -->
-2. The security lens checklist, which restates rule 5 point for point. It lives in the
-   `ticket-gate-reference` skill since #109, not in the agent file.
+1. The three hard-fail bars: UI E2E (section "E2E test specs"), API endpoint coverage (section
+   "Unit test specs"), and the personal-data judgment (section "Personal data handling"), in the
+   critic's brief.
+   <!-- anchor: "**UI E2E (section "E2E test specs"):**" :: rules 3 -->
+   <!-- anchor: "**API endpoint coverage (section "Unit test specs"):**" :: rules 2 -->
+   <!-- anchor: "**Personal-data judgment (section "Personal data handling"):**" :: rules 4 -->
+2. The security lens checklist, which restates section "Security checklist" point for point. It
+   lives in the `ticket-gate-reference` skill since #109, not in the agent file.
    <!-- anchor: "OWASP Top 10: injection, XSS, CSRF" -->
-3. Rule 1's GWT quality bar, which appears four times: in the Step 0c-iii synthesis table, and
-   three times in `check-ticket-mechanics`, which took Step 3A's checks over from prose in
-   #149, the third being the N/A clause check 4 refers since #241.
-   <!-- anchor: "Apply the rule-1 quality bar" -->
-   <!-- anchor: "check 4: GWT structure (rule 1, the checkable half)" -->
-   <!-- anchor: "narrower than rule 1's quality" -->
-   <!-- anchor: "the critic must judge rule 1 unaided" -->
-   <!-- anchor: "legitimate only where rule 1 finds no behaviour delta" -->
-4. Rule 2's integration and regression coverage, and rule 8's implementation concreteness (build
-   and test commands, dependency justification, N+1 and scalability), which the critic's brief
-   carries as blocking-capable concerns. These joined this doc in #117 (issue #94); before that
-   they existed only in the gate, so the list did not need them.
+3. The GWT quality bar of section "GWT scenarios", which appears four times: in the Step 0c-iii
+   synthesis table, and three times in `check-ticket-mechanics`, which took Step 3A's checks over
+   from prose in #149, the third being the N/A clause check 4 refers since #241.
+   <!-- anchor: "Apply the section "GWT scenarios" quality bar" -->
+   <!-- anchor: "check 4: GWT structure (section "GWT scenarios", the checkable half)" -->
+   <!-- anchor: "narrower than the section "GWT scenarios"" -->
+   <!-- anchor: "the critic must judge section \"GWT scenarios\" unaided" -->
+   <!-- anchor: "legitimate only where section \"GWT scenarios\" finds no behaviour delta" -->
+4. The integration and regression coverage of section "Unit test specs", and the implementation
+   concreteness of section "Implementation and dependency concreteness" (build and test commands,
+   dependency justification, N+1 and scalability), which the critic's brief carries as
+   blocking-capable concerns. These joined this doc in #117 (issue #94); before that they existed
+   only in the gate, so the list did not need them.
    <!-- anchor: "test-case quality and edge cases, including integration and regression coverage" :: rules 2 -->
    <!-- anchor: "file paths and implementation concreteness" :: rules 8 -->
-5. Rule 3's emulator clause, which the critic's brief restates near-verbatim. Item 1 covers rule
-   3's UI E2E hard-fail bar, which is a different clause of the same rule.
-   <!-- anchor: "rule 3's emulator clause" -->
-6. The Step 0c-iii synthesis table, whose rows restate the SHAPE required by rules 2, 3, 4 and 7,
-   because the synthesis sub-agent has to be told what to write. Item 3 covers rule 1's appearance
-   in that same table; these are the other four.
+5. The emulator clause of section "E2E test specs", which the critic's brief restates
+   near-verbatim. Item 1 covers the UI E2E hard-fail bar of the same section, which is a
+   different clause.
+   <!-- anchor: "section "E2E test specs" emulator clause" -->
+6. The Step 0c-iii synthesis table, whose rows restate the SHAPE required by section "Unit test
+   specs", section "E2E test specs", section "Personal data handling" and section "Documentation
+   currency", because the synthesis sub-agent has to be told what to write. Item 3 covers the
+   appearance of section "GWT scenarios" in that same table; these are the other four.
    <!-- anchor: "| Section | Derived from |" :: rules 2, 3, 4 and 7 -->
-7. The unit-test check in `check-ticket-mechanics`, which restates rule 2's concrete-spec bar
-   as a mechanical check, down to rejecting a bare "add unit tests", and restates the N/A rule's
-   own rationale. It was Step 3A prose until #149.
-   <!-- anchor: "legitimate only where rule 2 is out of scope" -->
-   <!-- anchor: "the critic must judge rule 2 unaided" -->
-8. Rule 7 in four further places: twice in `check-ticket-mechanics` (check 6's bar and the
-   reason it refers rather than passes), the critic's brief, and the Rules section (its
-   every-work-ticket scope).
-   <!-- anchor: "HOLDS is rule 7, judged by the critic" -->
-   <!-- anchor: "rule 7 applies to every work ticket:" -->
-   <!-- anchor: "documentation currency (rule 7) judged against the ticket's own file list" -->
-   <!-- anchor: "documentation currency (rule 7) applies to every work ticket" -->
-9. Rule 1's SCOPE clause at Step 3B. Item 3 covers rule 1's quality bar, which is a different
-   clause.
+7. The unit-test check in `check-ticket-mechanics`, which restates the concrete-spec bar of
+   section "Unit test specs" as a mechanical check, down to rejecting a bare "add unit tests", and
+   restates the N/A rule's own rationale. It was Step 3A prose until #149.
+   <!-- anchor: "legitimate only where section \"Unit test specs\" is out of scope" -->
+   <!-- anchor: "the critic must judge section \"Unit test specs\" unaided" -->
+8. The currency bar of section "Documentation currency" in four further places: twice in
+   `check-ticket-mechanics` (check 6's bar and the reason it refers rather than passes), the
+   critic's brief, and the Rules section (its every-work-ticket scope).
+   <!-- anchor: "HOLDS is section "Documentation currency", judged by the critic" -->
+   <!-- anchor: "section \"Documentation currency\" applies to every work ticket:" -->
+   <!-- anchor: "section "Documentation currency" judged against the ticket's own file list" -->
+   <!-- anchor: "section "Documentation currency" applies to every work ticket" -->
+9. The SCOPE clause of section "GWT scenarios" at Step 3B. Item 3 covers its quality bar, which is a
+   different clause.
    <!-- anchor: "an N/A claim is legitimate only where no behaviour delta exists" -->
-10. Rule 3's UI E2E hard-fail bar AGAIN, twice in `check-ticket-mechanics`. Item 1 covers the
-   same bar in the critic's brief; this is the mechanical half, and no review round ever named it.
-   The guard found it on its first run, and #149 moved it from prose into the script.
-   <!-- anchor: "UI at all (rule 3), is Step 3B's call" -->
-   <!-- anchor: "rule 3 says a UI-touching ticket cannot claim it" -->
-   <!-- anchor: "the critic must judge rule 3 unaided" -->
+10. The UI E2E hard-fail bar of section "E2E test specs" AGAIN, twice in `check-ticket-mechanics`.
+   Item 1 covers the same bar in the critic's brief; this is the mechanical half, and no review
+   round ever named it. The guard found it on its first run, and #149 moved it from prose into the
+   script.
+   <!-- anchor: "UI at all (section "E2E test specs"), is Step 3B's call" -->
+   <!-- anchor: "section \"E2E test specs\" says a UI-touching ticket cannot claim it" -->
+   <!-- anchor: "the critic must judge section \"E2E test specs\" unaided" -->
 
 <!-- restatement-allow: Step 2.5 :: rule 4 :: routing row for the optional
-     privacy-regime skill; it states no bar of its own and only notes that rule 4 still binds when
-     the skill is absent -->
+     privacy-regime skill; it states no bar of its own and only notes that section "Personal data
+     handling" still binds when the skill is absent -->
 
 
-Editing rule 5 or rule 1 therefore means editing the gate in the same change. The list used to
-claim the hard-fail bars were the *only* exception, which was false, so a maintainer editing rule 5
-got no signal in the exact place this doc certified as drift-free.
+Editing section "Security checklist" or section "GWT scenarios" therefore means editing the gate in
+the same change. The list used to claim the hard-fail bars were the *only* exception, which was
+false, so a maintainer editing the security checklist got no signal in the exact place this doc
+certified as drift-free.
 
 Where this doc IS installed, its text governs, and three cases are distinguished:
 

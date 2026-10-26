@@ -3303,16 +3303,16 @@ module.exports = [
         id: "262-r1-orphan-rules-kept", ticket: '#262',
         desc: "a reset of a server removed from the config keeps its dashboard rules",
         file: "src/services/healthCheck.js",
-        anchor: "const purgeRules = configured !== null && !configured.includes(server);",
-        mutant: "const purgeRules = false;",
+        anchor: "const purgeRules = configured !== null && !configured.includes(server) &&",
+        mutant: "const purgeRules = false &&",
         tests: "paymentRulesRoute"
     },
     {
         id: "262-r1-configured-rules-purged", ticket: '#262',
         desc: "a reset of a configured server deletes its dashboard rules",
         file: "src/services/healthCheck.js",
-        anchor: "const purgeRules = configured !== null && !configured.includes(server);",
-        mutant: "const purgeRules = true;",
+        anchor: "const purgeRules = configured !== null && !configured.includes(server) &&",
+        mutant: "const purgeRules = true &&",
         tests: "paymentRulesRoute"
     },
     {
@@ -3329,6 +3329,22 @@ module.exports = [
         file: "src/services/syncHistory.js",
         anchor: "        'DELETE FROM payment_alert_rule WHERE server NOT IN (SELECT value FROM json_each(?))'",
         mutant: "        'DELETE FROM payment_alert_rule WHERE ? IS NOT NULL'",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "372-r-reset-all-ungated", ticket: '#372',
+        desc: "reset all deletes orphan rules while config writes are off",
+        file: "src/services/healthCheck.js",
+        anchor: "          const configuredServers = this.getServers && this.configWritesReason() === null",
+        mutant: "          const configuredServers = this.getServers",
+        tests: "paymentRulesRoute"
+    },
+    {
+        id: "372-r-reset-server-ungated", ticket: '#372',
+        desc: "reset of one orphan server deletes its rules while config writes are off",
+        file: "src/services/healthCheck.js",
+        anchor: "            this.configWritesReason() === null;",
+        mutant: "            true;",
         tests: "paymentRulesRoute"
     },
     {
