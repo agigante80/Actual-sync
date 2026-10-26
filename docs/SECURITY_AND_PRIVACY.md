@@ -296,6 +296,22 @@ npm audit --audit-level=high
 2. **Medium**: Patch within 30 days
 3. **Low**: Patch in next regular update cycle
 
+### Image provenance and SBOM (#252)
+
+Every published Docker image carries a BuildKit SBOM (SPDX) and SLSA provenance
+in the registry, plus a signed GitHub artifact attestation per registry. The
+SBOM is also attached to each GitHub release. Users verify with
+`gh attestation verify oci://<image>:<tag> --repo agigante80/Actual-sync`
+(see [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#verifying-the-image)).
+
+**Caveat, recorded on purpose:** provenance attests how and where an artifact
+was built. It does not attest that the build was authorised, that the commit
+was legitimate, or that the source was not malicious. A compromised action
+inside the build would be faithfully attested as a legitimate build, which is
+why the third-party actions in the workflow are pinned to commit SHAs
+([CI/CD](CI_CD.md#pinning-third-party-actions)). Treat the attestation as a
+control against a substituted or re-tagged image, not as a review of the code.
+
 ### Security Updates
 
 **Automated Tools**:

@@ -158,6 +158,7 @@ Full documentation available at:
 - **User**: actualuser (UID 1001, non-root)
 - **Exposed Ports**: 3000 (health checks)
 - **Volumes**: `/app/config`, `/app/data`, `/app/logs`
+- **Attested**: each image carries a signed build provenance attestation and an SPDX SBOM. Verify with `gh attestation verify oci://index.docker.io/agigante80/actual-sync:<tag> --repo agigante80/Actual-sync`; see the [verification guide](https://github.com/agigante80/Actual-sync/blob/main/docs/DOCKER_DEPLOYMENT.md#verifying-the-image).
 
 ## Support
 
