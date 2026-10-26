@@ -56,8 +56,12 @@ docker run -d --name "$NAME" \
 
 fail() { echo "::error::$*"; echo "--- container logs"; docker logs "$NAME" 2>&1 | tail -40; exit 1; }
 
+# Deadlines in seconds rather than attempt counts: each curl can take up to its
+# --max-time, so a container that accepts TCP but never answers would otherwise
+# stretch 60 attempts well past the minute the message promises.
 code=000
-for _ in $(seq 1 60); do
+deadline=$((SECONDS + 60))
+while [ "$SECONDS" -lt "$deadline" ]; do
   code=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" "$BASE/health" || true)
   [ "$code" = 200 ] && break
   sleep 1
@@ -83,14 +87,15 @@ code=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" -X POST "$BASE/api/d
 [ "$code" = 200 ] || fail "POST /api/dashboard/sync returned $code"
 
 rows=0
-for _ in $(seq 1 30); do
+deadline=$((SECONDS + 30))
+while [ "$SECONDS" -lt "$deadline" ]; do
   # grep -c exits 1 while the row is not there yet, which set -e would turn into
   # a bare exit; the || true keeps the loop polling.
   rows=$(curl -s --max-time 10 "$BASE/api/dashboard/history?limit=5" -H "Origin: $BASE" | grep -c '"server_name"' || true)
   [ "${rows:-0}" -ge 1 ] && break
   sleep 1
 done
-[ "${rows:-0}" -ge 1 ] || fail "no sync attempt recorded in the history database"
+[ "${rows:-0}" -ge 1 ] || fail "no sync attempt recorded in the history database within 30s"
 
 code=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$BASE/dashboard" || true)
 [ "$code" = 200 ] || fail "GET /dashboard returned $code"
