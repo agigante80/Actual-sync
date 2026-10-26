@@ -359,6 +359,7 @@ jobs:
   docker-test:
     name: Docker Test Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [version, build, validate-short-description]
     if: |
       always() &&
@@ -420,6 +421,12 @@ jobs:
           
           # Clean up
           rm -rf test-config
+
+      # Starts the image with the capability and privilege settings that
+      # docker-compose.yml ships (#253) and proves it still serves /health and
+      # the dashboard, records a sync attempt and writes its log under them.
+      - name: Hardened container smoke test
+        run: scripts/docker-hardened-smoke.sh ${{ env.DOCKER_IMAGE_NAME }}:test
 
       - name: Docker test summary
         if: always()

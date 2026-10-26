@@ -172,7 +172,9 @@ docker run -d \
   -v ./config:/app/config:ro \
   -v ./data:/app/data \
   -v ./logs:/app/logs \
-  -p 3000:3000 \
+  -p 127.0.0.1:3000:3000 \
+  --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+  --security-opt no-new-privileges:true \
   -e PUID=1001 -e PGID=1001 \
   -e TZ=America/New_York \
   agigante80/actual-sync:latest
@@ -184,13 +186,22 @@ docker run -d \
   -v ./config:/app/config:ro \
   -v ./data:/app/data \
   -v ./logs:/app/logs \
-  -p 3000:3000 \
+  -p 127.0.0.1:3000:3000 \
+  --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+  --security-opt no-new-privileges:true \
   -e PUID=1001 -e PGID=1001 \
   -e TZ=America/New_York \
   ghcr.io/agigante80/actual-sync:latest
 ```
 
 Create `config/config.json` in your mounted directory and you're ready to go!
+
+> **Port and hardening (v1.22.0):** the dashboard port is published on
+> `127.0.0.1`, so only the Docker host can reach it. The capability and
+> `no-new-privileges` flags are the ones the image is tested with. To reach the
+> dashboard from another machine, put a reverse proxy in front or publish
+> `-p 3000:3000` with the dashboard login set. Details and how to relax each
+> control: [Container hardening](docs/DOCKER_DEPLOYMENT.md#container-hardening-253).
 
 > **PUID / PGID:** the container starts as root only to align its user to `PUID`/`PGID`
 > (default `1001:1001`) and fix ownership of the `data` and `logs` volumes, then drops
@@ -272,7 +283,9 @@ docker run -d \
   -v $(pwd)/config:/app/config:ro \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/logs:/app/logs \
-  -p 3000:3000 \
+  -p 127.0.0.1:3000:3000 \
+  --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+  --security-opt no-new-privileges:true \
   -e PUID=1001 -e PGID=1001 \
   -e TZ=America/New_York \
   agigante80/actual-sync:latest
@@ -281,14 +294,14 @@ docker run -d \
 **Docker Compose:**
 
 ```yaml
-version: '3.8'
+version: "3.8"
 services:
   actual-sync:
     image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest
     container_name: actual-sync
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"  # Dashboard, health and metrics: this host only. See the hardening doc before opening it.
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
@@ -298,6 +311,14 @@ services:
       - PGID=1001          # set to 100 on Unraid (users)
       - TZ=America/New_York
       - NODE_ENV=production
+    cap_drop:
+      - ALL                           # Drop every capability...
+    cap_add:
+      - CHOWN                         # ...except what the PUID/PGID entrypoint needs
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
 ```
 
 See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for advanced Docker configuration.
@@ -502,8 +523,7 @@ with a signed provenance attestation and an SBOM (see
 ### Docker Compose (Recommended)
 
 ```yaml
-version: '3.8'
-
+version: "3.8"
 services:
   actual-sync:
     image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest
@@ -511,7 +531,7 @@ services:
     restart: unless-stopped
     
     ports:
-      - "3000:3000"  # Health check endpoint
+      - "127.0.0.1:3000:3000"  # Dashboard, health and metrics: this host only. See the hardening doc before opening it.
     
     volumes:
       - ./config:/app/config:ro      # Read-only config
@@ -523,6 +543,15 @@ services:
       - PGID=1001                     # Run-as GID (100 on Unraid)
       - TZ=America/New_York           # Timezone for schedules
       - NODE_ENV=production
+    
+    cap_drop:
+      - ALL                           # Drop every capability...
+    cap_add:
+      - CHOWN                         # ...except what the PUID/PGID entrypoint needs
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
     
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
@@ -552,7 +581,7 @@ docker-compose ps
 curl http://localhost:3000/health
 ```
 
-See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for Kubernetes deployment and advanced configurations.
+See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for Kubernetes deployment and advanced configurations, and [Container hardening](docs/DOCKER_DEPLOYMENT.md#container-hardening-253) for what each of the `ports`, `cap_drop` and `security_opt` lines does and how to relax it.
 
 ---
 

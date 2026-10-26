@@ -597,7 +597,7 @@ wget -qO- http://localhost:3000/metrics
 
 By default, the health check service binds to `0.0.0.0` (all interfaces). Consider these options:
 
-1. **Internal Only**: Set `host` to `"127.0.0.1"` if only local access is needed
+1. **Internal Only**: Set `host` to `"127.0.0.1"` if only local access is needed. In a container keep `0.0.0.0` (the address inside the container) and restrict with the port mapping instead: the shipped `docker-compose.yml` publishes `127.0.0.1:3000:3000`, which only the Docker host can reach ([Container hardening](DOCKER_DEPLOYMENT.md#container-hardening-253))
 2. **Firewall**: Restrict access to health check port (3000) to monitoring systems only
 3. **Reverse Proxy**: Put behind nginx/Apache with authentication if exposed to internet, and set `healthCheck.trustProxy` (usually `1`) so rate limiting and auth-failure logs see the real client IP ([CONFIG.md](CONFIG.md#healthcheck-optional))
 
@@ -614,6 +614,8 @@ The `/metrics` endpoint exposes:
 - Set `healthCheck.auth` when the metrics endpoints must be reachable beyond your monitoring network (see [Which endpoints are authenticated](#which-endpoints-are-authenticated)). It is off by default so existing Prometheus setups keep working after an upgrade; that trade is deliberate, since the service normally sits behind a firewall.
 
 ### Docker Example with Restricted Access
+
+This is the default in the shipped `docker-compose.yml` since v1.22.0:
 
 ```yaml
 services:
