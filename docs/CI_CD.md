@@ -314,6 +314,12 @@ throttle), all against fixture states under
 3. Build Docker image locally
 4. Test container startup
 5. Verify health check
+6. Hardened container smoke test (`scripts/docker-hardened-smoke.sh`, #253):
+   starts the image with `--cap-drop ALL`, the three capabilities
+   `docker-compose.yml` adds back (CHOWN, SETUID, SETGID),
+   `no-new-privileges` and a non-default PUID/PGID, then checks `/health`,
+   the dashboard, a recorded sync attempt in the SQLite history, the log
+   file, and that the Node process holds no capability
 
 **Duration**: ~3-5 minutes
 
@@ -323,6 +329,9 @@ throttle), all against fixture states under
 - Container starts successfully
 - Health check endpoint responds
 - Application logs show correct version
+- The shipped compose hardening does not break the entrypoint or the
+  writable volumes (`src/__tests__/dockerCompose.test.js` keeps the script's
+  flags equal to the compose file's)
 
 **Why This Matters**:
 - Catches Docker build errors before publishing

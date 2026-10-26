@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   actual-sync:
     build:
@@ -8,7 +6,7 @@ services:
     image: actual-sync:latest
     container_name: actual-sync
     restart: unless-stopped
-    
+
     # Environment variables (optional, overrides config.json)
     environment:
       # PUID/PGID: run as this UID/GID and chown the data/logs volumes to match.
@@ -17,23 +15,61 @@ services:
       - PGID=1001
       - TZ=Europe/Madrid
       - NODE_ENV=production
-    
+
     # Mount config and data volumes
     volumes:
       # Configuration file
       - ./config/config.json:/app/config/config.json:ro
-      
+
       # Persistent data directories
       - actual-sync-data:/app/data
       - actual-sync-logs:/app/logs
-      
+
       # If using custom data directories for budget files
       # - ./budget-data:/budget-data
-    
-    # Expose health check port
+
+    # Dashboard, health and metrics port, published on this machine only:
+    # nothing else on the network can reach it. To use the dashboard from
+    # another machine, put a reverse proxy in front (docs/DOCKER_DEPLOYMENT.md,
+    # "Behind a reverse proxy"), or change this to "3000:3000" and set
+    # healthCheck.dashboard.auth (and healthCheck.auth for the metrics) in
+    # config.json first. healthCheck.host stays "0.0.0.0" inside the container
+    # either way; this line decides who can reach it.
     ports:
-      - "3000:3000"
-    
+      - "127.0.0.1:3000:3000"
+
+    # Container hardening (#253). Every Linux capability is dropped, then the
+    # three the entrypoint needs are added back. It runs as root only to apply
+    # PUID/PGID and chown the volumes, then drops to actualuser, which runs
+    # with no capability at all. Verified by a container run against each
+    # setting (see docs/DOCKER_DEPLOYMENT.md, "Container hardening").
+    #   CHOWN:          chown -R of /app/data and /app/logs
+    #   SETUID, SETGID: usermod/groupmod for PUID/PGID, and su-exec to the user
+    # A bind-mounted data or logs directory that another user owns with mode
+    # 700 also needs DAC_READ_SEARCH, or the chown cannot enter it.
+    # Alternative: set `user: "1001:1001"` (the owner of your directories).
+    # The entrypoint then skips its root phase and needs no capability, so
+    # cap_add can be removed entirely.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+
+    # No process in the container can gain privileges through a setuid binary,
+    # whatever capabilities it holds.
+    security_opt:
+      - no-new-privileges:true
+
+    # Optional: read-only root filesystem. It works with the default PUID/PGID
+    # (1001:1001). Any other value needs usermod and groupmod to write
+    # /etc/passwd and /etc/group, which a read-only root refuses, so the
+    # container does not start. Uncomment both lines together.
+    # read_only: true
+    # tmpfs:
+    #   - /tmp
+
     # Resource limits
     deploy:
       resources:
@@ -43,7 +79,7 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
-    
+
     # Health check
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"]
@@ -51,14 +87,14 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    
+
     # Logging configuration
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-    
+
     # Network configuration
     networks:
       - actual-network

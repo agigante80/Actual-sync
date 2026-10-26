@@ -116,21 +116,30 @@ Access the modern web dashboard at `http://localhost:3000/dashboard`:
 ## Docker Compose Example
 
 ```yaml
-version: '3.8'
 services:
   actual-sync:
     image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest
     container_name: actual-sync
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"  # this host only; use a reverse proxy or "3000:3000" with the dashboard login set
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
       - ./logs:/app/logs
     environment:
+      - PUID=1001
+      - PGID=1001
       - TZ=America/New_York
       - NODE_ENV=production
+    cap_drop:
+      - ALL
+    cap_add:          # the three the PUID/PGID entrypoint needs
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
       interval: 30s
@@ -156,6 +165,7 @@ Full documentation available at:
 - **Base Image**: node:22-alpine (pinned by digest)
 - **Image Size**: 229MB
 - **User**: actualuser (UID 1001, non-root)
+- **Hardening**: tested with `--cap-drop ALL` plus CHOWN, SETUID, SETGID and `no-new-privileges`; the node process runs with no capability. Details: https://github.com/agigante80/Actual-sync/blob/main/docs/DOCKER_DEPLOYMENT.md#container-hardening-253
 - **Exposed Ports**: 3000 (health checks)
 - **Volumes**: `/app/config`, `/app/data`, `/app/logs`
 

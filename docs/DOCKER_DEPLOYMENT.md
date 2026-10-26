@@ -18,6 +18,7 @@ This guide covers deploying Actual-sync using Docker and Docker Compose with rea
 docker run -d \
   --name actual-sync \
   --user 1026:100 \
+  --cap-drop ALL --security-opt no-new-privileges:true \
   -v ./config.json:/app/config/config.json:ro \
   -v ./data:/app/data \
   -v ./logs:/app/logs \
@@ -75,6 +76,10 @@ services:
     image: ghcr.io/agigante80/actual-sync:latest
     container_name: actual-sync-service
     user: "1026:100"  # Important: Match your host user UID:GID
+    cap_drop:
+      - ALL             # with `user` set, the entrypoint needs no capability
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./actual-sync/config.json:/app/config/config.json:ro
       - ./actual-sync/data:/app/data
@@ -292,7 +297,9 @@ The dashboard can't be reached, often only working with `--network host`.
 
 **Cause:** `healthCheck.host` was set to the host's LAN IP. A bridge-networked
 container can't bind the host's external IP — only `0.0.0.0` (all interfaces),
-`127.0.0.1`, or `localhost`.
+`127.0.0.1`, or `localhost`. `healthCheck.host` is the address inside the
+container; who can reach it from outside is decided by the `ports` mapping
+(see [Container hardening](#container-hardening-253)).
 
 **Solution:** set `healthCheck.host` to `0.0.0.0` (the default) and reach the
 dashboard via the published port:
@@ -337,6 +344,44 @@ volumes:
   actual-sync/data/
   actual-sync/logs/
   ```
+
+#### Container hardening (#253)
+
+Since v1.22.0 the shipped `docker-compose.yml`, the README and Docker Hub
+examples and the Unraid template start the container with these controls.
+Each was verified with a real container run before it was committed: the
+service reached `/health`, served the dashboard, recorded a sync attempt in
+its SQLite history and wrote its log file, and the Node process held no
+capability. CI repeats that run on every build
+(`scripts/docker-hardened-smoke.sh`).
+
+| Control | What it does | How to relax it |
+|---------|--------------|-----------------|
+| `ports: "127.0.0.1:3000:3000"` | The dashboard, health and metrics port answers on the Docker host only. Nothing else on the network can reach it. | Put a reverse proxy in front (next section), or publish `"3000:3000"` after setting `healthCheck.dashboard.auth`, and `healthCheck.auth` for the metrics, in `config.json`. |
+| `cap_drop: [ALL]` + `cap_add: [CHOWN, SETUID, SETGID]` | Every Linux capability is dropped; the three added back are what the entrypoint needs to apply `PUID`/`PGID` (`usermod`, `groupmod`), fix volume ownership (`chown -R`) and drop to `actualuser` (`su-exec`). The application itself then runs with none. | Add `DAC_READ_SEARCH` if a bind-mounted data or logs directory is owned by another user with mode `700`. Or set `user: "<uid>:<gid>"`: the entrypoint then skips its root phase and `cap_add` can be removed entirely. |
+| `security_opt: [no-new-privileges:true]` | No process in the container can gain privileges through a setuid binary, whatever capabilities it holds. | Nothing in the image needs it; leave it on. |
+| `read_only: true` + `tmpfs: [/tmp]` (commented out) | Read-only root filesystem. | Opt in only with the default `PUID`/`PGID` (`1001:1001`): any other value needs `usermod` and `groupmod` to write `/etc/passwd` and `/etc/group`, and the container does not start. |
+
+What the container run showed, with the start-up config pointing at an
+unreachable Actual server so the recorded attempt is a failure:
+
+| Run | Result |
+|-----|--------|
+| `--cap-drop ALL`, nothing added | `chown: /app/data: Operation not permitted`, container exits |
+| CHOWN, SETUID, SETGID; `PUID`/`PGID` default | starts, history and log written as `actualuser` |
+| CHOWN, SETUID, SETGID; `PUID=1234`, `PGID=1234` | starts as `1234:1234`, files owned `1234:1234` |
+| same, bind-mounted data directory, mode `755` | starts, files owned by the `PUID` |
+| same, bind-mounted data directory, mode `700`, other owner | `chown: /app/data: Permission denied`; passes with `DAC_READ_SEARCH` added |
+| same plus `--read-only --tmpfs /tmp`, default IDs | starts |
+| same plus `--read-only --tmpfs /tmp`, `PUID=1234` | `groupmod: /etc/group.10: Read-only file system`, container exits |
+| the dashboard from another machine's address | connection refused; `200` on the Docker host |
+| `su-exec root` as the service user under `no-new-privileges` | `Operation not permitted` |
+
+**Upgrading from an older compose file:** if you took the previous
+`docker-compose.yml` as it was and opened the dashboard from another machine,
+that stops working after you pull the new file. The container is fine; the
+port is just no longer published on the LAN. Pick one of the two options in
+the first row above.
 
 **Behind a reverse proxy (nginx, Traefik):** tell Actual-sync how many proxies sit in front, so rate limiting and auth-failure logs use the real client IP:
 

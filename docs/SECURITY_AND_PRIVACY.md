@@ -188,7 +188,11 @@ const limiter = rateLimit({
 **Recommendations**:
 - Restrict outbound connections to known Actual servers
 - Allow outbound HTTPS to GoCardless API domains
-- Block all inbound connections (service doesn't need to accept connections)
+- Inbound: only port 3000, and only from the hosts that use the dashboard or
+  scrape the metrics. The shipped `docker-compose.yml` publishes it on
+  `127.0.0.1`, so by default nothing beyond the Docker host can connect; see
+  [Container hardening](DOCKER_DEPLOYMENT.md#container-hardening-253) before
+  opening it.
 
 ---
 
@@ -275,10 +279,15 @@ chmod 700 /app/dataDir_*
 - Use least-privilege principle
 - Limit access to only required resources
 
-**Docker Example**:
-```dockerfile
-USER node
-```
+**In the container (#253)**: the image starts as root only to apply
+`PUID`/`PGID` and fix ownership of the writable volumes, then drops to
+`actualuser`. The shipped compose file, the README examples and the Unraid
+template drop every Linux capability except the three that entrypoint needs
+(CHOWN, SETUID, SETGID) and set `no-new-privileges`, so the application runs
+with no capability and cannot regain one. Setting `user:` instead removes the
+root phase altogether and needs no capability. The read-only root filesystem
+is an opt-in for the default IDs. Each control, its evidence and how to relax
+it: [Container hardening](DOCKER_DEPLOYMENT.md#container-hardening-253).
 
 ---
 
