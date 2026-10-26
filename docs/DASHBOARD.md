@@ -115,6 +115,64 @@ The last column, **Control**, switches an alert off or on and mutes it until a d
 
 The Settings tab has an **Orphaned alert overrides** card listing overrides whose alert or server is no longer in the configuration (for example after renaming an alert id), each with a Delete button. They have no effect on delivery; delete them to clear the stored reason.
 
+### Managing alerts from the dashboard
+
+Besides `config.json`, alerts can be created, edited and deleted here (#268). They are stored in the sync-history database like the switch and the mute, validated by the same validator as `config.json`, and apply from the next sync. The API behind the dialog is in [HEALTH_CHECK.md](HEALTH_CHECK.md#payment-rules-262); the rules' semantics are in [SCHEDULE_ALERTS.md](SCHEDULE_ALERTS.md#rules-from-the-dashboard).
+
+**Buttons.** Each server group has **Add alert**. Each row has these in the Control column:
+
+| Row | Buttons |
+|---|---|
+| Dashboard rule | Edit, Delete, Copy as JSON |
+| Rule from `config.json` | View (read-only), Copy as JSON |
+| Dashboard rule replaced by a config rule with the same id ("Replaced by config.json") | Delete |
+| Rule on a server whose `scheduleAlerts` block was removed ("Dormant: no scheduleAlerts block") | View, Delete, Copy as JSON |
+| Stored rule that no longer validates ("Invalid, not evaluated") | Edit, Delete, Copy as JSON |
+
+A rule that has not been evaluated yet (just saved, or added since the last sync) shows "Not evaluated yet". A rule saved after the last evaluation shows "Edited, applies from the next sync".
+
+**The dialog.**
+- **Id.** Filled in from the schedule name (`rent-parking-a`); a taken id gets `-2`, `-3`. Two schedules with the same name are told apart in the picker by the last 6 characters of their id. Fixed after the first save. Completed schedules are not offered.
+- **Watch.** One schedule, or every schedule whose name starts with a prefix (case-sensitive, with the number of matches shown; 0 means the rule will report `ruleUnmatched`). The line under the picker shows the schedule's cadence, amount, account and payee, and when the list was captured.
+- **Deadline.** Grace days and early days. For a monthly schedule whose day plus grace stays within 28, the line reads "deadline: 11th of each month"; otherwise it shows the real date for the next payment, since month length decides where it lands.
+- **Month shown in `{{period}}`**, **tolerance** (the placeholder says what the schedule itself implies), **reminders** and **channels** (the configured ones; at least one stays ticked, and all ticked means "use every channel", which writes nothing).
+- **Messages.** One text per event, prefilled with the server's own template or the built-in one; an emptied box goes back to the default. Variable chips insert at the cursor.
+- **Preview.** Renders the selected event as you type (after a short pause), with sample values for what only a real occurrence has, and says which. **Send test to all destinations** delivers it to every configured channel and lists the result per destination; it records no alert history (5 per minute).
+- **Save** with Enter or the button. Fields the server rejects are marked beside the field; anything else is a banner at the top. **Delete** asks first ("Delete this alert?" with Keep).
+- **Copy as JSON** copies the rule as a complete `alerts[]` entry to paste into `config.json`. When the browser blocks the clipboard (plain HTTP on a non-localhost address), the dialog shows the JSON in a box with "Press Ctrl+C to copy".
+
+**States.**
+- **No schedule snapshot yet** (no sync has finished on the server): the Watch section says so and offers Sync now. Nothing can be saved until a schedule is picked or a prefix typed.
+- **Server not configured** (no `scheduleAlerts` block): Add alert is disabled with a tooltip. Add `"scheduleAlerts": { "alerts": [] }` to the server in `config.json` first.
+- **Writes off** (`allowConfigWrites` false or auth `none`): Add, Edit and Delete are disabled with the usual tooltip; View and Copy as JSON still work. If writes turn off while a dialog is open, Save reports it and stays disabled.
+- **Alert list unavailable**: the rule list failed to load. The snapshot rows still show, Add alert is disabled and the group says "Alert list unavailable"; it recovers at the next refresh.
+- **Small screens.** Under 600 px wide the dialog fills the screen.
+- **Keyboard.** Esc closes the dialog without saving, and focus returns to the button that opened it. The dialog's own messages are announced as alerts.
+
+**Errors.** Wording is the dashboard's; the code is what the API sent.
+
+| Code or status | Shown as |
+|---|---|
+| `invalid_rule` | beside the field named in `details[].path`; if a path names no field, in the banner |
+| `invalid_template` | under that message's box: the unknown variable or helper, a syntax error with its line, or a Telegram markup problem |
+| `duplicate_id` | on the id: "An alert with this id exists" |
+| `id_in_config` | on the id: "config.json already has an alert with this id" |
+| `rule_not_found` | "This alert no longer exists."; the dialog closes and the list reloads |
+| `config_writes_disabled` (403) | "Configuration changes are turned off (...)"; the controls disable |
+| `managed_in_config` | "This alert is managed in config.json. Copy as JSON to change it there." |
+| `alerts_not_configured` | "Add a scheduleAlerts block to this server in config.json first." |
+| `too_many_rules` | "Limit of 200 dashboard alerts reached. Delete one first." |
+| `no_configured_destination` (preview) | "No notification channel is configured for this rule." |
+| `test_send_rate_limited` (429) | "Too many test messages, wait a minute." |
+| `send_failed`, `send_threw`, `timeout`, `channel_unavailable` (preview) | a note under the preview, with the per-destination results when there are any |
+| 401 | "Your session has expired or the credentials are wrong. Reload and sign in again." |
+| 413 | "This alert is too large to save (16 KB limit)." |
+| 500 | "The server could not save this alert. Try again; see the service log." |
+| 503 | "Sync history is not available, so alerts cannot be edited." |
+| no response | "Could not reach the server. Check your connection and try again." |
+
+Schedule names, rule fields and server messages are shown as text, never as HTML.
+
 Enable dashboard auth when `scheduleAlerts` is used: with the default `auth.type: none` this tab and its data are open to anyone who can reach the port.
 
 ## Behind a reverse proxy

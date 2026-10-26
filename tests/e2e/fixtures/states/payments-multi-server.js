@@ -1,8 +1,8 @@
 // One server ok, one whose last evaluation failed, one not configured (#341).
-const { AS_OF_MIN, FAILED_AT_MIN, CONFIGURED, attentionEvaluations } = require('./_payments');
+const { AS_OF_MIN, FAILED_AT_MIN, configuredFor, attentionEvaluations } = require('./_payments');
 
 module.exports = {
-  servers: [{ name: 'Main', ...CONFIGURED }, { name: 'Other', ...CONFIGURED }, { name: 'Third' }],
+  servers: [{ name: 'Main', ...configuredFor(attentionEvaluations().slice(0, 3)) }, { name: 'Other', ...configuredFor(attentionEvaluations().slice(3, 6)) }, { name: 'Third' }],
   seed(s) {
     s.payments('Main', attentionEvaluations().slice(0, 3), {}, AS_OF_MIN);
     s.payments('Other', attentionEvaluations().slice(3, 6), {}, AS_OF_MIN + 4000);
