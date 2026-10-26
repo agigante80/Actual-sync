@@ -504,6 +504,24 @@ describe('history reset and dashboard rules (#262 review L1)', () => {
   });
 });
 
+describe('reset keeps orphan rules while config writes are off', () => {
+  const reset = (server) => call('POST', '/api/dashboard/reset-history', { body: { server } });
+
+  test('reset of one orphan server keeps its rules', async () => {
+    await h.boot({ dashboard: { allowConfigWrites: false } });
+    h.state.history.insertRule('Old', 'moto', RENT);
+    expect((await reset('Old')).status).toBe(200);
+    expect(h.state.history.countRules('Old')).toBe(1);
+  });
+
+  test('reset all keeps orphan rules', async () => {
+    await h.boot({ dashboard: { allowConfigWrites: false } });
+    h.state.history.insertRule('Old', 'moto', RENT);
+    expect((await reset('all')).status).toBe(200);
+    expect(h.state.history.countRules('Old')).toBe(1);
+  });
+});
+
 describe('merged rule set for the #261 routes (#262)', () => {
   test('a dashboard rule id is accepted by the state route; the override is not orphaned', async () => {
     await h.boot();

@@ -1084,8 +1084,11 @@ class HealthCheckService {
             return res.status(404).json({ error: 'server_not_found' });
           }
           // Reset history for specific server
-          // A server no longer in the config also loses its dashboard rules (#262).
-          const purgeRules = configured !== null && !configured.includes(server);
+          // A server no longer in the config also loses its dashboard rules
+          // (#262), but only while config writes are allowed: rules are
+          // configuration, and this route is not behind configWrite().
+          const purgeRules = configured !== null && !configured.includes(server) &&
+            this.configWritesReason() === null;
           await this.syncHistory.resetServerHistory(server, { remoteAddr: req.ip, purgeRules });
           
           this.logger.info('Sync history reset for server via dashboard', {
@@ -1100,7 +1103,9 @@ class HealthCheckService {
         } else if (server === 'all') {
           // Reset all history. Servers no longer in the config also lose
           // their dashboard rules (#372).
-          const configuredServers = this.getServers ? (this.getServers() || []).map(sv => sv.name) : null;
+          // As above, only while config writes are allowed.
+          const configuredServers = this.getServers && this.configWritesReason() === null
+            ? (this.getServers() || []).map(sv => sv.name) : null;
           await this.syncHistory.resetAllHistory({ remoteAddr: req.ip, configuredServers });
           
           this.logger.info('All sync history reset via dashboard', {
