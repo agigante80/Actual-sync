@@ -777,13 +777,16 @@ Every configuration change is listed, with secrets redacted, in the Settings tab
 
 Actual-sync exposes HTTP endpoints for monitoring:
 
-| Endpoint | Description | Response |
-|----------|-------------|----------|
-| `GET /health` | Basic alive check | `200 OK` or `503 Service Unavailable` |
-| `GET /metrics` | Detailed sync statistics | JSON with per-server status |
-| `GET /ready` | Kubernetes readiness probe | `200 OK` when service is ready |
-| `GET /dashboard` | Web dashboard UI | HTML dashboard interface |
-| `WS /ws/logs` | Live log stream (dashboard auth, same-origin only) | JSON log records |
+| Endpoint | Description | Response | Credential |
+|----------|-------------|----------|------------|
+| `GET /health` | Basic alive check | `200 OK` or `503 Service Unavailable` | never |
+| `GET /metrics` | Detailed sync statistics | JSON with per-server status | `healthCheck.auth` (optional) |
+| `GET /metrics/prometheus` | Prometheus text format | metrics for scraping | `healthCheck.auth` (optional) |
+| `GET /ready` | Kubernetes readiness probe | `200 OK` when service is ready | never |
+| `GET /dashboard` | Web dashboard UI | HTML dashboard interface | `healthCheck.dashboard.auth` (optional) |
+| `WS /ws/logs` | Live log stream (dashboard auth, same-origin only) | JSON log records | `healthCheck.dashboard.auth` (optional) |
+
+The two credentials are independent and both off by default; see [docs/HEALTH_CHECK.md](docs/HEALTH_CHECK.md#which-endpoints-are-authenticated).
 
 **Example - Health Check:**
 

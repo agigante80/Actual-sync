@@ -497,6 +497,36 @@ class ConfigLoader {
             );
         }
 
+        // healthCheck.auth (#247): the schema requires the credential, but
+        // CONFIG_STRICT=false turns schema errors into warnings, and a scrape
+        // credential that is switched on with no value must not leave /metrics
+        // open or answer every scrape with 500. Fail at startup naming the key.
+        const metricsAuth = config.healthCheck && config.healthCheck.auth;
+        const metricsAuthType = (metricsAuth && metricsAuth.type) || 'none';
+        if (metricsAuthType === 'none' && metricsAuth &&
+            ['token', 'username', 'password'].some((key) => metricsAuth[key])) {
+            // A credential value with type "none" (or no type) is the example
+            // config left half edited: /metrics stays open and nothing would say so.
+            console.warn('healthCheck.auth has a credential but type is "none": /metrics and /metrics/prometheus stay open. Set healthCheck.auth.type to "basic" or "token".');
+        }
+        if (metricsAuthType !== 'none') {
+            const isSet = (key) => typeof metricsAuth[key] === 'string' && metricsAuth[key].length > 0;
+            const needed = { basic: ['username', 'password'], token: ['token'] }[metricsAuthType];
+            if (!needed) {
+                throw new Error(
+                    `Invalid healthCheck.auth.type: ${JSON.stringify(metricsAuthType)}\n` +
+                    `Use "none", "basic" or "token".`
+                );
+            }
+            const missing = needed.filter((key) => !isSet(key));
+            if (missing.length > 0) {
+                throw new Error(
+                    `healthCheck.auth.type is "${metricsAuthType}" but ${missing.map((key) => `healthCheck.auth.${key}`).join(' and ')} is not set.\n` +
+                    `Set the credential, or set healthCheck.auth.type to "none" to leave /metrics and /metrics/prometheus open.`
+                );
+            }
+        }
+
         // Validate retry settings
         if (config.sync.maxRetries < 0 || config.sync.maxRetries > 10) {
             throw new Error(

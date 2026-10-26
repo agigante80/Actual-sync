@@ -500,6 +500,50 @@
           "description": "Send the Strict-Transport-Security header (max-age 180 days, no includeSubDomains). Off by default because the service is plain HTTP in most deployments; enable it only when browsers reach it over HTTPS (normally TLS and HSTS are the reverse proxy's job).",
           "default": false
         },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Credential for GET /metrics and GET /metrics/prometheus (#247), separate from dashboard.auth so rotating one never breaks the other. Off by default. /health and /ready are never authenticated: they are liveness and readiness probes. With type basic or token the credential must be set, or startup fails.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Authentication type for the metrics endpoints",
+              "enum": ["none", "basic", "token"],
+              "default": "none"
+            },
+            "username": {
+              "type": "string",
+              "description": "Username for basic authentication (required if type=basic)"
+            },
+            "password": {
+              "type": "string",
+              "description": "Password for basic authentication (required if type=basic)"
+            },
+            "token": {
+              "type": "string",
+              "description": "Bearer token for token authentication (required if type=token). Prefer this over basic: a scrape credential should be a long random value, not a human password."
+            }
+          },
+          "allOf": [
+            {
+              "if": { "required": ["type"], "properties": { "type": { "const": "basic" } } },
+              "then": {
+                "required": ["username", "password"],
+                "properties": {
+                  "username": { "type": "string", "minLength": 1 },
+                  "password": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            {
+              "if": { "required": ["type"], "properties": { "type": { "const": "token" } } },
+              "then": {
+                "required": ["token"],
+                "properties": { "token": { "type": "string", "minLength": 1 } }
+              }
+            }
+          ]
+        },
         "dashboard": {
           "type": "object",
           "additionalProperties": false,

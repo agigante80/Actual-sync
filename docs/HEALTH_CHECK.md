@@ -31,6 +31,33 @@ Health check endpoints are configured in `config/config.json`:
 |--------|------|---------|-------------|
 | `port` | integer | `3000` | HTTP port for health check endpoints (1024-65535) |
 | `host` | string | `"0.0.0.0"` | Host to bind the server (use `"127.0.0.1"` for localhost only) |
+| `auth` | object | `{ "type": "none" }` | Credential for `/metrics` and `/metrics/prometheus` (see [Which endpoints are authenticated](#which-endpoints-are-authenticated)) |
+
+The other `healthCheck` keys (`trustProxy`, `hsts`, `dashboard`) are documented in [CONFIG.md](CONFIG.md#healthcheck-optional).
+
+### Which endpoints are authenticated
+
+Two credentials exist, and they are independent: rotating one never breaks the other.
+
+| Endpoint | `healthCheck.auth` | `healthCheck.dashboard.auth` |
+|----------|--------------------|------------------------------|
+| `GET /health`, `GET /ready` | never | never |
+| `GET /metrics`, `GET /metrics/prometheus` | when `type` is `basic` or `token` | no effect |
+| `GET /dashboard`, `/api/dashboard/*`, `WS /ws/logs` | no effect | when `type` is `basic` or `token` |
+
+`/health` and `/ready` are liveness and readiness probes. Docker, Kubernetes and uptime checkers send no credentials, so a credential there would only make the container look permanently unhealthy. They return a status word and an uptime, nothing about your servers.
+
+`/metrics` and `/metrics/prometheus` name your configured servers, when each last synced and whether it failed. By default they are open, exactly as before the credential existed, so an upgrade changes nothing. Set `healthCheck.auth` to close them:
+
+```json
+"healthCheck": {
+  "auth": { "type": "token", "token": "a-long-random-value" }
+}
+```
+
+`type` is `none` (default), `token` (sent as `Authorization: Bearer <token>`, the recommended choice for a scraper) or `basic` (`username` and `password`, for scrape tooling that only speaks basic auth). With `basic` or `token` the credential must be set, or the service refuses to start and names the missing key. Wrong credentials get `401`, and after 10 failures from one address in 15 minutes the metrics endpoints answer `429` for the rest of the window, on a counter separate from the dashboard login throttle. `healthCheck.dashboard.enabled` has no effect on these four endpoints. The dashboard API (`/api/dashboard/status`, `/api/dashboard/metrics`) returns the same server list, so this credential only closes the data when `healthCheck.dashboard.auth` is also set or the dashboard is disabled.
+
+Once set, Prometheus needs the same credential in its scrape config; see [PROMETHEUS.md](PROMETHEUS.md#2-configure-prometheus). Network controls (binding to `127.0.0.1`, a firewall, a reverse proxy) remain the first line, this credential is a second layer for operators who cannot use them.
 
 ## Endpoints
 
@@ -55,7 +82,9 @@ Basic health check endpoint that returns if the service is running.
 
 ### GET /metrics
 
-Detailed metrics endpoint with sync statistics and per-server status.
+Detailed metrics endpoint with sync statistics and per-server status. Open by
+default; `healthCheck.auth` can require a credential (see
+[Which endpoints are authenticated](#which-endpoints-are-authenticated)).
 
 **Response:**
 ```json
@@ -86,8 +115,8 @@ Detailed metrics endpoint with sync statistics and per-server status.
 }
 ```
 
-`/metrics` needs no login, so after a failed sync `lastError` holds only `timestamp` and
-`serverName`, and a server entry never carries the error text (it can include bank or Actual
+`/metrics` is open by default, so after a failed sync `lastError` holds only `timestamp` and
+`serverName`, and a server entry never carries the error text at any `healthCheck.auth` type (it can include bank or Actual
 messages). Read the failure text on the authenticated dashboard.
 
 **Status Values:**
@@ -132,7 +161,9 @@ Readiness probe endpoint for Kubernetes and container orchestration.
 
 Prometheus-format metrics (text exposition). This is the endpoint to scrape with
 Prometheus — `/metrics` returns JSON for humans/uptime checks, `/metrics/prometheus`
-returns the Prometheus text format. No authentication. See
+returns the Prometheus text format. Open by default; `healthCheck.auth` can require
+a bearer token or basic credentials, which Prometheus then sends with every scrape
+(see [Which endpoints are authenticated](#which-endpoints-are-authenticated)). See
 [docs/PROMETHEUS.md](PROMETHEUS.md) for the full metric reference and scrape config.
 
 ### Other public endpoints
@@ -421,6 +452,10 @@ scrape_configs:
       - targets: ['actual-sync:3000']
     metrics_path: '/metrics/prometheus'
     scrape_interval: 30s
+    # Only when healthCheck.auth is set to type token:
+    # authorization:
+    #   type: Bearer
+    #   credentials: a-long-random-value
 ```
 
 You'll need to convert the JSON response to Prometheus format using a JSON exporter or custom script.
@@ -576,7 +611,7 @@ The `/metrics` endpoint exposes:
 **Recommendations:**
 - Don't expose health check endpoints to the public internet
 - Use firewall rules to restrict access to monitoring systems
-- Consider adding authentication if external access is required
+- Set `healthCheck.auth` when the metrics endpoints must be reachable beyond your monitoring network (see [Which endpoints are authenticated](#which-endpoints-are-authenticated)). It is off by default so existing Prometheus setups keep working after an upgrade; that trade is deliberate, since the service normally sits behind a firewall.
 
 ### Docker Example with Restricted Access
 
