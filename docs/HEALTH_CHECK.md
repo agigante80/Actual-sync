@@ -55,7 +55,7 @@ Two credentials exist, and they are independent: rotating one never breaks the o
 }
 ```
 
-`type` is `none` (default), `token` (sent as `Authorization: Bearer <token>`, the recommended choice for a scraper) or `basic` (`username` and `password`, for scrape tooling that only speaks basic auth). With `basic` or `token` the credential must be set, or the service refuses to start and names the missing key. Wrong credentials get `401`, and after 10 failures from one address in 15 minutes the metrics endpoints answer `429` for the rest of the window, on a counter separate from the dashboard login throttle. `healthCheck.dashboard.enabled` has no effect on these four endpoints.
+`type` is `none` (default), `token` (sent as `Authorization: Bearer <token>`, the recommended choice for a scraper) or `basic` (`username` and `password`, for scrape tooling that only speaks basic auth). With `basic` or `token` the credential must be set, or the service refuses to start and names the missing key. Wrong credentials get `401`, and after 10 failures from one address in 15 minutes the metrics endpoints answer `429` for the rest of the window, on a counter separate from the dashboard login throttle. `healthCheck.dashboard.enabled` has no effect on these four endpoints. The dashboard API (`/api/dashboard/status`, `/api/dashboard/metrics`) returns the same server list, so this credential only closes the data when `healthCheck.dashboard.auth` is also set or the dashboard is disabled.
 
 Once set, Prometheus needs the same credential in its scrape config; see [PROMETHEUS.md](PROMETHEUS.md#2-configure-prometheus). Network controls (binding to `127.0.0.1`, a firewall, a reverse proxy) remain the first line, this credential is a second layer for operators who cannot use them.
 
@@ -115,8 +115,8 @@ default; `healthCheck.auth` can require a credential (see
 }
 ```
 
-`/metrics` needs no login, so after a failed sync `lastError` holds only `timestamp` and
-`serverName`, and a server entry never carries the error text (it can include bank or Actual
+`/metrics` is open by default, so after a failed sync `lastError` holds only `timestamp` and
+`serverName`, and a server entry never carries the error text at any `healthCheck.auth` type (it can include bank or Actual
 messages). Read the failure text on the authenticated dashboard.
 
 **Status Values:**

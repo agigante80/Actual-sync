@@ -503,6 +503,12 @@ class ConfigLoader {
         // open or answer every scrape with 500. Fail at startup naming the key.
         const metricsAuth = config.healthCheck && config.healthCheck.auth;
         const metricsAuthType = (metricsAuth && metricsAuth.type) || 'none';
+        if (metricsAuthType === 'none' && metricsAuth &&
+            ['token', 'username', 'password'].some((key) => metricsAuth[key])) {
+            // A credential value with type "none" (or no type) is the example
+            // config left half edited: /metrics stays open and nothing would say so.
+            console.warn('healthCheck.auth has a credential but type is "none": /metrics and /metrics/prometheus stay open. Set healthCheck.auth.type to "basic" or "token".');
+        }
         if (metricsAuthType !== 'none') {
             const isSet = (key) => typeof metricsAuth[key] === 'string' && metricsAuth[key].length > 0;
             const needed = { basic: ['username', 'password'], token: ['token'] }[metricsAuthType];

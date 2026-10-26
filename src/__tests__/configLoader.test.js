@@ -690,6 +690,18 @@ describe('ConfigLoader', () => {
                     .toThrow(/Invalid healthCheck\.auth\.type/);
             });
 
+            test('a credential left under type none warns that /metrics stays open', () => {
+                console.warn.mockClear();
+                new ConfigLoader().validateLogic(withMetricsAuth({ type: 'none', token: 'scrape-tok' }));
+                expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
+                console.warn.mockClear();
+                new ConfigLoader().validateLogic(withMetricsAuth({ username: 'prom', password: 'pw' }));
+                expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
+                console.warn.mockClear();
+                new ConfigLoader().validateLogic(withMetricsAuth({ type: 'none' }));
+                expect(console.warn).not.toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
+            });
+
             test('none, absent, and a complete credential pass', () => {
                 for (const auth of [undefined, { type: 'none' }, {}, { type: 'token', token: 'scrape-tok' },
                     { type: 'basic', username: 'prom', password: 'pw' }]) {
