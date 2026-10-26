@@ -562,13 +562,16 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
-      # The GitHub release is created by auto-release.yml before it pushes the
-      # tag, and this job is the tag's CI run, so the release already exists
-      # here. Pull the SPDX SBOM BuildKit attached to the pushed index, one file
-      # per platform, and attach it so it is readable without registry tooling.
-      # A tag pushed by hand (VERSIONING.md) has no release: the images are
-      # already out and attested at this point, so that case warns and skips
-      # rather than turning the publish job red with nothing left to retry.
+      # auto-release.yml pushes the tag and creates the GitHub release right
+      # after it. This job is the tag's CI run and reaches this step only after
+      # a multi-minute build, so the release exists by now. Pull the SPDX SBOM
+      # BuildKit attached to the pushed index, one file per platform, and attach
+      # it so it is readable without registry tooling. A tag pushed by hand
+      # (VERSIONING.md) has no release: the images are already out and attested
+      # at this point, so "release not found" warns and skips rather than
+      # turning the publish job red with nothing left to retry. Any other
+      # failure of the lookup (API error, token) still fails the step, so a
+      # release never silently ships without its SBOM assets.
       - name: Attach SBOM to the GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -579,9 +582,13 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::warning::no GitHub release for $TAG (tag pushed by hand?); the SBOM stays in the registry only"
-            exit 0
+          if ! ERR=$(gh release view "$TAG" 2>&1 >/dev/null); then
+            if [[ "$ERR" == *"release not found"* ]]; then
+              echo "::warning::no GitHub release for $TAG (tag pushed by hand?); the SBOM stays in the registry only"
+              exit 0
+            fi
+            echo "::error::gh release view $TAG failed: $ERR"
+            exit 1
           fi
           FILES=()
           for PLATFORM in ${PLATFORMS//,/ }; do

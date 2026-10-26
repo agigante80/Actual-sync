@@ -362,8 +362,10 @@ next to the image index in both registries. Two `actions/attest-build-provenance
 steps then sign a GitHub artifact attestation for the pushed digest, one per
 registry, which `gh attestation verify` checks against GitHub's trust root. On a
 `v*` tag the job also pulls the SBOM back out of the registry, one file per
-platform, and uploads it to the release that `auto-release.yml` created before
-pushing the tag. The job carries its own `permissions` block (`contents: write`
+platform, and uploads it to the release that `auto-release.yml` created right
+after pushing the tag (the upload runs after a multi-minute build, so the
+release exists by then; a tag with no release warns and skips, any other
+lookup error fails the step). The job carries its own `permissions` block (`contents: write`
 for the release upload, `packages: write`, `id-token: write`, `attestations:
 write`); the top-level token has none of the signing scopes. The `docker-test`
 and `security-scan` builds are never pushed and stay unchanged.

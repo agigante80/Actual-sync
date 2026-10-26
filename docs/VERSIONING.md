@@ -293,22 +293,20 @@ Bug fixes and minor improvements:
    git push origin main
    ```
 
-5. **Create and push tag**:
-   ```bash
-   git tag -a v1.5.0 -m "Release v1.5.0"
-   git push origin v1.5.0
-   ```
+5. **Do not tag by hand.** Once CI is green on `main`, the Auto Release
+   workflow tags `v1.5.0` and creates the GitHub Release itself (see
+   [Automated releases](#automated-releases)). A tag pushed by hand races it:
+   whoever tags second fails, and if the human wins there is no release.
 
 6. **GitHub Actions handles**:
    - ✅ Runs all tests
+   - ✅ Tags and creates the GitHub Release with generated notes
    - ✅ Builds Docker images
-   - ✅ Publishes to registries, with provenance attestations (#252)
+   - ✅ Publishes to registries, with provenance attestations and the SBOM
+     attached to the release (#252)
 
-   A tag pushed by hand does **not** create a GitHub Release or attach the
-   SBOM: releases and their notes come from the Auto Release workflow, which
-   runs off CI on `main` and pushes the tag itself (see
-   [Automated releases](#automated-releases)). Merge to `main` for a release;
-   push a tag by hand only when you want images without a release page.
+   A tag pushed by hand (outside this flow) builds and publishes images but
+   does **not** create a GitHub Release or attach the SBOM.
 
 ### Quick Patch Release
 
@@ -321,9 +319,8 @@ git add VERSION
 git commit -m "chore: bump to 1.4.3"
 git push origin main
 
-# 2. Tag and push
-git tag v1.4.3
-git push origin v1.4.3
+# 2. Nothing else: Auto Release tags v1.4.3 and creates the release
+#    once CI on main is green.
 ```
 
 ## Pre-Release Versions (Optional)
