@@ -302,9 +302,13 @@ Bug fixes and minor improvements:
 6. **GitHub Actions handles**:
    - ✅ Runs all tests
    - ✅ Builds Docker images
-   - ✅ Publishes to registries
-   - ✅ Creates GitHub Release
-   - ✅ Generates changelog
+   - ✅ Publishes to registries, with provenance attestations (#252)
+
+   A tag pushed by hand does **not** create a GitHub Release or attach the
+   SBOM: releases and their notes come from the Auto Release workflow, which
+   runs off CI on `main` and pushes the tag itself (see
+   [Automated releases](#automated-releases)). Merge to `main` for a release;
+   push a tag by hand only when you want images without a release page.
 
 ### Quick Patch Release
 

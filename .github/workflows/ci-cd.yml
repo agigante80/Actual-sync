@@ -566,6 +566,9 @@ jobs:
       # tag, and this job is the tag's CI run, so the release already exists
       # here. Pull the SPDX SBOM BuildKit attached to the pushed index, one file
       # per platform, and attach it so it is readable without registry tooling.
+      # A tag pushed by hand (VERSIONING.md) has no release: the images are
+      # already out and attested at this point, so that case warns and skips
+      # rather than turning the publish job red with nothing left to retry.
       - name: Attach SBOM to the GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -576,23 +579,25 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::warning::no GitHub release for $TAG (tag pushed by hand?); the SBOM stays in the registry only"
+            exit 0
+          fi
           FILES=()
           for PLATFORM in ${PLATFORMS//,/ }; do
             OUT="actual-sync-${TAG}-${PLATFORM//\//-}.spdx.json"
-            docker buildx imagetools inspect "${IMAGE}@${DIGEST}" \
-              --format "{{ json (index .SBOM \"${PLATFORM}\").SPDX }}" > "$OUT"
+            # imagetools keys .SBOM by platform for a multi-platform index and
+            # exposes .SBOM.SPDX directly for a single-platform one.
+            if [[ "$PLATFORMS" == *,* ]]; then
+              FORMAT="{{ json (index .SBOM \"${PLATFORM}\").SPDX }}"
+            else
+              FORMAT="{{ json .SBOM.SPDX }}"
+            fi
+            docker buildx imagetools inspect "${IMAGE}@${DIGEST}" --format "$FORMAT" > "$OUT"
             test -s "$OUT" && grep -q '"spdxVersion"' "$OUT"
             FILES+=("$OUT")
           done
-          # auto-release has already created the release; retry briefly in case
-          # the API is still catching up with the tag push.
-          for ATTEMPT in 1 2 3 4 5; do
-            if gh release upload "$TAG" "${FILES[@]}" --clobber; then exit 0; fi
-            echo "release $TAG not ready yet (attempt $ATTEMPT), waiting"
-            sleep 30
-          done
-          echo "::error::could not attach the SBOM to release $TAG"
-          exit 1
+          gh release upload "$TAG" "${FILES[@]}" --clobber
 
       - name: Docker publish summary
         run: |
