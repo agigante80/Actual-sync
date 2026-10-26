@@ -36,6 +36,7 @@ digest fairness fixes (#337, #338). Review lows went to backlog as #326 and #332
 
 ## Phase: P2 v1.19 Payments tab
 state: done
+plan: docs/plans/p2-v1-19-payments-tab.md
 
 Read-only Payments tab showing watched schedules and alert status. Helmet/CSP and the vendored
 Chart.js land first in this phase, because the new tab adds dashboard script that must be written
@@ -49,6 +50,7 @@ same night: #270 was folded into #261, and #259 and #261 were revised for implem
 
 ## Phase: P3 v1.20 Control from the dashboard
 state: done
+plan: docs/plans/p3-v1-20-control-from-the-dashboard.md
 
 The first dashboard writes: Origin check on every POST, opt-in config writes and an audit trail,
 then enable/disable and mute-until for alerts. The security ticket goes first because it guards the
@@ -63,13 +65,37 @@ backlog: the npm audit gate (#250), Dependabot cooldown (#251), Scorecard (#255)
 Docker base image with Dependabot updates (#362).
 
 ## Phase: P4 v1.21 Alert editor
-state: planned
+state: open
+plan: docs/plans/p4-v1-21-alert-editor.md
 
-Add and edit payment alerts from the dashboard with the Actual schedule picker, preview and export.
-Last because it depends on every write guard from P3.
+Add and edit payment alerts from the dashboard with the Actual schedule picker, preview and test
+send. Comes after P3 because it depends on every write guard from there. Also carries the fixes
+and dependency work that gathered since v1.20.0: the reset and retarget bugs (#372, #373), the
+CodeQL and dockerhub action bumps (#374, #375, #395) and the direct dependency bumps (#393, #394).
+
+## Phase: P5 v1.22 Hardening
+state: planned
+plan:
+
+Opt-in auth for the metrics endpoints independent of the dashboard (#247), an SBOM and build
+provenance attestation for the Docker image (#252), and hardened compose and Unraid defaults:
+localhost bind, cap_drop, no-new-privileges, read-only rootfs (#253). Comes after P4 because none
+of it needs the api release P6 waits for, and all of it can ship while that release is pending.
+
+## Phase: P6 v1.23 Sync activity
+state: planned
+plan:
+
+Carry the transaction counts the new runBankSync result exposes into the run summary and the
+generic payload (#391), add the activity_only notification mode on top of them (#392, #236), and
+replace the vendored schedule expansion with getScheduleDates (#298). Waits for @actual-app/api
+26.11.0, expected in the first days of November 2026; the release train bumps the api on its own,
+and this phase opens once that bump lands on development.
 
 ## Phase: Backlog
 state: backlog
 
-Worth doing, not yet ordered: loan split, activity-based notifications, metrics auth, and the
-remaining supply chain and Docker hardening. Items move out when a phase is shaped.
+Worth doing, not yet ordered: the post-sync loan split (#256). It stays here because it would be
+the first feature that writes transactions into Actual, which changes the read-only posture the
+README promises, and that is the owner's call before it is shaped into a phase. Items move out when
+a phase is shaped.
