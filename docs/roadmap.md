@@ -80,13 +80,19 @@ runtime (#393) and dev (#394) dependencies are at their latest versions. Nothing
 moved out.
 
 ## Phase: P5 v1.22 Hardening
-state: open
+state: done
 plan: docs/plans/p5-v1-22-hardening.md
 
 Opt-in auth for the metrics endpoints independent of the dashboard (#247), an SBOM and build
 provenance attestation for the Docker image (#252), and hardened compose and Unraid defaults:
 localhost bind, cap_drop, no-new-privileges, read-only rootfs (#253). Comes after P4 because none
 of it needs the api release P6 waits for, and all of it can ship while that release is pending.
+
+Outcome: done. Released as v1.22.0 on 2026-10-26. The metrics credential (#247), the SBOM and
+signed provenance (#252, verified with `gh attestation verify` on Docker Hub and GHCR, SBOMs on the
+release) and the hardened compose and Unraid defaults (#253) landed. As the plan allowed, the
+read-only root filesystem shipped as a documented opt-in, because a custom PUID/PGID cannot start
+with it; making it work for every ID went to backlog as #409.
 
 ## Phase: P6 v1.23 Sync activity
 state: planned
@@ -103,5 +109,6 @@ state: backlog
 
 Worth doing, not yet ordered: the post-sync loan split (#256). It stays here because it would be
 the first feature that writes transactions into Actual, which changes the read-only posture the
-README promises, and that is the owner's call before it is shaped into a phase. Items move out when
-a phase is shaped.
+README promises, and that is the owner's call before it is shaped into a phase. Also the read-only
+root filesystem for a custom PUID/PGID (#409), left over from P5. Items move out when a phase is
+shaped.
