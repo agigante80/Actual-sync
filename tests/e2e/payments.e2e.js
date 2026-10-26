@@ -47,6 +47,9 @@ const rowTexts = (page) => page.$$eval('#payments-content tr.pay-row', (trs) => 
   pillClass: tr.querySelector('.pay-pill')?.className
 })));
 
+// Rows that carry an evaluation; a rule that has not run yet shows as "Not evaluated yet" (#268).
+const evaluatedRows = async (page) => (await rowTexts(page)).filter((r) => r.pill !== 'Not evaluated yet');
+
 const groupTitles = (page) => page.$$eval('#payments-content .pay-group-title', (hs) => hs.map((h) => h.textContent));
 const errorText = (page) => page.$eval('#payments-error', (el) => (el.hidden ? '' : el.textContent));
 
@@ -203,7 +206,7 @@ describe('dashboard payments tab (#341)', () => {
           text: el.textContent,
           href: el.querySelector('a')?.getAttribute('href'),
           tables: el.querySelectorAll('table').length,
-          buttons: el.querySelectorAll('button').length
+          buttons: el.querySelectorAll('button:not([data-action="openAlertEditor"])').length
         }));
         expect(info.text).toContain('Missing-payment alerts are not configured for this server.');
         expect(info.href).toMatch(/#-missing-payment-alerts$/);
@@ -232,7 +235,7 @@ describe('dashboard payments tab (#341)', () => {
           rows: sec.querySelectorAll('tr.pay-row').length,
           asOf: sec.querySelector('.pay-asof')?.textContent || null,
           failure: sec.querySelector('.pay-failure')?.textContent || null,
-          sync: [...sec.querySelectorAll('.pay-group-head button')].map((b) => b.dataset.arg)
+          sync: [...sec.querySelectorAll('.pay-group-head button[data-action="paymentsSyncNow"]')].map((b) => b.dataset.arg)
         })));
         expect(groups[0]).toEqual({ rows: 3, asOf: 'as of 2026-01-14 08:01:00', failure: null, sync: ['Main'] });
         expect(groups[1].rows).toBe(3);
@@ -355,10 +358,10 @@ describe('dashboard payments tab (#341)', () => {
       await withFixture('payments-no-sync-yet', async ({ page, fixture }) => {
         ctl.fixture = fixture;
         await openPayments(page, fixture, { globals: { __paymentsSyncPollMs: 100 } });
-        expect(await rowTexts(page)).toHaveLength(0);
+        expect(await evaluatedRows(page)).toHaveLength(0);
         const events = track(page);
         await page.click('button[data-action="paymentsSyncNow"]');
-        await until(async () => (await rowTexts(page)).length === 12, 'the seeded rows');
+        await until(async () => (await evaluatedRows(page)).length === 12, 'the seeded rows');
         expect(fixture.calls.syncBank).toEqual(['Main']);
         expect(events.filter((e) => e === 'sync')).toHaveLength(1);
         // busy once, then null twice, then one refresh
@@ -412,7 +415,7 @@ describe('dashboard payments tab (#341)', () => {
         expect(await page.$eval('.pay-sync-error', (el) => el.textContent)).toBe('Could not start sync (network error)');
         remove();
         await page.click('button[data-action="paymentsSyncNow"]');
-        await until(async () => (await rowTexts(page)).length === 12, 'rows after the retry');
+        await until(async () => (await evaluatedRows(page)).length === 12, 'rows after the retry');
         expect(await page.$('.pay-sync-error')).toBeNull();
       });
     });

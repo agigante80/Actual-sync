@@ -119,6 +119,28 @@ describe('GET /api/dashboard/payments (#260)', () => {
     expect(main.lastRun).toMatchObject({ ok: true, errorCode: null, rulesErrored: 0 });
   });
 
+  test('source is per rule (#262): config and dashboard items, ruleState from the #261 override', async () => {
+    syncHistory.insertRule('Main', 'dash-rule', { id: 'dash-rule', schedule: 'Water' });
+    syncHistory.insertRule('Main', 'cfg-rule', { id: 'cfg-rule', schedule: 'Shadowed' });
+    syncHistory.replacePaymentSnapshot('Main', [
+      evaluation({ alertId: 'cfg-rule', scheduleId: 's1' }),
+      evaluation({ alertId: 'dash-rule', scheduleId: 's2' })
+    ]);
+    syncHistory.setOverride({ server: 'Main', alertId: 'dash-rule', enabled: false });
+    servers[0] = { name: 'Main', scheduleAlerts: { alerts: [{ id: 'cfg-rule', schedule: 'Rent' }] } };
+    try {
+      await start();
+      const items = (await get('?server=Main')).body.servers[0].items;
+      const byId = Object.fromEntries(items.map((i) => [i.alertId, i]));
+      expect(byId['cfg-rule'].source).toBe('config');
+      expect(byId['dash-rule'].source).toBe('dashboard');
+      expect(byId['dash-rule'].ruleState).toEqual({ enabled: false, mutedUntil: null, reason: null, lockedByConfig: false, muteEndDue: false });
+      expect(byId['cfg-rule'].ruleState.enabled).toBe(true);
+    } finally {
+      servers[0] = { name: 'Main', scheduleAlerts: { alerts: [] } };
+    }
+  });
+
   test('lastAlertAt is the latest sent time, ignores inferred rows, null without a sent row', async () => {
     syncHistory.replacePaymentSnapshot('Main', [evaluation(), evaluation({ alertId: 'quiet' })]);
     const rec = async (iso, delivery) => {

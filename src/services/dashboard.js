@@ -1574,7 +1574,7 @@ let paymentsReads = 0;                // status reads of the shared loop since a
 const paymentsQueued = new Set();     // subset of paymentsSyncing whose POST succeeded
 let paymentsWatching = false;         // one shared status loop for every server in paymentsSyncing
 let paymentsNullStreak = 0;           // consecutive successful null runningSync reads of that loop
-let paymentsCaps = null;              // GET /api/dashboard/capabilities: { configWrites, reason } (#259), null until read
+let paymentsCaps = null;              // GET /api/dashboard/capabilities: { configWrites, reason, channels } (#259, #262), null until read
 const paymentMuteForms = new Map();   // open mute forms keyed by [server, alertId]: { until, reason, error, busy } (#261)
 let paymentsFocusRequest = '';        // data-focus key to focus after the next render
 let paymentControlMessage = '';       // last control error, written to #payments-control-status
@@ -1730,8 +1730,11 @@ function paymentRuleState(item) {
     return item.ruleState || { enabled: true, mutedUntil: null, reason: null, lockedByConfig: false, muteEndDue: false };
 }
 
-function paymentAlertCount(group, alertId) {
-    return group.items.filter((i) => i.alertId === alertId).length;
+// Only evaluated rows count: the synthetic "Replaced by config.json" row of a superseded
+// twin is not a schedule the rule applies to, and it has a different source.
+function paymentAlertCount(group, alertId, source) {
+    const rows = group.rows || group.items.map((item) => ({ item, kind: 'evaluated' }));
+    return rows.filter((r) => r.kind === 'evaluated' && r.item.alertId === alertId && r.item.source === source).length;
 }
 
 function setPaymentControlMessage(text) {
@@ -1781,11 +1784,20 @@ function paymentControlButton(label, action, group, item, focusKind, className) 
     return btn;
 }
 
-function buildPaymentControl(group, item, showControls) {
+function buildPaymentControl(group, item, showControls, editorButtons) {
     const td = payCell('Control', null);
-    if (!showControls) return td;
-    const st = paymentRuleState(item);
+    const extra = editorButtons || [];
+    if (!showControls && extra.length === 0) return td;
     const wrap = payEl('div', 'pay-control');
+    if (showControls) appendMuteControls(wrap, group, item);
+    extra.forEach((btn) => wrap.appendChild(btn));
+    td.appendChild(wrap);
+    return td;
+}
+
+// The #261 switch and mute controls of one evaluated rule.
+function appendMuteControls(wrap, group, item) {
+    const st = paymentRuleState(item);
     if (!st.lockedByConfig) {
         const on = st.enabled !== false;
         const sw = paymentControlButton(on ? 'On' : 'Off', 'togglePaymentAlert', group, item, 'sw', 'pay-ctl pay-switch');
@@ -1799,10 +1811,81 @@ function buildPaymentControl(group, item, showControls) {
     } else if (!st.lockedByConfig) {
         wrap.appendChild(paymentControlButton('Mute...', 'openPaymentMute', group, item, 'mute'));
     }
-    const n = paymentAlertCount(group, item.alertId);
+    const n = paymentAlertCount(group, item.alertId, item.source);
     if (n > 1) wrap.appendChild(payEl('span', 'pay-applies', `Applies to ${n} schedules`));
-    td.appendChild(wrap);
-    return td;
+}
+
+// Edit, Delete, View and Copy as JSON (#268), per rule. Add/Edit/Delete follow the
+// same writes switch as the #261 controls; View and Copy always work.
+// The data-focus key of a row's editor button. Saving an edit returns focus to the same key.
+function editorRowFocusKey(server, alertId, source, action) {
+    return `ed:${JSON.stringify([server, alertId, source, action])}`;
+}
+
+// After a save, focus returns to the saved rule's Edit button ('editPaymentRule' is the row
+// button's action; a different action here would fall back to Add alert).
+function editorSavedFocusKey(server, ruleId) {
+    return editorRowFocusKey(server, ruleId, 'dashboard', 'editPaymentRule');
+}
+
+function editorRowButton(label, action, group, row, writes) {
+    const btn = payEl('button', 'pay-ctl', label);
+    btn.type = 'button';
+    btn.setAttribute('data-action', action);
+    btn.setAttribute('data-server', group.server);
+    btn.setAttribute('data-alert', row.item.alertId);
+    btn.setAttribute('data-source', row.item.source);
+    btn.setAttribute('data-focus', editorRowFocusKey(group.server, row.item.alertId, row.item.source, action));
+    btn.setAttribute('aria-label', `${label} alert ${row.item.alertId}`);
+    if (writes && !paymentWritesAllowed()) {
+        btn.setAttribute('aria-disabled', 'true');
+        btn.title = paymentWritesTip();
+    }
+    return btn;
+}
+
+function buildEditorButtons(group, row) {
+    if (!group.editorControls || !row.rule) return [];
+    const make = (label, action, writes) => editorRowButton(label, action, group, row, writes);
+    if (row.item.source !== 'dashboard') {
+        return [make('View', 'viewPaymentRule', false), make('Copy as JSON', 'copyPaymentRuleJson', false)];
+    }
+    if (row.kind === 'superseded') return [make('Delete', 'deletePaymentRuleAsk', true)];
+    if (row.kind === 'dormant') {
+        return [make('View', 'viewPaymentRule', false), make('Delete', 'deletePaymentRuleAsk', true), make('Copy as JSON', 'copyPaymentRuleJson', false)];
+    }
+    return [make('Edit', 'editPaymentRule', true), make('Delete', 'deletePaymentRuleAsk', true), make('Copy as JSON', 'copyPaymentRuleJson', false)];
+}
+
+const PAYMENT_ROW_PILLS = {
+    pending: ['Not evaluated yet', 'pay-pending'],
+    superseded: ['Replaced by config.json', 'pay-superseded'],
+    dormant: ['Dormant: no scheduleAlerts block', 'pay-dormant'],
+    invalid: ['Invalid, not evaluated', 'pay-invalid']
+};
+
+function buildAddAlertButton(group) {
+    const btn = payEl('button', 'pay-ctl', 'Add alert');
+    btn.type = 'button';
+    btn.setAttribute('data-action', 'openAlertEditor');
+    btn.setAttribute('data-server', group.server);
+    btn.setAttribute('data-focus', `add:${group.server}`);
+    let tip = '';
+    if (!group.editorControls) tip = 'Alert list unavailable';
+    else if (!paymentWritesAllowed()) tip = paymentWritesTip();
+    else if (!group.configured) tip = NOT_CONFIGURED_TIP;
+    if (tip) {
+        btn.setAttribute('aria-disabled', 'true');
+        btn.title = tip;
+    }
+    return btn;
+}
+
+// The snapshot rows joined with the rule list for one server (see mergePaymentRows).
+function paymentsEffectiveGroup(group) {
+    const entry = paymentsRules.get(group.server) || null;
+    const merged = mergePaymentRows(group.items, entry ? entry.rules : null, group.lastRun ? group.lastRun.at : null, group.configured);
+    return { ...group, rows: merged.rows, editorControls: merged.editorControls, items: merged.rows.map((r) => r.item) };
 }
 
 function buildPaymentMuteRow(group, item) {
@@ -1817,7 +1900,7 @@ function buildPaymentMuteRow(group, item) {
     form.setAttribute('data-alert', item.alertId);
     form.noValidate = true;
 
-    const dateLabel = payEl('label', 'pay-label', `Mute "${paymentAlertCount(group, item.alertId) > 1 ? item.alertId : (item.name || item.alertId)}" until `);
+    const dateLabel = payEl('label', 'pay-label', `Mute "${paymentAlertCount(group, item.alertId, item.source) > 1 ? item.alertId : (item.name || item.alertId)}" until `);
     const date = payEl('input', 'pay-mute-date');
     date.type = 'date';
     date.value = state.until;
@@ -2019,19 +2102,33 @@ async function loadPaymentCapabilities() {
         const response = await fetch('/api/dashboard/capabilities', getFetchOptions());
         if (!response.ok) return;
         const body = await response.json();
-        if (body && typeof body.configWrites === 'boolean') paymentsCaps = { configWrites: body.configWrites, reason: body.reason || null };
+        if (body && typeof body.configWrites === 'boolean') {
+            paymentsCaps = {
+                configWrites: body.configWrites, reason: body.reason || null,
+                channels: Array.isArray(body.channels) ? body.channels.filter((c) => typeof c === 'string') : []
+            };
+        }
     } catch (e) { /* keep the last known value; the controls stay disabled until it loads */ }
 }
 
 function restorePaymentsFocus(content, key) {
     if (!key || typeof content.querySelectorAll !== 'function') return;
-    const node = Array.from(content.querySelectorAll('[data-focus]')).find((n) => n.dataset.focus === key);
+    const all = Array.from(content.querySelectorAll('[data-focus]'));
+    let node = all.find((n) => n.dataset.focus === key);
+    if (!node && key.startsWith('ed:')) { // the row is gone (deleted): land on that server's Add alert
+        try {
+            const want = `add:${JSON.parse(key.slice(3))[0]}`;
+            node = all.find((n) => n.dataset.focus === want);
+        } catch (e) { node = null; }
+    }
     if (node && typeof node.focus === 'function') node.focus();
 }
 
-function appendPaymentRows(tbody, group, items, groupIndex) {
+function appendPaymentRows(tbody, group, rows, groupIndex) {
     const controlled = new Set();
-    items.forEach((item, rowIndex) => {
+    rows.forEach((row, rowIndex) => {
+        const item = row.item;
+        const evaluated = row.kind === 'evaluated';
         const key = paymentRowKey(group.server, item);
         const stripId = `pay-strip-${groupIndex}-${rowIndex}`;
         const open = paymentsExpanded.has(key);
@@ -2039,22 +2136,35 @@ function appendPaymentRows(tbody, group, items, groupIndex) {
         const tr = payEl('tr', 'pay-row');
         const stateTd = payCell('State', null);
         const stateWrap = payEl('div', 'pay-state');
-        stateWrap.appendChild(payPill(item.state));
-        const badge = buildPaymentOverrideBadge(item);
-        if (badge) stateWrap.appendChild(badge);
+        if (evaluated) {
+            stateWrap.appendChild(payPill(item.state));
+            const badge = buildPaymentOverrideBadge(item);
+            if (badge) stateWrap.appendChild(badge);
+        } else {
+            const [label, cls] = PAYMENT_ROW_PILLS[row.kind];
+            const pill = payEl('span', `pay-pill ${cls}`, label);
+            if (row.kind === 'invalid') {
+                const reasons = (row.rule.errors || []).map((e) => `${e.path || ''} ${e.message || ''}`.trim()).join('; ');
+                if (reasons) pill.title = reasons;
+            }
+            stateWrap.appendChild(pill);
+        }
+        if (row.edited) stateWrap.appendChild(payEl('span', 'pay-edited', 'Edited, applies from the next sync'));
         stateTd.appendChild(stateWrap);
         tr.appendChild(stateTd);
 
         const nameTd = payCell('Name', null);
-        const toggle = payEl('button', 'pay-expand', open ? '▾' : '▸');
-        toggle.type = 'button';
-        toggle.setAttribute('data-action', 'togglePaymentRow');
-        toggle.setAttribute('data-arg', stripId);
-        toggle.setAttribute('data-key', key);
-        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-        toggle.setAttribute('aria-controls', stripId);
-        toggle.setAttribute('aria-label', `Show occurrences of ${item.name || ''}`);
-        nameTd.appendChild(toggle);
+        if (evaluated) {
+            const toggle = payEl('button', 'pay-expand', open ? '▾' : '▸');
+            toggle.type = 'button';
+            toggle.setAttribute('data-action', 'togglePaymentRow');
+            toggle.setAttribute('data-arg', stripId);
+            toggle.setAttribute('data-key', key);
+            toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+            toggle.setAttribute('aria-controls', stripId);
+            toggle.setAttribute('aria-label', `Show occurrences of ${item.name || ''}`);
+            nameTd.appendChild(toggle);
+        }
         nameTd.appendChild(document.createTextNode(item.name || ''));
         tr.appendChild(nameTd);
 
@@ -2064,15 +2174,18 @@ function appendPaymentRows(tbody, group, items, groupIndex) {
         tr.appendChild(payCell('Next due', formatCalendarDate(item.nextDate)));
         tr.appendChild(payCell('Deadline', formatCalendarDate(item.deadline)));
         tr.appendChild(payCell('Last alert', item.lastAlertAt ? formatTime(item.lastAlertAt) : '', 'pay-extra'));
-        tr.appendChild(payCell('Source', item.source || '', 'pay-extra'));
-        // Rule level controls: once per alert id, on its first visible row.
-        const firstOfRule = !controlled.has(item.alertId);
-        controlled.add(item.alertId);
-        tr.appendChild(buildPaymentControl(group, item, firstOfRule));
+        tr.appendChild(payCell('Source', item.source || '', item.source === 'dashboard' ? 'pay-extra pay-src-dashboard' : 'pay-extra'));
+        // Rule level controls: once per rule (alert id + source), on its first visible row.
+        const ruleKey = paymentRuleKey(item.alertId, item.source);
+        const firstOfRule = !controlled.has(ruleKey);
+        controlled.add(ruleKey);
+        const muteControls = evaluated && firstOfRule;
+        tr.appendChild(buildPaymentControl(group, item, muteControls, firstOfRule ? buildEditorButtons(group, row) : []));
         tbody.appendChild(tr);
-        if (firstOfRule && paymentMuteForms.has(paymentFormKey(group.server, item.alertId))) {
+        if (muteControls && paymentMuteForms.has(paymentFormKey(group.server, item.alertId))) {
             tbody.appendChild(buildPaymentMuteRow(group, item));
         }
+        if (!evaluated) return;
 
         const strip = payEl('tr', 'pay-strip-row');
         strip.id = stripId;
@@ -2107,7 +2220,8 @@ function buildPaymentsTable(group, groupIndex) {
     const tbody = document.createElement('tbody');
     table.appendChild(tbody);
 
-    const shown = sortPaymentItems(group.items.filter(paymentMatchesFilters));
+    const rowOf = new Map((group.rows || group.items.map((item) => ({ item, kind: 'evaluated', rule: null, edited: false }))).map((r) => [r.item, r]));
+    const shown = sortPaymentItems(group.items.filter(paymentMatchesFilters)).map((item) => rowOf.get(item));
     if (shown.length === 0) {
         const tr = document.createElement('tr');
         const td = payEl('td', 'pay-empty', group.items.length === 0 ? 'No watched schedules' : 'No matching schedules');
@@ -2129,6 +2243,7 @@ function buildPaymentsGroup(group, groupIndex) {
     const run = group.lastRun;
 
     if (!group.configured) {
+        head.appendChild(buildAddAlertButton(group));
         section.appendChild(head);
         const note = payEl('p', 'pay-note', 'Missing-payment alerts are not configured for this server. ');
         const link = payEl('a', '', 'README');
@@ -2137,6 +2252,7 @@ function buildPaymentsGroup(group, groupIndex) {
         link.rel = 'noopener noreferrer';
         note.appendChild(link);
         section.appendChild(note);
+        if (group.rows.some((r) => r.kind !== 'evaluated')) section.appendChild(buildPaymentsTable(group, groupIndex));
         return section;
     }
 
@@ -2156,6 +2272,7 @@ function buildPaymentsGroup(group, groupIndex) {
     syncBtn.setAttribute('data-arg', group.server);
     syncBtn.disabled = syncing;
     head.appendChild(syncBtn);
+    head.appendChild(buildAddAlertButton(group));
 
     const syncError = paymentsSyncErrors.get(group.server);
     if (syncError) {
@@ -2168,8 +2285,11 @@ function buildPaymentsGroup(group, groupIndex) {
     }
     section.appendChild(head);
 
+    if (!group.editorControls) section.appendChild(payEl('p', 'pay-list-note', 'Alert list unavailable'));
+    const hasRuleRows = group.rows.some((r) => r.kind !== 'evaluated');
     if (!run) {
         section.appendChild(payEl('p', 'pay-note', 'Runs after the next sync'));
+        if (hasRuleRows) section.appendChild(buildPaymentsTable(group, groupIndex));
         return section;
     }
 
@@ -2180,7 +2300,7 @@ function buildPaymentsGroup(group, groupIndex) {
     }
     if (failureParts.length) section.appendChild(payEl('p', 'pay-failure', failureParts.join('. ')));
 
-    if (run.lastSuccessAt) section.appendChild(buildPaymentsTable(group, groupIndex));
+    if (run.lastSuccessAt || hasRuleRows) section.appendChild(buildPaymentsTable(group, groupIndex));
     return section;
 }
 
@@ -2250,12 +2370,14 @@ function renderPayments() {
 
     let watched = 0;
     let attention = 0;
-    for (const group of paymentsServers) {
-        watched += group.items.length;
-        attention += group.items.filter(paymentNeedsAttention).length;
+    const groups = paymentsServers.map(paymentsEffectiveGroup);
+    for (const group of groups) {
+        const evaluated = group.rows.filter((r) => r.kind === 'evaluated').map((r) => r.item);
+        watched += evaluated.length;
+        attention += evaluated.filter(paymentNeedsAttention).length;
     }
     summary.textContent = `${watched} watched · ${attention} need attention`;
-    paymentsServers.forEach((group, i) => content.appendChild(buildPaymentsGroup(group, i)));
+    groups.forEach((group, i) => content.appendChild(buildPaymentsGroup(group, i)));
     restorePaymentsFocus(content, focusKey);
     if (caret && document.activeElement && typeof document.activeElement.setSelectionRange === 'function') {
         try { document.activeElement.setSelectionRange(caret[0], caret[1]); } catch (e) { /* e.g. a date input */ }
@@ -2283,10 +2405,16 @@ async function loadPaymentsTab(force) {
         } catch (e) {
             message = 'Could not refresh payments (network error)';
         }
+        // The rule list is the source of truth for which alerts exist (#268).
+        let ruleLists = [];
+        if (body && Array.isArray(body.servers)) {
+            ruleLists = await Promise.all(body.servers.map((g) => fetchPaymentRules(g.server)));
+        }
         await capsRead;
         if (seq !== paymentsRequestSeq) return; // a newer request owns the view
         if (body && Array.isArray(body.servers)) {
             paymentsServers = body.servers;
+            body.servers.forEach((g, i) => paymentsRules.set(g.server, ruleLists[i]));
             prunePaymentForms();
             paymentsLoadError = '';
             if (!server) paymentsServerNames = body.servers.map((g) => g.server);
@@ -2399,6 +2527,1113 @@ async function watchPaymentsSync() {
     else renderPayments();
 }
 
+// ---- Alert editor (#268): pure helpers ---------------------------------------
+// Everything up to "Alert editor: dialog" is DOM free so the unit tests can
+// drive it directly. The server stays the authority on validity; these only
+// build the request body and word the answers.
+const EDITOR_EVENTS = ['missing', 'wrongAmount', 'resolved', 'cannotCheck', 'ruleUnmatched', 'muteEnded'];
+const EDITOR_EVENT_LABELS = {
+    missing: 'Missing payment', wrongAmount: 'Wrong amount', resolved: 'Payment received',
+    cannotCheck: 'Cannot check', ruleUnmatched: 'No matching schedule', muteEnded: 'Mute ended'
+};
+// The three constants this page owns. Everything else comes from the server
+// (GET payment-schedules/:server `defaults`).
+const DEFAULT_PERIOD = 'occurrence';
+const DEFAULT_REMIND_DAYS = 3;
+const NOT_CONFIGURED_TIP = 'Add a scheduleAlerts block to this server in config.json first (it can be empty)';
+const RULE_ID_PATTERN = /^[a-z0-9-]{1,64}$/;
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// Mirrors slugify() in src/lib/scheduleAlertRules.js: lowercase, runs of other
+// characters become one hyphen, trimmed, empty becomes "alert", cut to 64.
+function slugifyRuleId(name) {
+    const slug = String(name == null ? '' : name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return (slug || 'alert').slice(0, 64);
+}
+
+// base, then base-2, base-3 ... The base is cut first so the total stays <= 64.
+function uniqueRuleId(base, taken) {
+    if (!taken.has(base)) return base;
+    for (let n = 2; ; n += 1) {
+        const suffix = `-${n}`;
+        const id = base.slice(0, 64 - suffix.length) + suffix;
+        if (!taken.has(id)) return id;
+    }
+}
+
+// Case-sensitive startsWith, as the server matches. Completed schedules are not
+// offered, so they are not counted. An empty prefix matches nothing here.
+function countPrefixMatches(schedules, prefix) {
+    if (!prefix) return 0;
+    return (schedules || []).filter((s) => !s.completed && typeof s.name === 'string' && s.name.startsWith(prefix)).length;
+}
+
+function prefixMatchText(count) {
+    return count === 0 ? 'matches 0: this rule will report ruleUnmatched' : `matches ${count}`;
+}
+
+// The picker entries: completed schedules are left out and two schedules with
+// the same name get the last 6 characters of their id so they can be told apart.
+function scheduleOptions(schedules) {
+    const live = (schedules || []).filter((s) => !s.completed);
+    const counts = new Map();
+    live.forEach((s) => counts.set(s.name, (counts.get(s.name) || 0) + 1));
+    return live.map((s) => ({
+        value: String(s.id),
+        name: s.name,
+        label: counts.get(s.name) > 1 ? `${s.name} (${String(s.id).slice(-6)})` : String(s.name)
+    }));
+}
+
+function scheduleAmountText(s) {
+    if (s.amountOp === 'isbetween' && s.amountMin != null && s.amountMax != null) {
+        const a = Math.abs(s.amountMin);
+        const b = Math.abs(s.amountMax);
+        return formatPaymentAmount({ num1: Math.min(a, b), num2: Math.max(a, b) });
+    }
+    return s.amount == null ? '' : formatPaymentAmount(Math.abs(s.amount));
+}
+
+// "Every month on the 5th · 60.00 · into Main · from Tenant A". No currency
+// symbol (the snapshot has none). A negative amount is money leaving.
+function formatScheduleLine(s) {
+    if (!s) return '';
+    const probe = s.amount != null ? s.amount : s.amountMin;
+    const out = typeof probe === 'number' && probe < 0;
+    const parts = [s.cadenceText || '', scheduleAmountText(s)];
+    const account = s.account == null ? '(deleted account)' : s.account;
+    parts.push(`${out ? 'out of' : 'into'} ${account}`);
+    if (s.payee) parts.push(`${out ? 'to' : 'from'} ${s.payee}`);
+    return parts.filter((p) => p !== '').join(' · ');
+}
+
+function ordinalDay(n) {
+    const v = n % 100;
+    if (v >= 11 && v <= 13) return `${n}th`;
+    return `${n}${{ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'}`;
+}
+
+function shortDate(date) {
+    return `${date.getUTCDate()} ${MONTH_NAMES[date.getUTCMonth()]}`;
+}
+
+// The line under the grace field. A monthly schedule whose day + grace stays
+// within 28 has the same deadline every month, so say that. Anything else gets
+// the real calendar date (month length decides where day + grace lands).
+function editorDeadlineText(schedule, graceDays) {
+    if (!schedule || !schedule.nextDate) return '';
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(schedule.nextDate));
+    if (!m) return '';
+    const grace = Number.isFinite(graceDays) && graceDays >= 0 ? Math.floor(graceDays) : 0;
+    const due = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+    const cadence = String(schedule.cadenceText || '');
+    const day = /^Every month on the (\d+)/.exec(cadence);
+    if (!day) return `next date ${shortDate(due)}`;
+    if (Number(day[1]) + grace <= 28) return `deadline: ${ordinalDay(Number(day[1]) + grace)} of each month`;
+    const deadline = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + grace));
+    return `deadline: ${shortDate(deadline)} for the ${shortDate(due)} payment`;
+}
+
+function effectiveTemplate(defaults, event) {
+    const d = defaults || {};
+    const block = d.blockTemplates && d.blockTemplates[event];
+    if (block != null) return block;
+    const base = d.templates && d.templates[event];
+    return base == null ? '' : base;
+}
+
+function tolerancePlaceholder(amountOp) {
+    return amountOp === 'isapprox' ? 'From schedule (about 7.5%)' : 'From schedule (exact)';
+}
+
+function hasOwn(obj, key) {
+    return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+// A number field: cleared deletes the key; otherwise it is written when the
+// stored rule had the key or the value differs from the server default.
+function applyNumberField(body, stored, key, text, fallback) {
+    if (text === '' || text == null || !Number.isFinite(Number(text))) { delete body[key]; return; }
+    const n = Number(text);
+    if (hasOwn(stored, key) || n !== fallback) body[key] = n; else delete body[key];
+}
+
+// The request body for POST/PUT and for the preview. Starts from the stored
+// definition so keys this form does not show survive an edit, then sets only
+// what differs from the server defaults.
+function buildRuleBody(form, storedDefinition, defaults, allChannels) {
+    const stored = storedDefinition || {};
+    const d = defaults || {};
+    const body = { ...stored };
+    body.id = form.id;
+    delete body.schedule;
+    delete body.schedulePrefix;
+    if (form.watch === 'prefix') body.schedulePrefix = form.prefix; else body.schedule = form.schedule;
+
+    applyNumberField(body, stored, 'graceDays', form.graceDays, d.graceDays);
+    applyNumberField(body, stored, 'earlyDays', form.earlyDays, d.earlyDays);
+
+    if (hasOwn(stored, 'period') || form.period !== DEFAULT_PERIOD) body.period = form.period; else delete body.period;
+
+    if (form.tolerance === '' || form.tolerance == null || !Number.isFinite(Number(form.tolerance))) delete body.amountTolerancePct;
+    else body.amountTolerancePct = Number(form.tolerance);
+
+    if (form.remindOn) {
+        const n = Number(form.remindDays);
+        body.remindEveryDays = Number.isFinite(n) && form.remindDays !== '' ? n : DEFAULT_REMIND_DAYS;
+    } else {
+        delete body.remindEveryDays;
+    }
+
+    const all = allChannels || [];
+    const picked = form.channels || [];
+    if (all.length > 0) {
+        if (Array.isArray(stored.channels)) {
+            // A stored list is always written back explicitly: omitting it would widen the rule to
+            // every channel (#268 round 1). Untouched boxes keep the stored list as is, including
+            // entries that are not available now and so have no box.
+            const initial = all.filter((c) => stored.channels.includes(c));
+            const unchanged = initial.length === picked.length && initial.every((c) => picked.includes(c));
+            body.channels = unchanged ? stored.channels.slice() : all.filter((c) => picked.includes(c));
+        } else if (all.every((c) => picked.includes(c))) delete body.channels;
+        else body.channels = all.filter((c) => picked.includes(c));
+    }
+
+    const templates = { ...(stored.templates || {}) };
+    for (const event of EDITOR_EVENTS) {
+        const text = form.templates ? form.templates[event] : undefined;
+        if (text === undefined) continue;
+        if (text === '') delete templates[event];
+        else if (hasOwn(stored.templates, event) || text !== effectiveTemplate(d, event)) templates[event] = text;
+        else delete templates[event];
+    }
+    if (Object.keys(templates).length > 0) body.templates = templates; else delete body.templates;
+    return body;
+}
+
+// "Edited, applies from the next sync": a dashboard rule saved after the last evaluation.
+function editedNote(rule, lastRunAt) {
+    if (!rule || rule.source !== 'dashboard' || !rule.updatedAt || !lastRunAt) return false;
+    const saved = Date.parse(rule.updatedAt);
+    const ran = Date.parse(lastRunAt);
+    return Number.isFinite(saved) && Number.isFinite(ran) && saved > ran;
+}
+
+function paymentRuleKey(id, source) {
+    return JSON.stringify([id, source]);
+}
+
+function paymentRuleLabel(rule) {
+    const def = rule.definition || {};
+    if (def.schedule) return String(def.schedule);
+    if (def.schedulePrefix) return `${def.schedulePrefix}*`;
+    return String(rule.id);
+}
+
+// Joins the snapshot rows with the rule list (the source of truth for what
+// exists). A rule list that failed to load (null) merges nothing: the snapshot
+// rows show unchanged and the editor offers no controls. [] is different: it
+// hides every snapshot row, since none of them has a rule any more.
+//   kind: evaluated | pending | superseded | dormant | invalid
+function mergePaymentRows(items, rules, lastRunAt, configured) {
+    if (rules === null || rules === undefined) {
+        return { rows: (items || []).map((item) => ({ item, kind: 'evaluated', rule: null, edited: false })), editorControls: false };
+    }
+    const byKey = new Map(rules.map((r) => [paymentRuleKey(r.id, r.source), r]));
+    const used = new Set();
+    const rows = [];
+    for (const item of items || []) {
+        const key = paymentRuleKey(item.alertId, item.source || 'config');
+        const rule = byKey.get(key);
+        if (!rule) continue;
+        used.add(key);
+        if (rule.invalid) continue; // shown once, as an invalid row, below
+        rows.push({ item, kind: 'evaluated', rule, edited: editedNote(rule, lastRunAt) });
+    }
+    for (const rule of rules) {
+        const key = paymentRuleKey(rule.id, rule.source);
+        if (used.has(key) && !rule.invalid) continue;
+        let kind = 'pending';
+        if (rule.invalid) kind = 'invalid';
+        else if (rule.superseded) kind = 'superseded';
+        else if (configured === false) kind = 'dormant';
+        const item = {
+            alertId: rule.id, scheduleId: null, name: paymentRuleLabel(rule), cadenceText: '', account: '', payee: '',
+            expectedAmount: null, nextDate: null, deadline: null, state: null, lastAlertAt: null,
+            source: rule.source, ruleState: null, occurrences: []
+        };
+        rows.push({ item, kind, rule, edited: false });
+    }
+    return { rows, editorControls: true };
+}
+
+const EDITOR_PATH_FIELDS = [
+    ['/id', 'id'], ['/schedulePrefix', 'watch'], ['/schedule', 'watch'], ['/graceDays', 'graceDays'],
+    ['/earlyDays', 'earlyDays'], ['/period', 'period'], ['/amountTolerancePct', 'tolerance'],
+    ['/remindEveryDays', 'reminders'], ['/channels', 'channels']
+];
+
+// The editor field an error path names, '' when none. Prefix match on a path
+// boundary, so "/schedule" does not swallow "/schedulePrefix".
+function editorFieldForPath(path) {
+    const p = String(path == null ? '' : path);
+    const t = /^\/templates\/([A-Za-z]+)(\/|$)/.exec(p);
+    if (t) return `template:${t[1]}`;
+    for (const [prefix, field] of EDITOR_PATH_FIELDS) {
+        if (p === prefix || p.startsWith(`${prefix}/`)) return field;
+    }
+    return '';
+}
+
+function editorTemplateErrorText(json) {
+    const token = json.token == null ? '' : json.token;
+    switch (json.reason) {
+        case 'unknown_variable': return `unknown variable "${token}"`;
+        case 'unknown_helper': return `unknown helper "${token}"`;
+        case 'parse_error': return `template syntax error near "${token}" on line ${json.line}`;
+        case 'telegram_markup': return `this text breaks Telegram formatting near "${token}"; close or escape it`;
+        default: return 'this message template is not valid';
+    }
+}
+
+const EDITOR_WRITES_REASON = { 'disabled': 'allowConfigWrites is false', 'auth-none': 'dashboard authentication is off' };
+const EDITOR_INVALID_REQUEST = 'The editor sent an invalid request. Reload the page.';
+const EDITOR_NO_DESTINATION = 'No notification channel is configured for this rule.';
+const EDITOR_CODE_TEXT = {
+    origin_rejected: 'The request was rejected because it did not come from this dashboard\'s own address. Open the dashboard at its normal URL.',
+    server_not_found: 'This server is no longer configured.',
+    managed_in_config: 'This alert is managed in config.json. Copy as JSON to change it there.',
+    alerts_not_configured: 'Add a scheduleAlerts block to this server in config.json first (it can be empty).',
+    too_many_rules: 'Limit of 200 dashboard alerts reached. Delete one first.',
+    no_configured_destination: EDITOR_NO_DESTINATION,
+    test_send_rate_limited: 'Too many test messages, wait a minute.',
+    send_failed: 'No destination accepted the test message',
+    send_threw: 'The test message could not be sent. See the service log.',
+    timeout: 'The test message timed out.',
+    channel_unavailable: 'A channel is not available right now.'
+};
+
+// One answer for every failure: { banner, fields, preview, reload, close, writesOff }.
+// `where` is 'save' | 'delete' | 'preview'; a preview failure fills `preview`
+// instead of `banner`. Mapped by status and json.error, never by the body text.
+function mapEditorError(status, json, where) {
+    const out = { banner: '', fields: {}, preview: '', reload: false, close: false, writesOff: false };
+    const code = json && typeof json.error === 'string' ? json.error : '';
+    const say = (text) => { if (where === 'preview') out.preview = text; else out.banner = text; };
+    if (status === 0) { say('Could not reach the server. Check your connection and try again.'); return out; }
+    if (code === 'invalid_rule' && json && Array.isArray(json.details)) {
+        const loose = [];
+        for (const d of json.details) {
+            const field = editorFieldForPath(d && d.path);
+            const message = d && d.message ? String(d.message) : 'invalid';
+            if (field) { if (!out.fields[field]) out.fields[field] = message; } else loose.push(message);
+        }
+        if (loose.length) say(loose.join('. '));
+        return out;
+    }
+    if (code === 'invalid_template') {
+        const text = editorTemplateErrorText(json);
+        if (json.template) out.fields[`template:${json.template}`] = text; else say(text);
+        return out;
+    }
+    if (code === 'duplicate_id') { out.fields.id = 'An alert with this id exists'; return out; }
+    if (code === 'id_in_config') { out.fields.id = 'config.json already has an alert with this id'; return out; }
+    if (code === 'rule_not_found') { say('This alert no longer exists.'); out.reload = true; out.close = true; return out; }
+    if (code === 'config_writes_disabled') {
+        const reason = json.reason;
+        say(`Configuration changes are turned off (${EDITOR_WRITES_REASON[reason] || reason || 'unknown'}).`);
+        out.writesOff = true;
+        return out;
+    }
+    if (['id_mismatch', 'invalid_event', 'invalid_body', 'invalid_json', 'invalid_body_encoding'].includes(code) || status === 415) {
+        say(EDITOR_INVALID_REQUEST);
+        return out;
+    }
+    if (EDITOR_CODE_TEXT[code]) { say(EDITOR_CODE_TEXT[code]); return out; }
+    if (status === 401) { say('Your session has expired or the credentials are wrong. Reload and sign in again.'); return out; }
+    if (status === 413) { say('This alert is too large to save (16 KB limit). Shorten the message templates.'); return out; }
+    if (status === 429) { say(json ? 'Too many failed sign-in attempts. Wait a few minutes.' : 'Too many requests. Wait a minute.'); return out; }
+    if (status === 500 && where === 'preview') { say('The preview failed. See the service log.'); return out; }
+    if (status === 500) { say('The server could not save this alert. Try again; see the service log.'); return out; }
+    if (status === 503) { say('Sync history is not available, so alerts cannot be edited.'); return out; }
+    say(`The server rejected the request (${code || `HTTP ${status}`})`);
+    return out;
+}
+
+// ---- Alert editor (#268): dialog ---------------------------------------------
+// The dialog markup is static in dashboard.html; this fills the dynamic parts
+// once per open and then only updates text, visibility and disabled state, so
+// typing never rebuilds an input. It lives outside #payments-content, so the
+// 60 s poll re-render cannot drop its focus.
+let paymentsEditor = null;            // the open editor's state, null when closed
+const paymentsRules = new Map();      // server -> { configured, rules } | null (GET payment-rules failed)
+const EDITOR_PREVIEW_DELAY_MS = 400;
+let editorPreviewTimer = null;
+let editorPreviewSeq = 0;
+
+function aeEl(id) {
+    return document.getElementById(id);
+}
+
+function aeText(id, text) {
+    const node = aeEl(id);
+    if (node && node.textContent !== text) node.textContent = text;
+}
+
+function aeShow(id, visible) {
+    const node = aeEl(id);
+    if (node) node.hidden = !visible;
+}
+
+async function fetchPaymentRules(server) {
+    try {
+        const response = await fetch(`/api/dashboard/payment-rules/${encodeURIComponent(server)}`, getFetchOptions());
+        if (!response.ok) return null;
+        const body = await response.json();
+        if (!body || !Array.isArray(body.rules)) return null;
+        return { configured: body.configured === true, rules: body.rules };
+    } catch (e) {
+        return null;
+    }
+}
+
+async function editorRequest(method, url, body) {
+    try {
+        const init = { method, credentials: 'include' };
+        if (body !== undefined) {
+            init.headers = { 'Content-Type': 'application/json' };
+            init.body = JSON.stringify(body);
+        }
+        const response = await fetch(url, init);
+        let json = null;
+        try { json = await response.json(); } catch (e) { json = null; }
+        return { ok: response.ok, status: response.status, json };
+    } catch (e) {
+        return { ok: false, status: 0, json: null };
+    }
+}
+
+function editorRuleUrl(server, alertId) {
+    return `/api/dashboard/payment-rules/${encodeURIComponent(server)}${alertId ? `/${encodeURIComponent(alertId)}` : ''}`;
+}
+
+function editorStoredRule(server, alertId, source) {
+    const entry = paymentsRules.get(server);
+    return entry ? entry.rules.find((r) => r.id === alertId && r.source === source) || null : null;
+}
+
+function editorReadOnly(ed) {
+    return ed.mode === 'view' || (ed.rule && ed.rule.superseded === true);
+}
+
+function editorChannels() {
+    return paymentsCaps && Array.isArray(paymentsCaps.channels) ? paymentsCaps.channels : [];
+}
+
+function editorSchedule(ed) {
+    const list = (ed.data && ed.data.schedules) || [];
+    if (ed.form.watch === 'schedule') return list.find((s) => s.name === ed.form.schedule) || null;
+    return list.find((s) => !s.completed && typeof s.name === 'string' && ed.form.prefix && s.name.startsWith(ed.form.prefix)) || null;
+}
+
+function editorTakenIds(ed) {
+    const entry = paymentsRules.get(ed.server);
+    return new Set(entry ? entry.rules.map((r) => r.id) : []);
+}
+
+function editorBuildBody(ed) {
+    const stored = ed.mode === 'new' ? {} : (ed.rule && ed.rule.definition) || {};
+    return buildRuleBody(ed.form, stored, (ed.data && ed.data.defaults) || {}, editorChannels());
+}
+
+// Save is off while any field or template error is shown (the ticket requires it); an edit
+// clears that field's error, which turns Save back on.
+function editorCanSave(ed, ro, writes, problems) {
+    const shown = Object.values(ed.errors).some(Boolean);
+    return !ro && writes && !ed.busy && Object.keys(ed.invalid).length === 0 && !shown && !problems.channels && !ed.loading;
+}
+
+function editorCanSend(ed, ro, writes) {
+    return !ro && writes && !ed.busy && !ed.sending && !ed.loading;
+}
+
+// One test send at a time: false while one is already in flight.
+function beginEditorSend(ed) {
+    if (ed.sending) return false;
+    ed.sending = true;
+    return true;
+}
+
+// Local checks only for what has no server round trip worth making.
+function editorProblems(ed) {
+    const f = ed.form;
+    const problems = {};
+    if (!RULE_ID_PATTERN.test(f.id)) problems.id = 'Use 1 to 64 lowercase letters, digits or hyphens';
+    if (f.watch === 'schedule' && !f.schedule) problems.watch = 'Pick a schedule';
+    if (f.watch === 'prefix' && !f.prefix) problems.watch = 'Type the start of a schedule name';
+    if (editorChannels().length > 0 && f.channels.length === 0) problems.channels = 'Pick at least one channel';
+    return problems;
+}
+
+function editorFormFromRule(ed) {
+    const d = (ed.data && ed.data.defaults) || {};
+    const s = ed.mode === 'new' ? {} : (ed.rule && ed.rule.definition) || {};
+    const options = scheduleOptions(ed.data ? ed.data.schedules : []);
+    const watch = s.schedulePrefix !== undefined ? 'prefix' : 'schedule';
+    const first = options[0];
+    const templates = {};
+    for (const event of EDITOR_EVENTS) {
+        templates[event] = s.templates && s.templates[event] != null ? s.templates[event] : effectiveTemplate(d, event);
+    }
+    const all = editorChannels();
+    const form = {
+        id: s.id || ed.alertId || '',
+        watch,
+        schedule: watch === 'schedule' ? (s.schedule !== undefined ? s.schedule : (first ? first.name : '')) : '',
+        prefix: watch === 'prefix' ? String(s.schedulePrefix) : '',
+        graceDays: String(s.graceDays !== undefined ? s.graceDays : (d.graceDays !== undefined ? d.graceDays : 3)),
+        earlyDays: String(s.earlyDays !== undefined ? s.earlyDays : (d.earlyDays !== undefined ? d.earlyDays : 2)),
+        period: s.period || DEFAULT_PERIOD,
+        tolerance: s.amountTolerancePct != null ? String(s.amountTolerancePct) : '',
+        remindOn: s.remindEveryDays != null,
+        remindDays: String(s.remindEveryDays != null ? s.remindEveryDays : DEFAULT_REMIND_DAYS),
+        channels: Array.isArray(s.channels) ? all.filter((c) => s.channels.includes(c)) : all.slice(),
+        templates,
+        previewEvent: 'missing'
+    };
+    if (ed.mode === 'new') {
+        ed.idTouched = false;
+        form.id = editorSuggestId(ed, form);
+    }
+    return form;
+}
+
+function editorSuggestId(ed, form) {
+    let base = 'alert';
+    if (form.watch === 'prefix') base = slugifyRuleId(form.prefix);
+    else {
+        const opt = scheduleOptions(ed.data ? ed.data.schedules : []).find((o) => o.name === form.schedule);
+        base = slugifyRuleId(opt ? opt.label : form.schedule);
+    }
+    return uniqueRuleId(base, editorTakenIds(ed));
+}
+
+function editorMakeField(ed, event) {
+    const wrap = payEl('details', 'ae-tpl');
+    if (event === 'missing') wrap.open = true;
+    wrap.appendChild(payEl('summary', '', EDITOR_EVENT_LABELS[event]));
+    const area = payEl('textarea');
+    area.id = `ae-tpl-${event}`;
+    area.setAttribute('data-input', 'onEditorInput');
+    area.setAttribute('data-change', 'onEditorTemplateChange');
+    area.setAttribute('data-field', `template:${event}`);
+    area.setAttribute('aria-label', `${EDITOR_EVENT_LABELS[event]} message`);
+    area.value = ed.form.templates[event];
+    wrap.appendChild(area);
+    wrap.appendChild(payEl('div', 'ae-err')).id = `ae-err-template-${event}`;
+    return wrap;
+}
+
+// Once per open: the parts that depend on the loaded data.
+function editorBuildDom(ed) {
+    const f = ed.form;
+    const sel = aeEl('ae-schedule');
+    if (sel) {
+        sel.textContent = '';
+        const options = scheduleOptions(ed.data ? ed.data.schedules : []);
+        options.forEach((o) => {
+            const opt = payEl('option', '', o.label);
+            opt.value = o.name;
+            sel.appendChild(opt);
+        });
+        if (f.schedule && !options.some((o) => o.name === f.schedule)) {
+            const opt = payEl('option', '', f.schedule);
+            opt.value = f.schedule;
+            sel.appendChild(opt);
+        }
+        sel.value = f.schedule;
+    }
+    const box = aeEl('ae-channels');
+    if (box) {
+        box.textContent = '';
+        const all = editorChannels();
+        if (all.length === 0) box.appendChild(payEl('span', 'ae-note', 'No notification channel is configured.'));
+        all.forEach((name) => {
+            const label = payEl('label');
+            const cb = payEl('input');
+            cb.type = 'checkbox';
+            cb.value = name;
+            cb.checked = f.channels.includes(name);
+            cb.setAttribute('data-input', 'onEditorInput');
+            cb.setAttribute('data-field', 'channel');
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(` ${name}`));
+            box.appendChild(label);
+        });
+    }
+    const tpls = aeEl('ae-templates');
+    if (tpls) {
+        tpls.textContent = '';
+        EDITOR_EVENTS.forEach((event) => tpls.appendChild(editorMakeField(ed, event)));
+    }
+    const ev = aeEl('ae-preview-event');
+    if (ev) {
+        ev.textContent = '';
+        EDITOR_EVENTS.forEach((event) => {
+            const opt = payEl('option', '', EDITOR_EVENT_LABELS[event]);
+            opt.value = event;
+            ev.appendChild(opt);
+        });
+        ev.value = f.previewEvent;
+    }
+    const set = (id, value) => { const n = aeEl(id); if (n) n.value = value; };
+    set('ae-id', f.id);
+    set('ae-prefix', f.prefix);
+    set('ae-grace', f.graceDays);
+    set('ae-early', f.earlyDays);
+    set('ae-tol', f.tolerance);
+    set('ae-remind-days', f.remindDays);
+    const check = (id, value) => { const n = aeEl(id); if (n) n.checked = value; };
+    check('ae-mode-schedule', f.watch === 'schedule');
+    check('ae-mode-prefix', f.watch === 'prefix');
+    check('ae-period-occurrence', f.period === 'occurrence');
+    check('ae-period-next', f.period === 'next');
+    check('ae-remind-on', f.remindOn);
+    const tol = aeEl('ae-tol');
+    const sched = editorSchedule(ed);
+    if (tol) tol.placeholder = tolerancePlaceholder(sched ? sched.amountOp : 'is');
+    editorBuildChips(ed);
+}
+
+function editorBuildChips(ed) {
+    const box = aeEl('ae-vars');
+    if (!box) return;
+    box.textContent = '';
+    const vars = (ed.data && ed.data.defaults && ed.data.defaults.variables && ed.data.defaults.variables[ed.form.previewEvent]) || [];
+    vars.forEach((name) => {
+        const chip = payEl('button', 'ae-chip', name);
+        chip.type = 'button';
+        chip.setAttribute('data-action', 'insertTemplateVariable');
+        chip.setAttribute('data-arg', name);
+        box.appendChild(chip);
+    });
+}
+
+function editorTitle(ed) {
+    if (ed.mode === 'new') return `Add payment alert for ${ed.server}`;
+    if (ed.mode === 'view') return `Alert ${ed.alertId}`;
+    return `Edit alert ${ed.alertId}`;
+}
+
+// Every state-dependent bit of the dialog; never creates inputs.
+function renderEditor() {
+    const ed = paymentsEditor;
+    if (!ed) return;
+    const f = ed.form;
+    const ro = editorReadOnly(ed);
+    const writes = paymentWritesAllowed();
+    aeText('alert-editor-title', editorTitle(ed));
+    aeText('ae-server', ed.server);
+
+    let banner = ed.banner;
+    let info = false;
+    if (!banner && ed.rule && ed.rule.superseded) { banner = 'Replaced by the config.json rule with the same id. You can delete this one.'; info = true; }
+    else if (!banner && ed.mode === 'view' && ed.source === 'config') { banner = 'Managed in config.json. Copy as JSON to change it there.'; info = true; }
+    aeText('ae-banner', banner);
+    const bannerEl = aeEl('ae-banner');
+    if (bannerEl) {
+        bannerEl.hidden = !banner;
+        bannerEl.className = info ? 'ae-banner ae-info' : 'ae-banner';
+        bannerEl.setAttribute('role', info ? 'note' : 'alert');
+    }
+    aeShow('ae-loading', ed.loading);
+    aeShow('ae-form', !ed.loading && !ed.json);
+    aeShow('ae-json', !!ed.json);
+    if (ed.loading || !ed.form) {
+        ['ae-save', 'ae-send'].forEach((id) => { const n = aeEl(id); if (n) n.setAttribute('aria-disabled', 'true'); });
+        aeShow('ae-delete', false);
+        aeShow('ae-copy', false);
+        aeShow('ae-confirm', false);
+        return;
+    }
+
+    const noSnap = ed.mode === 'new' && !!ed.data && !ed.data.capturedAt;
+    aeShow('ae-nosnap', noSnap);
+    aeShow('ae-pick', !noSnap);
+    const sync = aeEl('ae-sync');
+    if (sync) sync.setAttribute('data-arg', ed.server);
+
+    const errors = ed.errors;
+    ['id', 'watch', 'graceDays', 'earlyDays', 'period', 'tolerance', 'reminders', 'channels'].forEach((k) => aeText(`ae-err-${k}`, errors[k] || ''));
+    EDITOR_EVENTS.forEach((event) => {
+        const message = errors[`template:${event}`] || '';
+        aeText(`ae-err-template-${event}`, message);
+        // A template error must be visible: a collapsed section would leave Save off with no
+        // reason on screen (#268 review), so the section with the error is opened.
+        const area = aeEl(`ae-tpl-${event}`);
+        const section = area && area.parentNode;
+        if (message && section && section.tagName === 'DETAILS') section.open = true;
+    });
+
+    const schedMode = f.watch === 'schedule';
+    const sel = aeEl('ae-schedule');
+    if (sel) sel.disabled = ro || !schedMode;
+    const prefix = aeEl('ae-prefix');
+    if (prefix) prefix.disabled = ro || schedMode;
+    const matches = countPrefixMatches(ed.data ? ed.data.schedules : [], f.prefix);
+    aeText('ae-matches', !schedMode && f.prefix ? prefixMatchText(matches) : '');
+    const sched = editorSchedule(ed);
+    aeText('ae-sline', formatScheduleLine(sched));
+    const captured = ed.data && ed.data.capturedAt;
+    aeText('ae-asof', captured ? `Schedules as of ${formatTime(captured)}` : '');
+    const grace = Number(f.graceDays);
+    aeText('ae-deadline', f.graceDays === '' ? '' : editorDeadlineText(sched, grace));
+    const tol = aeEl('ae-tol');
+    if (tol) tol.placeholder = tolerancePlaceholder(sched ? sched.amountOp : 'is');
+    const idEl = aeEl('ae-id');
+    if (idEl) idEl.disabled = ro || ed.mode === 'edit';
+    ['ae-mode-schedule', 'ae-mode-prefix', 'ae-grace', 'ae-early', 'ae-period-occurrence', 'ae-period-next', 'ae-tol', 'ae-remind-on']
+        .forEach((id) => { const n = aeEl(id); if (n) n.disabled = ro; });
+    const rd = aeEl('ae-remind-days');
+    if (rd) rd.disabled = ro || !f.remindOn;
+    EDITOR_EVENTS.forEach((event) => { const n = aeEl(`ae-tpl-${event}`); if (n) n.readOnly = ro; });
+    const box = aeEl('ae-channels');
+    if (box && box.querySelectorAll) box.querySelectorAll('input').forEach((cb) => { cb.disabled = ro; });
+
+    // Preview area.
+    const pv = ed.preview;
+    aeText('ae-preview-text', pv && pv.text != null ? pv.text : '');
+    aeText('ae-preview-keys', pv && pv.sampleKeys && pv.sampleKeys.length ? `Sample values used for: ${pv.sampleKeys.join(', ')}` : '');
+    aeText('ae-preview-note', pv && pv.note ? pv.note : '');
+    const list = aeEl('ae-results');
+    if (list) {
+        list.textContent = '';
+        for (const line of (pv && pv.lines) || []) list.appendChild(payEl('li', '', line));
+    }
+
+    // Footer.
+    const problems = editorProblems(ed);
+    // Same condition as editorCanSave: a shown server error blocks Save as much as a local one.
+    const blocked = Object.keys(ed.invalid).length > 0 || Object.values(ed.errors).some(Boolean);
+    const canSave = editorCanSave(ed, ro, writes, problems);
+    const hint = problems.channels || (blocked ? 'Fix the highlighted fields to save' : '') || (!writes && !ro ? paymentWritesTip() : '');
+    aeText('ae-save-hint', hint);
+    const flag = (id, enabled, visible) => {
+        const n = aeEl(id);
+        if (!n) return;
+        n.hidden = !visible;
+        if (enabled) n.removeAttribute('aria-disabled'); else n.setAttribute('aria-disabled', 'true');
+    };
+    flag('ae-save', canSave, !ro);
+    flag('ae-send', editorCanSend(ed, ro, writes), !ro);
+    const canDelete = ed.mode !== 'new' && ed.source === 'dashboard';
+    flag('ae-delete', writes && !ed.busy, canDelete);
+    const del = aeEl('ae-delete');
+    if (del) del.title = writes ? '' : paymentWritesTip();
+    const save = aeEl('ae-save');
+    if (save) save.title = writes ? '' : paymentWritesTip();
+    flag('ae-copy', true, ed.mode !== 'new' && !(ed.rule && ed.rule.superseded));
+    aeText('ae-cancel', ro ? 'Close' : 'Cancel');
+    aeShow('ae-foot', !ed.confirmDelete);
+    aeShow('ae-confirm', !!ed.confirmDelete);
+    aeText('ae-copy-status', ed.copyStatus || '');
+    if (ed.json) {
+        const area = aeEl('ae-json-text');
+        if (area && area.value !== ed.json) area.value = ed.json;
+    }
+}
+
+function editorSyncDialog(open) {
+    const dlg = aeEl('alert-editor');
+    if (!dlg) return;
+    if (open && !dlg.open && typeof dlg.showModal === 'function') dlg.showModal();
+    if (!open && dlg.open && typeof dlg.close === 'function') dlg.close();
+}
+
+function editorFocusRequest(ed) {
+    if (ed.opener) paymentsFocusRequest = ed.opener;
+}
+
+async function openEditor(spec) {
+    const writeMode = spec.mode === 'new' || spec.mode === 'edit' || spec.confirmDelete;
+    if (writeMode && !paymentWritesAllowed()) return;
+    clearTimeout(editorPreviewTimer);
+    editorPreviewSeq += 1;
+    const rule = spec.mode === 'new' ? null : editorStoredRule(spec.server, spec.alertId, spec.source);
+    if (spec.mode !== 'new' && !rule) return;
+    const ed = {
+        mode: spec.mode, server: spec.server, alertId: spec.alertId || '', source: spec.source || 'dashboard', rule,
+        opener: spec.opener || '', data: null, form: null, errors: {}, invalid: {}, banner: '', loading: true, busy: false,
+        confirmDelete: !!spec.confirmDelete, preview: null, json: '', copyStatus: '', idTouched: true
+    };
+    paymentsEditor = ed;
+    renderEditor();
+    editorSyncDialog(true);
+    const title = aeEl('alert-editor-title');
+    if (title && typeof title.focus === 'function') title.focus();
+
+    const result = await editorRequest('GET', `/api/dashboard/payment-schedules/${encodeURIComponent(spec.server)}`);
+    if (paymentsEditor !== ed) return;
+    if (result.ok && result.json && Array.isArray(result.json.schedules)) {
+        ed.data = result.json;
+    } else {
+        ed.data = { configured: false, capturedAt: null, schedules: [], defaults: {} };
+        if (spec.mode !== 'view') ed.banner = mapEditorError(result.status, result.json, 'save').banner;
+    }
+    ed.form = editorFormFromRule(ed);
+    if (rule && rule.invalid) {
+        for (const e of rule.errors || []) {
+            const field = editorFieldForPath(e.path);
+            if (field && !ed.errors[field]) { ed.errors[field] = e.message; ed.invalid[field] = true; }
+        }
+    }
+    ed.loading = false;
+    editorBuildDom(ed);
+    renderEditor();
+    if (title && typeof title.focus === 'function') title.focus();
+    if (!editorReadOnly(ed) && writeMode) editorSchedulePreview(ed);
+}
+
+function closeEditor(reload) {
+    const ed = paymentsEditor;
+    if (!ed) return;
+    paymentsEditor = null;
+    clearTimeout(editorPreviewTimer);
+    editorPreviewSeq += 1;
+    editorSyncDialog(false);
+    editorFocusRequest(ed);
+    if (reload) {
+        fetchPaymentRules(ed.server).then((entry) => { paymentsRules.set(ed.server, entry); renderPayments(); });
+    }
+    renderPayments();
+}
+
+function closeAlertEditor() {
+    closeEditor(false);
+}
+
+function editorRowSpec(mode, el, extra) {
+    return {
+        mode, server: el.dataset.server, alertId: el.dataset.alert, source: el.dataset.source,
+        opener: el.dataset.focus || '', ...extra
+    };
+}
+
+function openAlertEditor(arg, el) {
+    if (el.getAttribute('aria-disabled') === 'true') return;
+    openEditor({ mode: 'new', server: el.dataset.server, opener: el.dataset.focus || '' });
+}
+
+function editPaymentRule(arg, el) {
+    if (el.getAttribute('aria-disabled') === 'true') return;
+    openEditor(editorRowSpec('edit', el));
+}
+
+function viewPaymentRule(arg, el) {
+    openEditor(editorRowSpec('view', el));
+}
+
+function deletePaymentRuleAsk(arg, el) {
+    if (el.getAttribute('aria-disabled') === 'true') return;
+    const ed = paymentsEditor;
+    if (ed && !el.dataset.alert) { // the dialog's own Delete button
+        ed.confirmDelete = true;
+        renderEditor();
+        const yes = aeEl('ae-delete-yes');
+        if (yes && typeof yes.focus === 'function') yes.focus();
+        return;
+    }
+    openEditor(editorRowSpec('edit', el, { confirmDelete: true }));
+}
+
+function deletePaymentRuleKeep() {
+    const ed = paymentsEditor;
+    if (!ed) return;
+    ed.confirmDelete = false;
+    renderEditor();
+    const btn = aeEl('ae-delete');
+    if (btn && typeof btn.focus === 'function') btn.focus();
+}
+
+async function deletePaymentRuleConfirm() {
+    const ed = paymentsEditor;
+    if (!ed || ed.busy) return;
+    if (!paymentWritesAllowed()) { ed.banner = paymentWritesTip(); ed.confirmDelete = false; renderEditor(); return; }
+    ed.busy = true;
+    renderEditor();
+    const result = await editorRequest('DELETE', editorRuleUrl(ed.server, ed.alertId));
+    if (paymentsEditor !== ed) return;
+    ed.busy = false;
+    if (result.ok && result.json && result.json.deleted === true) {
+        ed.opener = `add:${ed.server}`;
+        setPaymentNotice('Alert deleted.');
+        closeEditor(true);
+        return;
+    }
+    editorApplyError(ed, mapEditorError(result.status, result.json, 'delete'));
+    ed.confirmDelete = false;
+    renderEditor();
+}
+
+function setPaymentNotice(text) {
+    aeText('payments-notice', text);
+}
+
+// Shared by save, delete and preview failures.
+function editorApplyError(ed, mapped) {
+    ed.banner = mapped.banner;
+    for (const [field, message] of Object.entries(mapped.fields)) ed.errors[field] = message;
+    if (mapped.writesOff) {
+        paymentsCaps = { ...(paymentsCaps || {}), configWrites: false, reason: paymentsCaps && paymentsCaps.reason ? paymentsCaps.reason : 'disabled' };
+        loadPaymentCapabilities().then(() => { renderPayments(); renderEditor(); });
+        renderPayments();
+    }
+    if (mapped.close) {
+        const server = ed.server;
+        ed.opener = `add:${server}`;
+        closeEditor(true);
+    }
+}
+
+function editorFocusFirstError(ed) {
+    const order = ['id', 'watch', 'graceDays', 'earlyDays', 'period', 'tolerance', 'reminders', 'channels'];
+    const target = { id: 'ae-id', watch: ed.form.watch === 'prefix' ? 'ae-prefix' : 'ae-schedule', graceDays: 'ae-grace', earlyDays: 'ae-early', tolerance: 'ae-tol', reminders: 'ae-remind-days' };
+    const field = order.find((k) => ed.errors[k]);
+    const node = field ? aeEl(target[field] || 'ae-id') : null;
+    if (node && typeof node.focus === 'function') node.focus();
+}
+
+async function savePaymentRule() {
+    const ed = paymentsEditor;
+    if (!ed || ed.busy || ed.loading || editorReadOnly(ed)) return;
+    if (!paymentWritesAllowed()) { ed.banner = paymentWritesTip(); renderEditor(); return; }
+    if (!editorCanSave(ed, false, true, {})) return;
+    const problems = editorProblems(ed);
+    ed.banner = '';
+    if (Object.keys(problems).length > 0) {
+        Object.assign(ed.errors, problems);
+        renderEditor();
+        editorFocusFirstError(ed);
+        return;
+    }
+    ed.busy = true;
+    renderEditor();
+    const body = editorBuildBody(ed);
+    const result = ed.mode === 'new'
+        ? await editorRequest('POST', editorRuleUrl(ed.server), body)
+        : await editorRequest('PUT', editorRuleUrl(ed.server, ed.alertId), body);
+    if (paymentsEditor !== ed) return;
+    ed.busy = false;
+    if (result.ok && result.json && result.json.rule) {
+        ed.opener = editorSavedFocusKey(ed.server, result.json.rule.id);
+        setPaymentNotice(ed.mode === 'new' ? 'Alert saved.' : 'Alert updated.');
+        closeEditor(true);
+        return;
+    }
+    const mapped = mapEditorError(result.status, result.json, 'save');
+    editorApplyError(ed, mapped);
+    if (paymentsEditor === ed) {
+        renderEditor();
+        editorFocusFirstError(ed);
+    }
+}
+
+// ---- preview ----------------------------------------------------------------
+function editorSchedulePreview(ed) {
+    clearTimeout(editorPreviewTimer);
+    if (!paymentWritesAllowed() || editorReadOnly(ed) || ed.mode === 'view') return;
+    editorPreviewTimer = setTimeout(() => runEditorPreview(ed, false), EDITOR_PREVIEW_DELAY_MS);
+}
+
+function editorResultLines(results) {
+    return (results || []).map((r) => `${r.channel}${r.target ? ` (${r.target})` : ''}: ${r.ok ? 'sent' : `failed${r.error ? ` (${r.error})` : ''}`}`);
+}
+
+async function runEditorPreview(ed, send) {
+    if (paymentsEditor !== ed || ed.loading || !paymentWritesAllowed() || editorReadOnly(ed)) return;
+    const problems = editorProblems(ed);
+    if (Object.keys(problems).length > 0) {
+        ed.preview = { text: '', sampleKeys: [], note: send ? 'Complete the form first.' : '', lines: [] };
+        renderEditor();
+        return;
+    }
+    editorPreviewSeq += 1;
+    const seq = editorPreviewSeq;
+    const result = await editorRequest('POST', `/api/dashboard/payment-preview/${encodeURIComponent(ed.server)}`,
+        { rule: editorBuildBody(ed), event: ed.form.previewEvent, send });
+    if (paymentsEditor !== ed || seq !== editorPreviewSeq) return;
+    // Each answer replaces the earlier template errors.
+    for (const k of Object.keys(ed.errors)) if (k.startsWith('template:') && !ed.invalid[k]) delete ed.errors[k];
+    const json = result.json || {};
+    if (result.ok || (result.status === 502 && json.error === 'send_failed')) {
+        const lines = send ? editorResultLines(json.results) : [];
+        if (send && result.ok) {
+            const ok = (json.results || []).filter((r) => r.ok).length;
+            const total = (json.results || []).length;
+            lines.unshift(ok === total ? `Sent to ${total} destination${total === 1 ? '' : 's'}` : `Sent to ${ok} of ${total} destinations`);
+        }
+        ed.preview = {
+            text: json.text, sampleKeys: json.sampleKeys || [], lines,
+            note: result.ok ? '' : mapEditorError(502, json, 'preview').preview
+        };
+    } else {
+        const mapped = mapEditorError(result.status, result.json, 'preview');
+        for (const [field, message] of Object.entries(mapped.fields)) ed.errors[field] = message;
+        ed.preview = { text: '', sampleKeys: [], lines: [], note: mapped.preview || mapped.banner };
+        if (mapped.writesOff) editorApplyError(ed, { banner: '', fields: {}, writesOff: true });
+    }
+    renderEditor();
+}
+
+function sendPaymentTest(arg, el) {
+    const ed = paymentsEditor;
+    if (!ed || el.getAttribute('aria-disabled') === 'true' || !beginEditorSend(ed)) return;
+    clearTimeout(editorPreviewTimer);
+    renderEditor();
+    runEditorPreview(ed, true).finally(() => {
+        ed.sending = false;
+        if (paymentsEditor === ed) renderEditor();
+    });
+}
+
+// ---- form events ------------------------------------------------------------
+function onEditorInput(arg, el) {
+    const ed = paymentsEditor;
+    if (!ed || !ed.form) return;
+    const f = ed.form;
+    const field = el.dataset.field;
+    if (field === 'id') { f.id = el.value; ed.idTouched = true; }
+    else if (field === 'prefix') { f.prefix = el.value; if (ed.mode === 'new' && !ed.idTouched) { f.id = editorSuggestId(ed, f); const n = aeEl('ae-id'); if (n) n.value = f.id; } }
+    else if (field === 'graceDays' || field === 'earlyDays') f[field] = el.value;
+    else if (field === 'tolerance') f.tolerance = el.value;
+    else if (field === 'period') f.period = el.value;
+    else if (field === 'remindOn') f.remindOn = !!el.checked;
+    else if (field === 'remindDays') f.remindDays = el.value;
+    else if (field === 'previewEvent') { f.previewEvent = el.value; editorBuildChips(ed); }
+    else if (field === 'channel') f.channels = editorChannels().filter((name) => {
+        const box = aeEl('ae-channels');
+        const cbs = box && box.querySelectorAll ? Array.from(box.querySelectorAll('input')) : [];
+        const cb = cbs.find((c) => c.value === name);
+        return cb ? cb.checked : f.channels.includes(name);
+    });
+    else if (field && field.startsWith('template:')) {
+        const event = field.slice('template:'.length);
+        f.templates[event] = el.value;
+        if (f.previewEvent !== event) {
+            f.previewEvent = event;
+            const sel = aeEl('ae-preview-event');
+            if (sel) sel.value = event;
+            editorBuildChips(ed);
+        }
+    }
+    const errKey = field === 'remindOn' || field === 'remindDays' ? 'reminders' : field === 'prefix' ? 'watch'
+        : field === 'channel' ? 'channels' : field === 'previewEvent' ? '' : field;
+    if (errKey) { delete ed.errors[errKey]; delete ed.invalid[errKey]; }
+    renderEditor();
+    editorSchedulePreview(ed);
+}
+
+// An emptied message falls back to the default text (and the key is dropped on save).
+function onEditorTemplateChange(arg, el) {
+    const ed = paymentsEditor;
+    if (!ed || !ed.form || el.value !== '') return;
+    const event = el.dataset.field.slice('template:'.length);
+    el.value = effectiveTemplate((ed.data && ed.data.defaults) || {}, event);
+    ed.form.templates[event] = '';
+}
+
+function onEditorWatchModeChange(arg, el) {
+    const ed = paymentsEditor;
+    if (!ed || !ed.form) return;
+    ed.form.watch = el.value === 'prefix' ? 'prefix' : 'schedule';
+    delete ed.errors.watch;
+    delete ed.invalid.watch;
+    if (ed.form.watch === 'schedule' && !ed.form.schedule) {
+        const sel = aeEl('ae-schedule');
+        if (sel) ed.form.schedule = sel.value;
+    }
+    if (ed.mode === 'new' && !ed.idTouched) { ed.form.id = editorSuggestId(ed, ed.form); const n = aeEl('ae-id'); if (n) n.value = ed.form.id; }
+    renderEditor();
+    editorSchedulePreview(ed);
+}
+
+function onEditorScheduleChange(arg, el) {
+    const ed = paymentsEditor;
+    if (!ed || !ed.form) return;
+    ed.form.schedule = el.value;
+    delete ed.errors.watch;
+    delete ed.invalid.watch;
+    if (ed.mode === 'new' && !ed.idTouched) { ed.form.id = editorSuggestId(ed, ed.form); const n = aeEl('ae-id'); if (n) n.value = ed.form.id; }
+    renderEditor();
+    editorSchedulePreview(ed);
+}
+
+function insertTemplateVariable(name) {
+    const ed = paymentsEditor;
+    if (!ed || !ed.form || editorReadOnly(ed)) return;
+    const event = ed.form.previewEvent;
+    const area = aeEl(`ae-tpl-${event}`);
+    if (!area) return;
+    const token = `{{${name}}}`;
+    const start = typeof area.selectionStart === 'number' ? area.selectionStart : area.value.length;
+    const end = typeof area.selectionEnd === 'number' ? area.selectionEnd : start;
+    area.value = area.value.slice(0, start) + token + area.value.slice(end);
+    ed.form.templates[event] = area.value;
+    delete ed.errors[`template:${event}`];
+    delete ed.invalid[`template:${event}`];
+    if (typeof area.focus === 'function') area.focus();
+    if (typeof area.setSelectionRange === 'function') area.setSelectionRange(start + token.length, start + token.length);
+    renderEditor();
+    editorSchedulePreview(ed);
+}
+
+// ---- Copy as JSON -------------------------------------------------------------
+async function copyPaymentRuleJson(arg, el) {
+    let ed = paymentsEditor;
+    let text = '';
+    if (el.dataset.alert) { // a row button: the stored definition, no dialog unless the clipboard fails
+        const rule = editorStoredRule(el.dataset.server, el.dataset.alert, el.dataset.source);
+        if (!rule) return;
+        text = JSON.stringify(rule.definition, null, 2);
+    } else if (ed && ed.form) {
+        const stored = ed.rule && ed.rule.definition;
+        text = JSON.stringify(ed.mode === 'view' || editorReadOnly(ed) ? stored : editorBuildBody(ed), null, 2);
+    } else return;
+    let copied = false;
+    if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        try { await navigator.clipboard.writeText(text); copied = true; } catch (e) { copied = false; }
+    }
+    if (copied) {
+        if (ed && ed === paymentsEditor) { ed.copyStatus = 'Copied.'; renderEditor(); } else setPaymentNotice('Copied to the clipboard.');
+        return;
+    }
+    // Fallback: a read-only, preselected textarea the user copies from.
+    if (!ed || ed !== paymentsEditor) {
+        await openEditor(editorRowSpec('view', el));
+        ed = paymentsEditor;
+        if (!ed) return;
+    }
+    ed.json = text;
+    ed.copyStatus = '';
+    renderEditor();
+    const area = aeEl('ae-json-text');
+    if (area) {
+        if (typeof area.focus === 'function') area.focus();
+        if (typeof area.select === 'function') area.select();
+    }
+}
+
+// The dialog's Esc/cancel event is bound on the element, once, after the DOM exists.
+function bindAlertEditorDialog() {
+    const dlg = aeEl('alert-editor');
+    if (!dlg || typeof dlg.addEventListener !== 'function') return;
+    dlg.addEventListener('cancel', (e) => {
+        e.preventDefault(); // closeEditor closes it and puts the focus back
+        if (paymentsEditor && paymentsEditor.busy) return;
+        closeEditor(false);
+    });
+}
+
 // 60 s refresh: skipped while the page is hidden or another tab is showing.
 setInterval(() => {
     if (document.hidden || !paymentsTabActive()) return;
@@ -2431,17 +3666,32 @@ const CLICK_ACTIONS = {
     openPaymentMute: (arg, el) => openPaymentMute(arg, el),
     cancelPaymentMute: (arg, el) => cancelPaymentMute(arg, el),
     unmutePaymentAlert: (arg, el) => unmutePaymentAlert(arg, el),
-    deleteOrphanedOverride: (arg, el) => deleteOrphanedOverride(el)
+    deleteOrphanedOverride: (arg, el) => deleteOrphanedOverride(el),
+    openAlertEditor: (arg, el) => openAlertEditor(arg, el),
+    editPaymentRule: (arg, el) => editPaymentRule(arg, el),
+    viewPaymentRule: (arg, el) => viewPaymentRule(arg, el),
+    copyPaymentRuleJson: (arg, el) => copyPaymentRuleJson(arg, el),
+    deletePaymentRuleAsk: (arg, el) => deletePaymentRuleAsk(arg, el),
+    deletePaymentRuleConfirm: () => deletePaymentRuleConfirm(),
+    deletePaymentRuleKeep: () => deletePaymentRuleKeep(),
+    savePaymentRule: (arg, el) => { if (el.getAttribute('aria-disabled') !== 'true') savePaymentRule(); },
+    sendPaymentTest: (arg, el) => sendPaymentTest(arg, el),
+    insertTemplateVariable: (arg) => insertTemplateVariable(arg),
+    closeAlertEditor: () => closeAlertEditor()
 };
 const CHANGE_ACTIONS = {
     renderAccounts: () => renderAccounts(),
     onDateFormatChange: () => onDateFormatChange(),
     loadHistoryTab: () => loadHistoryTab(),
-    onPaymentsServerChange: () => onPaymentsServerChange()
+    onPaymentsServerChange: () => onPaymentsServerChange(),
+    onEditorWatchModeChange: (arg, el) => onEditorWatchModeChange(arg, el),
+    onEditorScheduleChange: (arg, el) => onEditorScheduleChange(arg, el),
+    onEditorTemplateChange: (arg, el) => onEditorTemplateChange(arg, el)
 };
 const INPUT_ACTIONS = {
     onPaymentsSearch: (arg, el) => onPaymentsSearch(arg, el),
-    onPaymentMuteField: (arg, el) => onPaymentMuteField(arg, el)
+    onPaymentMuteField: (arg, el) => onPaymentMuteField(arg, el),
+    onEditorInput: (arg, el) => onEditorInput(arg, el)
 };
 
 document.addEventListener('click', (e) => {
@@ -2461,6 +3711,14 @@ document.addEventListener('submit', (e) => {
     e.preventDefault();
     savePaymentMute(form);
 });
+// Enter in a single line field of the alert editor saves (the form has no submit button).
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !e.target || !e.target.closest) return;
+    if (e.target.tagName !== 'INPUT' || e.target.type === 'checkbox' || e.target.type === 'radio') return;
+    if (!e.target.closest('[data-form="alertEditor"]')) return;
+    e.preventDefault();
+    savePaymentRule();
+});
 document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     const form = e.target.closest && e.target.closest('[data-form="paymentMute"]');
@@ -2471,6 +3729,8 @@ document.addEventListener('input', (e) => {
     const action = el && INPUT_ACTIONS[el.dataset.input];
     if (action) action(undefined, el);
 });
+
+bindAlertEditorDialog();
 
 // Hide the header logo if /icon.png fails. 'error' does not bubble, so it
 // is bound on the element; the complete/naturalWidth check covers a

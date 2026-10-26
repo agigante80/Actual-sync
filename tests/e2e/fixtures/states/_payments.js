@@ -15,6 +15,24 @@ const ALERT_MIN = 4559;
 const CONFIGURED = { scheduleAlerts: {} };
 
 /**
+ * A scheduleAlerts block with one config rule per evaluation. The dashboard
+ * lists the rules (#268), not the snapshot, so a state that seeds evaluations
+ * needs the rules that produced them; an empty block would show no rows.
+ * @param {Object[]} evaluations
+ * @returns {{scheduleAlerts: Object}}
+ */
+function configuredFor(evaluations) {
+  const seen = new Set();
+  const alerts = [];
+  for (const e of evaluations) {
+    if (seen.has(e.alertId)) continue;
+    seen.add(e.alertId);
+    alerts.push({ id: e.alertId, schedule: e.name });
+  }
+  return { scheduleAlerts: { alerts } };
+}
+
+/**
  * One evaluation as evaluate().evaluations returns it.
  * @param {string} id - alertId (and the base of the scheduleId)
  * @param {string} name
@@ -121,4 +139,4 @@ function controlEvaluations() {
   ];
 }
 
-module.exports = { CONTROL_SERVER, controlEvaluations, AS_OF_MIN, FAILED_AT_MIN, ALERT_MIN, CONFIGURED, ev, occurrences, attentionEvaluations };
+module.exports = { configuredFor, CONTROL_SERVER, controlEvaluations, AS_OF_MIN, FAILED_AT_MIN, ALERT_MIN, CONFIGURED, ev, occurrences, attentionEvaluations };

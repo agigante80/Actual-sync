@@ -2,10 +2,10 @@
  * Schedule alert rule loading (#258).
  *
  * The single merge point that turns a server's `scheduleAlerts` config block
- * into the normalized rule list `scheduleAlerts.js` evaluates. In this ticket
- * the only source is `config.json`; #262 adds dashboard-created rules and
- * #261 adds enable/mute state, both by plugging into `getRules` /
- * `expandRules` rather than changing the evaluation engine (see #258's
+ * into the normalized rule list `scheduleAlerts.js` evaluates. `getRules` is
+ * config-only; `mergeRules` (#262) adds the dashboard-created rules stored in
+ * `payment_alert_rule`, and #261's enable/mute state plugs in through
+ * `ruleState`, none of it changing the evaluation engine (see #258's
  * "Design impact" comment).
  *
  * This file has no I/O: it is pure data transformation over the config object
@@ -95,6 +95,42 @@ function getRules(scheduleAlerts) {
 }
 
 /**
+ * Merge config rules with the dashboard rules stored for a server (#262).
+ * Pure: the caller reads the rows (`syncHistory.listRules`).
+ *
+ * Every entry keeps the normalized rule shape and adds `source`
+ * (`'config'|'dashboard'`), `superseded`, the raw `definition` and `updatedAt`
+ * (null for a config rule). A dashboard rule whose id equals a config rule's id
+ * is `superseded: true`: config wins, and the stored row is kept (it becomes
+ * active again if the config rule is removed) but must not be evaluated.
+ * Compare ids with `deriveRuleId`, as every other lookup does.
+ *
+ * @param {Object[]} configRules - `getRules(block)`
+ * @param {Array<{alertId:string, definition:Object, updatedAt:string}>} dashboardRows
+ * @param {?Object} block - the server's `scheduleAlerts` block
+ * @returns {Object[]} config rules first (config order), then dashboard rules
+ *   in the order given
+ */
+function mergeRules(configRules, dashboardRows, block) {
+  const rawConfig = block && Array.isArray(block.alerts) ? block.alerts : [];
+  const configIds = new Set(configRules.map((rule) => rule.id));
+  const merged = configRules.map((rule, index) => ({
+    ...rule, source: 'config', superseded: false, definition: rawConfig[index] || null, updatedAt: null
+  }));
+  for (const row of dashboardRows || []) {
+    const rule = normalizeRule(row.definition, block || {});
+    merged.push({
+      ...rule,
+      source: 'dashboard',
+      superseded: configIds.has(rule.id),
+      definition: row.definition,
+      updatedAt: row.updatedAt
+    });
+  }
+  return merged;
+}
+
+/**
  * Startup check: every alert id must be unique within a server (AJV cannot
  * express key uniqueness across array items). Throws on the first collision
  * found, in `config.json` order, naming both colliding indices.
@@ -118,6 +154,29 @@ function checkUniqueIds(servers) {
       seen.set(id, index);
     });
   }
+}
+
+/**
+ * Every schedule a rule's target (`schedulePrefix` first, else exact
+ * `schedule`) names, completed ones included. Shared by `expandRules` and
+ * `matchedScheduleIdsByRule` so "matched" means one thing everywhere.
+ */
+function ruleNameMatches(rule, schedules) {
+  if (rule.schedulePrefix) {
+    return (schedules || []).filter((s) => typeof s.name === 'string' && s.name.startsWith(rule.schedulePrefix));
+  }
+  if (rule.schedule) return (schedules || []).filter((s) => s.name === rule.schedule);
+  return [];
+}
+
+/**
+ * #373: rule id -> Set of the schedule ids its CURRENT target names (completed
+ * ones included, since a completed schedule is still bound to the rule).
+ * Delivery uses it to tell an open `missing` whose schedule the rule no longer
+ * targets (the target was edited) from one that is still tracked.
+ */
+function matchedScheduleIdsByRule(rules, schedules) {
+  return new Map((rules || []).map((rule) => [rule.id, new Set(ruleNameMatches(rule, schedules).map((s) => s.id))]));
 }
 
 /**
@@ -153,14 +212,7 @@ function expandRules(rules, schedules) {
     // as a name mismatch, firing a daily `ruleUnmatched` for a rule that was
     // actually working fine.
     const isActive = (s) => s.completed !== true;
-    let rawMatches;
-    if (rule.schedulePrefix) {
-      rawMatches = (schedules || []).filter((s) => typeof s.name === 'string' && s.name.startsWith(rule.schedulePrefix));
-    } else if (rule.schedule) {
-      rawMatches = (schedules || []).filter((s) => s.name === rule.schedule);
-    } else {
-      rawMatches = [];
-    }
+    const rawMatches = ruleNameMatches(rule, schedules);
     const matches = rawMatches.filter(isActive);
 
     // #326: a COMPLETED ONE-OFF schedule (`date` is a plain date string, not a
@@ -235,8 +287,11 @@ module.exports = {
   muteEndsAt,
   deriveRuleId,
   getRules,
+  mergeRules,
+  normalizeRule,
   checkUniqueIds,
   expandRules,
+  matchedScheduleIdsByRule,
   DEFAULT_GRACE_DAYS,
   DEFAULT_EARLY_DAYS,
   DEFAULT_STALE_AFTER_DAYS

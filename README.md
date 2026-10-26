@@ -139,7 +139,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate) applied to failures
 - ✅ **Rate Limiting** - Failure-notification spam prevention with configurable intervals
 - ✅ **Missing-Payment Alerts** - Compares Actual's own schedules against posted transactions per server and notifies when an expected payment is late, missing, wrong-amount, or cannot be checked (stale bank connection); see [Missing-Payment Alerts](#-missing-payment-alerts)
-- ✅ **Payments Tab** - Dashboard view of every watched schedule, with an on/off switch and mute-until per alert: state, expected amount, next due date, deadline, the last 6 occurrences and the last alert sent; works without a connection to Actual; see [Payments tab](#payments-tab)
+- ✅ **Payments Tab** - Dashboard view of every watched schedule, with an on/off switch, mute-until and an alert editor per alert: state, expected amount, next due date, deadline, the last 6 occurrences and the last alert sent; works without a connection to Actual; see [Payments tab](#payments-tab)
 
 ### 🛡️ Reliability & Security
 
@@ -705,6 +705,14 @@ The pill always shows what Actual says; a separate badge beside it shows "Muted 
 
 The reason is stored in the sync-history database, shown in the dashboard as text, and **included in the summary message**, so it goes to your notification channels. Remove `{{reason}}` from the `muteEnded` template if you do not want that. See [docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md#switching-alerts-off-and-muting) for the exact rules and [docs/SECURITY_AND_PRIVACY.md](docs/SECURITY_AND_PRIVACY.md) for how the reason is stored and cleared.
 
+##### Managing alerts from the dashboard
+
+Each server group on the Payments tab has an **Add alert** button, and every row has **Edit**, **Delete** and **Copy as JSON** (a rule from `config.json` has **View** and **Copy as JSON** only). The dialog asks for the same things as a rule in `config.json`: the schedule (or a name prefix), the grace and early days, the month shown in `{{period}}`, an amount tolerance, reminders, the channels and the message texts, with a live preview of the message. Rules are stored in the sync-history database and apply from the next sync, no restart needed. A rule in `config.json` wins over a dashboard rule with the same id.
+
+It needs `healthCheck.dashboard.allowConfigWrites: true`, dashboard auth other than `none`, a `scheduleAlerts` block on the server (an empty `"alerts": []` is enough) and one finished sync, so the schedule list has data. Otherwise the buttons are shown disabled, with a tooltip saying what to change. **Send test to all destinations** delivers the previewed message to every configured channel (5 per minute) and records nothing, so it never affects a real alert.
+
+Messages in a dialog that fails to save name the field to fix; a message that cannot be placed on a field appears as a banner at the top. See [docs/DASHBOARD.md](docs/DASHBOARD.md#managing-alerts-from-the-dashboard) for every state and error.
+
 ---
 
 **Dashboard Capabilities:**
@@ -906,9 +914,9 @@ Enable it per server with a `scheduleAlerts` block:
 
 A server with no `scheduleAlerts` block never calls `getSchedules()` and pays no cost for this feature. The step runs once per sync, after the bank-sync loop, inside the same Actual session; any error in it is logged at WARN and never changes the sync's own recorded result.
 
-### Ten scenarios
+### Twelve scenarios
 
-Every scenario below (except #9, which needs a shorter cadence to demonstrate) uses the same
+Every scenario below (except #9, which needs a shorter cadence to demonstrate, and #11 and #12, which use the dashboard) uses the same
 schedule, configured in Actual as: recurrence **Monthly, on the 5th**; amount **-850.00** (an
 expense); account **Checking**; payee **Landlord LLC**; name **"Rent - Apartment"**. Timezone is
 `Europe/Madrid`, `dateFormat` is left at its default (`D MMM YYYY`), and the destination channel is
@@ -1054,6 +1062,20 @@ digest.
 > ⚠️ Rent - Apartment did not go out. -850.00 to Landlord LLC from Checking was due 5 Oct 2026.
 > ⚠️ Salary: received 3000.00 on 5 Oct 2026, expected 3200.00 (difference -200.00).
 
+**11. Add an alert for a new tenant in two minutes** - a new tenant starts paying "Rent - Parking C" and
+you want the same watch as the other spots, without touching `config.json`. In the Payments tab, click
+**Add alert** on the server, pick the schedule (the id fills in as `rent-parking-c`), set **Grace days** to 6
+and leave the rest. The line under the field reads "deadline: 11th of each month". Read the preview, click
+**Send test to all destinations** to see it arrive, then **Save**. The next sync evaluates the rule and the
+row shows "Not evaluated yet" until then. If the month is missed you get the usual `missing` message for
+that schedule.
+
+**12. Promote a dashboard alert to config.json** - the alert has proved useful and should live with the
+rest of your configuration. Open it, click **Copy as JSON**, and paste the object into the server's
+`scheduleAlerts.alerts` array. Restart, then **Delete** the dashboard copy: until you do, the row shows
+"Replaced by config.json" and only the config rule is evaluated, so nothing is sent twice. (If the
+clipboard is blocked, the dialog shows the JSON in a box to copy by hand.)
+
 ### Variables
 
 Every template (built-in or an override under `templates`) can reference these; each has a raw (`_raw`) counterpart carrying the underlying value (a number or an unformatted ISO date) for a template author who wants to format it differently.
@@ -1076,7 +1098,7 @@ Every template (built-in or an override under `templates`) can reference these; 
 | `difference` / `difference_raw` | `received_amount - expected_amount` (for `wrongAmount`) |
 | `last_sync` / `last_sync_raw` | The account's last successful sync date (for `cannotCheck`) |
 | `reason` | Why a `cannotCheck` was raised: `stale`, `not-synced`, `interval-violation` or `error` (empty for other events) |
-| `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual, `deleted` when the schedule was removed in Actual (empty otherwise) |
+| `closed_by` | `completed` when a `resolved` closes the alert because the one-off schedule was marked completed in Actual, `deleted` when the schedule was removed in Actual, `rule_changed` when the rule's target was edited so it no longer names the schedule (empty otherwise) |
 | `budget` | The server name |
 | `alert_id` | The rule's `id` |
 
@@ -1085,6 +1107,10 @@ A variable that does not apply to the current event type is always present as `n
 ### Timezone
 
 Every date in this feature - an occurrence date, a deadline, "today", account staleness - is computed in one timezone: the top-level `timezone` config key (see [CONFIG.md](docs/CONFIG.md#timezone-optional)), falling back to the process timezone (`TZ`, else the system zone), and to `UTC` when that is blank or not a valid IANA name. All servers share it.
+
+### Rules from the dashboard
+
+Besides `config.json`, a server with a `scheduleAlerts` block (an empty `"alerts": []` is enough) can have rules created in the dashboard. They are stored in the sync-history database, validated and evaluated exactly like config rules, and a rule in `config.json` wins over a dashboard rule with the same id. The editor is described under [Managing alerts from the dashboard](#managing-alerts-from-the-dashboard); the API is in [docs/HEALTH_CHECK.md](docs/HEALTH_CHECK.md#payment-rules-262). Editing needs `dashboard.allowConfigWrites: true` and dashboard auth, and a sync must have run once so the schedule picker has data.
 
 See **[docs/SCHEDULE_ALERTS.md](docs/SCHEDULE_ALERTS.md)** for the full configuration reference, the algorithm's edge cases, and message-template overrides.
 

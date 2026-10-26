@@ -139,7 +139,7 @@ describe('dashboard settings tab (#263)', () => {
         expect(fixture.calls.syncBank).toHaveLength(1);
 
         const capabilities = await page.evaluate(async () => (await fetch('/api/dashboard/capabilities')).json());
-        expect(capabilities).toEqual({ configWrites: true, reason: null });
+        expect(capabilities).toEqual({ configWrites: true, reason: null, channels: expect.any(Array) });
       });
     });
   });

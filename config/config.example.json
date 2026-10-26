@@ -23,6 +23,7 @@
       "password": "your_password_here",
       "syncId": "your_sync_id_here",
       "dataDir": "/app/dataDir_Secondary_temp",
+      "scheduleAlerts": { "alerts": [] },
       "sync": {
         "schedule": "0 4 * * *",
         "maxRetries": 3,

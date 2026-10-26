@@ -8,8 +8,11 @@
  * real `SyncHistoryService` and `NotificationService` through `syncService.js`.
  */
 
-const { deliver, DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS, destinationKey } = require('../lib/scheduleAlertDelivery');
-const { getRules, ruleState } = require('../lib/scheduleAlertRules');
+const {
+  deliver, DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS, destinationKey,
+  buildPreviewContext, previewRule, PREVIEW_EVENTS
+} = require('../lib/scheduleAlertDelivery');
+const { getRules, ruleState, normalizeRule } = require('../lib/scheduleAlertRules');
 const path = require('path');
 const { SyncHistoryService } = require('../services/syncHistory');
 const { createTempDir, cleanupTempDir } = require('./helpers/testHelpers');
@@ -201,6 +204,42 @@ describe('deliver: de-duplication and reminders', () => {
     const again = await deliver([unmatchedEvent], { ...args, evaluations: [] });
     expect(again).toEqual({ sent: 1, skipped: 0 });
     expect(sender.calls).toHaveLength(2);
+  });
+});
+
+describe('deliver: retargeted rule close (#373)', () => {
+  const setup = () => {
+    const history = makeFakeHistory();
+    history.rows.push({ server: 'Main', alertId: 'rent', scheduleId: 's1', occurrenceDate: '2026-01-05', event: 'missing', delivery: 'sent', channel: 'telegram', recordedAt: '2026-01-06T00:00:00.000Z' });
+    history.listMissingScheduleAlertSchedules = async () => [{ scheduleId: 's1', occurrenceDate: '2026-01-05' }];
+    const sender = makeFakeSender({ telegram: { enabled: true } });
+    const args = {
+      evaluations: [], ruleState: enabledState, history, sender, now: '2026-01-11T00:00:00.000Z',
+      server: 'Main', rules: rentRules(), timezone: 'UTC', logger: quietLogger,
+      existingScheduleIds: new Set(['s1', 's2'])
+    };
+    return { history, sender, args };
+  };
+
+  test('without a matched-schedule map an existing schedule is never closed', async () => {
+    const { sender, args } = setup();
+    await deliver([], args);
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  test('an existing schedule outside its rule\'s matched set is closed once with the live name', async () => {
+    const { sender, args } = setup();
+    const extra = { ...args, matchedScheduleIds: new Map([['rent', new Set(['s2'])]]), scheduleNameById: new Map([['s1', 'Old rent']]) };
+    await deliver([], extra);
+    await deliver([], extra);
+    expect(sender.calls).toHaveLength(1);
+    expect(JSON.stringify(sender.calls[0])).toMatch(/Old rent/);
+  });
+
+  test('an existing schedule inside the matched set is left open', async () => {
+    const { sender, args } = setup();
+    await deliver([], { ...args, matchedScheduleIds: new Map([['rent', new Set(['s1'])]]) });
+    expect(sender.calls).toHaveLength(0);
   });
 });
 
@@ -1712,6 +1751,153 @@ describe('deliver: off, mute and mute end (#261)', () => {
       at('2026-10-12T08:00:00.000Z');
       await run(events, { evaluations: [evalOf('2026-10-12')] });
       expect(events).toEqual(copy);
+    });
+  });
+});
+
+describe('preview (#262)', () => {
+  const NOW = new Date('2026-10-14T09:00:00.000Z');
+  const rule = normalizeRule({ id: 'rent', schedule: 'Rent', graceDays: 3 }, {});
+  const snapshot = {
+    id: 's1', name: 'Rent', payee: 'Landlord', account: 'Checking', amount: -85000, amountMin: null,
+    cadenceText: 'Every month on the 1st', nextDate: '2026-11-01'
+  };
+  const ctx = (eventName, schedule = snapshot, r = rule) =>
+    buildPreviewContext({ eventName, rule: r, schedule, server: 'Main', timezone: 'UTC', now: NOW });
+
+  describe('buildPreviewContext', () => {
+    test('real snapshot data fills the schedule variables; occurrence variables are samples', () => {
+      const { context, sampleKeys } = ctx('missing');
+      expect(context).toMatchObject({
+        name: 'Rent', payee: 'Landlord', account: 'Checking', expected_amount: '-850.00', cadence: 'Every month on the 1st',
+        budget: 'Main', expected_date_raw: '2026-11-01', deadline_raw: '2026-11-04', direction: 'expense', days_overdue: 1
+      });
+      expect(sampleKeys).toEqual(['deadline', 'days_overdue']);
+    });
+
+    test('with no matching schedule every schedule variable is a sample', () => {
+      const { context, sampleKeys } = ctx('missing', null);
+      expect(context.name).toBe('Sample payment');
+      expect(context.expected_date_raw).toBe('2026-10-14');
+      expect(sampleKeys).toEqual(expect.arrayContaining(['name', 'payee', 'account', 'expected_amount', 'cadence', 'expected_date', 'days_overdue']));
+    });
+
+    test('a snapshot schedule with no next date makes the date a sample', () => {
+      const { sampleKeys } = ctx('missing', { ...snapshot, nextDate: null });
+      expect(sampleKeys).toEqual(expect.arrayContaining(['expected_date', 'period']));
+    });
+
+    test('an isbetween schedule previews with the lower bound of its range', () => {
+      const { context } = ctx('missing', { ...snapshot, amount: null, amountMin: -9000, amountMax: -5000 });
+      expect(context.expected_amount_raw).toBe(-9000);
+    });
+
+    test.each([
+      ['wrongAmount', ['received_amount', 'received_date', 'difference']],
+      ['resolved', ['received_amount', 'received_date', 'days_overdue']],
+      ['cannotCheck', ['reason', 'last_sync']]
+    ])('%s lists its event-specific samples', (eventName, keys) => {
+      const { context, sampleKeys } = ctx(eventName);
+      expect(sampleKeys).toEqual(expect.arrayContaining(keys));
+      for (const k of keys) expect(context[k]).not.toBeNull();
+    });
+
+    test('ruleUnmatched is about the rule only', () => {
+      const { context, sampleKeys } = ctx('ruleUnmatched');
+      expect(sampleKeys).toEqual([]);
+      expect(context).toMatchObject({ alert_id: 'rent', budget: 'Main', name: 'rent', expected_date: null });
+    });
+
+    test('muteEnded fills the summary variables with samples and uses the snapshot schedule', () => {
+      const { context, sampleKeys } = ctx('muteEnded');
+      expect(context).toMatchObject({ name: 'Rent', payee: 'Landlord', events_count: 1, reason: 'Sample reason' });
+      expect(context.events).toHaveLength(1);
+      expect(sampleKeys).toEqual(expect.arrayContaining(['muted_from', 'muted_until', 'events_count', 'events', 'reason']));
+    });
+
+    test('every event renders against the built-in template for every channel mode', () => {
+      expect(PREVIEW_EVENTS).toEqual(['missing', 'wrongAmount', 'resolved', 'cannotCheck', 'ruleUnmatched', 'muteEnded']);
+      for (const eventName of PREVIEW_EVENTS) {
+        for (const schedule of [snapshot, null]) {
+          const { context } = ctx(eventName, schedule);
+          expect(Object.keys(context).sort()).toEqual([...VARIABLES].sort());
+        }
+      }
+    });
+  });
+
+  describe('previewRule', () => {
+    const slackHook = (name) => ({ url: `https://hooks.slack.test/${name || 'anon'}-SECRET`, ...(name ? { name } : {}) });
+    const run = (sender, extra = {}, r = rule, eventName = 'missing') =>
+      previewRule({ eventName, context: ctx(eventName, snapshot, r).context, rule: r, sender, ...extra });
+
+    test('renders the first channel without sending when send is false', async () => {
+      const sender = makeFakeSender({ telegram: { enabled: true }, webhooks: { slack: [slackHook('ops')] } });
+      const out = await run(sender);
+      expect(out.text).toMatch(/Rent did not go out/);
+      expect(out.results).toEqual([]);
+      expect(sender.calls).toHaveLength(0);
+    });
+
+    test('sends once per destination with only that destination\'s channel output', async () => {
+      const sender = makeFakeSender({ telegram: { enabled: true }, webhooks: { slack: [slackHook('ops'), slackHook()] } });
+      const out = await run(sender, { send: true });
+      expect(sender.calls.map((c) => Object.keys(c))).toEqual([['telegram'], ['slack'], ['slack']]);
+      expect(out.results.map((r) => [r.channel, r.ok])).toEqual([['telegram', true], ['slack', true], ['slack', true]]);
+      // a name is shown as is, a nameless webhook as its destination key; never a URL
+      expect(out.results[1].target).toBe('ops');
+      expect(out.results[2].target).toMatch(/^slack:#:[0-9a-f]{8}$/);
+      expect(JSON.stringify(out)).not.toMatch(/SECRET|https?:/);
+    });
+
+    test('a channel failure, a throw, a timeout and a null result map to closed error codes', async () => {
+      const sender = makeFakeSender({
+        telegram: { enabled: true },
+        email: { enabled: true },
+        webhooks: { slack: [slackHook('a')], discord: [{ url: 'https://d.test/SECRET', name: 'd' }] }
+      });
+      sender.result = (o) => {
+        if (o.telegram) return { telegram: { ok: false, statusCode: 500 } };
+        if (o.email) return { email: null };
+        if (o.slack) throw new Error('boom https://hooks.slack.test/SECRET');
+        return new Promise(() => {}); // discord never answers
+      };
+      const out = await run(sender, { send: true, sendTimeoutMs: 20 });
+      expect(out.results.map((r) => [r.channel, r.error])).toEqual([
+        ['telegram', 'send_failed'], ['email', 'channel_unavailable'], ['slack', 'send_threw'], ['discord', 'timeout']
+      ]);
+      expect(out.results.every((r) => r.ok === false)).toBe(true);
+      expect(JSON.stringify(out)).not.toMatch(/SECRET|boom/);
+    });
+
+    test('treats success false and ok false as failures, keyed by channel', async () => {
+      const sender = makeFakeSender({ webhooks: { slack: [slackHook('a')] }, ntfy: { enabled: true, url: 'https://n.test/t' } });
+      sender.result = (o) => (o.slack ? { slack: { success: false } } : { ntfy: { ok: false } });
+      const out = await run(sender, { send: true });
+      expect(out.results.map((r) => r.error)).toEqual(['send_failed', 'send_failed']);
+    });
+
+    test('compiles the template set once per call', async () => {
+      let compiles = 0;
+      let isolated;
+      jest.isolateModules(() => {
+        const real = jest.requireActual('../lib/templateRenderer');
+        jest.doMock('../lib/templateRenderer', () => ({
+          ...real, compileTemplateSet: (...args) => { compiles += 1; return real.compileTemplateSet(...args); }
+        }));
+        isolated = require('../lib/scheduleAlertDelivery');
+      });
+      const sender = makeFakeSender({ telegram: { enabled: true }, webhooks: { slack: [slackHook('a'), slackHook('b')] } });
+      await isolated.previewRule({ eventName: 'missing', context: ctx('missing').context, rule, sender, send: true });
+      jest.dontMock('../lib/templateRenderer');
+      expect(compiles).toBe(1);
+      expect(sender.calls).toHaveLength(3);
+    });
+
+    test('honours the rule\'s own templates over the built-ins', async () => {
+      const custom = normalizeRule({ id: 'rent', schedule: 'Rent', templates: { missing: 'LATE {{name}}' } }, {});
+      const out = await run(makeFakeSender({ telegram: { enabled: true } }), {}, custom);
+      expect(out.text).toBe('LATE Rent');
     });
   });
 });

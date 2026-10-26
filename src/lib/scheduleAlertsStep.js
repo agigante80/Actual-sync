@@ -41,8 +41,10 @@
  */
 
 const moment = require('moment-timezone');
-const { getRules, ruleState } = require('./scheduleAlertRules');
-const { evaluate, skipKey, MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS } = require('./scheduleAlerts');
+const { getRules, mergeRules, ruleState, matchedScheduleIdsByRule } = require('./scheduleAlertRules');
+const { evaluate, skipKey, MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS, CADENCE_DATE_FORMAT } = require('./scheduleAlerts');
+const { getRecurringDescription } = require('./vendor/actualSchedules');
+const { validateScheduleAlert } = require('./scheduleAlertValidation');
 const { deliver } = require('./scheduleAlertDelivery');
 
 // #295 review, M3: the deliver phase runs after the Actual session has
@@ -110,6 +112,36 @@ function makeRuleStateLookup({ syncHistory, serverName, rules, now, timezone }) 
 }
 
 /**
+ * #262: the rules this sync evaluates: config rules plus the dashboard rules
+ * stored for the server. A dashboard rule shadowed by a config rule with the
+ * same id is dropped silently; one that no longer validates (schema or
+ * template, the same `schemaOnly` check the rule list uses) is dropped with a
+ * single WARN naming every such id, so one bad stored rule cannot stop the
+ * others from being checked.
+ *
+ * The `listRules` read is deliberately outside the `rules_invalid` tag: a
+ * failure there is an evaluation failure (the previous snapshot is kept), and
+ * there is no config-only fallback, because that would silently stop
+ * evaluating every dashboard rule.
+ */
+function activeRules(configRules, block, serverName, syncHistory, logger) {
+    if (!syncHistory || typeof syncHistory.listRules !== 'function') return configRules;
+    const merged = mergeRules(configRules, syncHistory.listRules(serverName), block);
+    const active = [];
+    const excluded = [];
+    for (const rule of merged) {
+        if (rule.source === 'config') { active.push(rule); continue; }
+        if (rule.superseded) continue;
+        const result = validateScheduleAlert(rule.definition, { block, dashboard: true, schemaOnly: true });
+        if (result.valid) active.push(rule); else excluded.push(rule.id);
+    }
+    if (excluded.length) {
+        logger.warn('Dashboard payment rules excluded: they no longer validate', { server: serverName, ruleIds: excluded });
+    }
+    return active;
+}
+
+/**
  * Read-side phase: fetch schedules/payees/accounts/transactions from the
  * still-open Actual session and run the pure `evaluate()`. No ledger or
  * notification I/O happens here.
@@ -131,12 +163,13 @@ function makeRuleStateLookup({ syncHistory, serverName, rules, now, timezone }) 
  * @returns {Promise<Object>} the evaluated result to pass to `deliverScheduleAlerts`
  */
 async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, logger, syncHistory }) {
-    let scheduleAlertRules;
+    let configRules;
     try {
-        scheduleAlertRules = getRules(server.scheduleAlerts);
+        configRules = getRules(server.scheduleAlerts);
     } catch (error) {
         throw tagError(error, 'rules_invalid');
     }
+    const scheduleAlertRules = activeRules(configRules, server.scheduleAlerts, serverName, syncHistory, logger);
     const alertNow = now || new Date();
 
     // #295 review, H3: the old fixed `MAX_LOOKBACK_DAYS` window took no
@@ -255,8 +288,16 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
     const existingScheduleIds = scheduleListReliable
         ? new Set(rawSchedules.map((s) => s.id))
         : null;
+    // #373: what each rule's current target matches, and the live name of every
+    // schedule, so an open `missing` for a schedule a rule no longer targets
+    // can be closed (`closed_by: rule_changed`) with the schedule's own name.
+    const matchedScheduleIds = scheduleListReliable ? matchedScheduleIdsByRule(scheduleAlertRules, rawSchedules) : null;
+    const scheduleNameById = scheduleListReliable ? new Map(rawSchedules.map((s) => [s.id, s.name])) : null;
 
-    return { events, evaluations, warnings, skipDecisions, completedSchedules, existingScheduleIds, scheduleAlertRules, timezone, serverName, now: alertNow };
+    return {
+        events, evaluations, warnings, skipDecisions, completedSchedules, existingScheduleIds, matchedScheduleIds, scheduleNameById,
+        scheduleAlertRules, hydratedSchedules, timezone, serverName, now: alertNow
+    };
 }
 
 /**
@@ -279,7 +320,7 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
  * @returns {Promise<{events: number, sent: number, skipped: number}>}
  */
 async function deliverScheduleAlerts(evaluated, { syncHistory, notificationService, logger, deliverBudgetMs }) {
-    const { events, evaluations, skipDecisions, completedSchedules, existingScheduleIds, scheduleAlertRules, timezone, serverName, now } = evaluated;
+    const { events, evaluations, skipDecisions, completedSchedules, existingScheduleIds, matchedScheduleIds, scheduleNameById, scheduleAlertRules, timezone, serverName, now } = evaluated;
     // #359: nothing was evaluated, so there is nothing to deliver and
     // `deliver()` must not run (it would mark every rule as matched).
     if (evaluated.skipped) return { events: 0, sent: 0, skipped: 0 };
@@ -303,6 +344,8 @@ async function deliverScheduleAlerts(evaluated, { syncHistory, notificationServi
         evaluations,
         completedSchedules,
         existingScheduleIds,
+        matchedScheduleIds,
+        scheduleNameById,
         ruleState: makeRuleStateLookup({ syncHistory, serverName, rules: scheduleAlertRules, now, timezone }),
         history: syncHistory,
         sender: notificationService,
@@ -423,6 +466,35 @@ async function maybeDeliverScheduleAlerts(evaluated, { syncHistory, notification
  * @param {Object} [deps.outcome] - the object passed to `maybeRunScheduleAlerts`
  * @param {Object} [deps.logger]
  */
+/**
+ * #262: one actual_schedule_snapshot row per schedule of the evaluated result.
+ * `cadence_text` uses the same vendored description and fixed date format as
+ * the evaluations, null for a one-off (string) date or when Actual's
+ * description throws.
+ */
+function snapshotRows(hydratedSchedules) {
+    return (hydratedSchedules || []).map((s) => {
+        let cadenceText = null;
+        if (s.date && typeof s.date !== 'string') {
+            try { cadenceText = getRecurringDescription(s.date, CADENCE_DATE_FORMAT); } catch (_) { cadenceText = null; }
+        }
+        const range = s.amount && typeof s.amount === 'object';
+        return {
+            id: s.id,
+            name: s.name ?? null,
+            cadenceText,
+            amount: typeof s.amount === 'number' ? s.amount : null,
+            amountMin: range ? Math.min(s.amount.num1, s.amount.num2) : null,
+            amountMax: range ? Math.max(s.amount.num1, s.amount.num2) : null,
+            amountOp: s.amountOp ?? null,
+            account: s.accountName ?? null,
+            payee: s.payeeName ?? null,
+            nextDate: s.next_date ?? null,
+            completed: s.completed === true
+        };
+    });
+}
+
 function persistPaymentSnapshot(server, evaluated, { syncHistory, serverName, outcome, logger }) {
     if (!syncHistory) return;
     try {
@@ -453,6 +525,22 @@ function persistPaymentSnapshot(server, evaluated, { syncHistory, serverName, ou
     } catch (error) {
         if (logger && typeof logger.warn === 'function') {
             logger.warn('Failed to persist payment alert snapshot; sync result is unaffected', { error: error.message });
+        }
+    }
+
+    // #262: the schedule snapshot has its own try, so a failure here changes
+    // neither the alert snapshot above nor the sync result. A failed
+    // evaluation keeps the previous snapshot, and so does a #359 skipped one
+    // (an empty schedule read would otherwise blank the editor's list).
+    try {
+        if (!server.scheduleAlerts) {
+            syncHistory.deleteScheduleSnapshot(serverName);
+        } else if (!(outcome && outcome.failed) && evaluated && !evaluated.skipped) {
+            syncHistory.replaceScheduleSnapshot(serverName, snapshotRows(evaluated.hydratedSchedules), evaluated.now);
+        }
+    } catch (error) {
+        if (logger && typeof logger.warn === 'function') {
+            logger.warn('Failed to persist schedule snapshot; sync result is unaffected', { error: error.message });
         }
     }
 }

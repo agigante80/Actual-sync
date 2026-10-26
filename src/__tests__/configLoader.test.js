@@ -164,6 +164,15 @@ describe('ConfigLoader', () => {
             }
         );
 
+        test('an empty scheduleAlerts.alerts array is valid (#262)', () => {
+            const realSchemaPath = path.join(__dirname, '..', '..', 'config', 'config.schema.json');
+            const schema = JSON.parse(fs.readFileSync(realSchemaPath, 'utf8'));
+            const loader = new ConfigLoader('x', realSchemaPath);
+            const config = createMockConfig({});
+            config.servers[0].scheduleAlerts = { alerts: [] };
+            expect(loader.collectSchemaErrors(config, schema)).toEqual({ hard: [], unknownKeys: [] });
+        });
+
         test('the hard-fail message omits AJV combinator noise (anyOf / if-then) (#121)', () => {
             // telegram enabled but missing botToken/chatId triggers if-then + anyOf
             // meta-errors alongside the real "missing required property" leaves.
@@ -529,6 +538,30 @@ describe('ConfigLoader', () => {
                 }],
                 sync: { maxRetries: 3, baseRetryDelayMs: 1000, schedule: '0 0 * * *' },
                 notifications
+            });
+
+            test('#262 F2: a block with no config rules still has its templates checked at startup', () => {
+                const tg = { telegram: { enabled: true, botToken: '1:AAAA', chatId: '1' } };
+                const bad = baseConfig({ templates: { missing: '{{nmae}}' }, alerts: [] }, tg);
+                expect(() => new ConfigLoader().validateLogic(bad)).toThrow(/Invalid scheduleAlerts template \(server "Test"\)/);
+                const good = baseConfig({ templates: { missing: '{{name}}' }, alerts: [] }, tg);
+                expect(() => new ConfigLoader().validateLogic(good)).not.toThrow();
+            });
+
+            test('#262 round 2 M1: a block template only an unconfigured channel rejects warns at startup', () => {
+                const slack = { webhooks: { slack: [{ name: 's', url: 'https://hooks.slack.com/x' }] } };
+                const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+                try {
+                    const cfg = baseConfig({ templates: { missing: 'Rent & bills {{name}}' }, alerts: [] }, slack);
+                    expect(() => new ConfigLoader().validateLogic(cfg)).not.toThrow();
+                    expect(warn.mock.calls.some(([m]) => /fails on a channel that is not configured/.test(m))).toBe(true);
+                    warn.mockClear();
+                    const fine = baseConfig({ templates: { missing: 'Rent {{name}}' }, alerts: [] }, slack);
+                    new ConfigLoader().validateLogic(fine);
+                    expect(warn.mock.calls.some(([m]) => /fails on a channel that is not configured/.test(m))).toBe(false);
+                } finally {
+                    warn.mockRestore();
+                }
             });
 
             test('H6: a rule with an invalid template throws at startup, naming the rule and server', () => {

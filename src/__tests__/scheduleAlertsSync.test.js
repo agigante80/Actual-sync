@@ -744,6 +744,100 @@ describe('persistPaymentSnapshot and error codes (#260)', () => {
     expect(warnings.some((w) => /payment alert snapshot/.test(w.message))).toBe(true);
   });
 
+  describe('schedule snapshot and dashboard rules (#262)', () => {
+    const recurring = { frequency: 'monthly', start: '2026-01-05', endMode: 'never', interval: 1, patterns: [] };
+    const apiWith = (extra = {}) => fakeApi({
+      schedules: [
+        rentSchedule({ date: recurring, next_date: '2026-02-05' }),
+        rentSchedule({ id: 's3', name: 'Water', date: recurring, next_date: '2026-02-05' }),
+        rentSchedule({ id: 's2', name: 'Tax', date: '2026-03-01', amount: { num1: -9000, num2: -5000 }, amountOp: 'isbetween', account: 'gone', payee: null, completed: true })
+      ],
+      ...extra
+    });
+
+    test('a successful evaluation stores every schedule with names, cents, range and cadence', async () => {
+      await syncOnce(configured, apiWith());
+      const snap = syncHistory.getScheduleSnapshot('Main');
+      expect(snap.capturedAt).toBe(NOW.toISOString());
+      const rent = snap.schedules.find((s) => s.id === 's1');
+      expect(rent).toMatchObject({
+        name: 'Rent', amount: -50000, amountOp: 'is', account: 'Checking', payee: 'Landlord', nextDate: '2026-02-05', completed: false
+      });
+      expect(rent.cadenceText).toEqual(expect.stringMatching(/month/i));
+      const tax = snap.schedules.find((s) => s.id === 's2');
+      expect(tax).toMatchObject({
+        cadenceText: null, amount: null, amountMin: -9000, amountMax: -5000, amountOp: 'isbetween',
+        account: null, payee: null, completed: true
+      });
+    });
+
+    test('a failed evaluation keeps the previous snapshot', async () => {
+      await syncOnce(configured, apiWith());
+      const before = syncHistory.getScheduleSnapshot('Main');
+      await syncOnce(configured, fakeApi({ getSchedules: jest.fn().mockRejectedValue(new Error('down')) }), new Date('2026-01-11T00:00:00.000Z'));
+      expect(syncHistory.getScheduleSnapshot('Main')).toEqual(before);
+    });
+
+    test('a sync skipped for an empty schedule list keeps the previous snapshot (#359)', async () => {
+      await syncOnce(configured, apiWith());
+      const before = syncHistory.getScheduleSnapshot('Main');
+      expect(before.schedules.length).toBeGreaterThan(0);
+      await syncOnce(configured, fakeApi({ schedules: [] }), new Date('2026-01-11T00:00:00.000Z'));
+      expect(syncHistory.getScheduleSnapshot('Main')).toEqual(before);
+    });
+
+    test('removing the scheduleAlerts block deletes the snapshot', async () => {
+      await syncOnce(configured, apiWith());
+      await syncOnce({}, apiWith());
+      expect(syncHistory.getScheduleSnapshot('Main')).toEqual({ capturedAt: null, schedules: [] });
+    });
+
+    test('a snapshot write error logs a WARN and leaves the alert snapshot and the call intact', async () => {
+      const failing = Object.create(syncHistory);
+      failing.replaceScheduleSnapshot = () => { throw new Error('disk full'); };
+      const { evaluated } = await syncOnce(configured, apiWith(), NOW, failing);
+      expect(evaluated).not.toBeNull();
+      expect(syncHistory.getPaymentSnapshot('Main').items).toHaveLength(1);
+      expect(warnings.some((w) => /schedule snapshot/.test(w.message))).toBe(true);
+    });
+
+    test('a dashboard rule is evaluated alongside the config rules', async () => {
+      syncHistory.insertRule('Main', 'water', { id: 'water', schedule: 'Water' });
+      const { evaluated } = await syncOnce(configured, apiWith());
+      expect(evaluated.scheduleAlertRules.map((r) => r.id)).toEqual(['rent', 'water']);
+      expect(syncHistory.getPaymentSnapshot('Main').items.map((i) => i.alertId).sort()).toEqual(['rent', 'water']);
+    });
+
+    test('a dashboard rule shadowed by a config rule id is not evaluated', async () => {
+      syncHistory.insertRule('Main', 'rent', { id: 'rent', schedule: 'Water' });
+      const { evaluated } = await syncOnce(configured, apiWith());
+      expect(evaluated.scheduleAlertRules).toHaveLength(1);
+      expect(evaluated.scheduleAlertRules[0].schedule).toBe('Rent');
+    });
+
+    test('a stored rule that no longer validates is excluded with one WARN; the others still run', async () => {
+      syncHistory.insertRule('Main', 'water', { id: 'water', schedule: 'Water' });
+      syncHistory.insertRule('Main', 'bad-a', { id: 'bad-a', schedule: 'Water', graceDays: 999 });
+      syncHistory.insertRule('Main', 'bad-b', { id: 'bad-b', schedule: 'Water', templates: { missing: '{{nope}}' } });
+      const { evaluated } = await syncOnce(configured, apiWith());
+      expect(evaluated.scheduleAlertRules.map((r) => r.id)).toEqual(['rent', 'water']);
+      const warns = warnings.filter((w) => /excluded/.test(w.message));
+      expect(warns).toHaveLength(1);
+      expect(warns[0].meta.ruleIds).toEqual(['bad-a', 'bad-b']);
+    });
+
+    test('a listRules failure is evaluation_failed and keeps the previous snapshots (no config-only fallback)', async () => {
+      await syncOnce(configured, apiWith());
+      const before = syncHistory.getPaymentSnapshot('Main');
+      const failing = Object.create(syncHistory);
+      failing.listRules = () => { throw new Error('locked'); };
+      const { evaluated, outcome } = await syncOnce(configured, apiWith(), NOW, failing);
+      expect(evaluated).toBeNull();
+      expect(outcome).toEqual({ failed: true, errorCode: 'evaluation_failed' });
+      expect(syncHistory.getPaymentSnapshot('Main').items).toEqual(before.items);
+    });
+  });
+
   test('is a no-op without syncHistory', () => {
     expect(() => persistPaymentSnapshot(configured, { evaluations: [], warnings: [] }, { serverName: 'Main', outcome: {}, logger })).not.toThrow();
     // Without the guard it would throw on syncHistory.deletePaymentSnapshot/replace
@@ -1110,6 +1204,7 @@ describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356
   const texts = () => requests.map((r) => r.body.text);
   const unmatched = () => texts().filter((t) => /matches no schedule/.test(t));
   const closed = () => texts().filter((t) => /removed in Actual/.test(t));
+  const retargeted = () => texts().filter((t) => /no longer tracked by this alert rule/.test(t));
 
   test('deleted with an open missing: one resolved with deleted wording, no repeat', async () => {
     await run(apiFor(), '2026-01-10T00:00:00.000Z');
@@ -1144,7 +1239,7 @@ describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356
     expect(closed()).toHaveLength(0);
   });
 
-  test('a schedule that is still there (renamed away from the rule) is not treated as deleted', async () => {
+  test('a schedule that is still there (renamed away from the rule) is not closed as deleted (#373: closed as rule_changed)', async () => {
     await run(apiFor(), '2026-01-10T00:00:00.000Z');
     const renamed = makeFakeApi({
       schedules: [rentSchedule({ name: 'Rent 2' }), other()],
@@ -1153,6 +1248,7 @@ describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356
     });
     await run(renamed, '2026-01-11T00:00:00.000Z');
     expect(closed()).toHaveLength(0);
+    expect(retargeted()).toHaveLength(1);
   });
 
   test('a deleted schedule that never raised a missing sends no close', async () => {
@@ -1192,6 +1288,98 @@ describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356
     expect(closed()).toHaveLength(1);
     expect(texts().join('\n')).not.toMatch(/arrived/);
     expect(texts().join('\n')).toMatch(/removed in Actual/);
+  });
+
+  // #373: the rule's target is edited while a `missing` is open. The old schedule
+  // still exists in Actual but is no longer named by the rule.
+  const retargetBlock = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent 2', channels: ['telegram'] }] } };
+  const retargetApi = (lastSync = '2026-01-10') => makeFakeApi({
+    schedules: [rentSchedule(), other(), rentSchedule({ id: 's3', name: 'Rent 2', date: '2026-02-01' })],
+    payees: [{ id: 'pay1', name: 'Landlord' }],
+    accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs(lastSync) }]
+  });
+
+  test('retarget (#373): the old schedule\'s open missing is closed once with its own name, never repeated', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    expect(requests).toHaveLength(1);
+
+    await run(retargetApi('2026-01-10'), '2026-01-11T00:00:00.000Z', retargetBlock);
+    expect(retargeted()).toHaveLength(1);
+    expect(retargeted()[0]).toMatch(/Rent \(5 Jan 2026\): no longer tracked by this alert rule\. Alert closed\./);
+    expect(closed()).toHaveLength(0);
+    expect(texts().join('\n')).not.toMatch(/arrived/);
+
+    await run(retargetApi('2026-01-11'), '2026-01-12T00:00:00.000Z', retargetBlock);
+    await run(retargetApi('2026-01-12'), '2026-01-20T00:00:00.000Z', retargetBlock);
+    expect(retargeted()).toHaveLength(1);
+  });
+
+  test('retarget (#373): a prefix rule that still matches the schedule closes nothing', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const prefix = { scheduleAlerts: { alerts: [{ id: 'rent', schedulePrefix: 'Re', channels: ['telegram'] }] } };
+    await run(retargetApi('2026-01-10'), '2026-01-11T00:00:00.000Z', prefix);
+    expect(retargeted()).toHaveLength(0);
+    expect(closed()).toHaveLength(0);
+  });
+
+  test('retarget (#373): a rule that is unchanged closes nothing', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    await run(apiFor({ lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+    expect(retargeted()).toHaveLength(0);
+  });
+
+  test('retarget (#373): a schedule that is deleted still closes as deleted, not rule_changed', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-11T00:00:00.000Z');
+    expect(closed()).toHaveLength(1);
+    expect(retargeted()).toHaveLength(0);
+  });
+
+  test('retarget (#373): a deleted old schedule and a retargeted rule close as deleted', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const gone = makeFakeApi({
+      schedules: [other(), rentSchedule({ id: 's3', name: 'Rent 2', date: '2026-02-01' })],
+      payees: [{ id: 'pay1', name: 'Landlord' }],
+      accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(gone, '2026-01-11T00:00:00.000Z', retargetBlock);
+    expect(closed()).toHaveLength(1);
+    expect(retargeted()).toHaveLength(0);
+  });
+
+  test('retarget (#373): an empty schedule list closes nothing', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    const empty = makeFakeApi({
+      schedules: [], payees: [], accounts: [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-10') }]
+    });
+    await run(empty, '2026-01-11T00:00:00.000Z', retargetBlock);
+    expect(retargeted()).toHaveLength(0);
+  });
+
+  test('retarget (#373): a muted rule sends no close, same as a deleted schedule (#356/#261)', async () => {
+    await run(apiFor(), '2026-01-10T00:00:00.000Z');
+    history.setOverride({ server: 'Main', alertId: 'rent', enabled: true, mutedFrom: '2026-01-10T12:00:00.000Z', mutedUntil: '2026-01-31', reason: 'away' });
+    const before = requests.length;
+    await run(retargetApi('2026-01-10'), '2026-01-11T00:00:00.000Z', retargetBlock);
+    expect(retargeted()).toHaveLength(0);
+    expect(requests.length).toBe(before);
+
+    // Deleted-schedule path under the same mute: the behaviour to mirror.
+    history.setOverride({ server: 'Main', alertId: 'rent', enabled: true, mutedFrom: '2026-01-10T12:00:00.000Z', mutedUntil: '2026-01-31', reason: 'away' });
+    await run(apiFor({ deleted: true, lastSync: '2026-01-10' }), '2026-01-12T00:00:00.000Z');
+    expect(closed()).toHaveLength(0);
+    expect(requests.length).toBe(before);
+  });
+
+  test('retarget (#373): a custom resolved without closed_by gets the built-in rule_changed text', async () => {
+    const custom = (schedule) => ({ scheduleAlerts: { alerts: [{
+      id: 'rent', schedule, channels: ['telegram'],
+      templates: { resolved: '{{name}}: {{received_amount}} arrived {{received_date}}' }
+    }] } });
+    await run(apiFor(), '2026-01-10T00:00:00.000Z', custom('Rent'));
+    await run(retargetApi('2026-01-10'), '2026-01-11T00:00:00.000Z', custom('Rent 2'));
+    expect(retargeted()).toHaveLength(1);
+    expect(texts().join('\n')).not.toMatch(/arrived/);
   });
 
   test('ruleUnmatched re-arms when the rule only matches a schedule that throws on evaluation (cannotCheck, no evaluation row)', async () => {

@@ -86,7 +86,9 @@ function makeEnv({ route, windowGlobals = {}, dateFormat = null } = {}) {
   };
   vm.createContext(ctx);
   vm.runInContext(`${block}
-this.api = { loadPaymentsTab, paymentsSyncNow, formatCalendarDate, formatPaymentAmount, setPaymentStateFilter, togglePaymentAlert, openPaymentMute, savePaymentMute, onPaymentMuteField, unmutePaymentAlert };`, ctx);
+this.api = { loadPaymentsTab, paymentsSyncNow, formatCalendarDate, formatPaymentAmount, setPaymentStateFilter, togglePaymentAlert, openPaymentMute, savePaymentMute, onPaymentMuteField, unmutePaymentAlert,
+  slugifyRuleId, uniqueRuleId, countPrefixMatches, prefixMatchText, scheduleOptions, formatScheduleLine, editorDeadlineText, effectiveTemplate,
+  tolerancePlaceholder, buildRuleBody, paymentAlertCount, editorCanSave, beginEditorSend, editorRowFocusKey, editorSavedFocusKey, editorCanSend, editedNote, mergePaymentRows, editorFieldForPath, mapEditorError };`, ctx);
   return { ctx, els, log, calls, timers, api: ctx.api, setActive: (v) => { active = v; } };
 }
 
@@ -277,10 +279,12 @@ describe('Payments tab client (#341)', () => {
       expect(JSON.parse(post.body)).toEqual({ server: SERVER });
     });
 
-    test('a group that is not configured has no Sync now', async () => {
+    test('a group that is not configured has no Sync now (only a disabled Add alert, #268)', async () => {
       const env = makeEnv({ route: () => payments(group({ configured: false, lastRun: null, items: [] })) });
       await env.api.loadPaymentsTab();
-      expect(env.els['payments-content'].find((e) => e.tag === 'button')).toHaveLength(0);
+      const buttons = env.els['payments-content'].find((e) => e.tag === 'button');
+      expect(buttons.map((b) => b.attrs['data-action'])).toEqual(['openAlertEditor']);
+      expect(buttons[0].attrs['aria-disabled']).toBe('true');
     });
   });
 
@@ -640,7 +644,7 @@ describe('Payments tab client (#341)', () => {
 
     test('an overlapping tick does not start a second fetch', async () => {
       let release;
-      const env = makeEnv({ route: (url) => (url.includes('capabilities') ? ok({ configWrites: false, reason: 'disabled' }) : new Promise((r) => { release = () => r(payments(group())); })) });
+      const env = makeEnv({ route: (url) => (url.includes('capabilities') ? ok({ configWrites: false, reason: 'disabled' }) : url.includes('payment-rules') ? ok({ rules: [] }) : new Promise((r) => { release = () => r(payments(group())); })) });
       const first = env.api.loadPaymentsTab();
       env.api.loadPaymentsTab();
       expect(paymentCalls(env)).toHaveLength(1);
@@ -692,6 +696,379 @@ describe('Payments tab client (#341)', () => {
       expect(api.formatPaymentAmount(5)).toBe('0.05');
       expect(api.formatPaymentAmount({ num1: 5000, num2: 7000 })).toBe('50.00 to 70.00');
       expect(api.formatPaymentAmount(null)).toBe('');
+    });
+  });
+});
+
+describe('Payments alert editor helpers (#268)', () => {
+  const api = makeEnv({ route: () => ok({}) }).api;
+  // Results come out of the vm realm: compare through JSON.
+  const plain = (v) => JSON.parse(JSON.stringify(v));
+
+  describe('rule id', () => {
+    test('slugifyRuleId mirrors the server slug', () => {
+      expect(api.slugifyRuleId('Rent - Parking A')).toBe('rent-parking-a');
+      expect(api.slugifyRuleId('  --Gym!!  ')).toBe('gym');
+      expect(api.slugifyRuleId('')).toBe('alert');
+      expect(api.slugifyRuleId('!!!')).toBe('alert');
+      expect(api.slugifyRuleId(null)).toBe('alert');
+      expect(api.slugifyRuleId('a'.repeat(80))).toHaveLength(64);
+    });
+
+    test('uniqueRuleId appends -2, -3 and keeps the total within 64', () => {
+      expect(api.uniqueRuleId('gym', new Set())).toBe('gym');
+      expect(api.uniqueRuleId('gym', new Set(['gym']))).toBe('gym-2');
+      expect(api.uniqueRuleId('gym', new Set(['gym', 'gym-2']))).toBe('gym-3');
+      const long = 'a'.repeat(64);
+      const id = api.uniqueRuleId(long, new Set([long]));
+      expect(id).toBe(`${'a'.repeat(62)}-2`);
+      expect(id).toHaveLength(64);
+      expect(api.uniqueRuleId(long, new Set([long, id]))).toBe(`${'a'.repeat(62)}-3`);
+    });
+  });
+
+  describe('schedule picker', () => {
+    const list = [
+      { id: 's1', name: 'Rent - A', completed: false },
+      { id: 's2', name: 'Rent - B', completed: true },
+      { id: 'abcdef123456', name: 'Gym', completed: false },
+      { id: 'zzzzzz654321', name: 'Gym', completed: false }
+    ];
+
+    test('prefix count is case sensitive, skips completed schedules and is 0 for an empty prefix', () => {
+      expect(api.countPrefixMatches(list, 'Rent')).toBe(1);
+      expect(api.countPrefixMatches(list, 'rent')).toBe(0);
+      expect(api.countPrefixMatches(list, 'Gym')).toBe(2);
+      expect(api.countPrefixMatches(list, '')).toBe(0);
+      expect(api.countPrefixMatches(undefined, 'x')).toBe(0);
+    });
+
+    test('the match message warns about zero matches and stays plain otherwise', () => {
+      expect(api.prefixMatchText(0)).toBe('matches 0: this rule will report ruleUnmatched');
+      expect(api.prefixMatchText(3)).toBe('matches 3');
+    });
+
+    test('scheduleOptions drops completed schedules and tells equal names apart by id suffix', () => {
+      expect(plain(api.scheduleOptions(list))).toEqual([
+        { value: 's1', name: 'Rent - A', label: 'Rent - A' },
+        { value: 'abcdef123456', name: 'Gym', label: 'Gym (123456)' },
+        { value: 'zzzzzz654321', name: 'Gym', label: 'Gym (654321)' }
+      ]);
+    });
+
+    test('formatScheduleLine words amount, account and payee', () => {
+      expect(api.formatScheduleLine({ cadenceText: 'Every month on the 5th', amount: 6000, amountOp: 'is', account: 'Main', payee: 'Tenant A' }))
+        .toBe('Every month on the 5th · 60.00 · into Main · from Tenant A');
+      expect(api.formatScheduleLine({ cadenceText: 'Every month on the 1st', amount: null, amountMin: -7000, amountMax: -5000, amountOp: 'isbetween', account: null, payee: 'Fit Club' }))
+        .toBe('Every month on the 1st · 50.00 to 70.00 · out of (deleted account) · to Fit Club');
+      expect(api.formatScheduleLine({ cadenceText: 'Every week', amount: 100, account: 'Main', payee: null })).toBe('Every week · 1.00 · into Main');
+      expect(api.formatScheduleLine(null)).toBe('');
+    });
+
+    test('editorDeadlineText says "each month" only when day + grace stays within 28', () => {
+      const monthly = (day, nextDate) => ({ cadenceText: `Every month on the ${day}th`, nextDate });
+      expect(api.editorDeadlineText(monthly(8, '2026-02-08'), 3)).toBe('deadline: 11th of each month');
+      expect(api.editorDeadlineText(monthly(25, '2026-02-25'), 3)).toBe('deadline: 28th of each month');
+      expect(api.editorDeadlineText(monthly(28, '2026-10-28'), 6)).toBe('deadline: 3 Nov for the 28 Oct payment');
+      expect(api.editorDeadlineText(monthly(28, '2026-02-28'), 1)).toBe('deadline: 1 Mar for the 28 Feb payment');
+      expect(api.editorDeadlineText(monthly(28, '2026-02-28'), 6)).toBe('deadline: 6 Mar for the 28 Feb payment');
+      expect(api.editorDeadlineText({ cadenceText: 'Every month on the last day', nextDate: '2026-01-31' }, 3)).toBe('next date 31 Jan');
+      expect(api.editorDeadlineText({ cadenceText: 'Every 2 weeks on Friday', nextDate: '2026-11-05' }, 3)).toBe('next date 5 Nov');
+      expect(api.editorDeadlineText({ cadenceText: 'Every month on the 22nd', nextDate: '2026-02-22' }, 0)).toBe('deadline: 22nd of each month');
+      expect(api.editorDeadlineText({ cadenceText: 'Every month on the 1st', nextDate: '2026-02-01' }, 10)).toBe('deadline: 11th of each month');
+      expect(api.editorDeadlineText({ cadenceText: 'Every month on the 2nd', nextDate: '2026-02-02' }, 10)).toBe('deadline: 12th of each month');
+      expect(api.editorDeadlineText({ cadenceText: 'Every month on the 3rd', nextDate: '2026-02-03' }, 10)).toBe('deadline: 13th of each month');
+      expect(api.editorDeadlineText(null, 3)).toBe('');
+      expect(api.editorDeadlineText({ cadenceText: 'x', nextDate: 'bad' }, 3)).toBe('');
+    });
+  });
+
+  describe('tolerance and defaults', () => {
+    test('the placeholder follows the schedule amount operator', () => {
+      expect(api.tolerancePlaceholder('isapprox')).toBe('From schedule (about 7.5%)');
+      expect(api.tolerancePlaceholder('is')).toBe('From schedule (exact)');
+      expect(api.tolerancePlaceholder('isbetween')).toBe('From schedule (exact)');
+    });
+
+    test('the block template wins over the built-in one', () => {
+      const d = { templates: { missing: 'base', resolved: 'r' }, blockTemplates: { missing: 'block' } };
+      expect(api.effectiveTemplate(d, 'missing')).toBe('block');
+      expect(api.effectiveTemplate(d, 'resolved')).toBe('r');
+      expect(api.effectiveTemplate(d, 'muteEnded')).toBe('');
+      expect(api.effectiveTemplate(undefined, 'missing')).toBe('');
+    });
+  });
+
+  describe('editor Save, Send and focus helpers', () => {
+    const ed = (over = {}) => ({ errors: {}, invalid: {}, busy: false, loading: false, ...over });
+    test('Save is off while a field or template error is shown, and on again once cleared', () => {
+      expect(api.editorCanSave(ed(), false, true, {})).toBe(true);
+      expect(api.editorCanSave(ed({ errors: { 'template:missing': 'Unknown token nope' } }), false, true, {})).toBe(false);
+      expect(api.editorCanSave(ed({ errors: { graceDays: 'bad' } }), false, true, {})).toBe(false);
+      expect(api.editorCanSave(ed({ errors: { graceDays: '' } }), false, true, {})).toBe(true);
+      expect(api.editorCanSave(ed({ invalid: { id: true } }), false, true, {})).toBe(false);
+      expect(api.editorCanSave(ed(), false, true, { channels: 'Pick at least one channel' })).toBe(false);
+      expect(api.editorCanSave(ed({ busy: true }), false, true, {})).toBe(false);
+      expect(api.editorCanSave(ed({ loading: true }), false, true, {})).toBe(false);
+      expect(api.editorCanSave(ed(), true, true, {})).toBe(false);
+      expect(api.editorCanSave(ed(), false, false, {})).toBe(false);
+    });
+    test('a second test send is refused while one is in flight', () => {
+      const e = {};
+      expect(api.beginEditorSend(e)).toBe(true);
+      expect(e.sending).toBe(true);
+      expect(api.beginEditorSend(e)).toBe(false);
+    });
+    test('the Send button is off while a send is in flight', () => {
+      expect(api.editorCanSend(ed(), false, true)).toBe(true);
+      expect(api.editorCanSend(ed({ sending: true }), false, true)).toBe(false);
+      expect(api.editorCanSend(ed({ busy: true }), false, true)).toBe(false);
+      expect(api.editorCanSend(ed({ loading: true }), false, true)).toBe(false);
+      expect(api.editorCanSend(ed(), true, true)).toBe(false);
+      expect(api.editorCanSend(ed(), false, false)).toBe(false);
+    });
+    test('saving an edit returns focus to the row Edit button', () => {
+      expect(api.editorSavedFocusKey('Main', 'gym')).toBe(api.editorRowFocusKey('Main', 'gym', 'dashboard', 'editPaymentRule'));
+    });
+    test('the focus key after saving an edit is the row Edit button key', () => {
+      expect(api.editorRowFocusKey('Main', 'gym', 'dashboard', 'editPaymentRule')).toBe('ed:["Main","gym","dashboard","editPaymentRule"]');
+    });
+  });
+
+  describe('paymentAlertCount', () => {
+    const row = (kind, alertId, source) => ({ kind, item: { alertId, source } });
+    test('counts evaluated rows of the same alert and source, not a superseded twin', () => {
+      const group = { items: [], rows: [row('evaluated', 'a', 'config'), row('evaluated', 'a', 'config'), row('superseded', 'a', 'config'), row('evaluated', 'a', 'dashboard'), row('evaluated', 'b', 'config')] };
+      expect(api.paymentAlertCount(group, 'a', 'config')).toBe(2);
+      expect(api.paymentAlertCount({ items: [row('x', 'a', 'config').item], rows: undefined }, 'a', 'config')).toBe(1);
+    });
+  });
+
+  describe('buildRuleBody', () => {
+    const defaults = { graceDays: 3, earlyDays: 2, templates: { missing: 'M', wrongAmount: 'W' }, blockTemplates: { wrongAmount: 'BW' } };
+    const channels = ['discord', 'slack'];
+    const form = (over = {}) => ({
+      id: 'gym', watch: 'schedule', schedule: 'Gym', prefix: '', graceDays: '3', earlyDays: '2', period: 'occurrence',
+      tolerance: '', remindOn: false, remindDays: '3', channels: ['discord', 'slack'],
+      templates: { missing: 'M', wrongAmount: 'BW' }, ...over
+    });
+    const build = (f, stored, ch = channels) => plain(api.buildRuleBody(f, stored, defaults, ch));
+
+    test('an untouched new rule has only id and schedule', () => {
+      expect(build(form(), {})).toEqual({ id: 'gym', schedule: 'Gym' });
+    });
+
+    test('a prefix rule replaces schedule with schedulePrefix', () => {
+      expect(build(form({ watch: 'prefix', prefix: 'Rent' }), { schedule: 'Old' })).toEqual({ id: 'gym', schedulePrefix: 'Rent' });
+    });
+
+    test('values that differ from the defaults are sent, zero included', () => {
+      expect(build(form({ graceDays: '0', earlyDays: '5', tolerance: '0' }), {})).toEqual({
+        id: 'gym', schedule: 'Gym', graceDays: 0, earlyDays: 5, amountTolerancePct: 0
+      });
+      expect(build(form({ tolerance: '' }), { amountTolerancePct: 5 })).toEqual({ id: 'gym', schedule: 'Gym' });
+    });
+
+    test('a stored key is kept even when it equals the default; a cleared field deletes it', () => {
+      expect(build(form(), { graceDays: 3, earlyDays: 2 })).toEqual({ id: 'gym', schedule: 'Gym', graceDays: 3, earlyDays: 2 });
+      expect(build(form({ graceDays: '' }), { graceDays: 9 })).toEqual({ id: 'gym', schedule: 'Gym' });
+    });
+
+    test('keys the form does not show survive an edit', () => {
+      expect(build(form(), { custom: 'keep' }).custom).toBe('keep');
+    });
+
+    test('period is omitted while it is the default, unless it was stored', () => {
+      expect(build(form({ period: 'next' }), {}).period).toBe('next');
+      expect(build(form(), {}).period).toBeUndefined();
+      expect(build(form(), { period: 'occurrence' }).period).toBe('occurrence');
+    });
+
+    test('reminders: off deletes the key, on sends the days', () => {
+      expect(build(form({ remindOn: true, remindDays: '5' }), {}).remindEveryDays).toBe(5);
+      expect(build(form({ remindOn: true, remindDays: '' }), {}).remindEveryDays).toBe(3);
+      expect(build(form({ remindOn: false }), { remindEveryDays: 7 }).remindEveryDays).toBeUndefined();
+    });
+
+    test('a stored channels list is always written back, so editing another field never widens the rule', () => {
+      const stored = { id: 'gym', schedule: 'Gym', channels: ['slack'] };
+      expect(build(form({ channels: ['slack'], graceDays: '5' }), stored).channels).toEqual(['slack']);
+      // the user ticked every box: still explicit
+      expect(build(form({ channels: ['discord', 'slack'] }), stored).channels).toEqual(['discord', 'slack']);
+    });
+
+    test('a stored channel that is not available now survives untouched boxes and is dropped when the boxes change', () => {
+      const stored = { id: 'gym', schedule: 'Gym', channels: ['slack', 'telegram'] };
+      expect(build(form({ channels: ['slack'] }), stored).channels).toEqual(['slack', 'telegram']);
+      expect(build(form({ channels: ['discord', 'slack'] }), stored).channels).toEqual(['discord', 'slack']);
+    });
+
+    test('all channels checked means no channels key; a subset lists them', () => {
+      expect(build(form({ channels: ['slack'] }), {}).channels).toEqual(['slack']);
+      expect(build(form({ channels: ['slack', 'discord'] }), {}).channels).toBeUndefined();
+      expect(build(form({ channels: ['slack'] }), {}, []).channels).toBeUndefined();
+      expect(build(form({ channels: ['telegram', 'discord'] }), {}, ['discord', 'slack', 'telegram']).channels).toEqual(['discord', 'telegram']);
+    });
+
+    test('templates: only changed or stored ones are sent, an empty set is omitted', () => {
+      expect(build(form(), {}).templates).toBeUndefined();
+      expect(build(form({ templates: { missing: 'mine', wrongAmount: 'BW' } }), {}).templates).toEqual({ missing: 'mine' });
+      expect(build(form({ templates: { missing: 'M' } }), { templates: { missing: 'M' } }).templates).toEqual({ missing: 'M' });
+      expect(build(form({ templates: { missing: '' } }), { templates: { missing: 'old' } }).templates).toBeUndefined();
+      // equal to the block template (not the built-in one) counts as unchanged
+      expect(build(form({ templates: { wrongAmount: 'W' } }), {}).templates).toEqual({ wrongAmount: 'W' });
+    });
+  });
+
+  describe('mergePaymentRows', () => {
+    const it = (alertId, source = 'config', over = {}) => ({ alertId, source, scheduleId: `s-${alertId}`, name: alertId, state: 'upcoming', ...over });
+    const rule = (id, source = 'dashboard', over = {}) => ({ id, source, superseded: false, invalid: false, errors: [], definition: { id, schedule: id }, updatedAt: '2026-01-10T00:00:00Z', ...over });
+    const merge = (items, rules, at = '2026-01-14T00:00:00Z', configured = true) => plain(api.mergePaymentRows(items, rules, at, configured));
+    const kinds = (m) => m.rows.map((r) => `${r.item.alertId}:${r.kind}`);
+
+    test('a failed rule list (null) merges nothing and offers no editor controls', () => {
+      const m = merge([it('a')], null);
+      expect(kinds(m)).toEqual(['a:evaluated']);
+      expect(m.editorControls).toBe(false);
+    });
+
+    test('an empty rule list is not the same as null: it hides every snapshot row', () => {
+      const m = merge([it('a')], []);
+      expect(m.rows).toEqual([]);
+      expect(m.editorControls).toBe(true);
+    });
+
+    test('matches on alert id and source; rows without a rule are hidden', () => {
+      const m = merge([it('a', 'dashboard'), it('b', 'config'), it('gone', 'config')], [rule('a'), rule('b', 'config')]);
+      expect(kinds(m)).toEqual(['a:evaluated', 'b:evaluated']);
+      // same id, different source is a different rule
+      expect(kinds(merge([it('a', 'config')], [rule('a', 'dashboard')]))).toEqual(['a:pending']);
+    });
+
+    test('a dashboard rule with no snapshot row is "pending"; a superseded one has its own row', () => {
+      const m = merge([it('a', 'config')], [rule('a', 'config'), rule('a', 'dashboard', { superseded: true }), rule('n')]);
+      expect(kinds(m)).toEqual(['a:evaluated', 'a:superseded', 'n:pending']);
+    });
+
+    test('rules of a server without a scheduleAlerts block are dormant', () => {
+      expect(kinds(merge([], [rule('d')], null, false))).toEqual(['d:dormant']);
+    });
+
+    test('an invalid rule is one row and hides its snapshot rows', () => {
+      const m = merge([it('x', 'dashboard'), it('x', 'dashboard', { scheduleId: 'other' })], [rule('x', 'dashboard', { invalid: true, errors: [{ path: '/graceDays', message: 'bad' }] })]);
+      expect(kinds(m)).toEqual(['x:invalid']);
+    });
+
+    test('a synthetic row is labelled by schedule, prefix or id', () => {
+      const labels = merge([], [
+        rule('s', 'dashboard', { definition: { schedule: 'Gym' } }),
+        rule('p', 'dashboard', { definition: { schedulePrefix: 'Rent ' } }),
+        rule('i', 'dashboard', { definition: {} })
+      ]).rows.map((r) => r.item.name);
+      expect(labels).toEqual(['Gym', 'Rent *', 'i']);
+    });
+
+    test('edited is set for a dashboard rule saved after the last run', () => {
+      const m = merge([it('a', 'dashboard')], [rule('a', 'dashboard', { updatedAt: '2026-01-15T00:00:00Z' })]);
+      expect(m.rows[0].edited).toBe(true);
+      expect(merge([it('a', 'dashboard')], [rule('a')]).rows[0].edited).toBe(false);
+    });
+
+    test('editedNote needs a dashboard rule, both times, and a later save', () => {
+      const r = { source: 'dashboard', updatedAt: '2026-01-15T00:00:00Z' };
+      expect(api.editedNote(r, '2026-01-14T00:00:00Z')).toBe(true);
+      expect(api.editedNote(r, '2026-01-15T00:00:00Z')).toBe(false);
+      expect(api.editedNote(r, null)).toBe(false);
+      expect(api.editedNote({ ...r, source: 'config' }, '2026-01-14T00:00:00Z')).toBe(false);
+      expect(api.editedNote({ source: 'dashboard' }, '2026-01-14T00:00:00Z')).toBe(false);
+      expect(api.editedNote(null, '2026-01-14T00:00:00Z')).toBe(false);
+    });
+  });
+
+  describe('server errors', () => {
+    const map = (status, json, where = 'save') => plain(api.mapEditorError(status, json, where));
+
+    test('error paths map to fields on a path boundary', () => {
+      expect(api.editorFieldForPath('/id')).toBe('id');
+      expect(api.editorFieldForPath('/schedule')).toBe('watch');
+      expect(api.editorFieldForPath('/schedulePrefix')).toBe('watch');
+      expect(api.editorFieldForPath('/graceDays')).toBe('graceDays');
+      expect(api.editorFieldForPath('/earlyDays')).toBe('earlyDays');
+      expect(api.editorFieldForPath('/period')).toBe('period');
+      expect(api.editorFieldForPath('/amountTolerancePct')).toBe('tolerance');
+      expect(api.editorFieldForPath('/remindEveryDays')).toBe('reminders');
+      expect(api.editorFieldForPath('/channels/0')).toBe('channels');
+      expect(api.editorFieldForPath('/templates/missing')).toBe('template:missing');
+      expect(api.editorFieldForPath('/idx')).toBe('');
+      expect(api.editorFieldForPath('/other')).toBe('');
+      expect(api.editorFieldForPath(undefined)).toBe('');
+    });
+
+    test('invalid_rule goes to fields; unmapped paths go to the banner', () => {
+      const m = map(400, { error: 'invalid_rule', details: [{ path: '/graceDays', message: 'must be <= 60' }, { path: '/x', message: 'odd' }] });
+      expect(m.fields).toEqual({ graceDays: 'must be <= 60' });
+      expect(m.banner).toBe('odd');
+    });
+
+    test('invalid_template words each reason', () => {
+      const t = (reason, extra = {}) => map(400, { error: 'invalid_template', template: 'missing', token: 'x', line: 2, reason, ...extra }).fields['template:missing'];
+      expect(t('unknown_variable')).toBe('unknown variable "x"');
+      expect(t('unknown_helper')).toBe('unknown helper "x"');
+      expect(t('parse_error')).toBe('template syntax error near "x" on line 2');
+      expect(t('telegram_markup')).toBe('this text breaks Telegram formatting near "x"; close or escape it');
+    });
+
+    test.each([
+      [0, null, 'Could not reach the server. Check your connection and try again.'],
+      [400, { error: 'no_configured_destination' }, 'No notification channel is configured for this rule.'],
+      [400, { error: 'id_mismatch' }, 'The editor sent an invalid request. Reload the page.'],
+      [400, { error: 'invalid_event' }, 'The editor sent an invalid request. Reload the page.'],
+      [400, { error: 'invalid_body' }, 'The editor sent an invalid request. Reload the page.'],
+      [400, { error: 'invalid_json' }, 'The editor sent an invalid request. Reload the page.'],
+      [400, { error: 'invalid_body_encoding' }, 'The editor sent an invalid request. Reload the page.'],
+      [415, null, 'The editor sent an invalid request. Reload the page.'],
+      [401, null, 'Your session has expired or the credentials are wrong. Reload and sign in again.'],
+      [403, { error: 'config_writes_disabled', reason: 'disabled' }, 'Configuration changes are turned off (allowConfigWrites is false).'],
+      [403, { error: 'config_writes_disabled', reason: 'auth-none' }, 'Configuration changes are turned off (dashboard authentication is off).'],
+      [403, { error: 'origin_rejected' }, 'The request was rejected because it did not come from this dashboard\'s own address. Open the dashboard at its normal URL.'],
+      [404, { error: 'rule_not_found' }, 'This alert no longer exists.'],
+      [404, { error: 'server_not_found' }, 'This server is no longer configured.'],
+      [409, { error: 'managed_in_config' }, 'This alert is managed in config.json. Copy as JSON to change it there.'],
+      [409, { error: 'alerts_not_configured' }, 'Add a scheduleAlerts block to this server in config.json first (it can be empty).'],
+      [409, { error: 'too_many_rules' }, 'Limit of 200 dashboard alerts reached. Delete one first.'],
+      [413, null, 'This alert is too large to save (16 KB limit). Shorten the message templates.'],
+      [429, { error: 'too_many_attempts' }, 'Too many failed sign-in attempts. Wait a few minutes.'],
+      [429, null, 'Too many requests. Wait a minute.'],
+      [500, { error: 'Failed to save payment rule' }, 'The server could not save this alert. Try again; see the service log.'],
+      [503, { error: 'Sync history not available' }, 'Sync history is not available, so alerts cannot be edited.'],
+      [418, { error: 'teapot' }, 'The server rejected the request (teapot)'],
+      [418, null, 'The server rejected the request (HTTP 418)']
+    ])('status %s %j is worded for the banner', (status, json, text) => {
+      expect(map(status, json).banner).toBe(text);
+    });
+
+    test('duplicate_id and id_in_config sit next to the id field', () => {
+      expect(map(409, { error: 'duplicate_id' }).fields.id).toBe('An alert with this id exists');
+      expect(map(409, { error: 'id_in_config' }).fields.id).toBe('config.json already has an alert with this id');
+    });
+
+    test('flags: writes off, and a vanished rule closes and reloads', () => {
+      expect(map(403, { error: 'config_writes_disabled', reason: 'disabled' }).writesOff).toBe(true);
+      const gone = map(404, { error: 'rule_not_found' });
+      expect(gone.close).toBe(true);
+      expect(gone.reload).toBe(true);
+      expect(map(409, { error: 'duplicate_id' }).close).toBe(false);
+    });
+
+    test('preview failures fill the preview text, not the banner', () => {
+      const p = (status, json) => map(status, json, 'preview');
+      expect(p(400, { error: 'no_configured_destination' })).toMatchObject({ preview: 'No notification channel is configured for this rule.', banner: '' });
+      expect(p(502, { error: 'send_failed' }).preview).toBe('No destination accepted the test message');
+      expect(p(429, { error: 'test_send_rate_limited' }).preview).toBe('Too many test messages, wait a minute.');
+      expect(p(502, { error: 'send_threw' }).preview).toBe('The test message could not be sent. See the service log.');
+      expect(p(504, { error: 'timeout' }).preview).toBe('The test message timed out.');
+      expect(p(502, { error: 'channel_unavailable' }).preview).toBe('A channel is not available right now.');
+      expect(p(500, null).preview).toBe('The preview failed. See the service log.');
     });
   });
 });

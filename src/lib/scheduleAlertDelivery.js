@@ -150,8 +150,10 @@ const DEFAULT_TEMPLATES = {
   // #326: `closed_by` is "completed" when the one-off schedule was marked
   // completed in Actual instead of a payment arriving; the other branch is the
   // original text, unchanged. #356: "deleted" is the schedule removed from Actual.
+  // #373: "rule_changed" is the rule's target edited so it no longer names the schedule.
   resolved: '{{#if (eq closed_by "completed")}}✅ {{name}}: marked completed in Actual. Alert closed.'
-    + '{{else if (eq closed_by "deleted")}}✅ {{name}} ({{expected_date}}): removed in Actual. Alert closed.{{else}}'
+    + '{{else if (eq closed_by "deleted")}}✅ {{name}} ({{expected_date}}): removed in Actual. Alert closed.'
+    + '{{else if (eq closed_by "rule_changed")}}✅ {{name}} ({{expected_date}}): no longer tracked by this alert rule. Alert closed.{{else}}'
     + '✅ {{name}}: {{received_amount}} arrived {{received_date}}, {{#if (eq days_overdue 0)}}on time'
     + '{{else}}{{days_overdue}} day(s) after the deadline{{/if}}. Alert closed.{{/if}}',
   // One wording per `reason` (#296): only stale / not-synced are about the bank
@@ -911,7 +913,7 @@ async function sendDigestBatch(items, { sender, server, timezone, logger, histor
  * @param {string} server
  * @returns {Promise<Object[]>} synthesized `resolved` events, shaped like `evaluate()`'s AlertEvent
  */
-async function deriveResolvedEvents(evaluations, history, server, logger, { completedSchedules, existingScheduleIds, rules, now, timezone } = {}) {
+async function deriveResolvedEvents(evaluations, history, server, logger, { completedSchedules, existingScheduleIds, matchedScheduleIds, scheduleNameById, rules, now, timezone } = {}) {
   const resolved = [];
   // #356: a schedule deleted in Actual is gone from the schedule list, so its
   // open `missing` rows (same look-back window) are closed with a `resolved`
@@ -927,17 +929,28 @@ async function deriveResolvedEvents(evaluations, history, server, logger, { comp
       try {
         rows = await history.listMissingScheduleAlertSchedules({ server, alertId: rule.id, sinceDate });
       } catch (error) {
-        logger.warn('Schedule alert ledger lookup failed; deleted-schedule check withheld until the next sync', {
+        logger.warn('Schedule alert ledger lookup failed; deleted/retargeted-schedule check withheld until the next sync', {
           server, alertId: rule.id, event: 'resolved', error: error.message
         });
         continue;
       }
       for (const row of rows) {
-        if (existingScheduleIds.has(row.scheduleId)) continue;
+        let closedBy = 'deleted';
+        let scheduleName = rule.schedule || null; // exact-name rules only; a prefix rule falls back to its id
+        if (existingScheduleIds.has(row.scheduleId)) {
+          // #373: the schedule still exists, so this is only a close when the
+          // rule's current target no longer names it (the rule was edited).
+          // Without the matched map nothing is inferred. The schedule's own
+          // name is used: the rule's `schedule` now names something else.
+          const matched = matchedScheduleIds && matchedScheduleIds.get(rule.id);
+          if (!matched || matched.has(row.scheduleId)) continue;
+          closedBy = 'rule_changed';
+          scheduleName = (scheduleNameById && scheduleNameById.get(row.scheduleId)) || null;
+        }
         resolved.push({
           event: 'resolved',
-          closedBy: 'deleted',
-          scheduleName: rule.schedule || null, // exact-name rules only; a prefix rule falls back to its id
+          closedBy,
+          scheduleName,
           alertId: rule.id,
           scheduleId: row.scheduleId,
           occurrence: row.occurrenceDate,
@@ -1054,7 +1067,7 @@ async function markRulesMatched(matchedAlertIds, history, server, now, logger) {
  * "arrived ," with empty amount and date for a completed one-off, falsely
  * saying money arrived. So when the event is closed by completion and the
  * custom `resolved` never mentions `closed_by`, the built-in `resolved` is
- * used for that event. #356: the same holds for `closedBy: 'deleted'`.
+ * used for that event. #356, #373: the same holds for `closedBy: 'deleted'` and `'rule_changed'`.
  * A custom `resolved` is honoured only when it mentions `closed_by` and, if
  * it compares `closed_by` to quoted literals, one of them is this event's
  * value: a #326-style template that branches on `(eq closed_by "completed")`
@@ -1318,7 +1331,7 @@ async function runMuteEndPhase({ rules, evaluations, stateOf, history, sender, s
  *   this promise settles (see `sendEvent`'s doc comment).
  * @returns {Promise<{sent: number, skipped: number}>}
  */
-async function deliver(events, { evaluations, completedSchedules, existingScheduleIds, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
+async function deliver(events, { evaluations, completedSchedules, existingScheduleIds, matchedScheduleIds, scheduleNameById, ruleState, history, sender, now, server, rules, timezone, logger, deadline }) {
   const log = logger || { warn() {} };
   const rulesById = new Map((rules || []).map((r) => [r.id, r]));
   let sent = 0;
@@ -1337,7 +1350,7 @@ async function deliver(events, { evaluations, completedSchedules, existingSchedu
   dropPaidMutedRows({ evaluations: evaluations || [], rulesById, stateOf, history, sender, server, log });
   await runMuteEndPhase({ rules: rules || [], evaluations: evaluations || [], stateOf, history, sender, server, timezone, log, now, deadline });
 
-  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log, { completedSchedules, existingScheduleIds, rules, now, timezone });
+  const resolvedEvents = await deriveResolvedEvents(evaluations || [], history, server, log, { completedSchedules, existingScheduleIds, matchedScheduleIds, scheduleNameById, rules, now, timezone });
   // #356 L2: a rule matched this sync unless it produced a `ruleUnmatched`
   // event. Deriving it from evaluations missed rules whose schedule only
   // yields cannotCheck or is a completed recurring one, leaving the
@@ -1461,7 +1474,166 @@ async function deliver(events, { evaluations, completedSchedules, existingSchedu
   return { sent, skipped };
 }
 
+// ---------------------------------------------------------------------------
+// Preview and test send (#262)
+// ---------------------------------------------------------------------------
+
+const PREVIEW_EVENTS = ['missing', 'wrongAmount', 'resolved', 'cannotCheck', 'ruleUnmatched', 'muteEnded'];
+const PREVIEW_SEND_TIMEOUT_MS = 15000;
+
+/** Stand-in values for a preview of a rule that matches no snapshot schedule. */
+const PREVIEW_SAMPLE_SCHEDULE = {
+  name: 'Sample payment', payee: 'Sample payee', account: 'Sample account', amount: -12345,
+  cadenceText: 'Every month on the 1st'
+};
+
+/**
+ * The render context for a preview, and the names of the variables whose value
+ * is a stand-in rather than real data (`sampleKeys`, in `VARIABLES` order).
+ *
+ * Real: name, payee, account, expected amount, cadence, budget and the next
+ * occurrence, all from the stored schedule snapshot. Stand-ins: anything about
+ * a particular occurrence (days overdue, the received payment, last sync,
+ * the mute period) and, with no matching schedule, everything about the
+ * schedule too. Pure: nothing is read or written.
+ *
+ * @param {Object} args
+ * @param {string} args.eventName - one of PREVIEW_EVENTS
+ * @param {Object} args.rule - normalized rule (`normalizeRule`)
+ * @param {?Object} args.schedule - snapshot row (`getScheduleSnapshot`) or null
+ * @param {string} args.server
+ * @param {string} args.timezone
+ * @param {Date} args.now
+ * @returns {{context: Object, sampleKeys: string[]}}
+ */
+function buildPreviewContext({ eventName, rule, schedule, server, timezone, now }) {
+  const sample = new Set();
+  const today = moment.tz(now, timezone).format('YYYY-MM-DD');
+  const base = schedule || PREVIEW_SAMPLE_SCHEDULE;
+  if (!schedule) ['name', 'payee', 'account', 'expected_amount', 'cadence', 'direction'].forEach((k) => sample.add(k));
+  const expectedAmount = schedule
+    ? (schedule.amount != null ? schedule.amount : (schedule.amountMin != null ? schedule.amountMin : null))
+    : base.amount;
+  const evaluation = {
+    name: base.name, payee: base.payee, account: base.account, expectedAmount, cadenceText: base.cadenceText
+  };
+
+  if (eventName === 'muteEnded') {
+    const mutedFrom = moment.tz(now, timezone).subtract(7, 'days').toISOString();
+    const mutedUntil = moment.tz(now, timezone).subtract(1, 'day').format('YYYY-MM-DD');
+    ['muted_from', 'muted_until', 'reason', 'events_count', 'events'].forEach((k) => sample.add(k));
+    const occurrenceDate = moment.tz(now, timezone).subtract(3, 'days').format('YYYY-MM-DD');
+    const context = buildMuteEndedContext({
+      rule,
+      override: { mutedFrom, mutedUntil, reason: 'Sample reason' },
+      keyRows: [{ scheduleId: schedule ? schedule.id : null, occurrenceDate, event: 'missing' }],
+      evaluations: schedule ? [{ scheduleId: schedule.id, payee: base.payee, account: base.account, cadenceText: base.cadenceText, occurrences: [] }] : [],
+      server,
+      timezone
+    });
+    context.name = base.name;
+    if (!schedule) {
+      Object.assign(context, { payee: base.payee, account: base.account, cadence: base.cadenceText });
+      ['expected_amount', 'direction'].forEach((k) => sample.delete(k)); // not muteEnded variables
+    }
+    return { context, sampleKeys: VARIABLES.filter((k) => sample.has(k)) };
+  }
+
+  const event = { event: eventName, alertId: rule.id, scheduleId: schedule ? schedule.id : null };
+  if (eventName !== 'ruleUnmatched') {
+    const hasNext = Boolean(schedule && schedule.nextDate);
+    event.occurrence = hasNext ? schedule.nextDate : today;
+    event.deadline = moment.tz(event.occurrence, timezone).add(rule.graceDays || 0, 'days').format('YYYY-MM-DD');
+    if (!hasNext) { sample.add('expected_date'); sample.add('period'); }
+    sample.add('deadline'); // always derived: occurrence + graceDays
+  }
+  const received = expectedAmount != null ? expectedAmount : -12345;
+  if (eventName === 'missing') {
+    event.daysOverdue = 1;
+    sample.add('days_overdue');
+  } else if (eventName === 'wrongAmount') {
+    event.receivedAmount = Math.round(received * 1.1);
+    event.receivedDate = event.occurrence;
+    event.difference = event.receivedAmount - received;
+    ['received_amount', 'received_date', 'difference'].forEach((k) => sample.add(k));
+  } else if (eventName === 'resolved') {
+    event.receivedAmount = received;
+    event.receivedDate = event.occurrence;
+    event.daysOverdue = 0;
+    ['received_amount', 'received_date', 'days_overdue'].forEach((k) => sample.add(k));
+  } else if (eventName === 'cannotCheck') {
+    event.reason = 'stale';
+    event.lastSync = moment.tz(now, timezone).subtract(5, 'days').format('YYYY-MM-DD');
+    ['reason', 'last_sync'].forEach((k) => sample.add(k));
+  }
+  // ruleUnmatched is about the rule, never a schedule: the real message has no
+  // schedule data, so neither does its preview.
+  if (eventName === 'ruleUnmatched') ['name', 'payee', 'account', 'expected_amount', 'cadence', 'direction'].forEach((k) => sample.delete(k));
+  const context = buildContext(event, eventName === 'ruleUnmatched' ? null : evaluation, rule, { server, timezone });
+  return { context, sampleKeys: VARIABLES.filter((k) => sample.has(k)) };
+}
+
+/** `channel` result of one `sendTemplated` call -> the closed preview error code, or null on success. */
+function previewResultError(results, channel) {
+  const result = results ? results[channel] : undefined;
+  if (result == null) return 'channel_unavailable';
+  return channelSucceeded(result) ? null : 'send_failed';
+}
+
+/**
+ * Render one event for a rule once per channel and, with `send`, send one
+ * message per destination. Never touches the ledger or the status tables.
+ *
+ * The template set is compiled ONCE for the rule's channel set. `text` is the
+ * first destination channel's render. Each send result carries a label that is
+ * never a URL (the webhook's `name` when it has one, else `destinationKey`)
+ * and a closed error code, never exception text, so nothing a channel client
+ * put in an error message (a URL, a token) can reach the response.
+ *
+ * @param {Object} args
+ * @param {string} args.eventName
+ * @param {Object} args.context - from buildPreviewContext
+ * @param {Object} args.rule - normalized rule
+ * @param {{config?:Object, sendTemplated:Function}} args.sender
+ * @param {boolean} [args.send]
+ * @param {number} [args.sendTimeoutMs] - per destination, injectable for tests
+ * @returns {Promise<{text: ?string, results: Array<{channel:string, target:string, ok:boolean, error?:string}>}>}
+ * @throws {TemplateValidationError} when the template no longer compiles
+ */
+async function previewRule({ eventName, context, rule, sender, send = false, sendTimeoutMs = PREVIEW_SEND_TIMEOUT_MS }) {
+  const destinations = destinationsForRule(rule, sender);
+  const channels = Array.from(new Set(destinations.map((d) => d.channel)));
+  const modes = channels.flatMap((channel) => CHANNEL_TO_MODES[channel] || []);
+  const templates = templatesFor({ event: eventName }, rule);
+  const renderer = compileTemplateSet({ templates, variables: VARIABLES, channels: modes });
+  const text = channels.length ? renderer.render(eventName, context, CHANNEL_TO_MODES[channels[0]][0]) : null;
+
+  const results = [];
+  if (!send) return { text, results };
+  for (const destination of destinations) {
+    const target = destination.target.name || destination.key;
+    const entry = { channel: destination.channel, target };
+    let timer;
+    try {
+      const channelOutputs = buildChannelOutput(
+        renderer, eventName, context, destination.channel, destination.target, context.name
+      );
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { previewTimeout: true })), sendTimeoutMs);
+      });
+      const sent = await Promise.race([sender.sendTemplated(channelOutputs), timeout]);
+      const error = previewResultError(sent, destination.channel);
+      results.push(error ? { ...entry, ok: false, error } : { ...entry, ok: true });
+    } catch (error) {
+      results.push({ ...entry, ok: false, error: error && error.previewTimeout ? 'timeout' : 'send_threw' });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { text, results };
+}
+
 module.exports = {
   deliver, DEFAULT_TEMPLATES, VARIABLES, ALL_CHANNELS, CHANNEL_TO_MODES,
-  resolveChannels, destinationKey
+  resolveChannels, destinationKey, buildPreviewContext, previewRule, PREVIEW_EVENTS
 };
