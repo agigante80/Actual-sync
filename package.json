@@ -103,8 +103,8 @@
     "@sinonjs/fake-timers": "15.4.0",
     "@types/jest": "^30.0.0",
     "jest": "^30.5.2",
-    "js-yaml": "^5.4.3",
-    "knip": "^6.41.0",
-    "puppeteer": "^25.13.0"
+    "js-yaml": "^5.5.0",
+    "knip": "^6.43.0",
+    "puppeteer": "^25.16.0"
   }
 }
