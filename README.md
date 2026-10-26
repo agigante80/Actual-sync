@@ -172,7 +172,9 @@ docker run -d \
   -v ./config:/app/config:ro \
   -v ./data:/app/data \
   -v ./logs:/app/logs \
-  -p 3000:3000 \
+  -p 127.0.0.1:3000:3000 \
+  --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+  --security-opt no-new-privileges:true \
   -e PUID=1001 -e PGID=1001 \
   -e TZ=America/New_York \
   agigante80/actual-sync:latest
@@ -184,13 +186,22 @@ docker run -d \
   -v ./config:/app/config:ro \
   -v ./data:/app/data \
   -v ./logs:/app/logs \
-  -p 3000:3000 \
+  -p 127.0.0.1:3000:3000 \
+  --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+  --security-opt no-new-privileges:true \
   -e PUID=1001 -e PGID=1001 \
   -e TZ=America/New_York \
   ghcr.io/agigante80/actual-sync:latest
 ```
 
 Create `config/config.json` in your mounted directory and you're ready to go!
+
+> **Port and hardening (v1.22.0):** the dashboard port is published on
+> `127.0.0.1`, so only the Docker host can reach it. The capability and
+> `no-new-privileges` flags are the ones the image is tested with. To reach the
+> dashboard from another machine, put a reverse proxy in front or publish
+> `-p 3000:3000` with the dashboard login set. Details and how to relax each
+> control: [Container hardening](docs/DOCKER_DEPLOYMENT.md#container-hardening-253).
 
 > **PUID / PGID:** the container starts as root only to align its user to `PUID`/`PGID`
 > (default `1001:1001`) and fix ownership of the `data` and `logs` volumes, then drops
@@ -272,7 +283,9 @@ docker run -d \
   -v $(pwd)/config:/app/config:ro \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/logs:/app/logs \
-  -p 3000:3000 \
+  -p 127.0.0.1:3000:3000 \
+  --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+  --security-opt no-new-privileges:true \
   -e PUID=1001 -e PGID=1001 \
   -e TZ=America/New_York \
   agigante80/actual-sync:latest
@@ -281,14 +294,14 @@ docker run -d \
 **Docker Compose:**
 
 ```yaml
-version: '3.8'
+version: "3.8"
 services:
   actual-sync:
     image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest
     container_name: actual-sync
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"  # Dashboard, health and metrics: this host only. See the hardening doc before opening it.
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
@@ -298,9 +311,27 @@ services:
       - PGID=1001          # set to 100 on Unraid (users)
       - TZ=America/New_York
       - NODE_ENV=production
+    cap_drop:
+      - ALL                           # Drop every capability...
+    cap_add:
+      - CHOWN                         # ...except what the PUID/PGID entrypoint needs
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
 ```
 
 See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for advanced Docker configuration.
+
+**Verifying the image:** every published image has a signed build provenance
+attestation and an SBOM. Check that the tag you pulled was built by this
+repository's CI from a specific commit:
+
+```bash
+gh attestation verify oci://ghcr.io/agigante80/actual-sync:latest --repo agigante80/Actual-sync
+```
+
+Details and the SBOM download in [docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md#verifying-the-image).
 
 ### Method 2: NPM Installation (Recommended for Development)
 
@@ -485,13 +516,14 @@ Actual-sync is published to two registries:
 - **Docker Hub**: `agigante80/actual-sync:latest`
 - **GitHub Container Registry**: `ghcr.io/agigante80/actual-sync:latest`
 
-Both registries contain identical multi-platform images (amd64/arm64).
+Both registries contain identical multi-platform images (amd64/arm64), each
+with a signed provenance attestation and an SBOM (see
+[Verifying the image](docs/DOCKER_DEPLOYMENT.md#verifying-the-image)).
 
 ### Docker Compose (Recommended)
 
 ```yaml
-version: '3.8'
-
+version: "3.8"
 services:
   actual-sync:
     image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest
@@ -499,7 +531,7 @@ services:
     restart: unless-stopped
     
     ports:
-      - "3000:3000"  # Health check endpoint
+      - "127.0.0.1:3000:3000"  # Dashboard, health and metrics: this host only. See the hardening doc before opening it.
     
     volumes:
       - ./config:/app/config:ro      # Read-only config
@@ -511,6 +543,15 @@ services:
       - PGID=1001                     # Run-as GID (100 on Unraid)
       - TZ=America/New_York           # Timezone for schedules
       - NODE_ENV=production
+    
+    cap_drop:
+      - ALL                           # Drop every capability...
+    cap_add:
+      - CHOWN                         # ...except what the PUID/PGID entrypoint needs
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
     
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
@@ -540,7 +581,7 @@ docker-compose ps
 curl http://localhost:3000/health
 ```
 
-See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for Kubernetes deployment and advanced configurations.
+See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for Kubernetes deployment and advanced configurations, and [Container hardening](docs/DOCKER_DEPLOYMENT.md#container-hardening-253) for what each of the `ports`, `cap_drop` and `security_opt` lines does and how to relax it.
 
 ---
 
@@ -777,13 +818,16 @@ Every configuration change is listed, with secrets redacted, in the Settings tab
 
 Actual-sync exposes HTTP endpoints for monitoring:
 
-| Endpoint | Description | Response |
-|----------|-------------|----------|
-| `GET /health` | Basic alive check | `200 OK` or `503 Service Unavailable` |
-| `GET /metrics` | Detailed sync statistics | JSON with per-server status |
-| `GET /ready` | Kubernetes readiness probe | `200 OK` when service is ready |
-| `GET /dashboard` | Web dashboard UI | HTML dashboard interface |
-| `WS /ws/logs` | Live log stream (dashboard auth, same-origin only) | JSON log records |
+| Endpoint | Description | Response | Credential |
+|----------|-------------|----------|------------|
+| `GET /health` | Basic alive check | `200 OK` or `503 Service Unavailable` | never |
+| `GET /metrics` | Detailed sync statistics | JSON with per-server status | `healthCheck.auth` (optional) |
+| `GET /metrics/prometheus` | Prometheus text format | metrics for scraping | `healthCheck.auth` (optional) |
+| `GET /ready` | Kubernetes readiness probe | `200 OK` when service is ready | never |
+| `GET /dashboard` | Web dashboard UI | HTML dashboard interface | `healthCheck.dashboard.auth` (optional) |
+| `WS /ws/logs` | Live log stream (dashboard auth, same-origin only) | JSON log records | `healthCheck.dashboard.auth` (optional) |
+
+The two credentials are independent and both off by default; see [docs/HEALTH_CHECK.md](docs/HEALTH_CHECK.md#which-endpoints-are-authenticated).
 
 **Example - Health Check:**
 

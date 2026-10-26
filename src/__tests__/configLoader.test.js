@@ -664,6 +664,52 @@ describe('ConfigLoader', () => {
             });
         });
 
+        describe('healthCheck.auth (#247)', () => {
+            const withMetricsAuth = (auth) => ({
+                servers: [{ name: 'Test', url: 'https://test.com', password: 'password123', syncId: 'id', dataDir: '/tmp' }],
+                sync: { maxRetries: 3, baseRetryDelayMs: 1000, schedule: '0 0 * * *' },
+                healthCheck: { port: 3000, auth }
+            });
+
+            test('type token with no token fails startup naming healthCheck.auth.token', () => {
+                for (const auth of [{ type: 'token' }, { type: 'token', token: '' }, { type: 'token', token: 7 }]) {
+                    expect(() => new ConfigLoader().validateLogic(withMetricsAuth(auth)))
+                        .toThrow(/healthCheck\.auth\.token/);
+                }
+            });
+
+            test('type basic names each missing half', () => {
+                expect(() => new ConfigLoader().validateLogic(withMetricsAuth({ type: 'basic', username: 'prom' })))
+                    .toThrow(/healthCheck\.auth\.password/);
+                expect(() => new ConfigLoader().validateLogic(withMetricsAuth({ type: 'basic' })))
+                    .toThrow(/healthCheck\.auth\.username and healthCheck\.auth\.password/);
+            });
+
+            test('an unknown type is refused even with schema strictness off', () => {
+                expect(() => new ConfigLoader().validateLogic(withMetricsAuth({ type: 'digest', token: 'x' })))
+                    .toThrow(/Invalid healthCheck\.auth\.type/);
+            });
+
+            test('a credential left under type none warns that /metrics stays open', () => {
+                console.warn.mockClear();
+                new ConfigLoader().validateLogic(withMetricsAuth({ type: 'none', token: 'scrape-tok' }));
+                expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
+                console.warn.mockClear();
+                new ConfigLoader().validateLogic(withMetricsAuth({ username: 'prom', password: 'pw' }));
+                expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
+                console.warn.mockClear();
+                new ConfigLoader().validateLogic(withMetricsAuth({ type: 'none' }));
+                expect(console.warn).not.toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
+            });
+
+            test('none, absent, and a complete credential pass', () => {
+                for (const auth of [undefined, { type: 'none' }, {}, { type: 'token', token: 'scrape-tok' },
+                    { type: 'basic', username: 'prom', password: 'pw' }]) {
+                    expect(() => new ConfigLoader().validateLogic(withMetricsAuth(auth))).not.toThrow();
+                }
+            });
+        });
+
         test('should NOT warn for safe health hosts incl. IPv6 wildcard/loopback (#94)', () => {
             for (const host of ['0.0.0.0', '127.0.0.1', 'localhost', '::', '::1']) {
                 console.warn.mockClear();

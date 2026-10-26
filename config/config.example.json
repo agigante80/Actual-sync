@@ -77,6 +77,9 @@
     "host": "0.0.0.0",
     "trustProxy": false,
     "hsts": false,
+    "auth": {
+      "type": "none"
+    },
     "dashboard": {
       "enabled": true,
       "allowedOrigins": [],

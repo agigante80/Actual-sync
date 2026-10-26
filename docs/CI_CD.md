@@ -314,6 +314,12 @@ throttle), all against fixture states under
 3. Build Docker image locally
 4. Test container startup
 5. Verify health check
+6. Hardened container smoke test (`scripts/docker-hardened-smoke.sh`, #253):
+   starts the image with `--cap-drop ALL`, the three capabilities
+   `docker-compose.yml` adds back (CHOWN, SETUID, SETGID),
+   `no-new-privileges` and a non-default PUID/PGID, then checks `/health`,
+   the dashboard, a recorded sync attempt in the SQLite history, the log
+   file, and that the Node process holds no capability
 
 **Duration**: ~3-5 minutes
 
@@ -323,6 +329,9 @@ throttle), all against fixture states under
 - Container starts successfully
 - Health check endpoint responds
 - Application logs show correct version
+- The shipped compose hardening does not break the entrypoint or the
+  writable volumes (`src/__tests__/dockerCompose.test.js` keeps the script's
+  flags equal to the compose file's)
 
 **Why This Matters**:
 - Catches Docker build errors before publishing
@@ -349,10 +358,33 @@ throttle), all against fixture states under
 4. Login to Docker Hub
 5. Login to GitHub Container Registry
 6. Generate Docker tags
-7. Build and push multi-platform images
-8. Update Docker Hub description (main branch only)
+7. Build and push multi-platform images, with `provenance: mode=max` and `sbom: true`
+8. Attest build provenance (Docker Hub and GHCR)
+9. Attach the SBOM to the GitHub release (`v*` tags only)
+10. Update Docker Hub description (main branch only)
 
 **Duration**: ~10-15 minutes (multi-platform builds)
+
+**SBOM and provenance (#252)**: the publish build asks BuildKit for an SPDX
+SBOM and max-detail SLSA provenance, which it stores as attestation manifests
+next to the image index in both registries. Two `actions/attest-build-provenance`
+steps then sign a GitHub artifact attestation for the pushed digest, one per
+registry, which `gh attestation verify` checks against GitHub's trust root. On a
+`v*` tag the job also pulls the SBOM back out of the registry, one file per
+platform, and uploads it to the release that `auto-release.yml` created right
+after pushing the tag (the upload runs after a multi-minute build, so the
+release exists by then; a tag with no release warns and skips, any other
+lookup error fails the step). The job carries its own `permissions` block (`contents: write`
+for the release upload, `packages: write`, `id-token: write`, `attestations:
+write`); the top-level token has none of the signing scopes. The `docker-test`
+and `security-scan` builds are never pushed and stay unchanged.
+
+What it proves: that this digest was produced by this workflow, at this commit,
+in this repository. What it does not prove: that the commit was reviewed, that
+the release was authorised, or that a pinned third-party action in the build did
+what it claims. See [Pinning third-party actions](#pinning-third-party-actions).
+Verification steps for users are in
+[DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md#verifying-the-image).
 
 **Platforms Built**:
 - `main` and `v*` tags → **`linux/amd64` + `linux/arm64`** (multi-arch release builds)
@@ -511,7 +543,9 @@ commit (message prefix `chore(release): bump version`) to avoid a release loop.
 5. Create the GitHub Release with auto-generated notes.
 
 > The App token is required (not `GITHUB_TOKEN`) so the new `v*` tag triggers this
-> pipeline's tag-based `docker-publish`, producing a version-tagged image.
+> pipeline's tag-based `docker-publish`, producing a version-tagged image. That
+> tag run is also what attaches the SBOM files to the release (#252), so a
+> release has no SBOM asset until its Docker publish finishes.
 
 See [VERSIONING.md](VERSIONING.md#automated-releases) for the full flow.
 

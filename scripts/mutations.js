@@ -1247,8 +1247,8 @@ module.exports = [
         id: '246-token-failure-uncounted', ticket: '#246',
         desc: 'wrong tokens no longer count, so brute force is unthrottled',
         file: 'src/services/healthCheck.js',
-        anchor: "    res.locals.authFailed = true;\n    this.logger.warn('Dashboard token authentication failed', {",
-        mutant: "    this.logger.warn('Dashboard token authentication failed', {",
+        anchor: "    res.locals.authFailed = true;\n    this.logger.warn(`${realm} token authentication failed`, {",
+        mutant: "    this.logger.warn(`${realm} token authentication failed`, {",
         tests: 'healthCheck'
     },
     {
@@ -1263,8 +1263,8 @@ module.exports = [
         id: '246-success-counts', ticket: '#246',
         desc: 'every request counts, so an operator with the right password is locked out',
         file: 'src/services/healthCheck.js',
-        anchor: '        if (res.locals.authFailed) this.authFailures.increment(key);',
-        mutant: '        this.authFailures.increment(key);',
+        anchor: '        if (res.locals.authFailed) failures.increment(key);',
+        mutant: '        failures.increment(key);',
         tests: 'healthCheck'
     },
     {
@@ -1288,8 +1288,8 @@ module.exports = [
         id: '246-await-between-check-and-count', ticket: '#246',
         desc: 'an await between reading the count and adding a failure lets pipelined guesses through',
         file: 'src/services/healthCheck.js',
-        anchor: "    const dashboardAuth = (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n",
-        mutant: "    const dashboardAuth = async (req, res, next) => {\n      // Skip if dashboard is disabled\n      if (!this.dashboardConfig.enabled) {\n        return res.status(403).json({ error: 'Dashboard is disabled' });\n      }\n\n      const authConfig = this.dashboardConfig.auth || {};\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = this.authFailures.get(key);\n        await new Promise((resolve) => setImmediate(resolve));\n",
+        anchor: "    const middleware = (req, res, next) => {\n      const authConfig = getAuthConfig();\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = failures.get(key);\n",
+        mutant: "    const middleware = async (req, res, next) => {\n      const authConfig = getAuthConfig();\n      const authType = authConfig.type || 'none';\n      if (authType === 'none') return next();\n\n      try {\n        const key = ipKeyGenerator(req.ip || '');\n        const seen = failures.get(key);\n        await new Promise((resolve) => setImmediate(resolve));\n",
         tests: 'healthCheck'
     },
 
@@ -1305,9 +1305,58 @@ module.exports = [
         id: '286-username-logged', ticket: '#286',
         desc: 'a failed basic login logs the typed username again, which may be a pasted password',
         file: 'src/services/healthCheck.js',
-        anchor: "      this.logger.warn('Dashboard authentication failed', {\n        remoteAddress",
-        mutant: "      this.logger.warn('Dashboard authentication failed', {\n        username: Buffer.from((req.headers.authorization || '').slice(6), 'base64').toString('utf8'),\n        remoteAddress",
+        anchor: "      this.logger.warn(`${realm} authentication failed`, {\n        remoteAddress",
+        mutant: "      this.logger.warn(`${realm} authentication failed`, {\n        username: Buffer.from((req.headers.authorization || '').slice(6), 'base64').toString('utf8'),\n        remoteAddress",
         tests: 'healthCheck'
+    },
+
+    {
+        id: '247-prometheus-unguarded', ticket: '#247',
+        desc: '/metrics/prometheus ignores healthCheck.auth',
+        file: 'src/services/healthCheck.js',
+        anchor: "this.app.get('/metrics/prometheus', this.metricsAuth(), async (req, res) => {",
+        mutant: "this.app.get('/metrics/prometheus', async (req, res) => {",
+        tests: 'healthCheck'
+    },
+    {
+        id: '247-metrics-unguarded', ticket: '#247',
+        desc: '/metrics ignores healthCheck.auth',
+        file: 'src/services/healthCheck.js',
+        anchor: "this.app.get('/metrics', this.metricsAuth(), (req, res) => {",
+        mutant: "this.app.get('/metrics', (req, res) => {",
+        tests: 'healthCheck'
+    },
+    {
+        id: '247-metrics-reads-dashboard-auth', ticket: '#247',
+        desc: 'the metrics endpoints accept the dashboard login instead of the scrape credential (the #241 coupling)',
+        file: 'src/services/healthCheck.js',
+        anchor: "return this.makeAuthMiddleware('metricsAuth', () => this.metricsAuthConfig || {},",
+        mutant: "return this.makeAuthMiddleware('metricsAuth', () => this.dashboardConfig.auth || {},",
+        tests: 'healthCheck'
+    },
+    {
+        id: '247-metrics-gated-on-dashboard-enabled', ticket: '#247',
+        desc: 'switching the dashboard off answers 403 to Prometheus',
+        file: 'src/services/healthCheck.js',
+        anchor: "    const middleware = (req, res, next) => {\n      const authConfig = getAuthConfig();",
+        mutant: "    const middleware = (req, res, next) => {\n      if (!this.dashboardConfig.enabled) return res.status(403).json({ error: 'Dashboard is disabled' });\n      const authConfig = getAuthConfig();",
+        tests: 'healthCheck'
+    },
+    {
+        id: '247-shared-failure-counter', ticket: '#247',
+        desc: 'wrong scrape tokens count against the dashboard login throttle',
+        file: 'src/services/healthCheck.js',
+        anchor: "      'Metrics', this.metricsAuthFailures);",
+        mutant: "      'Metrics', this.authFailures || (this.authFailures = new AuthFailureCounter(this.authFailureWindowMs)));",
+        tests: 'healthCheck'
+    },
+    {
+        id: '247-half-set-credential-starts', ticket: '#247',
+        desc: 'healthCheck.auth.type token with no token starts the service',
+        file: 'src/lib/configLoader.js',
+        anchor: "            const missing = needed.filter((key) => !isSet(key));",
+        mutant: "            const missing = [];",
+        tests: 'configLoader'
     },
     {
         id: '286-xff-warning-every-request', ticket: '#286',
@@ -3085,8 +3134,8 @@ module.exports = [
         id: '289-metrics-uptime-real-clock', ticket: '#289',
         desc: "/metrics computes uptime from the real clock instead of now()",
         file: 'src/services/healthCheck.js',
-        anchor: "this.app.get('/metrics', (req, res) => {\n      const uptime = Math.floor((this.now().getTime()",
-        mutant: "this.app.get('/metrics', (req, res) => {\n      const uptime = Math.floor((new Date().getTime()",
+        anchor: "this.app.get('/metrics', this.metricsAuth(), (req, res) => {\n      const uptime = Math.floor((this.now().getTime()",
+        mutant: "this.app.get('/metrics', this.metricsAuth(), (req, res) => {\n      const uptime = Math.floor((new Date().getTime()",
         tests: 'healthCheckPort'
     },
     {

@@ -22,6 +22,10 @@ scrape_configs:
     metrics_path: '/metrics/prometheus'
     scrape_interval: 30s
     scrape_timeout: 10s
+    # Uncomment when healthCheck.auth is set in config.json (see docs/PROMETHEUS.md):
+    # authorization:
+    #   type: Bearer
+    #   credentials: a-long-random-value
     
   # Prometheus self-monitoring
   - job_name: 'prometheus'

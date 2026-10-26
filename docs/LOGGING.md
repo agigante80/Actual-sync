@@ -359,6 +359,7 @@ These WARN lines are worth an alert rule in your log pipeline:
 |---|---|
 | `Dashboard authentication failed` / `Dashboard token authentication failed` | One wrong dashboard credential, with `remoteAddress` only (the typed username is never logged, since users paste passwords into it) |
 | `Dashboard authentication throttled after repeated failures` | A client already has 10 failed logins in the current 15 minute window and is refused with 429 (#246). It is written for every refused request, not once per lockout, so a burst of these is a guessing attempt or a stale tab still polling with an old credential |
+| `Metrics authentication failed` / `Metrics token authentication failed` / `Metrics authentication throttled after repeated failures` | The same three for `healthCheck.auth` on `/metrics` and `/metrics/prometheus` (#247). A steady stream at the scrape interval is a Prometheus with a stale credential |
 | `WebSocket handshake refused` | A `/ws/logs` connection was refused, with the status and reason |
 
 ```bash
