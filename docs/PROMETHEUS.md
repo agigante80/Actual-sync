@@ -703,7 +703,7 @@ Example: Alert when no sync in 2 hours
 
 **Problem**: `/metrics/prometheus` returns 401 and the target shows `DOWN` with `server returned HTTP status 401 Unauthorized`
 
-`healthCheck.auth` is set and the scrape carries no credential, or a stale one. Add the `authorization` (token) or `basic_auth` block from [Configure Prometheus](#2-configure-prometheus) with the current value from `config.json`, then reload Prometheus. A `429` instead of a `401` means 10 wrong attempts from the Prometheus host in the last 15 minutes: fix the credential and wait for the window to end. `/health` and `/ready` never need a credential, so a probe failing with 401 is hitting the wrong path.
+`healthCheck.auth` is set and the scrape carries no credential, or a stale one. Add the `authorization` (token) or `basic_auth` block from [the scrape config above](#2-configure-prometheus) with the current value from `config.json`, then reload Prometheus. A `429` instead of a `401` means 10 wrong attempts from the Prometheus host in the last 15 minutes: fix the credential and wait for the window to end. `/health` and `/ready` never need a credential, so a probe failing with 401 is hitting the wrong path.
 
 ### Empty Metrics
 
