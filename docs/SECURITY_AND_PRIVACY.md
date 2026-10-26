@@ -179,6 +179,10 @@ const limiter = rateLimit({
 
 **Note**: Telegram bot API calls currently have no rate limiting (see Improvement Areas).
 
+### Metrics endpoints (#247)
+
+`/metrics` and `/metrics/prometheus` name the configured servers and their last sync result. Network controls are the primary recommendation: bind `healthCheck.host` to `127.0.0.1` where possible, and firewall port 3000 to the monitoring host. `healthCheck.auth` (bearer token or basic) is a second layer for operators who cannot do that. It is off by default so an upgrade never breaks an existing scrape, and it is separate from the dashboard login. `/health` and `/ready` are never authenticated. See [HEALTH_CHECK.md](HEALTH_CHECK.md#which-endpoints-are-authenticated).
+
 ### Firewall Configuration
 
 **Recommendations**:

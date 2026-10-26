@@ -190,6 +190,7 @@ try {
         trustProxy: config.healthCheck?.trustProxy,
         hsts: config.healthCheck?.hsts === true,
         dashboardConfig: config.healthCheck?.dashboard || { enabled: true, auth: { type: 'none' } },
+        metricsAuth: config.healthCheck?.auth || { type: 'none' },
         prometheusService: prometheusService,
         syncHistory: syncHistory,
         notificationService: notificationService,

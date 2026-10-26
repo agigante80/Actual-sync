@@ -120,6 +120,8 @@ class HealthCheckService {
    * @param {Object} options.loggerConfig - Logger configuration
    * @param {boolean} options.hsts - send Strict-Transport-Security (#243); off unless true
    * @param {boolean|number|string|string[]} options.trustProxy - Express 'trust proxy' value (#245); off when unset
+   * @param {Object} options.metricsAuth - healthCheck.auth: the credential for /metrics and
+   *   /metrics/prometheus (#247), independent of dashboard.auth; { type: 'none' } when unset
    */
   constructor(options = {}) {
     // ?? not ||: port 0 asks the OS for a free port (the e2e fixtures, #263);
@@ -143,6 +145,7 @@ class HealthCheckService {
     this.getSchedules = options.getSchedules;
     this.getCronSchedules = options.getCronSchedules;
     this.dashboardConfig = options.dashboardConfig || { enabled: true, auth: { type: 'none' } };
+    this.metricsAuthConfig = options.metricsAuth || { type: 'none' };
     this.logger = createLogger(options.loggerConfig || {});
     
     this.app = express();
@@ -305,6 +308,8 @@ class HealthCheckService {
     // the same tick, so with an await in between (express-rate-limit's async
     // MemoryStore) all of them read the old count and a single write of 60
     // wrong guesses was checked in full against a limit of 10.
+    const check = this.makeAuthMiddleware('dashboardAuth', () => this.dashboardConfig.auth || {},
+      'Dashboard', this.authFailures);
     // Named (not an anonymous arrow): the route-enumeration test in
     // dashboardWriteSecurity.test.js matches layers by layer.handle.name. (#259)
     const dashboardAuth = (req, res, next) => {
@@ -312,32 +317,70 @@ class HealthCheckService {
       if (!this.dashboardConfig.enabled) {
         return res.status(403).json({ error: 'Dashboard is disabled' });
       }
+      return check(req, res, next);
+    };
+    return dashboardAuth;
+  }
 
-      const authConfig = this.dashboardConfig.auth || {};
+  /**
+   * Credential middleware for /metrics and /metrics/prometheus (#247). It reads
+   * healthCheck.auth, a scrape credential separate from the dashboard login, so
+   * rotating one never breaks the other, and it has its own failure counter so a
+   * scraper left with a stale token cannot lock a person out of the dashboard.
+   *
+   * dashboard.enabled is deliberately NOT consulted here: that coupling was the
+   * defect in the earlier attempt (#241), which answered 403 to Prometheus the
+   * moment the web UI was switched off. /health and /ready never get this
+   * middleware: they are liveness and readiness probes, and kubelet sends no
+   * credentials.
+   */
+  metricsAuth() {
+    if (!this.metricsAuthFailures) {
+      this.metricsAuthFailures = new AuthFailureCounter(this.authFailureWindowMs);
+    }
+    return this.makeAuthMiddleware('metricsAuth', () => this.metricsAuthConfig || {},
+      'Metrics', this.metricsAuthFailures);
+  }
+
+  /**
+   * The one credential check behind dashboardAuth() and metricsAuth(): the
+   * dashboard and the metrics endpoints are two calls to this factory, not two
+   * copies of the throttle and the header parsing. (#247)
+   *
+   * @param {string} name - the middleware's function name (route-enumeration tests
+   *   match layers by layer.handle.name, #259)
+   * @param {Function} getAuthConfig - () => the auth block, read on every request
+   * @param {string} realm - the Basic realm, also the prefix of every log line
+   * @param {AuthFailureCounter} failures - the throttle for this credential
+   */
+  makeAuthMiddleware(name, getAuthConfig, realm, failures) {
+    const middleware = (req, res, next) => {
+      const authConfig = getAuthConfig();
       const authType = authConfig.type || 'none';
       if (authType === 'none') return next();
 
       try {
         const key = ipKeyGenerator(req.ip || '');
-        const seen = this.authFailures.get(key);
+        const seen = failures.get(key);
         // get() also returns entries whose window has ended (they are
         // only swept on a timer), so check resetTime or a lockout lasts up to
         // two windows.
         if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {
-          this.logger.warn('Dashboard authentication throttled after repeated failures', {
+          this.logger.warn(`${realm} authentication throttled after repeated failures`, {
             remoteAddress: req.ip,
             limit: this.authFailureLimit,
             windowMinutes: Math.round(this.authFailureWindowMs / 60000)
           });
           return res.status(429).json({ error: 'Too many failed authentication attempts, try again later' });
         }
-        this.checkDashboardCredentials(req, res, next, authConfig, authType);
-        if (res.locals.authFailed) this.authFailures.increment(key);
+        this.checkRequestCredentials(req, res, next, authConfig, authType, realm);
+        if (res.locals.authFailed) failures.increment(key);
       } catch (err) {
         next(err);
       }
     };
-    return dashboardAuth;
+    Object.defineProperty(middleware, 'name', { value: name });
+    return middleware;
   }
 
   /**
@@ -577,8 +620,10 @@ class HealthCheckService {
   /**
    * Check the credentials once the failure throttle has let the request through.
    * A wrong credential sets res.locals.authFailed so the throttle counts it.
+   * `realm` is 'Dashboard' or 'Metrics' (#247): it names the Basic realm and
+   * prefixes the log lines docs/LOGGING.md lists.
    */
-  checkDashboardCredentials(req, res, next, authConfig, authType) {
+  checkRequestCredentials(req, res, next, authConfig, authType, realm) {
     const result = checkCredentials(req.headers, authConfig);
     if (result.ok) return next();
 
@@ -587,13 +632,13 @@ class HealthCheckService {
     }
 
     if (authType === 'basic') {
-      res.set('WWW-Authenticate', 'Basic realm="Dashboard"');
+      res.set('WWW-Authenticate', `Basic realm="${realm}"`);
       if (result.reason === 'missing') {
         return res.status(401).json({ error: 'Authentication required' });
       }
       res.locals.authFailed = true;
       // Never log the username: users paste passwords into that field. (#286)
-      this.logger.warn('Dashboard authentication failed', {
+      this.logger.warn(`${realm} authentication failed`, {
         remoteAddress: req.ip
       });
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -604,7 +649,7 @@ class HealthCheckService {
       return res.status(401).json({ error: 'Authentication required' });
     }
     res.locals.authFailed = true;
-    this.logger.warn('Dashboard token authentication failed', {
+    this.logger.warn(`${realm} token authentication failed`, {
       remoteAddress: req.ip
     });
     return res.status(401).json({ error: 'Invalid token' });
@@ -630,8 +675,9 @@ class HealthCheckService {
       res.json(health);
     });
 
-    // Metrics endpoint - detailed sync metrics
-    this.app.get('/metrics', (req, res) => {
+    // Metrics endpoint - detailed sync metrics. Guarded by healthCheck.auth
+    // (#247), which is off by default; /health and /ready stay open.
+    this.app.get('/metrics', this.metricsAuth(), (req, res) => {
       const uptime = Math.floor((this.now().getTime() - new Date(this.status.startTime).getTime()) / 1000);
       
       const metrics = {
@@ -650,9 +696,9 @@ class HealthCheckService {
             ? ((this.status.successCount / this.status.syncCount) * 100).toFixed(2) + '%'
             : 'N/A'
         },
-        // /metrics has no authentication, so it names which server failed and
-        // when, never the error text: that can carry bank or Actual messages.
-        // The text stays on the authenticated dashboard. (#263)
+        // /metrics is open unless healthCheck.auth is set, so it names which
+        // server failed and when, never the error text: that can carry bank or
+        // Actual messages. The text stays on the authenticated dashboard. (#263)
         servers: Object.fromEntries(Object.entries(this.status.serverStatuses)
           .map(([name, { error, ...rest }]) => [name, rest])),
         lastError: this.status.lastError && {
@@ -685,8 +731,8 @@ class HealthCheckService {
       }
     });
 
-    // Prometheus metrics endpoint
-    this.app.get('/metrics/prometheus', async (req, res) => {
+    // Prometheus metrics endpoint, guarded by healthCheck.auth like /metrics (#247)
+    this.app.get('/metrics/prometheus', this.metricsAuth(), async (req, res) => {
       if (!this.prometheusService) {
         this.logger.warn('Prometheus metrics requested but service not configured');
         res.status(503).json({
@@ -2130,6 +2176,7 @@ This test verifies that notifications are configured correctly and can reach the
    */
   async stop() {
     if (this.authFailures) this.authFailures.shutdown();
+    if (this.metricsAuthFailures) this.metricsAuthFailures.shutdown();
     return new Promise((resolve, reject) => {
       if (!this.server) {
         resolve();

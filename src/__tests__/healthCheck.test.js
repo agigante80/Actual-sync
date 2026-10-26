@@ -1215,6 +1215,115 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('Metrics authentication (#247)', () => {
+    // healthCheck.auth guards /metrics and /metrics/prometheus only. It is a
+    // separate credential from dashboard.auth, and must never consult
+    // dashboard.enabled: #241 tried dashboardAuth() on these routes and broke
+    // Prometheus scraping and readiness probes for anyone with the UI off.
+    const prometheusService = {
+      getMetrics: async () => '# HELP up\nup 1\n',
+      getContentType: () => 'text/plain; version=0.0.4',
+      recordSync: () => {}
+    };
+    const metricsService = (metricsAuth, dashboardConfig) => makeService({
+      port: testPort,
+      host: '127.0.0.1',
+      prometheusService,
+      metricsAuth,
+      dashboardConfig,
+      loggerConfig: { level: 'ERROR' }
+    });
+    const get = (path, headers = {}) => new Promise((resolve, reject) => {
+      http.get({ hostname: '127.0.0.1', port: testPort, path, headers }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, text: data }));
+      }).on('error', reject);
+    });
+
+    test('no healthCheck.auth: /metrics and /metrics/prometheus answer 200 with no credentials, as before', async () => {
+      const hc = metricsService(undefined, { enabled: true, auth: { type: 'none' } });
+      await hc.start();
+      expect((await get('/metrics')).statusCode).toBe(200);
+      expect((await get('/metrics/prometheus')).statusCode).toBe(200);
+    });
+
+    test('token: both metrics endpoints answer 401 without the bearer, 401 with a wrong one, 200 with the right one', async () => {
+      const hc = metricsService({ type: 'token', token: 'scrape-tok' }, { enabled: true, auth: { type: 'none' } });
+      await hc.start();
+      for (const path of ['/metrics', '/metrics/prometheus']) {
+        expect((await get(path)).statusCode).toBe(401);
+        expect((await get(path, { Authorization: 'Bearer wrong' })).statusCode).toBe(401);
+        const ok = await get(path, { Authorization: 'Bearer scrape-tok' });
+        expect(ok.statusCode).toBe(200);
+        expect(ok.text.length).toBeGreaterThan(0);
+      }
+    });
+
+    test('basic: the challenge names the Metrics realm, not the dashboard one', async () => {
+      const hc = metricsService({ type: 'basic', username: 'prom', password: 'pw' }, { enabled: true, auth: { type: 'none' } });
+      await hc.start();
+      const missing = await get('/metrics/prometheus');
+      expect(missing.statusCode).toBe(401);
+      expect(missing.headers['www-authenticate']).toBe('Basic realm="Metrics"');
+      const right = await get('/metrics/prometheus', { Authorization: 'Basic ' + Buffer.from('prom:pw').toString('base64') });
+      expect(right.statusCode).toBe(200);
+    });
+
+    test('/health and /ready are never authenticated, whatever healthCheck.auth says', async () => {
+      const hc = metricsService({ type: 'token', token: 'scrape-tok' }, { enabled: true, auth: { type: 'none' } });
+      await hc.start();
+      expect((await get('/health')).statusCode).toBe(200);
+      expect((await get('/ready')).statusCode).toBe(200);
+    });
+
+    test('the metrics credential is the scrape token, not the dashboard login', async () => {
+      const hc = metricsService({ type: 'token', token: 'scrape-tok' },
+        { enabled: true, auth: { type: 'token', token: 'dashboard-tok' } });
+      await hc.start();
+      expect((await get('/metrics', { Authorization: 'Bearer dashboard-tok' })).statusCode).toBe(401);
+      expect((await get('/metrics', { Authorization: 'Bearer scrape-tok' })).statusCode).toBe(200);
+      // And the dashboard keeps its own: the scrape token opens nothing there.
+      expect((await get('/api/dashboard/status', { Authorization: 'Bearer scrape-tok' })).statusCode).toBe(401);
+    });
+
+    test('dashboard.enabled false changes nothing on /metrics, /metrics/prometheus, /health or /ready (the #241 regression)', async () => {
+      const hc = metricsService({ type: 'none' }, { enabled: false });
+      await hc.start();
+      for (const path of ['/metrics', '/metrics/prometheus', '/health', '/ready']) {
+        const res = await get(path);
+        expect(res.statusCode).toBe(200);
+      }
+    });
+
+    test('with a scrape token set, dashboard.enabled false is still irrelevant to /metrics', async () => {
+      const hc = metricsService({ type: 'token', token: 'scrape-tok' }, { enabled: false });
+      await hc.start();
+      expect((await get('/metrics', { Authorization: 'Bearer scrape-tok' })).statusCode).toBe(200);
+      expect((await get('/metrics')).statusCode).toBe(401);
+    });
+
+    test('wrong scrape tokens are throttled on their own counter, so they never lock the dashboard', async () => {
+      const hc = metricsService({ type: 'token', token: 'scrape-tok' },
+        { enabled: true, auth: { type: 'token', token: 'dashboard-tok' } });
+      await hc.start();
+      for (let i = 0; i < hc.authFailureLimit; i++) {
+        expect((await get('/metrics', { Authorization: 'Bearer wrong' })).statusCode).toBe(401);
+      }
+      expect((await get('/metrics', { Authorization: 'Bearer scrape-tok' })).statusCode).toBe(429);
+      expect((await get('/api/dashboard/status', { Authorization: 'Bearer dashboard-tok' })).statusCode).toBe(200);
+    });
+
+    test('stop() clears the metrics failure sweep timer too', async () => {
+      const hc = metricsService({ type: 'token', token: 'scrape-tok' }, { enabled: true, auth: { type: 'none' } });
+      await hc.start();
+      await get('/metrics', { Authorization: 'Bearer wrong' });
+      expect(hc.metricsAuthFailures.sweeper).not.toBeNull();
+      await hc.stop();
+      expect(hc.metricsAuthFailures.sweeper).toBeNull();
+    });
+  });
+
   describe('Dashboard History API server filter (#288)', () => {
     const historyService = (mockSyncHistory) => makeService({
       port: testPort,

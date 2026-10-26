@@ -73,6 +73,8 @@ Add the `prometheus` section to your `config.json`:
 | `enabled` | boolean | `true` | Enable Prometheus metrics export |
 | `includeDefaultMetrics` | boolean | `true` | Include Node.js runtime metrics |
 
+The scrape endpoint is open by default. To require a credential, set `healthCheck.auth` (separate from the dashboard login; see [HEALTH_CHECK.md](HEALTH_CHECK.md#which-endpoints-are-authenticated)) and add the matching `authorization` or `basic_auth` block to the scrape config below.
+
 ## Available Metrics
 
 ### Custom Application Metrics
@@ -390,6 +392,26 @@ scrape_configs:
     scrape_interval: 30s
 ```
 
+With `healthCheck.auth` set, add the credential, or every scrape gets `401` and the target shows `DOWN`:
+
+```yaml
+scrape_configs:
+  - job_name: 'actual-sync'
+    static_configs:
+      - targets: ['actual-sync:3000']
+    metrics_path: '/metrics/prometheus'
+    # healthCheck.auth.type: token
+    authorization:
+      type: Bearer
+      credentials: a-long-random-value
+    # or, for healthCheck.auth.type: basic
+    # basic_auth:
+    #   username: prometheus
+    #   password: change-me
+```
+
+Prometheus can also read the secret from a file (`credentials_file`, `password_file`) so it stays out of `prometheus.yml`.
+
 For multiple instances:
 
 ```yaml
@@ -676,6 +698,12 @@ Example: Alert when no sync in 2 hours
    # Check for Prometheus initialization
    grep "Prometheus metrics service" logs/*.log
    ```
+
+### 401 Unauthorized
+
+**Problem**: `/metrics/prometheus` returns 401 and the target shows `DOWN` with `server returned HTTP status 401 Unauthorized`
+
+`healthCheck.auth` is set and the scrape carries no credential, or a stale one. Add the `authorization` (token) or `basic_auth` block from [Configure Prometheus](#2-configure-prometheus) with the current value from `config.json`, then reload Prometheus. A `429` instead of a `401` means 10 wrong attempts from the Prometheus host in the last 15 minutes: fix the credential and wait for the window to end. `/health` and `/ready` never need a credential, so a probe failing with 401 is hitting the wrong path.
 
 ### Empty Metrics
 

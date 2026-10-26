@@ -232,6 +232,7 @@ HTTP server for health probes, Prometheus metrics, and the web dashboard.
   - `true`: trusts every hop. **Do not use it if the port is reachable without the proxy**: any client could then send its own `X-Forwarded-For`, pick any IP and bypass rate limiting. Startup warns when it is set.
   An invalid IP/CIDR fails at startup with a message naming `healthCheck.trustProxy`.
 - **hsts** (boolean, default: `false`): send the `Strict-Transport-Security` header (`max-age=15552000`, 180 days, without `includeSubDomains`, so other hosts under the same domain are not affected). Leave it off unless browsers reach the dashboard over HTTPS. Sent over plain HTTP it does nothing, and the service is plain HTTP in most deployments; TLS and HSTS are normally the reverse proxy's job (set it there, or enable this when the service is the TLS endpoint behind a proxy that does not add it). Once a browser has seen it, that host refuses plain HTTP for 180 days, so enable it only when HTTPS is permanent.
+- **auth.type** (string, default: `"none"`): credential for `GET /metrics` and `GET /metrics/prometheus` only. `"none"`, `"basic"` (requires **auth.username** and **auth.password**) or `"token"` (requires **auth.token**, sent as `Authorization: Bearer <token>`; the recommended choice, use a long random value). Independent of `dashboard.auth`, so rotating one never breaks the other, and `dashboard.enabled` has no effect on it. `/health` and `/ready` are never authenticated: they are liveness and readiness probes. With `basic` or `token` the credential must be set, or startup fails naming the missing key. Once set, add the same credential to the Prometheus scrape config ([PROMETHEUS.md](PROMETHEUS.md#2-configure-prometheus)). Off by default so an upgrade changes nothing; see [HEALTH_CHECK.md](HEALTH_CHECK.md#which-endpoints-are-authenticated).
 - **dashboard.enabled** (boolean, default: `true`) — serve the web dashboard.
 - **dashboard.auth.type** (string, default: `"none"`) — `"none"`, `"basic"`, or `"token"`.
   - `"basic"` requires **username** and **password**.
@@ -244,6 +245,7 @@ HTTP server for health probes, Prometheus metrics, and the web dashboard.
 "healthCheck": {
   "port": 3000,
   "host": "0.0.0.0",
+  "auth": { "type": "token", "token": "a-long-random-value" },
   "dashboard": { "enabled": true, "auth": { "type": "basic", "username": "admin", "password": "change-me" } }
 }
 ```
