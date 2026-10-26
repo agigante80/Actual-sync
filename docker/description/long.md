@@ -116,6 +116,7 @@ Access the modern web dashboard at `http://localhost:3000/dashboard`:
 ## Docker Compose Example
 
 ```yaml
+version: "3.8"
 services:
   actual-sync:
     image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest

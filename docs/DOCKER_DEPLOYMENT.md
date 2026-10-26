@@ -348,7 +348,8 @@ volumes:
 #### Container hardening (#253)
 
 Since v1.22.0 the shipped `docker-compose.yml`, the README and Docker Hub
-examples and the Unraid template start the container with these controls.
+examples start the container with these controls; the Unraid template applies
+all of them but the port row, since its WebUI stays reachable on the LAN.
 Each was verified with a real container run before it was committed: the
 service reached `/health`, served the dashboard, recorded a sync attempt in
 its SQLite history and wrote its log file, and the Node process held no

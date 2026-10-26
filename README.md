@@ -294,6 +294,7 @@ docker run -d \
 **Docker Compose:**
 
 ```yaml
+version: "3.8"
 services:
   actual-sync:
     image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest
@@ -510,6 +511,7 @@ Both registries contain identical multi-platform images (amd64/arm64).
 ### Docker Compose (Recommended)
 
 ```yaml
+version: "3.8"
 services:
   actual-sync:
     image: agigante80/actual-sync:latest  # or ghcr.io/agigante80/actual-sync:latest

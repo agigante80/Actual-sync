@@ -359,6 +359,7 @@ jobs:
   docker-test:
     name: Docker Test Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [version, build, validate-short-description]
     if: |
       always() &&

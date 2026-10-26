@@ -1,3 +1,5 @@
+version: "3.8" # kept so the legacy docker-compose 1.x still reads the file; Compose v2 ignores it with a warning
+
 services:
   actual-sync:
     build:
