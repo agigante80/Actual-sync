@@ -302,6 +302,16 @@ services:
 
 See **[docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md)** for advanced Docker configuration.
 
+**Verifying the image:** every published image has a signed build provenance
+attestation and an SBOM. Check that the tag you pulled was built by this
+repository's CI from a specific commit:
+
+```bash
+gh attestation verify oci://ghcr.io/agigante80/actual-sync:latest --repo agigante80/Actual-sync
+```
+
+Details and the SBOM download in [docs/DOCKER_DEPLOYMENT.md](docs/DOCKER_DEPLOYMENT.md#verifying-the-image).
+
 ### Method 2: NPM Installation (Recommended for Development)
 
 ```bash
@@ -485,7 +495,9 @@ Actual-sync is published to two registries:
 - **Docker Hub**: `agigante80/actual-sync:latest`
 - **GitHub Container Registry**: `ghcr.io/agigante80/actual-sync:latest`
 
-Both registries contain identical multi-platform images (amd64/arm64).
+Both registries contain identical multi-platform images (amd64/arm64), each
+with a signed provenance attestation and an SBOM (see
+[Verifying the image](docs/DOCKER_DEPLOYMENT.md#verifying-the-image)).
 
 ### Docker Compose (Recommended)
 

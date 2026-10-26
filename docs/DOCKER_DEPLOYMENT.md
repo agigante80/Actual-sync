@@ -9,6 +9,7 @@ This guide covers deploying Actual-sync using Docker and Docker Compose with rea
 - [Configuration](#configuration)
 - [Common Issues](#common-issues)
 - [Production Tips](#production-tips)
+- [Verifying the image](#verifying-the-image)
 
 ## Quick Start
 
@@ -318,6 +319,58 @@ writable volumes, then drops to a non-root user (see
 The dashboard needs no outbound access: its chart library (Chart.js) is a
 production dependency installed into the image, so the dashboard works with
 egress blocked.
+
+## Verifying the image
+
+Every published image carries a signed build provenance attestation and an
+SBOM (software bill of materials), produced by the publish job in CI (#252).
+The attestation ties the image digest to the exact commit and workflow run
+that built it, so you can check that the tag you pulled was built by this
+repository and not re-tagged from somewhere else.
+
+**Check the provenance** with the GitHub CLI (`gh` 2.49 or newer). The command
+resolves the tag to its digest, fetches the attestation from the registry and
+checks the signature against GitHub's trust root:
+
+```bash
+gh attestation verify oci://ghcr.io/agigante80/actual-sync:1.22.0 --repo agigante80/Actual-sync
+```
+
+Docker Hub works the same way with `oci://index.docker.io/agigante80/actual-sync:1.22.0`.
+A successful run ends with a line like:
+
+```
+✓ Verification succeeded!
+
+The following 2 attestations matched the policy criteria
+
+- Attestation #1
+  - Build repo:..... agigante80/Actual-sync
+  - Build workflow:. .github/workflows/ci-cd.yml@refs/tags/v1.22.0
+  - Signer workflow: .github/workflows/ci-cd.yml@refs/tags/v1.22.0
+```
+
+An image that was built elsewhere and pushed under the same tag has no matching
+attestation, and the command exits non-zero with `no attestations found`. Pin
+the digest the command printed in your compose file (`image: ghcr.io/agigante80/actual-sync@sha256:...`)
+if you want later pulls to keep matching what you verified.
+
+**Read the SBOM.** The SPDX SBOM is attached to each GitHub release as
+`actual-sync-vX.Y.Z-linux-amd64.spdx.json` (and `-linux-arm64`), so you can
+answer "does this image contain package X" without pulling the image:
+
+```bash
+gh release download v1.22.0 --repo agigante80/Actual-sync --pattern '*.spdx.json'
+```
+
+The same SBOM is stored in the registry next to the image and can be read with
+`docker buildx imagetools inspect ghcr.io/agigante80/actual-sync:1.22.0 --format '{{ json .SBOM }}'`.
+
+**What this does and does not prove.** The attestation proves how and where
+the image was built. It does not prove that the commit it was built from is
+sound, or that the release was authorised. Treat it as one link in the chain:
+it stops a tampered or substituted image, not a bad commit. See
+[SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md#image-provenance-and-sbom-252).
 
 ## Production Tips
 
