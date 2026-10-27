@@ -92,14 +92,16 @@ Outcome: done. Released as v1.22.0 on 2026-10-26. The metrics credential (#247),
 signed provenance (#252, verified with `gh attestation verify` on Docker Hub and GHCR, SBOMs on the
 release) and the hardened compose and Unraid defaults (#253) landed. As the plan allowed, the
 read-only root filesystem shipped as a documented opt-in, because a custom PUID/PGID cannot start
-with it; making it work for every ID went to backlog as #409.
+with it. Making it work for every ID (#409) was then closed as won't fix: the app already runs as
+a non-root user with no capabilities, so a read-only root only adds `/tmp`.
 
 ## Phase: P6 v1.23 Sync activity
 state: planned
 plan:
 
 Carry the transaction counts the new runBankSync result exposes into the run summary and the
-generic payload (#391), add the activity_only notification mode on top of them (#392, #236), and
+generic payload (#391), add the activity_only notification mode on top of them (#392, which depends on #391; #236, the
+request both came from, is closed as superseded by them), and
 replace the vendored schedule expansion with getScheduleDates (#298). Waits for @actual-app/api
 26.11.0, expected in the first days of November 2026; the release train bumps the api on its own,
 and this phase opens once that bump lands on development.
@@ -107,8 +109,7 @@ and this phase opens once that bump lands on development.
 ## Phase: Backlog
 state: backlog
 
-Worth doing, not yet ordered: the read-only root filesystem for a custom PUID/PGID (#409), left
-over from P5. Items move out when a phase is shaped.
+Empty. Items move out when a phase is shaped.
 
 The post-sync loan split (#256) was closed as out of scope on 2026-10-27. It would edit budget data
 with the lender's numbers, which is not actual-sync's job, and a manual split costs minutes a
