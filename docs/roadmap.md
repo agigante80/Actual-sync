@@ -107,8 +107,10 @@ and this phase opens once that bump lands on development.
 ## Phase: Backlog
 state: backlog
 
-Worth doing, not yet ordered: the post-sync loan split (#256). It stays here because it would be
-the first feature that writes transactions into Actual, which changes the read-only posture the
-README promises, and that is the owner's call before it is shaped into a phase. Also the read-only
-root filesystem for a custom PUID/PGID (#409), left over from P5. Items move out when a phase is
-shaped.
+Worth doing, not yet ordered: the read-only root filesystem for a custom PUID/PGID (#409), left
+over from P5. Items move out when a phase is shaped.
+
+The post-sync loan split (#256) was closed as out of scope on 2026-10-27. It would edit budget data
+with the lender's numbers, which is not actual-sync's job, and a manual split costs minutes a
+month. If it comes back, it is a standalone script outside this repo; native support is tracked
+upstream in actualbudget/actual#4201.
