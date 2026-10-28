@@ -81,7 +81,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-sqlite3": "^13.0.3",
-    "chart.js": "^4.5.1",
+    "chart.js": "^4.6.1",
     "cronstrue": "^3.38.0",
     "date-fns": "4.4.0",
     "dotenv": "^18.0.9",
