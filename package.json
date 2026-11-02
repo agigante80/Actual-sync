@@ -75,7 +75,7 @@
     "url": ""
   },
   "dependencies": {
-    "@actual-app/api": "^26.10.0",
+    "@actual-app/api": "^26.11.0",
     "@rschedule/core": "1.5.0",
     "@rschedule/standard-date-adapter": "1.5.0",
     "ajv": "^8.20.0",
