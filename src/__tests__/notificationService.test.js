@@ -881,6 +881,47 @@ describe('NotificationService', () => {
       });
     });
 
+    describe('activity_only (#392)', () => {
+      const service = () => new NotificationService({ notifyOnSuccess: 'activity_only' });
+
+      test('success with an imported transaction sends', () => {
+        expect(service().shouldNotifyChannel('ntfy', 'success', undefined, { transactionsAdded: 2 })).toBe(true);
+      });
+
+      test('success with only an updated transaction sends', () => {
+        expect(service().shouldNotifyChannel('ntfy', 'success', undefined, { transactionsAdded: 0, transactionsUpdated: 1 })).toBe(true);
+      });
+
+      test('success with no activity is suppressed', () => {
+        expect(service().shouldNotifyChannel('ntfy', 'success', undefined, { transactionsAdded: 0, transactionsUpdated: 0 })).toBe(false);
+      });
+
+      test('success with no counts at all is suppressed (older api)', () => {
+        expect(service().shouldNotifyChannel('ntfy', 'success')).toBe(false);
+      });
+
+      test.each(['partial', 'failure'])('%s with no activity still sends', (status) => {
+        expect(service().shouldNotifyChannel('ntfy', status, undefined, { transactionsAdded: 0 })).toBe(true);
+      });
+
+      test('startup is not filtered', () => {
+        expect(service().shouldNotifyChannel('ntfy', 'startup', undefined, undefined)).toBe(true);
+      });
+
+      test('a per-entry activity_only overrides a global always', () => {
+        const s = new NotificationService({ notifyOnSuccess: 'always' });
+        expect(s.shouldNotifyChannel('slack', 'success', { notifyOnSuccess: 'activity_only' }, { transactionsAdded: 0 })).toBe(false);
+      });
+
+      test('is not listed as muted', () => {
+        const s = new NotificationService({
+          notifyOnSuccess: 'activity_only',
+          email: { enabled: true, from: 'a@b.c', to: ['d@e.f'] }
+        });
+        expect(s.mutedChannels()).toEqual([]);
+      });
+    });
+
     describe('startup notifications', () => {
       test('errors_only does not suppress startup (no sync status to filter on)', () => {
         const service = new NotificationService({ notifyOnSuccess: 'errors_only' });
@@ -1377,6 +1418,30 @@ describe('NotificationService', () => {
         const service = allSinks({ notifyOnSuccess: 'errors_only' });
         const t = spyTransports(service);
         await runSync(service, status);
+        SINKS.forEach(sink => expect(t.fired()[sink]).toBe(true));
+      });
+    });
+
+    describe('activity_only gates success on transaction counts (#392)', () => {
+      test('success with activity sends everywhere', async () => {
+        const service = allSinks({ notifyOnSuccess: 'activity_only' });
+        const t = spyTransports(service);
+        await runSync(service, 'success', { transactionsAdded: 2 });
+        SINKS.forEach(sink => expect(t.fired()[sink]).toBe(true));
+      });
+
+      test('success with no activity is suppressed everywhere', async () => {
+        const service = allSinks({ notifyOnSuccess: 'activity_only' });
+        const t = spyTransports(service);
+        const result = await runSync(service, 'success', { transactionsAdded: 0, transactionsUpdated: 0 });
+        SINKS.forEach(sink => expect(t.fired()[sink]).toBe(false));
+        expect(result.sent).toBe(false);
+      });
+
+      test.each(['partial', 'failure'])('%s with no activity still sends everywhere', async (status) => {
+        const service = allSinks({ notifyOnSuccess: 'activity_only' });
+        const t = spyTransports(service);
+        await runSync(service, status, { transactionsAdded: 0, transactionsUpdated: 0 });
         SINKS.forEach(sink => expect(t.fired()[sink]).toBe(true));
       });
     });

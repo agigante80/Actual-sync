@@ -497,7 +497,7 @@ If you've configured the Telegram bot, you can interact with the service:
 - `/stats` - Show sync statistics
 - `/servers` - List configured servers
 - `/sync ServerName` - Trigger manual sync for specific server
-- `/notify [always|errors|never]` - Change notification preferences at runtime (the command's `errors` is the config's `errors_only`)
+- `/notify [always|errors|activity|never]` - Change notification preferences at runtime (the command's `errors` is the config's `errors_only`, `activity` is `activity_only`)
 - `/help` - Show all available commands
 - `/ping` - Test bot connectivity
 - `/stats` - Show sync statistics
