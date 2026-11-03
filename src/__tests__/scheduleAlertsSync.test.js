@@ -43,6 +43,8 @@ const { SyncHistoryService } = require('../services/syncHistory');
 const { NotificationService } = require('../services/notificationService');
 const { createTempDir, cleanupTempDir } = require('./helpers/testHelpers');
 
+const realActualApi = require('@actual-app/api');
+
 const quietLogger = { info() {}, warn() {}, error() {} };
 
 /** Production `last_sync` is an epoch-millisecond string, not a date string (#295 review, H1). */
@@ -56,7 +58,7 @@ function epochMs(dateOrDateTimeStr) {
  * builder that records only the collection name, since that is all the fake
  * aqlQuery needs to route on.
  */
-function makeFakeApi({ schedules = [], payees = [], accounts = [], transactions = [], getSchedules } = {}) {
+function makeFakeApi({ schedules = [], payees = [], accounts = [], transactions = [], getSchedules, getScheduleDates } = {}) {
   // `captured` records the last filter()/options() argument seen per
   // collection, so a test can assert on the exact query shape
   // evaluateScheduleAlerts builds (#295 review, H3/M4) without needing a
@@ -73,6 +75,8 @@ function makeFakeApi({ schedules = [], payees = [], accounts = [], transactions 
   };
   return {
     getSchedules: getSchedules || jest.fn().mockResolvedValue(schedules),
+    // #298: Actual's own expansion; the handler needs no open budget.
+    getScheduleDates: getScheduleDates || jest.fn((date, window) => realActualApi.getScheduleDates(date, window)),
     q: jest.fn(q),
     aqlQuery: jest.fn(async (builder) => {
       if (builder.collection === 'payees') return { data: payees };
@@ -1492,5 +1496,73 @@ describe('scheduleAlertsSync: deleted schedule and ruleUnmatched frequency (#356
       persistPaymentSnapshot(server_, skipped, { syncHistory: history, serverName: 'Main', outcome: {}, logger });
       expect(snapshot()).toBe(kept);
     });
+  });
+});
+
+describe('#298: occurrence dates read from Actual per bound schedule', () => {
+  const twoRules = {
+    scheduleAlerts: {
+      alerts: [
+        { id: 'rent', schedule: 'Rent' },
+        { id: 'rent-again', schedule: 'Rent' },
+        { id: 'gym', schedule: 'Gym' }
+      ]
+    }
+  };
+  const schedules = () => [
+    rentSchedule(),
+    rentSchedule({ id: 's2', name: 'Gym', payee: 'pay2' }),
+    rentSchedule({ id: 's3', name: 'Unbound' })
+  ];
+  const accounts = [{ id: 'acc1', name: 'Checking', last_sync: epochMs('2026-01-09') }];
+  const now = new Date('2026-01-10T00:00:00.000Z');
+
+  test('calls getScheduleDates once per bound schedule, over occurrenceWindow()', async () => {
+    const api = makeFakeApi({ schedules: schedules(), accounts });
+    await evaluateScheduleAlerts({ api, server: twoRules, serverName: 'Main', timezone: 'UTC', now, logger: quietLogger });
+
+    const { occurrenceWindow } = require('../lib/scheduleAlerts');
+    const window = occurrenceWindow(now, 'UTC');
+    expect(api.getScheduleDates).toHaveBeenCalledTimes(2); // s1 once despite two rules; s3 is not bound
+    expect(api.getScheduleDates).toHaveBeenCalledWith('2026-01-05', window);
+  });
+
+  test('one schedule failing is cannotCheck for it alone, with a warning', async () => {
+    const real = require('@actual-app/api');
+    const warn = jest.fn();
+    const api = makeFakeApi({
+      schedules: schedules(),
+      accounts,
+      getScheduleDates: jest.fn(async (date, window) => {
+        if (api.getScheduleDates.mock.calls.length === 1) throw new Error('Cannot expand schedule date: boom');
+        return real.getScheduleDates(date, window);
+      })
+    });
+    const result = await evaluateScheduleAlerts({
+      api, server: twoRules, serverName: 'Main', timezone: 'UTC', now, logger: { ...quietLogger, warn }
+    });
+
+    const rentEvents = result.events.filter((e) => e.scheduleId === 's1');
+    expect(rentEvents.length).toBeGreaterThan(0);
+    expect(rentEvents.every((e) => e.event === 'cannotCheck' && e.reason === 'error')).toBe(true);
+    expect(result.events).toContainEqual(expect.objectContaining({ event: 'missing', alertId: 'gym' }));
+    expect(warn).toHaveBeenCalledWith('Could not read schedule occurrence dates from Actual', expect.objectContaining({ scheduleId: 's1' }));
+  });
+
+  test('a phase timeout fails the whole evaluation instead of waiting once per schedule', async () => {
+    const timeout = Object.assign(new Error("Actual API call 'getScheduleDates' did not finish within 300s"), { code: 'PHASE_TIMEOUT' });
+    const api = makeFakeApi({ schedules: schedules(), accounts, getScheduleDates: jest.fn().mockRejectedValue(timeout) });
+
+    await expect(evaluateScheduleAlerts({ api, server: twoRules, serverName: 'Main', timezone: 'UTC', now, logger: quietLogger }))
+      .rejects.toBe(timeout);
+    expect(api.getScheduleDates).toHaveBeenCalledTimes(1);
+  });
+
+  test('a non-Error rejection is still stored as an Error (cannotCheck)', async () => {
+    const api = makeFakeApi({ schedules: [rentSchedule()], accounts, getScheduleDates: jest.fn().mockRejectedValue('plain string') });
+    const result = await evaluateScheduleAlerts({
+      api, server: { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent' }] } }, serverName: 'Main', timezone: 'UTC', now, logger: quietLogger
+    });
+    expect(result.events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'error' })]);
   });
 });

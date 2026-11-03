@@ -10,8 +10,10 @@
  * Single source of truth: Actual's own Schedules. This module adds only what
  * a schedule lacks - a grace period, an early-payment allowance, and how long
  * a stale bank connection is tolerated before giving up rather than crying
- * wolf - never a cadence of its own (see `src/lib/vendor/actualSchedules.js`
- * for how a schedule's recurrence config becomes occurrence dates).
+ * wolf - never a cadence of its own. The dates a schedule falls on come from
+ * Actual itself (`getScheduleDates`, @actual-app/api 26.11.0, #298): the
+ * caller expands each bound schedule over `occurrenceWindow()` and passes the
+ * result in as `occurrencesBySchedule`, so this module stays pure.
  *
  * ## Design notes / deviations from the literal #258 text
  *
@@ -61,7 +63,7 @@
 'use strict';
 
 const moment = require('moment-timezone');
-const { parseRecurDate, getDateWithSkippedWeekend, getRecurringDescription } = require('./vendor/actualSchedules');
+const { getRecurringDescription } = require('./vendor/actualSchedules');
 const { expandRules } = require('./scheduleAlertRules');
 
 /** Hard cap on the look-back window, regardless of a schedule's own interval. */
@@ -84,56 +86,69 @@ const CADENCE_DATE_FORMAT = 'd MMM yyyy';
 const LINKED_EARLY_WINDOW_DAYS = 2;
 
 /**
- * Turn a rschedule-generated `Date` (local time, noon-anchored - see
- * `vendor/actualSchedules.js`) into a calendar-day moment in `timezone`. Only
- * the Y/M/D components are taken from the `Date`; a schedule's occurrence
- * date is a calendar date with no zone of its own, and all arithmetic on it
- * (deadlines, "today", staleness) must happen in one chosen zone regardless
- * of the machine's own local time.
- *
- * @param {Date} date
- * @param {string} timezone
- * @returns {moment.Moment}
+ * The window, in days around today, that `occurrencesBySchedule` must cover
+ * (#298). `evaluate()` reads occurrences in two ranges: the interval stats
+ * over today +/- MAX_LOOKBACK_DAYS, and the evaluation range from
+ * today - lookbackDays (at most MAX_LOOKBACK_DAYS) to today +
+ * longestIntervalDays. The longest gap between two occurrences that both lie
+ * inside +/- MAX_LOOKBACK_DAYS is at most 2 * MAX_LOOKBACK_DAYS, so that is
+ * how far ahead the dates must reach.
  */
-function toCalendarDay(date, timezone) {
-  return moment.tz([date.getFullYear(), date.getMonth(), date.getDate()], timezone).startOf('day');
+const OCCURRENCE_WINDOW_BEFORE_DAYS = MAX_LOOKBACK_DAYS;
+const OCCURRENCE_WINDOW_AFTER_DAYS = 2 * MAX_LOOKBACK_DAYS;
+
+/**
+ * The `{ start, end }` (`YYYY-MM-DD`, inclusive) to expand every bound
+ * schedule over before calling `evaluate()` with the same `now` and
+ * `timezone` (#298). `end` is always set: Actual rejects an open-ended
+ * recurrence without one.
+ *
+ * @param {Date|string} now
+ * @param {string} timezone
+ * @returns {{ start: string, end: string }}
+ */
+function occurrenceWindow(now, timezone) {
+  const today = moment.tz(now, timezone).startOf('day');
+  return {
+    start: today.clone().subtract(OCCURRENCE_WINDOW_BEFORE_DAYS, 'days').format('YYYY-MM-DD'),
+    end: today.clone().add(OCCURRENCE_WINDOW_AFTER_DAYS, 'days').format('YYYY-MM-DD')
+  };
 }
 
 /**
- * Expand a schedule's `date` config (a `RecurConfig`, or a plain `YYYY-MM-DD`
- * string for a one-off schedule) into calendar-day moments in `timezone`,
- * within `[rangeStart, rangeEnd]` inclusive, ascending and deduplicated.
+ * The occurrence days of one schedule within `[rangeStart, rangeEnd]`
+ * inclusive, ascending and deduplicated, as calendar-day moments in
+ * `timezone` (#298).
  *
- * @param {Object|string} dateConfig
+ * `dates` is what Actual's `getScheduleDates` returned for the schedule:
+ * `YYYY-MM-DD` calendar dates, already moved off weekends and with no zone
+ * of their own. They are read as calendar days in `timezone` once, here; no
+ * other conversion is applied. An `Error` (the lookup failed) or a missing
+ * entry throws, which `evaluate()`'s per-binding catch turns into a
+ * `cannotCheck` with reason `error` and a warning, like any other
+ * per-schedule fault.
+ *
+ * @param {string[]|Error|undefined} dates
  * @param {moment.Moment} rangeStart
  * @param {moment.Moment} rangeEnd
  * @param {string} timezone
  * @returns {moment.Moment[]}
  */
-function expandOccurrences(dateConfig, rangeStart, rangeEnd, timezone) {
-  if (typeof dateConfig === 'string') {
-    const single = moment.tz(dateConfig, timezone).startOf('day');
-    return single.isBetween(rangeStart, rangeEnd, 'day', '[]') ? [single] : [];
-  }
-
-  const parsed = parseRecurDate(dateConfig);
-  const raw = parsed.schedule
-    .occurrences({ start: rangeStart.clone().subtract(1, 'day').toDate(), end: rangeEnd.clone().add(1, 'day').toDate() })
-    .toArray()
-    .map((occ) => occ.date);
-
-  const days = raw.map((d) => (dateConfig.skipWeekend ? getDateWithSkippedWeekend(d, dateConfig.weekendSolveMode) : d));
-  const calendarDays = days.map((d) => toCalendarDay(d, timezone));
+function occurrencesInRange(dates, rangeStart, rangeEnd, timezone) {
+  if (dates instanceof Error) throw dates;
+  if (!Array.isArray(dates)) throw new Error('no occurrence dates were read from Actual for this schedule');
 
   const seen = new Set();
-  const unique = [];
-  for (const day of calendarDays.sort((a, b) => a.valueOf() - b.valueOf())) {
+  const days = [];
+  for (const date of dates) {
+    const day = moment.tz(date, 'YYYY-MM-DD', true, timezone);
+    if (!day.isValid()) throw new Error(`Actual returned an invalid occurrence date: ${date}`);
     const key = day.format('YYYY-MM-DD');
     if (seen.has(key)) continue;
     seen.add(key);
-    if (day.isBetween(rangeStart, rangeEnd, 'day', '[]')) unique.push(day);
+    if (day.isBetween(rangeStart, rangeEnd, 'day', '[]')) days.push(day);
   }
-  return unique;
+  return days.sort((a, b) => a.valueOf() - b.valueOf());
 }
 
 /**
@@ -141,15 +156,15 @@ function expandOccurrences(dateConfig, rangeStart, rangeEnd, timezone) {
  * a wide reference window. Used to size the look-back window and to catch
  * the #271 item 1 window-overlap condition.
  *
- * @param {Object|string} dateConfig
+ * @param {string[]|Error|undefined} dates - the schedule's dates from Actual (see occurrencesInRange)
  * @param {moment.Moment} today
  * @param {string} timezone
  * @returns {{ shortestIntervalDays: number|null, longestIntervalDays: number }}
  */
-function computeIntervalStats(dateConfig, today, timezone) {
+function computeIntervalStats(dates, today, timezone) {
   const rangeStart = today.clone().subtract(MAX_LOOKBACK_DAYS, 'days');
   const rangeEnd = today.clone().add(MAX_LOOKBACK_DAYS, 'days');
-  const days = expandOccurrences(dateConfig, rangeStart, rangeEnd, timezone);
+  const days = occurrencesInRange(dates, rangeStart, rangeEnd, timezone);
 
   let shortest = null;
   let longest = 0;
@@ -385,6 +400,11 @@ function parseLastSync(lastSync, timezone) {
  * @param {Array<{id:string,last_sync:?string}>} args.accounts
  * @param {Date|string} args.now
  * @param {string} args.timezone - IANA zone, e.g. `Europe/Madrid`
+ * @param {Object<string, string[]|Error>} args.occurrencesBySchedule - #298:
+ *   per schedule id, the `YYYY-MM-DD` dates Actual's `getScheduleDates`
+ *   returned over `occurrenceWindow(now, timezone)`, or the Error the lookup
+ *   failed with. A bound schedule with no entry, or an Error, is
+ *   `cannotCheck` (reason `error`) with a warning.
  * @param {Iterable<string>} [args.skips] - #297 F1: remembered skip decisions,
  *   each `${scheduleId}|${occurrence}` (see `skipKey`). An unpaid occurrence in
  *   this set is `skipped` regardless of what `next_date` says now.
@@ -393,7 +413,7 @@ function parseLastSync(lastSync, timezone) {
  *   (`{alertId, scheduleId, occurrence}`); the caller persists them so the
  *   next call can pass them back in as `skips`.
  */
-function evaluate({ rules, schedules, transactions, accounts, now, timezone, skips }) {
+function evaluate({ rules, schedules, transactions, accounts, now, timezone, skips, occurrencesBySchedule }) {
   const events = [];
   const skipDecisions = [];
   const rememberedSkips = new Set(skips || []);
@@ -447,13 +467,16 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
     const dateConfig = schedule.date;
 
     // #295 review, H2: one bad schedule (a malformed recurrence config, or
-    // any other unexpected throw from `expandOccurrences`/`getRecurringDescription`/
+    // any other unexpected throw from `occurrencesInRange`/`getRecurringDescription`/
     // date parsing below) must not silence every other rule's evaluation in
     // the same sync. Each binding gets its own try/catch, isolating a fault
     // to a single `cannotCheck`/warning instead of aborting `evaluate()`
     // entirely (which would drop every OTHER rule's events too).
     try {
-      const { shortestIntervalDays, longestIntervalDays } = computeIntervalStats(dateConfig, today, timezone);
+      // #298: a failed or missing date lookup for this schedule throws here
+      // and lands in this binding's catch below (cannotCheck, reason error).
+      const scheduleDates = occurrencesBySchedule ? occurrencesBySchedule[schedule.id] : undefined;
+      const { shortestIntervalDays, longestIntervalDays } = computeIntervalStats(scheduleDates, today, timezone);
 
       // The overlap check counts the linked-transaction early allowance
       // (LINKED_EARLY_WINDOW_DAYS) as well as the rule's own earlyDays, but
@@ -508,7 +531,7 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
       const lookbackDays = Math.max(7, Math.min(MAX_LOOKBACK_DAYS, 2 * longestIntervalDays));
       const rangeStart = today.clone().subtract(lookbackDays, 'days');
       const rangeEnd = today.clone().add(longestIntervalDays, 'days');
-      const occurrenceDays = expandOccurrences(dateConfig, rangeStart, rangeEnd, timezone);
+      const occurrenceDays = occurrencesInRange(scheduleDates, rangeStart, rangeEnd, timezone);
 
       const tolerancePct = resolveTolerancePct(binding, schedule);
       const account = accountsById.get(schedule.account) || null;
@@ -802,4 +825,14 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
   return { events, evaluations, warnings, skipDecisions, completedSchedules };
 }
 
-module.exports = { evaluate, skipKey, MAX_LOOKBACK_DAYS, MAX_OCCURRENCES, LINKED_EARLY_WINDOW_DAYS, CADENCE_DATE_FORMAT };
+module.exports = {
+  evaluate,
+  occurrenceWindow,
+  skipKey,
+  MAX_LOOKBACK_DAYS,
+  MAX_OCCURRENCES,
+  LINKED_EARLY_WINDOW_DAYS,
+  CADENCE_DATE_FORMAT,
+  OCCURRENCE_WINDOW_BEFORE_DAYS,
+  OCCURRENCE_WINDOW_AFTER_DAYS
+};

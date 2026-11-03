@@ -14,10 +14,22 @@
  * (#295 review, H1).
  */
 
-const { evaluate, MAX_OCCURRENCES } = require('../lib/scheduleAlerts');
+const { evaluate: evaluateWithDates, MAX_OCCURRENCES } = require('../lib/scheduleAlerts');
+const { actualScheduleDates } = require('./helpers/actualScheduleDates');
 const { getRules } = require('../lib/scheduleAlertRules');
 
 const TZ = 'UTC';
+
+/**
+ * #298: evaluate() with each schedule's dates expanded by Actual itself
+ * (`getScheduleDates`), as the sync step does. A test that passes its own
+ * `occurrencesBySchedule` keeps it.
+ */
+async function evaluate(args) {
+  if (Object.prototype.hasOwnProperty.call(args, 'occurrencesBySchedule')) return evaluateWithDates(args);
+  const occurrencesBySchedule = await actualScheduleDates(args.schedules, args.now, args.timezone);
+  return evaluateWithDates({ ...args, occurrencesBySchedule });
+}
 
 /** Production `last_sync` is an epoch-millisecond string, not a date string (#295 review, H1). */
 function epochMs(dateOrDateTimeStr) {
@@ -51,8 +63,8 @@ function account(overrides = {}) {
 }
 
 describe('evaluate: missing / cannotCheck', () => {
-  test('no transaction, synced past the deadline and not stale -> missing', () => {
-    const { events, evaluations, warnings } = evaluate({
+  test('no transaction, synced past the deadline and not stale -> missing', async () => {
+    const { events, evaluations, warnings } = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [],
@@ -74,8 +86,8 @@ describe('evaluate: missing / cannotCheck', () => {
     expect(evaluations[0].state).toBe('missing');
   });
 
-  test('#296: an account never bank-synced (last_sync null) gives cannotCheck, never missing', () => {
-    const { events } = evaluate({
+  test('#296: an account never bank-synced (last_sync null) gives cannotCheck, never missing', async () => {
+    const { events } = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [],
@@ -86,8 +98,8 @@ describe('evaluate: missing / cannotCheck', () => {
     expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'stale', lastSync: null })]);
   });
 
-  test('stale bank connection (last_sync more than staleAfterDays ago) -> cannotCheck, reason stale', () => {
-    const { events } = evaluate({
+  test('stale bank connection (last_sync more than staleAfterDays ago) -> cannotCheck, reason stale', async () => {
+    const { events } = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [],
@@ -99,9 +111,9 @@ describe('evaluate: missing / cannotCheck', () => {
     expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'stale', lastSync: '2026-01-05' })]);
   });
 
-  test('#271 item 3: staleness boundary is strict (> not >=)', () => {
+  test('#271 item 3: staleness boundary is strict (> not >=)', async () => {
     // staleAfterDays = 3. Exactly 3 days since last_sync must NOT be stale.
-    const exactlyThree = evaluate({
+    const exactlyThree = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [],
@@ -111,7 +123,7 @@ describe('evaluate: missing / cannotCheck', () => {
     });
     expect(exactlyThree.events[0]).toMatchObject({ event: 'cannotCheck', reason: 'not-synced' });
 
-    const fourDays = evaluate({
+    const fourDays = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [],
@@ -122,8 +134,8 @@ describe('evaluate: missing / cannotCheck', () => {
     expect(fourDays.events[0]).toMatchObject({ event: 'cannotCheck', reason: 'stale' });
   });
 
-  test('synced, but not yet past the deadline -> cannotCheck, reason not-synced', () => {
-    const { events } = evaluate({
+  test('synced, but not yet past the deadline -> cannotCheck, reason not-synced', async () => {
+    const { events } = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [],
@@ -135,8 +147,8 @@ describe('evaluate: missing / cannotCheck', () => {
     expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'not-synced' })]);
   });
 
-  test('occurrence not yet due (today within the grace period) -> no event, state upcoming', () => {
-    const { events, evaluations } = evaluate({
+  test('occurrence not yet due (today within the grace period) -> no event, state upcoming', async () => {
+    const { events, evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [],
@@ -148,8 +160,8 @@ describe('evaluate: missing / cannotCheck', () => {
     expect(evaluations[0].state).toBe('upcoming');
   });
 
-  test('a future occurrence -> upcoming, no event', () => {
-    const { events, evaluations } = evaluate({
+  test('a future occurrence -> upcoming, no event', async () => {
+    const { events, evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule({ date: '2026-02-05' })],
       transactions: [],
@@ -163,8 +175,8 @@ describe('evaluate: missing / cannotCheck', () => {
 });
 
 describe('evaluate: received / late / wrongAmount', () => {
-  test('exact-amount transaction inside the on-time window -> received, no event', () => {
-    const { events, evaluations } = evaluate({
+  test('exact-amount transaction inside the on-time window -> received, no event', async () => {
+    const { events, evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null }],
@@ -179,10 +191,10 @@ describe('evaluate: received / late / wrongAmount', () => {
     });
   });
 
-  test('#271 item 2: with no next occurrence, the late window is open through "today"', () => {
+  test('#271 item 2: with no next occurrence, the late window is open through "today"', async () => {
     // Deadline is Jan 8; the transaction lands well after it but the late
     // window has no next occurrence to be capped by, so it extends to "now".
-    const { events, evaluations } = evaluate({
+    const { events, evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-09', schedule: null }],
@@ -195,7 +207,7 @@ describe('evaluate: received / late / wrongAmount', () => {
     expect(evaluations[0].occurrences[0]).toMatchObject({ state: 'late', receivedDate: '2026-01-09' });
   });
 
-  test('#296: an outgoing refund of the same size is not the incoming payment (sign must match)', () => {
+  test('#296: an outgoing refund of the same size is not the incoming payment (sign must match)', async () => {
     const run = (amount) => evaluate({
       rules: rentRule({ amountTolerancePct: 0 }),
       schedules: [rentSchedule({ amount: 6000 })],
@@ -204,9 +216,9 @@ describe('evaluate: received / late / wrongAmount', () => {
       now: '2026-01-10',
       timezone: TZ
     });
-    expect(run(6000).evaluations[0].state).toBe('received');
-    expect(run(-6000).evaluations[0].state).toBe('missing');
-    expect(run(-6000).events.map((e) => e.event)).not.toContain('resolved');
+    expect((await run(6000)).evaluations[0].state).toBe('received');
+    expect((await run(-6000)).evaluations[0].state).toBe('missing');
+    expect((await run(-6000)).events.map((e) => e.event)).not.toContain('resolved');
   });
 
   describe('#296 round 1 M1: the sign check holds in every fallback pass', () => {
@@ -220,25 +232,25 @@ describe('evaluate: received / late / wrongAmount', () => {
     });
     const tx = (id, amount, date, schedule = null) => ({ id, account: 'acc1', payee: 'pay1', amount, date, schedule });
 
-    test('(a) only an opposite-sign transaction in the late window -> missing', () => {
-      const { events, evaluations } = run([tx('t1', -6000, '2026-01-10')]);
+    test('(a) only an opposite-sign transaction in the late window -> missing', async () => {
+      const { events, evaluations } = await run([tx('t1', -6000, '2026-01-10')]);
       expect(evaluations[0].state).toBe('missing');
       expect(events.map((e) => e.event)).toContain('missing');
     });
 
-    test('(b) opposite sign in the on-time window plus a right-sign payment later -> late', () => {
-      const { evaluations } = run([tx('t1', -6000, '2026-01-04'), tx('t2', 6000, '2026-01-10')]);
+    test('(b) opposite sign in the on-time window plus a right-sign payment later -> late', async () => {
+      const { evaluations } = await run([tx('t1', -6000, '2026-01-04'), tx('t2', 6000, '2026-01-10')]);
       expect(evaluations[0].state).toBe('late');
     });
 
-    test('(c) a LINKED opposite-sign transaction stays authoritative (Actual\'s link wins)', () => {
-      const { evaluations } = run([tx('t1', -6000, '2026-01-10', 's1')]);
+    test('(c) a LINKED opposite-sign transaction stays authoritative (Actual\'s link wins)', async () => {
+      const { evaluations } = await run([tx('t1', -6000, '2026-01-10', 's1')]);
       expect(evaluations[0].state).toBe('late');
     });
   });
 
-  test('a transaction linked via transaction.schedule counts regardless of amount', () => {
-    const { evaluations } = evaluate({
+  test('a transaction linked via transaction.schedule counts regardless of amount', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -1, date: '2026-01-05', schedule: 's1' }],
@@ -249,8 +261,8 @@ describe('evaluate: received / late / wrongAmount', () => {
     expect(evaluations[0].state).toBe('received');
   });
 
-  test('an unlinked transaction with the wrong amount -> wrongAmount event with the correct difference', () => {
-    const { events } = evaluate({
+  test('an unlinked transaction with the wrong amount -> wrongAmount event with the correct difference', async () => {
+    const { events } = await evaluate({
       rules: rentRule({ amountTolerancePct: 0 }),
       schedules: [rentSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -40000, date: '2026-01-05', schedule: null }],
@@ -272,9 +284,9 @@ describe('evaluate: received / late / wrongAmount', () => {
     }]);
   });
 
-  test('isapprox amount tolerance defaults to 7.5% and is inclusive at the boundary', () => {
+  test('isapprox amount tolerance defaults to 7.5% and is inclusive at the boundary', async () => {
     const schedule = rentSchedule({ amountOp: 'isapprox' });
-    const atBoundary = evaluate({
+    const atBoundary = await evaluate({
       rules: rentRule(),
       schedules: [schedule],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -46250, date: '2026-01-05', schedule: null }], // exactly 7.5% under
@@ -284,7 +296,7 @@ describe('evaluate: received / late / wrongAmount', () => {
     });
     expect(atBoundary.evaluations[0].state).toBe('received');
 
-    const beyondBoundary = evaluate({
+    const beyondBoundary = await evaluate({
       rules: rentRule(),
       schedules: [schedule],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -46249, date: '2026-01-05', schedule: null }],
@@ -297,8 +309,8 @@ describe('evaluate: received / late / wrongAmount', () => {
 });
 
 describe('evaluate: rule matching', () => {
-  test('a rule matching no schedule -> ruleUnmatched event, no evaluation entry', () => {
-    const { events, evaluations } = evaluate({
+  test('a rule matching no schedule -> ruleUnmatched event, no evaluation entry', async () => {
+    const { events, evaluations } = await evaluate({
       rules: getRules({ alerts: [{ id: 'ghost', schedule: 'Does Not Exist' }] }),
       schedules: [rentSchedule()],
       transactions: [],
@@ -310,12 +322,12 @@ describe('evaluate: rule matching', () => {
     expect(evaluations).toEqual([]);
   });
 
-  test('a schedulePrefix rule expands into one independent evaluation per matching schedule', () => {
+  test('a schedulePrefix rule expands into one independent evaluation per matching schedule', async () => {
     const schedules = [
       rentSchedule({ id: 's1', name: 'Utilities - Gas', account: 'acc1', payee: 'pay1' }),
       rentSchedule({ id: 's2', name: 'Utilities - Electric', account: 'acc1', payee: 'pay2' })
     ];
-    const { events, evaluations } = evaluate({
+    const { events, evaluations } = await evaluate({
       rules: getRules({ staleAfterDays: 3, alerts: [{ id: 'utilities', schedulePrefix: 'Utilities', graceDays: 3, earlyDays: 2 }] }),
       schedules,
       transactions: [],
@@ -331,11 +343,11 @@ describe('evaluate: rule matching', () => {
 });
 
 describe('evaluate: #271 item 1 (window overlap)', () => {
-  test('graceDays + earlyDays >= the shortest interval -> the rule is skipped with a warning and a cannotCheck event', () => {
+  test('graceDays + earlyDays >= the shortest interval -> the rule is skipped with a warning and a cannotCheck event', async () => {
     const weeklySchedule = rentSchedule({
       date: { start: '2026-01-05', frequency: 'weekly' } // 7-day interval
     });
-    const { events, evaluations, warnings } = evaluate({
+    const { events, evaluations, warnings } = await evaluate({
       rules: rentRule({ graceDays: 5, earlyDays: 3 }), // 5 + 3 = 8 >= 7
       schedules: [weeklySchedule],
       transactions: [],
@@ -354,9 +366,9 @@ describe('evaluate: #271 item 1 (window overlap)', () => {
     expect(evaluations[0]).toMatchObject({ state: 'cannotCheck', occurrences: [] });
   });
 
-  test('graceDays + earlyDays strictly less than the interval -> no warning', () => {
+  test('graceDays + earlyDays strictly less than the interval -> no warning', async () => {
     const weeklySchedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } });
-    const { warnings } = evaluate({
+    const { warnings } = await evaluate({
       rules: rentRule({ graceDays: 2, earlyDays: 2 }), // 4 < 7
       schedules: [weeklySchedule],
       transactions: [],
@@ -367,9 +379,9 @@ describe('evaluate: #271 item 1 (window overlap)', () => {
     expect(warnings).toEqual([]);
   });
 
-  test('graceDays + earlyDays exactly equal to the shortest interval also trips the guard (boundary is >=, not >)', () => {
+  test('graceDays + earlyDays exactly equal to the shortest interval also trips the guard (boundary is >=, not >)', async () => {
     const weeklySchedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } }); // 7-day interval
-    const { events, warnings } = evaluate({
+    const { events, warnings } = await evaluate({
       rules: rentRule({ graceDays: 4, earlyDays: 3 }), // 4 + 3 = 7 == 7
       schedules: [weeklySchedule],
       transactions: [],
@@ -385,8 +397,8 @@ describe('evaluate: #271 item 1 (window overlap)', () => {
 });
 
 describe('evaluate: #271 item 4 (occurrences shape) and MAX_OCCURRENCES', () => {
-  test('each occurrence carries date, deadline, state, receivedDate and receivedAmount', () => {
-    const { evaluations } = evaluate({
+  test('each occurrence carries date, deadline, state, receivedDate and receivedAmount', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [rentSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null }],
@@ -398,7 +410,7 @@ describe('evaluate: #271 item 4 (occurrences shape) and MAX_OCCURRENCES', () => 
     expect(Object.keys(occ).sort()).toEqual(['date', 'deadline', 'receivedAmount', 'receivedDate', 'state'].sort());
   });
 
-  test('occurrences is capped at MAX_OCCURRENCES, keeping the most recent', () => {
+  test('occurrences is capped at MAX_OCCURRENCES, keeping the most recent', async () => {
     // A plain daily schedule no longer works as this test's fixture: its
     // 1-day interval always trips the #295 review round 2, M3 overlap guard
     // now that the guard accounts for the linked-early window (graceDays(0)
@@ -410,7 +422,7 @@ describe('evaluate: #271 item 4 (occurrences shape) and MAX_OCCURRENCES', () => 
     const denseSchedule = rentSchedule({
       date: { start: '2025-01-01', frequency: 'monthly', patterns: [1, 4, 7, 10, 13, 16, 25].map((value) => ({ type: 'day', value })) }
     });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules: rentRule({ graceDays: 0, earlyDays: 0 }),
       schedules: [denseSchedule],
       transactions: [],
@@ -429,11 +441,11 @@ describe('evaluate: #271 item 4 (occurrences shape) and MAX_OCCURRENCES', () => 
 });
 
 describe('evaluate: H2 (isolation and on_date cadence text)', () => {
-  test('an on_date endMode schedule does not throw and its cadenceText uses a valid date-fns format', () => {
+  test('an on_date endMode schedule does not throw and its cadenceText uses a valid date-fns format', async () => {
     const schedule = rentSchedule({
       date: { start: '2026-01-05', frequency: 'monthly', endMode: 'on_date', endDate: '2026-06-01' }
     });
-    const { evaluations, warnings } = evaluate({
+    const { evaluations, warnings } = await evaluate({
       rules: rentRule(),
       schedules: [schedule],
       transactions: [],
@@ -446,7 +458,7 @@ describe('evaluate: H2 (isolation and on_date cadence text)', () => {
     expect(evaluations[0].cadenceText).toBe('Every month on the 5th, until 1 Jun 2026');
   });
 
-  test('a schedule that throws during evaluation does not block other rules', () => {
+  test('a schedule that throws during evaluation does not block other rules', async () => {
     const goodSchedule = rentSchedule({ id: 's1', name: 'Rent' });
     const badSchedule = rentSchedule({ id: 's2', name: 'Broken', date: { start: '2026-01-05', frequency: 'bogus' } });
     const rules = getRules({
@@ -456,7 +468,7 @@ describe('evaluate: H2 (isolation and on_date cadence text)', () => {
         { id: 'broken', schedule: 'Broken', graceDays: 3, earlyDays: 2 }
       ]
     });
-    const { events, evaluations, warnings } = evaluate({
+    const { events, evaluations, warnings } = await evaluate({
       rules,
       schedules: [goodSchedule, badSchedule],
       transactions: [],
@@ -474,9 +486,9 @@ describe('evaluate: H2 (isolation and on_date cadence text)', () => {
 });
 
 describe('evaluate: M9 (Actual "Skip next date")', () => {
-  test('an occurrence strictly before schedule.next_date is treated as skipped, not missing', () => {
+  test('an occurrence strictly before schedule.next_date is treated as skipped, not missing', async () => {
     const schedule = rentSchedule({ next_date: '2026-01-06' }); // occurrence Jan 5 was skipped in Actual
-    const { events, evaluations } = evaluate({
+    const { events, evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [schedule],
       transactions: [],
@@ -488,9 +500,9 @@ describe('evaluate: M9 (Actual "Skip next date")', () => {
     expect(evaluations[0].state).toBe('skipped');
   });
 
-  test('without next_date, the same occurrence is still reported missing as before', () => {
+  test('without next_date, the same occurrence is still reported missing as before', async () => {
     const schedule = rentSchedule();
-    const { events, evaluations } = evaluate({
+    const { events, evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [schedule],
       transactions: [],
@@ -504,7 +516,7 @@ describe('evaluate: M9 (Actual "Skip next date")', () => {
 });
 
 describe('evaluate: R2-H2 (next_date can advance from a later linked payment, not only an explicit skip)', () => {
-  test('a later occurrence being linked (advancing next_date) does not hide an earlier genuinely missed occurrence', () => {
+  test('a later occurrence being linked (advancing next_date) does not hide an earlier genuinely missed occurrence', async () => {
     // Monthly on the 1st: January was never paid; a February payment posted
     // and linked to the schedule, so Actual advanced next_date to 1 March -
     // NOT because January was explicitly skipped.
@@ -512,7 +524,7 @@ describe('evaluate: R2-H2 (next_date can advance from a later linked payment, no
       date: { start: '2026-01-01', frequency: 'monthly' },
       next_date: '2026-03-01'
     });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [schedule],
       transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }],
@@ -524,12 +536,12 @@ describe('evaluate: R2-H2 (next_date can advance from a later linked payment, no
     expect(jan.state).toBe('missing'); // not silently "skipped"
   });
 
-  test('next_date advancing with no intervening linked payment at all is still a genuine skip', () => {
+  test('next_date advancing with no intervening linked payment at all is still a genuine skip', async () => {
     const schedule = rentSchedule({
       date: { start: '2026-01-01', frequency: 'monthly' },
       next_date: '2026-02-01' // Actual's own "Skip next date" on January, no transaction involved
     });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [schedule],
       transactions: [],
@@ -545,8 +557,8 @@ describe('evaluate: R2-H2 (next_date can advance from a later linked payment, no
 describe('evaluate: #297 F1 (remember the skip decision)', () => {
   const monthly = (nextDate) => rentSchedule({ date: { start: '2026-01-01', frequency: 'monthly' }, next_date: nextDate });
 
-  test('a skip inferred for the first time is reported as a skipDecision so the caller can persist it', () => {
-    const { evaluations, skipDecisions, events } = evaluate({
+  test('a skip inferred for the first time is reported as a skipDecision so the caller can persist it', async () => {
+    const { evaluations, skipDecisions, events } = await evaluate({
       rules: rentRule(),
       schedules: [monthly('2026-02-01')],
       transactions: [],
@@ -559,10 +571,10 @@ describe('evaluate: #297 F1 (remember the skip decision)', () => {
     expect(skipDecisions).toEqual([{ alertId: 'rent', scheduleId: 's1', occurrence: '2026-01-01' }]);
   });
 
-  test('January skipped, February paid and linked: with the remembered skip, January stays skipped (no false missing)', () => {
+  test('January skipped, February paid and linked: with the remembered skip, January stays skipped (no false missing)', async () => {
     // next_date is now 2026-03-01 and the February payment sits between January's deadline
     // and next_date - indistinguishable from a real miss without the remembered decision.
-    const { evaluations, events, skipDecisions } = evaluate({
+    const { evaluations, events, skipDecisions } = await evaluate({
       rules: rentRule(),
       schedules: [monthly('2026-03-01')],
       transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }],
@@ -576,8 +588,8 @@ describe('evaluate: #297 F1 (remember the skip decision)', () => {
     expect(skipDecisions).toEqual([]); // already remembered, nothing new to persist
   });
 
-  test('a remembered skip is scoped to its schedule and occurrence', () => {
-    const { evaluations } = evaluate({
+  test('a remembered skip is scoped to its schedule and occurrence', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [monthly('2026-03-01')],
       transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }],
@@ -589,8 +601,8 @@ describe('evaluate: #297 F1 (remember the skip decision)', () => {
     expect(evaluations[0].occurrences.find((o) => o.date === '2026-01-01').state).toBe('missing');
   });
 
-  test('an intervening linked payment with no remembered skip is not recorded as a skip decision', () => {
-    const { skipDecisions } = evaluate({
+  test('an intervening linked payment with no remembered skip is not recorded as a skip decision', async () => {
+    const { skipDecisions } = await evaluate({
       rules: rentRule(),
       schedules: [monthly('2026-03-01')],
       transactions: [{ id: 'feb', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-02-01', schedule: 's1' }],
@@ -601,8 +613,8 @@ describe('evaluate: #297 F1 (remember the skip decision)', () => {
     expect(skipDecisions).toEqual([]);
   });
 
-  test('a remembered skip never hides an occurrence that a payment actually settled', () => {
-    const { evaluations } = evaluate({
+  test('a remembered skip never hides an occurrence that a payment actually settled', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [monthly('2026-02-01')],
       transactions: [{ id: 'jan', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-01', schedule: 's1' }],
@@ -629,10 +641,10 @@ describe('evaluate: #297 F2 / F2b (linked payments take precedence over unlinked
     });
   }
 
-  test('F2: an unlinked exact-amount payment does not beat a payment linked to the schedule', () => {
+  test('F2: an unlinked exact-amount payment does not beat a payment linked to the schedule', async () => {
     // A and B share account+payee and amount. tA (-51000) is linked to A on 01-03 (inside Actual's
     // 2-day link tolerance, outside earlyDays 0); tB (-50000) is unlinked on 01-05.
-    const { events, evaluations } = evaluate({
+    const { events, evaluations } = await evaluate({
       rules: twoRules(),
       schedules: [sibling('sA', 'Alpha'), sibling('sB', 'Beta')],
       transactions: [
@@ -648,9 +660,9 @@ describe('evaluate: #297 F2 / F2b (linked payments take precedence over unlinked
     expect(evaluations.find((e) => e.alertId === 'b').occurrences[0].receivedDate).toBe('2026-01-05');
   });
 
-  test('F2b: pass 2 prefers a payment linked to the schedule over an earlier unlinked lookalike', () => {
+  test('F2b: pass 2 prefers a payment linked to the schedule over an earlier unlinked lookalike', async () => {
     // A due 01-05, B due 01-10. tB (unlinked) lands 01-10; tA (linked to A) lands 01-11, late for A.
-    const { events, evaluations } = evaluate({
+    const { events, evaluations } = await evaluate({
       rules: twoRules(),
       schedules: [sibling('sA', 'Alpha'), rentSchedule({ id: 'sB', name: 'Beta', date: '2026-01-10' })],
       transactions: [
@@ -668,11 +680,11 @@ describe('evaluate: #297 F2 / F2b (linked payments take precedence over unlinked
 });
 
 describe('evaluate: #297 round 1 M1 (the linked allowance does not steal an in-window exact-amount payment)', () => {
-  test('a late linked January payment dated 01-31 does not beat February\'s own unlinked payment on 02-01', () => {
+  test('a late linked January payment dated 01-31 does not beat February\'s own unlinked payment on 02-01', async () => {
     // Monthly on the 1st, grace 5, early 0. Jan was paid late on 01-31 (linked by hand, odd amount);
     // Feb was paid on time on 02-01 for the exact amount (unlinked). No sibling rule shares the payee.
     const schedule = rentSchedule({ date: { start: '2026-01-01', frequency: 'monthly' } });
-    const { events, evaluations } = evaluate({
+    const { events, evaluations } = await evaluate({
       rules: rentRule({ graceDays: 5, earlyDays: 0 }),
       schedules: [schedule],
       transactions: [
@@ -691,9 +703,9 @@ describe('evaluate: #297 round 1 M1 (the linked allowance does not steal an in-w
 });
 
 describe('evaluate: R2-M4 (next_date boundary)', () => {
-  test('next_date equal to the unpaid occurrence date is not "before" it -> missing, not skipped', () => {
+  test('next_date equal to the unpaid occurrence date is not "before" it -> missing, not skipped', async () => {
     const schedule = rentSchedule({ next_date: '2026-01-05' }); // equal to the occurrence date itself
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [schedule],
       transactions: [],
@@ -710,8 +722,8 @@ describe('evaluate: M10 (isbetween amount range)', () => {
     return rentSchedule({ amountOp: 'isbetween', amount: { num1: -55000, num2: -45000 }, ...overrides });
   }
 
-  test('an amount within the isbetween range -> received, not wrongAmount', () => {
-    const { evaluations } = evaluate({
+  test('an amount within the isbetween range -> received, not wrongAmount', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule({ amountTolerancePct: 0 }),
       schedules: [isbetweenSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null }],
@@ -722,8 +734,8 @@ describe('evaluate: M10 (isbetween amount range)', () => {
     expect(evaluations[0].state).toBe('received');
   });
 
-  test('an amount outside the isbetween range -> wrongAmount', () => {
-    const { evaluations } = evaluate({
+  test('an amount outside the isbetween range -> wrongAmount', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule({ amountTolerancePct: 0 }),
       schedules: [isbetweenSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -30000, date: '2026-01-05', schedule: null }],
@@ -734,8 +746,8 @@ describe('evaluate: M10 (isbetween amount range)', () => {
     expect(evaluations[0].state).toBe('wrongAmount');
   });
 
-  test('the range bounds are order-independent (num1 may be the larger or smaller bound)', () => {
-    const { evaluations } = evaluate({
+  test('the range bounds are order-independent (num1 may be the larger or smaller bound)', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule({ amountTolerancePct: 0 }),
       schedules: [isbetweenSchedule({ amount: { num1: -45000, num2: -55000 } })], // swapped
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null }],
@@ -748,8 +760,8 @@ describe('evaluate: M10 (isbetween amount range)', () => {
 });
 
 describe('evaluate: M11 (candidate priority + cross-binding sharing)', () => {
-  test('within one on-time window, a within-tolerance candidate is preferred over an earlier wrong-amount one', () => {
-    const { evaluations } = evaluate({
+  test('within one on-time window, a within-tolerance candidate is preferred over an earlier wrong-amount one', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule({ amountTolerancePct: 0, earlyDays: 5 }), // widen window so both candidates qualify
       schedules: [rentSchedule()],
       transactions: [
@@ -764,7 +776,7 @@ describe('evaluate: M11 (candidate priority + cross-binding sharing)', () => {
     expect(evaluations[0].occurrences[0]).toMatchObject({ receivedDate: '2026-01-03', receivedAmount: -50000 });
   });
 
-  test('a transaction linked to a different schedule is not also claimed via account+payee matching', () => {
+  test('a transaction linked to a different schedule is not also claimed via account+payee matching', async () => {
     const scheduleA = rentSchedule({ id: 'sA', name: 'Rent A' });
     const scheduleB = rentSchedule({ id: 'sB', name: 'Rent B' }); // same account+payee as A
     const rules = getRules({
@@ -774,7 +786,7 @@ describe('evaluate: M11 (candidate priority + cross-binding sharing)', () => {
         { id: 'rentB', schedule: 'Rent B', graceDays: 3, earlyDays: 2 }
       ]
     });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules,
       schedules: [scheduleA, scheduleB],
       // Linked to schedule A only; account+payee also matches schedule B.
@@ -788,7 +800,7 @@ describe('evaluate: M11 (candidate priority + cross-binding sharing)', () => {
     expect(byAlert.rentB.state).toBe('missing'); // not silently marked received via the shared tx
   });
 
-  test('an unlinked transaction shared by two schedules with the same account+payee settles only one of them', () => {
+  test('an unlinked transaction shared by two schedules with the same account+payee settles only one of them', async () => {
     const scheduleA = rentSchedule({ id: 'sA', name: 'Rent A' });
     const scheduleB = rentSchedule({ id: 'sB', name: 'Rent B' }); // same account+payee as A
     const rules = getRules({
@@ -798,7 +810,7 @@ describe('evaluate: M11 (candidate priority + cross-binding sharing)', () => {
         { id: 'rentB', schedule: 'Rent B', graceDays: 3, earlyDays: 2 }
       ]
     });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules,
       schedules: [scheduleA, scheduleB],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null }],
@@ -816,8 +828,8 @@ describe('evaluate: M11 (candidate priority + cross-binding sharing)', () => {
 });
 
 describe('evaluate: M12 (linked early window)', () => {
-  test('a transaction linked 2 days early counts as received even when earlyDays is 0', () => {
-    const { evaluations } = evaluate({
+  test('a transaction linked 2 days early counts as received even when earlyDays is 0', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule({ earlyDays: 0 }),
       schedules: [rentSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -1, date: '2026-01-03', schedule: 's1' }], // 2 days early, linked
@@ -829,8 +841,8 @@ describe('evaluate: M12 (linked early window)', () => {
     expect(evaluations[0].occurrences[0]).toMatchObject({ receivedDate: '2026-01-03' });
   });
 
-  test('an unlinked transaction 2 days early is still excluded when earlyDays is 0 (the widened window is link-specific)', () => {
-    const { evaluations } = evaluate({
+  test('an unlinked transaction 2 days early is still excluded when earlyDays is 0 (the widened window is link-specific)', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule({ earlyDays: 0 }),
       schedules: [rentSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-03', schedule: null }], // 2 days early, unlinked
@@ -843,7 +855,7 @@ describe('evaluate: M12 (linked early window)', () => {
 });
 
 describe('evaluate: R2-H1 (two rules bound to the same schedule share transaction claims)', () => {
-  test('a linked payment settles every rule bound to the same schedule, not just the first', () => {
+  test('a linked payment settles every rule bound to the same schedule, not just the first', async () => {
     const schedule = rentSchedule(); // name 'Rent', id 's1'
     const rules = getRules({
       staleAfterDays: 3,
@@ -852,7 +864,7 @@ describe('evaluate: R2-H1 (two rules bound to the same schedule share transactio
         { id: 'rentPrefix', schedulePrefix: 'Re', graceDays: 3, earlyDays: 2 }
       ]
     });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules,
       schedules: [schedule],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: 's1' }],
@@ -871,7 +883,7 @@ describe('evaluate: R2-H1 (two rules bound to the same schedule share transactio
 });
 
 describe("evaluate: R2-M1 (wrong-amount / late fallback must not steal a sibling schedule's payment)", () => {
-  test("pass 1: an unlinked payment correctly amounted for a sibling schedule is not grabbed by this schedule's wrong-amount fallback", () => {
+  test("pass 1: an unlinked payment correctly amounted for a sibling schedule is not grabbed by this schedule's wrong-amount fallback", async () => {
     const rent = rentSchedule({ id: 'sRent', name: 'Rent', amount: -50000 });
     const parking = rentSchedule({ id: 'sParking', name: 'Parking', amount: -8000 });
     const rules = getRules({
@@ -881,7 +893,7 @@ describe("evaluate: R2-M1 (wrong-amount / late fallback must not steal a sibling
         { id: 'parking', schedule: 'Parking', graceDays: 3, earlyDays: 2 }
       ]
     });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules,
       schedules: [rent, parking],
       // Unlinked; account+payee matches BOTH schedules, amount only matches Parking.
@@ -895,7 +907,7 @@ describe("evaluate: R2-M1 (wrong-amount / late fallback must not steal a sibling
     expect(byAlert.rent.state).toBe('missing'); // not stolen as a false wrongAmount
   });
 
-  test("pass 2: a sibling schedule's correctly-amounted late payment is not grabbed by this schedule either", () => {
+  test("pass 2: a sibling schedule's correctly-amounted late payment is not grabbed by this schedule either", async () => {
     const rent = rentSchedule({ id: 'sRent', name: 'Rent', amount: -50000 });
     const parking = rentSchedule({ id: 'sParking', name: 'Parking', amount: -8000 });
     const rules = getRules({
@@ -905,7 +917,7 @@ describe("evaluate: R2-M1 (wrong-amount / late fallback must not steal a sibling
         { id: 'parking', schedule: 'Parking', graceDays: 3, earlyDays: 2 }
       ]
     });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules,
       schedules: [rent, parking],
       // Late for both (after the shared 8 Jan deadline); amount only matches Parking.
@@ -928,9 +940,9 @@ describe('evaluate: R2-M3 / #297 F4 / round 1 M2 (overlap guard and the linked-e
   // allowance itself, so a daily schedule (interval 1) is not rejected for good.
   // For such short intervals the linked early start is clamped to the day after
   // the previous occurrence's deadline.
-  test('weekly, graceDays 5, earlyDays 0 is an interval violation (cannotCheck + one warning)', () => {
+  test('weekly, graceDays 5, earlyDays 0 is an interval violation (cannotCheck + one warning)', async () => {
     const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } }); // 7-day interval
-    const { events, warnings } = evaluate({
+    const { events, warnings } = await evaluate({
       rules: rentRule({ graceDays: 5, earlyDays: 0 }),
       schedules: [schedule],
       transactions: [],
@@ -944,9 +956,9 @@ describe('evaluate: R2-M3 / #297 F4 / round 1 M2 (overlap guard and the linked-e
     expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'interval-violation' })]);
   });
 
-  test('M2 scenario: a missed 01-05 and a linked early 01-10 payment for 01-12 produce no received/skipped and no skip decision', () => {
+  test('M2 scenario: a missed 01-05 and a linked early 01-10 payment for 01-12 produce no received/skipped and no skip decision', async () => {
     const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' }, next_date: '2026-01-19' });
-    const result = evaluate({
+    const result = await evaluate({
       rules: rentRule({ graceDays: 5, earlyDays: 0 }),
       schedules: [schedule],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-10', schedule: 's1' }],
@@ -958,9 +970,9 @@ describe('evaluate: R2-M3 / #297 F4 / round 1 M2 (overlap guard and the linked-e
     expect(result.events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'interval-violation' })]);
   });
 
-  test('weekly, graceDays 4, earlyDays 0 is evaluated (4 + 2 < 7)', () => {
+  test('weekly, graceDays 4, earlyDays 0 is evaluated (4 + 2 < 7)', async () => {
     const schedule = rentSchedule({ date: { start: '2026-01-05', frequency: 'weekly' } });
-    const { events, warnings } = evaluate({
+    const { events, warnings } = await evaluate({
       rules: rentRule({ graceDays: 4, earlyDays: 0 }),
       schedules: [schedule],
       transactions: [],
@@ -972,9 +984,9 @@ describe('evaluate: R2-M3 / #297 F4 / round 1 M2 (overlap guard and the linked-e
     expect(events.some((e) => e.reason === 'interval-violation')).toBe(false);
   });
 
-  test('a daily schedule with graceDays 0 and earlyDays 0 is evaluated, not rejected (#297 F4)', () => {
+  test('a daily schedule with graceDays 0 and earlyDays 0 is evaluated, not rejected (#297 F4)', async () => {
     const schedule = rentSchedule({ date: { start: '2026-01-01', frequency: 'daily' } });
-    const { events, warnings, evaluations } = evaluate({
+    const { events, warnings, evaluations } = await evaluate({
       rules: rentRule({ graceDays: 0, earlyDays: 0 }),
       schedules: [schedule],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-09', schedule: 's1' }],
@@ -987,9 +999,9 @@ describe('evaluate: R2-M3 / #297 F4 / round 1 M2 (overlap guard and the linked-e
     expect(evaluations[0].state).not.toBe('cannotCheck');
   });
 
-  test('daily: a second linked payment dated on the previous occurrence is not pulled forward onto the next one (clamp)', () => {
+  test('daily: a second linked payment dated on the previous occurrence is not pulled forward onto the next one (clamp)', async () => {
     const schedule = rentSchedule({ date: { start: '2026-01-01', frequency: 'daily' } });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules: rentRule({ graceDays: 0, earlyDays: 0 }),
       schedules: [schedule],
       transactions: [
@@ -1007,8 +1019,8 @@ describe('evaluate: R2-M3 / #297 F4 / round 1 M2 (overlap guard and the linked-e
 });
 
 describe('evaluate: M13 (interval fallback for a one-off/yearly schedule)', () => {
-  test('a one-off schedule well outside the old 30-day-derived window still fires missing under a large graceDays', () => {
-    const { evaluations } = evaluate({
+  test('a one-off schedule well outside the old 30-day-derived window still fires missing under a large graceDays', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule({ graceDays: 60, earlyDays: 0 }),
       schedules: [rentSchedule({ date: '2026-01-21' })],
       transactions: [],
@@ -1025,8 +1037,8 @@ describe('evaluate: M14 (coordinator scenarios a/b/c)', () => {
     return rentSchedule({ date: { start: '2026-10-05', frequency: 'monthly' }, ...overrides });
   }
 
-  test('(a) a payment on 2 Nov settles the 5 Oct occurrence as late', () => {
-    const { evaluations } = evaluate({
+  test('(a) a payment on 2 Nov settles the 5 Oct occurrence as late', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [monthlyRentSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-11-02', schedule: null }],
@@ -1038,8 +1050,8 @@ describe('evaluate: M14 (coordinator scenarios a/b/c)', () => {
     expect(oct).toMatchObject({ state: 'late', receivedDate: '2026-11-02' });
   });
 
-  test('(b) a payment on 3 Nov settles the 5 Nov occurrence while 5 Oct stays missing', () => {
-    const { evaluations } = evaluate({
+  test('(b) a payment on 3 Nov settles the 5 Nov occurrence while 5 Oct stays missing', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule(),
       schedules: [monthlyRentSchedule()],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-11-03', schedule: null }],
@@ -1053,8 +1065,8 @@ describe('evaluate: M14 (coordinator scenarios a/b/c)', () => {
     expect(nov).toMatchObject({ state: 'received', receivedDate: '2026-11-03' });
   });
 
-  test('(c) #271 item 3 exact scenario: now 15 Oct, last_sync 12 Oct 08:00 (epoch-ms string), staleAfterDays 3 -> missing, not stale', () => {
-    const { events } = evaluate({
+  test('(c) #271 item 3 exact scenario: now 15 Oct, last_sync 12 Oct 08:00 (epoch-ms string), staleAfterDays 3 -> missing, not stale', async () => {
+    const { events } = await evaluate({
       rules: rentRule({ graceDays: 3, earlyDays: 2 }),
       schedules: [rentSchedule({ date: '2026-10-05' })],
       transactions: [],
@@ -1067,8 +1079,8 @@ describe('evaluate: M14 (coordinator scenarios a/b/c)', () => {
 });
 
 describe('evaluate: M15 (boundary and timezone mutants)', () => {
-  test('a transaction exactly earlyDays before the occurrence is inside the on-time window (inclusive boundary)', () => {
-    const { evaluations } = evaluate({
+  test('a transaction exactly earlyDays before the occurrence is inside the on-time window (inclusive boundary)', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule({ earlyDays: 2, graceDays: 3 }),
       schedules: [rentSchedule({ date: '2026-01-10' })],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-08', schedule: null }], // exactly earlyDays=2 before
@@ -1080,8 +1092,8 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     expect(evaluations[0].occurrences[0]).toMatchObject({ receivedDate: '2026-01-08' });
   });
 
-  test('a transaction exactly on the deadline day is on time (inclusive boundary)', () => {
-    const { evaluations } = evaluate({
+  test('a transaction exactly on the deadline day is on time (inclusive boundary)', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule({ earlyDays: 2, graceDays: 3 }),
       schedules: [rentSchedule({ date: '2026-01-05' })], // deadline = Jan 8
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-08', schedule: null }],
@@ -1093,8 +1105,8 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     expect(evaluations[0].occurrences[0].receivedDate).toBe('2026-01-08');
   });
 
-  test('lastSync exactly on the deadline day is not "after" it -> cannotCheck (not-synced), not missing', () => {
-    const { events } = evaluate({
+  test('lastSync exactly on the deadline day is not "after" it -> cannotCheck (not-synced), not missing', async () => {
+    const { events } = await evaluate({
       rules: rentRule({ earlyDays: 2, graceDays: 3 }),
       schedules: [rentSchedule({ date: '2026-01-05' })], // deadline = Jan 8
       transactions: [],
@@ -1105,11 +1117,11 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'not-synced' })]);
   });
 
-  test('the late window of one occurrence does not extend into the next occurrence\'s on-time window', () => {
+  test('the late window of one occurrence does not extend into the next occurrence\'s on-time window', async () => {
     // With earlyDays=2, the next occurrence's on-time window starts 2 days
     // before it; a transaction landing exactly on that day must settle the
     // NEXT occurrence only, never count as "late" for the previous one.
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules: rentRule({ graceDays: 3, earlyDays: 2 }),
       schedules: [rentSchedule({ date: { start: '2026-10-05', frequency: 'monthly' } })],
       transactions: [{ id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-11-03', schedule: null }],
@@ -1123,7 +1135,7 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     expect(nov).toMatchObject({ state: 'received', receivedDate: '2026-11-03' });
   });
 
-  test('pass 2 does not let one late-window transaction settle two different bindings\' occurrences', () => {
+  test('pass 2 does not let one late-window transaction settle two different bindings\' occurrences', async () => {
     const scheduleA = rentSchedule({ id: 'sA', name: 'Rent A', date: '2026-01-05' });
     const scheduleB = rentSchedule({ id: 'sB', name: 'Rent B', date: '2026-01-05' }); // same account+payee
     const rules = getRules({
@@ -1133,7 +1145,7 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
         { id: 'rentB', schedule: 'Rent B', graceDays: 3, earlyDays: 2 }
       ]
     });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules,
       schedules: [scheduleA, scheduleB],
       // Lands after both deadlines (Jan 8), inside the open-ended late window.
@@ -1146,17 +1158,17 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     expect(states).toEqual(['late', 'missing']);
   });
 
-  test('the same instant produces a different "today" (and therefore a different state) in Madrid vs UTC', () => {
+  test('the same instant produces a different "today" (and therefore a different state) in Madrid vs UTC', async () => {
     const now = '2026-06-15T23:00:00Z'; // June 15 in UTC, already June 16 in Europe/Madrid (CEST, UTC+2)
     const schedule = rentSchedule({ date: '2026-06-13' }); // deadline = June 15 (graceDays 2)
     const rule = rentRule({ graceDays: 2, earlyDays: 0 });
     const lastSync = epochMs(now);
 
-    const inUtc = evaluate({
+    const inUtc = await evaluate({
       rules: rule, schedules: [schedule], transactions: [],
       accounts: [account({ last_sync: lastSync })], now, timezone: 'UTC'
     });
-    const inMadrid = evaluate({
+    const inMadrid = await evaluate({
       rules: rule, schedules: [schedule], transactions: [],
       accounts: [account({ last_sync: lastSync })], now, timezone: 'Europe/Madrid'
     });
@@ -1165,8 +1177,8 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     expect(inMadrid.evaluations[0].state).toBe('missing'); // "today" is already June 16 there, past the deadline
   });
 
-  test('DST fall-back boundary (Europe/Madrid, clocks change 25 Oct 2026) does not distort the staleness day count', () => {
-    const { events } = evaluate({
+  test('DST fall-back boundary (Europe/Madrid, clocks change 25 Oct 2026) does not distort the staleness day count', async () => {
+    const { events } = await evaluate({
       rules: rentRule({ graceDays: 1, earlyDays: 0 }),
       schedules: [rentSchedule({ date: '2026-10-20' })], // deadline Oct 21
       transactions: [],
@@ -1180,8 +1192,8 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     expect(events).toEqual([expect.objectContaining({ event: 'missing' })]);
   });
 
-  test('DST spring-forward boundary (Europe/Madrid, clocks change 29 Mar 2026) does not distort the staleness day count', () => {
-    const { events } = evaluate({
+  test('DST spring-forward boundary (Europe/Madrid, clocks change 29 Mar 2026) does not distort the staleness day count', async () => {
+    const { events } = await evaluate({
       rules: rentRule({ graceDays: 1, earlyDays: 0 }),
       schedules: [rentSchedule({ date: '2026-03-24' })], // deadline Mar 25
       transactions: [],
@@ -1193,8 +1205,8 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
     expect(events).toEqual([expect.objectContaining({ event: 'missing' })]);
   });
 
-  test('mixed on-time and late occurrences resolve independently in one call', () => {
-    const { evaluations } = evaluate({
+  test('mixed on-time and late occurrences resolve independently in one call', async () => {
+    const { evaluations } = await evaluate({
       rules: rentRule({ graceDays: 3, earlyDays: 2 }),
       schedules: [rentSchedule({ date: { start: '2026-10-05', frequency: 'monthly' } })],
       transactions: [
@@ -1213,7 +1225,7 @@ describe('evaluate: M15 (boundary and timezone mutants)', () => {
 });
 
 describe('#296 round 2 L1: sign check inside the tolerance comparison', () => {
-  test('an opposite-sign amount of the same size is not a better match for a sibling schedule', () => {
+  test('an opposite-sign amount of the same size is not a better match for a sibling schedule', async () => {
     const tx = { id: 't1', account: 'acc1', payee: 'pay1', amount: -50000, date: '2026-01-05', schedule: null };
     const rules = getRules({
       staleAfterDays: 3,
@@ -1222,7 +1234,7 @@ describe('#296 round 2 L1: sign check inside the tolerance comparison', () => {
         { id: 'dep', schedule: 'Deposit', graceDays: 3, earlyDays: 2 }
       ]
     });
-    const { evaluations } = evaluate({
+    const { evaluations } = await evaluate({
       rules,
       schedules: [
         rentSchedule({ amount: -40000 }),
@@ -1250,21 +1262,84 @@ describe('#296 round 2: sign compatibility edge cases', () => {
     timezone: TZ
   });
 
-  test('M1: a zero-amount schedule still reports wrongAmount for a non-zero unlinked payment', () => {
+  test('M1: a zero-amount schedule still reports wrongAmount for a non-zero unlinked payment', async () => {
     for (const amountOp of ['is', 'isapprox']) {
-      const { evaluations } = run({ amount: 0, amountOp, date: '2026-01-05' }, [tx('t1', -1234, '2026-01-05')], '2026-01-10');
+      const { evaluations } = await run({ amount: 0, amountOp, date: '2026-01-05' }, [tx('t1', -1234, '2026-01-05')], '2026-01-10');
       expect(evaluations[0].state).toBe('wrongAmount');
     }
   });
 
-  test('M2: a range of negative bounds ignores an unlinked positive refund (day 10 and day 5)', () => {
+  test('M2: a range of negative bounds ignores an unlinked positive refund (day 10 and day 5)', async () => {
     const range = { amountOp: 'isbetween', amount: { num1: -5000, num2: -7000 }, date: '2026-01-05' };
-    expect(run(range, [tx('t1', 6000, '2026-01-10')], '2026-01-14').evaluations[0].state).toBe('missing');
-    expect(run(range, [tx('t1', 6000, '2026-01-05')], '2026-01-10').evaluations[0].state).toBe('missing');
+    expect((await run(range, [tx('t1', 6000, '2026-01-10')], '2026-01-14')).evaluations[0].state).toBe('missing');
+    expect((await run(range, [tx('t1', 6000, '2026-01-05')], '2026-01-10')).evaluations[0].state).toBe('missing');
   });
 
-  test('M2: a range spanning zero still matches a positive amount inside it', () => {
+  test('M2: a range spanning zero still matches a positive amount inside it', async () => {
     const range = { amountOp: 'isbetween', amount: { num1: -5000, num2: 5000 }, date: '2026-01-05' };
-    expect(run(range, [tx('t1', 3000, '2026-01-05')], '2026-01-10').evaluations[0].state).toBe('received');
+    expect((await run(range, [tx('t1', 3000, '2026-01-05')], '2026-01-10')).evaluations[0].state).toBe('received');
+  });
+});
+
+describe('#298: occurrence dates come from Actual (getScheduleDates)', () => {
+  const run = (scheduleOverrides, extra = {}) => evaluate({
+    rules: rentRule(),
+    schedules: [rentSchedule(scheduleOverrides)],
+    transactions: [],
+    accounts: [account({ last_sync: epochMs('2026-01-14') })],
+    now: '2026-01-14',
+    timezone: TZ,
+    ...extra
+  });
+
+  test('skipWeekend "after" moves a Saturday occurrence to Monday, as Actual shows it', async () => {
+    // 2026-01-10 is a Saturday.
+    const { evaluations } = await run({
+      date: { start: '2026-01-10', frequency: 'monthly', interval: 1, endMode: 'never', skipWeekend: true, weekendSolveMode: 'after' }
+    });
+    expect(evaluations[0].occurrences.map((o) => o.date)).toContain('2026-01-12');
+    expect(evaluations[0].occurrences.map((o) => o.date)).not.toContain('2026-01-10');
+  });
+
+  test('skipWeekend without weekendSolveMode is cannotCheck (error), even on a weekday', async () => {
+    // Actual rejects the whole config, so the schedule can never be checked.
+    const { events, evaluations, warnings } = await run({
+      date: { start: '2026-01-05', frequency: 'monthly', interval: 1, endMode: 'never', skipWeekend: true }
+    });
+    expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', alertId: 'rent', reason: 'error' })]);
+    expect(evaluations).toEqual([]);
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('no dates read for a bound schedule is cannotCheck (error), never missing', async () => {
+    const { events } = await run({}, { occurrencesBySchedule: {} });
+    expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'error' })]);
+  });
+
+  test('a failed read (stored Error) is cannotCheck (error) with its message in the warning', async () => {
+    const { events, warnings } = await run({}, { occurrencesBySchedule: { s1: new Error('Cannot expand schedule date: boom') } });
+    expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'error' })]);
+    expect(warnings[0].message).toContain('boom');
+  });
+
+  test('an invalid date string from Actual is cannotCheck (error)', async () => {
+    const { events } = await run({}, { occurrencesBySchedule: { s1: ['2026-02-30'] } });
+    expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'error' })]);
+  });
+
+  test('duplicate and out-of-order dates are deduped and sorted', async () => {
+    const { evaluations } = await run({}, { occurrencesBySchedule: { s1: ['2026-01-05', '2025-12-05', '2026-01-05'] } });
+    expect(evaluations[0].occurrences.map((o) => o.date)).toEqual(['2025-12-05', '2026-01-05']);
+  });
+});
+
+describe('#298: occurrenceWindow', () => {
+  const { occurrenceWindow, OCCURRENCE_WINDOW_BEFORE_DAYS, OCCURRENCE_WINDOW_AFTER_DAYS } = require('../lib/scheduleAlerts');
+
+  test('covers today - BEFORE to today + AFTER in the server timezone', () => {
+    expect(OCCURRENCE_WINDOW_AFTER_DAYS).toBe(2 * OCCURRENCE_WINDOW_BEFORE_DAYS);
+    const { start, end } = occurrenceWindow('2026-01-14T23:30:00Z', 'Europe/Madrid'); // already the 15th in Madrid
+    expect(start).toBe(require('moment-timezone').tz('2026-01-15', 'Europe/Madrid').subtract(OCCURRENCE_WINDOW_BEFORE_DAYS, 'days').format('YYYY-MM-DD'));
+    expect(end).toBe(require('moment-timezone').tz('2026-01-15', 'Europe/Madrid').add(OCCURRENCE_WINDOW_AFTER_DAYS, 'days').format('YYYY-MM-DD'));
   });
 });

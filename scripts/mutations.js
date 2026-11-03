@@ -1593,13 +1593,31 @@ module.exports = [
         mutant: '      const scheduleAlertsRetentionDays = this.retentionDays;',
         tests: 'syncHistory'
     },
+    // #298: occurrence dates come from Actual's getScheduleDates; the
+    // vendored weekend roll this slot used to guard was deleted with it.
     {
-        id: '258-weekend-skip-mode-inverted', ticket: '#258',
-        desc: 'a "before" weekend solve mode rolls a Saturday to Monday instead of back to Friday (the before/after branches are swapped)',
-        file: 'src/lib/vendor/actualSchedules.js',
-        anchor: "    if (solveMode === 'after') {\n      return d.nextMonday(date);\n    } else if (solveMode === 'before') {\n      return d.previousFriday(date);\n    }",
-        mutant: "    if (solveMode === 'after') {\n      return d.previousFriday(date);\n    } else if (solveMode === 'before') {\n      return d.nextMonday(date);\n    }",
-        tests: 'actualSchedules.vendor'
+        id: '298-missing-dates-treated-as-none', ticket: '#298',
+        desc: 'a schedule with no dates read from Actual is treated as having no occurrences (silently never alerting) instead of cannotCheck',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  if (!Array.isArray(dates)) throw new Error('no occurrence dates were read from Actual for this schedule');",
+        mutant: "  if (!Array.isArray(dates)) return [];",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '298-duplicate-dates-kept', ticket: '#298',
+        desc: 'a date Actual returns twice becomes two occurrences instead of one',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "    if (seen.has(key)) continue;\n",
+        mutant: "",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '298-timeout-swallowed-per-schedule', ticket: '#298',
+        desc: 'a phase timeout on one getScheduleDates call is stored per schedule, so a stuck session waits out the timeout once for every bound schedule',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "            if (error && error.code === 'PHASE_TIMEOUT') throw tagError(error, 'actual_read_failed');\n",
+        mutant: "",
+        tests: 'scheduleAlertsSync'
     },
 
     // ---- #258 additional guards from PR #295 review round 1 ----------------
