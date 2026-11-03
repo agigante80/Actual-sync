@@ -481,8 +481,9 @@ Changes notification preferences. Without arguments, shows current mode.
 
 **Modes:**
 - `always` - Get notified on every sync (success or failure)
-- `errors` - Get notified only on failures (default)
-- `never` - No sync notifications (commands still work)
+- `errors` - Get notified only on failures and partial syncs
+- `activity` - Failures and partial syncs, plus successful syncs that imported or updated transactions
+- `never` - No notifications at all, including failures (commands still work)
 
 **Examples:**
 ```
@@ -506,9 +507,10 @@ You will receive sync notifications.
 
 Usage: /notify [always|errors|activity|never]
 
-• always - Notify on all syncs
-• errors - Notify only on failures (default)
-• never - No sync notifications (commands still work)
+• always - Notify on all syncs (default)
+• errors - Notify only on failures and partial syncs
+• activity - Failures and partial syncs, plus successful syncs that imported or updated transactions
+• never - No notifications at all, INCLUDING failures (commands still work)
 ```
 
 #### `/errors [limit]`
