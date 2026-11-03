@@ -48,6 +48,8 @@ Each sync operation is recorded with:
 | `accounts_succeeded` | INTEGER | Accounts synced successfully |
 | `accounts_failed` | INTEGER | Accounts that failed |
 | `accounts_skipped` | INTEGER | Accounts skipped (manual / closed) — see account syncability |
+| `transactions_added` | INTEGER | Transactions the bank sync imported, summed over the run (#391) |
+| `transactions_updated` | INTEGER | Existing transactions the bank sync matched and updated (#391) |
 | `error_message` | TEXT | Error message if failed |
 | `error_code` | TEXT | Error code if failed |
 | `correlation_id` | TEXT | UUID for tracking |

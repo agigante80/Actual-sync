@@ -39,7 +39,10 @@ the per-account outcome, on **both** success and failure:
   looks exactly as it did before the line existed. The counts come from Actual
   itself (`runBankSync`, `@actual-app/api` 26.11.0 or later). An account whose
   bank sync finished after its 60 s timeout adds 0, because its result arrived
-  too late to be read.
+  too late to be read. The numbers are Actual's own, so they can differ from
+  what the bank shows: a split transaction counts its parent plus each part,
+  and a newly linked account's first sync includes its starting-balance
+  transaction.
 - **✅ Synced** — bank-linked accounts that synced.
 - **❌ Failed** — accounts whose bank sync errored (with the error). This appears on
   the failure path too — e.g. a single rate-limited account shows up here rather
