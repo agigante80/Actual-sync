@@ -1565,4 +1565,34 @@ describe('#298: occurrence dates read from Actual per bound schedule', () => {
     });
     expect(result.events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'error' })]);
   });
+
+  // #298 round 1, M1: the expansion is synchronous, so the phase timeout cannot
+  // stop a slow one. The step logs it instead; a fast call stays silent.
+  test.each([
+    ['slow', 3001, 1],
+    ['fast', 3000, 0]
+  ])('a %s getScheduleDates call is logged by schedule id only when over 3s', async (_label, elapsedMs, warnings) => {
+    const real = require('@actual-app/api');
+    const warn = jest.fn();
+    let clock = 1000000;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const api = makeFakeApi({
+        schedules: [rentSchedule()],
+        accounts,
+        getScheduleDates: jest.fn(async (date, window) => {
+          clock += elapsedMs;
+          return real.getScheduleDates(date, window);
+        })
+      });
+      await evaluateScheduleAlerts({
+        api, server: { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'Rent' }] } }, serverName: 'Main', timezone: 'UTC', now, logger: { ...quietLogger, warn }
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+    const slow = warn.mock.calls.filter(([msg]) => msg === 'Reading schedule occurrence dates from Actual was slow');
+    expect(slow).toHaveLength(warnings);
+    if (warnings) expect(slow[0][1]).toEqual({ scheduleId: 's1', elapsedMs });
+  });
 });

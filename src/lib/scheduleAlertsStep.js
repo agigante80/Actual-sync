@@ -152,8 +152,16 @@ function activeRules(configRules, block, serverName, syncHistory, logger) {
  * stuck, so every later read would wait out the same timeout. It is rethrown
  * and fails the whole evaluation, like the other Actual reads above.
  *
+ * The timeout only cuts off a call that waits. Actual expands the rule
+ * synchronously, and a schedule with an occurrence count is walked from its
+ * first date on every call, so a long one can block the process for seconds;
+ * no timer fires meanwhile. A call slower than SLOW_SCHEDULE_DATES_MS is
+ * logged with the schedule id, so the cause is visible.
+ *
  * @returns {Promise<Object<string, string[]|Error>>} keyed by schedule id
  */
+const SLOW_SCHEDULE_DATES_MS = 3000;
+
 async function readOccurrenceDates({ api, rules, schedules, now, timezone, logger }) {
     const { start, end } = occurrenceWindow(now, timezone);
     const byId = {};
@@ -161,6 +169,7 @@ async function readOccurrenceDates({ api, rules, schedules, now, timezone, logge
         if (binding.unmatched || binding.completedOneOff) continue;
         const schedule = binding.schedule;
         if (Object.prototype.hasOwnProperty.call(byId, schedule.id)) continue;
+        const startedAt = Date.now();
         try {
             byId[schedule.id] = await api.getScheduleDates(schedule.date, { start, end });
         } catch (error) {
@@ -169,6 +178,13 @@ async function readOccurrenceDates({ api, rules, schedules, now, timezone, logge
                 scheduleId: schedule.id, error: error && error.message
             });
             byId[schedule.id] = error instanceof Error ? error : new Error(String(error));
+        } finally {
+            const elapsedMs = Date.now() - startedAt;
+            if (elapsedMs > SLOW_SCHEDULE_DATES_MS) {
+                logger.warn('Reading schedule occurrence dates from Actual was slow', {
+                    scheduleId: schedule.id, elapsedMs
+                });
+            }
         }
     }
     return byId;

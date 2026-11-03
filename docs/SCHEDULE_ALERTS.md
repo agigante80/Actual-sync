@@ -543,3 +543,10 @@ A server with a `scheduleAlerts` block can also have rules created in the dashbo
   Databases written by a pre-release development build of this feature (ledger keys of the form
   `slack:#ops`, before the hash was always appended) may see one extra re-send of open alerts after
   upgrading; no released version wrote those keys (#297 round 1, L2).
+- **A schedule with many occurrences can stall a sync (#298).** Occurrence dates come from Actual's
+  `getScheduleDates`, which expands the rule synchronously. For a schedule that ends after a number
+  of occurrences, Actual walks from the first date for every date it returns, so a daily or weekly
+  schedule with hundreds of occurrences that started years ago can take seconds or more. The phase
+  timeout cannot interrupt it, because nothing else runs until it returns. A call that takes more
+  than 3 seconds logs a warning naming the schedule; ending such a schedule on a date instead of a
+  count avoids the cost.
