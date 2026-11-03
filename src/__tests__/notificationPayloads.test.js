@@ -43,6 +43,22 @@ describe('notification payload baseline (#257)', () => {
       expect(MessageFormatter.formatSyncNotification(result)).toMatchSnapshot();
     });
 
+    test('success with transaction counts (#391)', () => {
+      const result = {
+        status: 'success',
+        serverName: 'Main Server',
+        duration: 4200,
+        accountsProcessed: 2,
+        accountsFailed: 0,
+        succeededAccounts: ['Checking', 'Savings'],
+        failedAccounts: [],
+        skippedAccounts: [],
+        transactionsAdded: 2,
+        transactionsUpdated: 1
+      };
+      expect(MessageFormatter.formatSyncNotification(result)).toMatchSnapshot();
+    });
+
     test('success with partial issues (some accounts failed)', () => {
       const result = {
         status: 'partial',

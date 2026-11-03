@@ -204,6 +204,8 @@ exports[`notification payload baseline (#257) formatSyncNotification failure wit
     "status": "failure",
     "succeededAccounts": [],
     "timestamp": "2026-01-15T10:00:00.000Z",
+    "transactionsAdded": 0,
+    "transactionsUpdated": 0,
   },
   "html": "
 <!DOCTYPE html>
@@ -363,6 +365,8 @@ exports[`notification payload baseline (#257) formatSyncNotification failure wit
     "status": "failure",
     "succeededAccounts": [],
     "timestamp": "2026-01-15T10:00:00.000Z",
+    "transactionsAdded": 0,
+    "transactionsUpdated": 0,
   },
   "html": "
 <!DOCTYPE html>
@@ -536,6 +540,8 @@ exports[`notification payload baseline (#257) formatSyncNotification success wit
       "Credit Card",
     ],
     "timestamp": "2026-01-15T10:00:00.000Z",
+    "transactionsAdded": 0,
+    "transactionsUpdated": 0,
   },
   "html": "
 <!DOCTYPE html>
@@ -726,6 +732,8 @@ exports[`notification payload baseline (#257) formatSyncNotification success wit
       "Savings",
     ],
     "timestamp": "2026-01-15T10:00:00.000Z",
+    "transactionsAdded": 0,
+    "transactionsUpdated": 0,
   },
   "html": "
 <!DOCTYPE html>
@@ -869,6 +877,194 @@ Accounts: 2 synced, 1 failed, 1 skipped
 
 ⏭️ Skipped (not bank-linked / closed): 1
   • Closed Account (not bank-linked)
+",
+}
+`;
+
+exports[`notification payload baseline (#257) formatSyncNotification success with transaction counts (#391) 1`] = `
+{
+  "discord": {
+    "embeds": [
+      {
+        "color": 5025616,
+        "fields": [
+          {
+            "inline": true,
+            "name": "Server",
+            "value": "Main Server",
+          },
+          {
+            "inline": true,
+            "name": "Duration",
+            "value": "4.2s",
+          },
+          {
+            "name": "Accounts",
+            "value": "2 synced, 0 failed, 0 skipped",
+          },
+          {
+            "name": "Transactions",
+            "value": "2 new, 1 updated",
+          },
+          {
+            "name": "✅ Synced Accounts",
+            "value": "• Checking
+• Savings",
+          },
+        ],
+        "timestamp": "2026-01-15T10:00:00.000Z",
+        "title": "✅ Sync Successful",
+      },
+    ],
+  },
+  "generic": {
+    "accounts": {
+      "failed": 0,
+      "skipped": 0,
+      "synced": 2,
+    },
+    "durationMs": 4200,
+    "event": "sync",
+    "failedAccounts": [],
+    "message": "Sync Successful",
+    "server": "Main Server",
+    "skippedAccounts": [],
+    "status": "success",
+    "succeededAccounts": [
+      "Checking",
+      "Savings",
+    ],
+    "timestamp": "2026-01-15T10:00:00.000Z",
+    "transactionsAdded": 2,
+    "transactionsUpdated": 1,
+  },
+  "html": "
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: #28a745; color: white; padding: 15px; border-radius: 5px 5px 0 0; }
+    .content { background: #f8f9fa; padding: 20px; border: 1px solid #dee2e6; }
+    .field { margin: 10px 0; }
+    .label { font-weight: bold; color: #495057; }
+    .value { color: #212529; }
+    .account-list { list-style: none; padding-left: 0; }
+    .account-item { padding: 5px 0; }
+    .error-detail { color: #6c757d; font-size: 0.9em; margin-left: 20px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>✅ Sync Successful</h2>
+    </div>
+    <div class="content">
+      <div class="field">
+        <span class="label">Server:</span>
+        <span class="value">Main Server</span>
+      </div>
+      <div class="field">
+        <span class="label">Duration:</span>
+        <span class="value">4.2s</span>
+      </div>
+      <div class="field">
+        <span class="label">Accounts:</span>
+        <span class="value">2 synced, 0 failed, 0 skipped</span>
+      </div>
+      <div class="field">
+        <span class="label">Transactions:</span>
+        <span class="value">2 new, 1 updated</span>
+      </div>
+      <div class="field">
+        <span class="label">✅ Synced Accounts:</span>
+        <ul class="account-list"><li class="account-item">• Checking</li><li class="account-item">• Savings</li></ul>
+      </div>
+    </div>
+  </div>
+</body>
+</html>",
+  "ntfy": {
+    "level": "success",
+    "message": "✅ Sync Successful
+
+Server: Main Server
+Duration: 4.2s
+
+Accounts: 2 synced, 0 failed, 0 skipped
+Transactions: 2 new, 1 updated
+
+✅ Synced:
+  • Checking
+  • Savings
+",
+    "tags": [
+      "white_check_mark",
+    ],
+    "title": "Sync Successful: Main Server",
+  },
+  "slack": {
+    "blocks": [
+      {
+        "text": {
+          "text": "✅ Sync Successful",
+          "type": "plain_text",
+        },
+        "type": "header",
+      },
+      {
+        "fields": [
+          {
+            "text": "*Server:*
+Main Server",
+            "type": "mrkdwn",
+          },
+          {
+            "text": "*Duration:*
+4.2s",
+            "type": "mrkdwn",
+          },
+        ],
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*Accounts:* 2 synced, 0 failed, 0 skipped",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*Transactions:* 2 new, 1 updated",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+      {
+        "text": {
+          "text": "*✅ Synced:*
+• Checking
+• Savings",
+          "type": "mrkdwn",
+        },
+        "type": "section",
+      },
+    ],
+    "text": "*✅ Sync Successful*",
+  },
+  "text": "✅ Sync Successful
+
+Server: Main Server
+Duration: 4.2s
+
+Accounts: 2 synced, 0 failed, 0 skipped
+Transactions: 2 new, 1 updated
+
+✅ Synced:
+  • Checking
+  • Savings
 ",
 }
 `;

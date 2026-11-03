@@ -584,6 +584,63 @@ describe('SyncHistoryService', () => {
     });
   });
 
+  describe('transaction counts (#391)', () => {
+    const hasColumn = (db, name) =>
+      db.prepare('PRAGMA table_info(sync_history)').all().some(c => c.name === name);
+
+    test('recordSync persists both counts and defaults them to 0', () => {
+      const withCounts = syncHistory.recordSync({
+        serverName: 'TestServer', status: 'success', transactionsAdded: 2, transactionsUpdated: 1
+      });
+      const without = syncHistory.recordSync({ serverName: 'TestServer', status: 'success' });
+      const row = (id) => syncHistory.db.prepare('SELECT * FROM sync_history WHERE id = ?').get(id);
+      expect(row(withCounts)).toMatchObject({ transactions_added: 2, transactions_updated: 1 });
+      expect(row(without)).toMatchObject({ transactions_added: 0, transactions_updated: 0 });
+    });
+
+    test('migrates a database without the columns, keeping old rows as NULL (idempotent)', () => {
+      const legacyDbPath = path.join(__dirname, 'test-legacy-counts.db');
+      if (fs.existsSync(legacyDbPath)) fs.unlinkSync(legacyDbPath);
+      const legacy = new Database(legacyDbPath);
+      legacy.exec(`
+        CREATE TABLE sync_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp TEXT NOT NULL,
+          server_name TEXT NOT NULL,
+          status TEXT NOT NULL,
+          duration_ms INTEGER,
+          accounts_processed INTEGER,
+          accounts_succeeded INTEGER,
+          accounts_failed INTEGER,
+          accounts_skipped INTEGER,
+          error_message TEXT,
+          error_code TEXT,
+          correlation_id TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      legacy.prepare('INSERT INTO sync_history (timestamp, server_name, status) VALUES (?, ?, ?)')
+        .run(new Date().toISOString(), 'LegacyServer', 'success');
+      legacy.close();
+
+      try {
+        const migrated = new SyncHistoryService({ dbPath: legacyDbPath, loggerConfig: { level: 'ERROR' } });
+        expect(hasColumn(migrated.db, 'transactions_added')).toBe(true);
+        expect(hasColumn(migrated.db, 'transactions_updated')).toBe(true);
+        const old = migrated.db.prepare('SELECT * FROM sync_history WHERE server_name = ?').get('LegacyServer');
+        expect(old.transactions_added).toBeNull();
+        expect(old.transactions_updated).toBeNull();
+        migrated.close();
+
+        const reopened = new SyncHistoryService({ dbPath: legacyDbPath, loggerConfig: { level: 'ERROR' } });
+        expect(hasColumn(reopened.db, 'transactions_added')).toBe(true);
+        reopened.close();
+      } finally {
+        fs.unlinkSync(legacyDbPath);
+      }
+    });
+  });
+
   describe('cleanup', () => {
     test('should delete old records', () => {      
       // Insert an old record manually

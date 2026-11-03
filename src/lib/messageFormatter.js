@@ -16,6 +16,8 @@ class MessageFormatter {
    * @param {number} result.accountsFailed - Failed account count
    * @param {Array} result.succeededAccounts - Successful account names
    * @param {Array} result.failedAccounts - Failed accounts with errors
+   * @param {number} result.transactionsAdded - Transactions the bank sync imported (#391)
+   * @param {number} result.transactionsUpdated - Existing transactions it matched and updated (#391)
    * @param {string} result.error - Error message (for failures)
    * @param {string} result.errorCode - Error code (for failures)
    * @returns {Object} Formatted messages for all channels
@@ -60,7 +62,9 @@ class MessageFormatter {
       totalAccounts: (result.accountsProcessed || 0) + (result.accountsFailed || 0),
       succeededAccounts: result.succeededAccounts || [],
       failedAccounts: result.failedAccounts || [],
-      skippedAccounts: result.skippedAccounts || []
+      skippedAccounts: result.skippedAccounts || [],
+      transactionsAdded: this._count(result.transactionsAdded),
+      transactionsUpdated: this._count(result.transactionsUpdated)
     };
 
     const text = this._formatPlainText(content);
@@ -83,6 +87,10 @@ class MessageFormatter {
           failed: content.failedAccounts.length,
           skipped: content.skippedAccounts.length
         },
+        // Always present (0 when nothing was imported or the api version does
+        // not report it), so a consumer can gate on them without a key check. (#391)
+        transactionsAdded: content.transactionsAdded,
+        transactionsUpdated: content.transactionsUpdated,
         succeededAccounts: content.succeededAccounts,
         failedAccounts: content.failedAccounts,
         skippedAccounts: content.skippedAccounts,
@@ -145,6 +153,20 @@ class MessageFormatter {
   // ========== SYNC NOTIFICATION FORMATTERS ==========
 
   // Truncate a per-account error to keep notifications compact (shared across channels). (#108)
+  /** A non-negative integer count, or 0 for anything else. (#391) */
+  static _count(value) {
+    return Number.isInteger(value) && value > 0 ? value : 0;
+  }
+
+  /**
+   * "2 new, 1 updated", or null when both counts are 0 so the templates stay
+   * exactly as they were before the counts existed. (#391)
+   */
+  static _transactionsSummary(content) {
+    if (!content.transactionsAdded && !content.transactionsUpdated) return null;
+    return `${content.transactionsAdded} new, ${content.transactionsUpdated} updated`;
+  }
+
   static _truncateError(error) {
     if (!error) return '';
     return error.length > 80 ? error.substring(0, 77) + '...' : error;
@@ -206,6 +228,10 @@ class MessageFormatter {
     const skipped = content.skippedAccounts.length;
     if (synced || failed || skipped) {
       text += `\nAccounts: ${synced} synced, ${failed} failed, ${skipped} skipped\n`;
+      const transactions = this._transactionsSummary(content);
+      if (transactions) {
+        text += `Transactions: ${transactions}\n`;
+      }
 
       if (synced > 0) {
         text += `\n✅ Synced:\n`;
@@ -296,6 +322,14 @@ class MessageFormatter {
         <span class="label">Accounts:</span>
         <span class="value">${synced} synced, ${failed} failed, ${skipped} skipped</span>
       </div>`;
+        const transactions = this._transactionsSummary(content);
+        if (transactions) {
+          html += `
+      <div class="field">
+        <span class="label">Transactions:</span>
+        <span class="value">${transactions}</span>
+      </div>`;
+        }
       }
 
       if (synced > 0) {
@@ -389,6 +423,13 @@ class MessageFormatter {
         type: 'section',
         text: { type: 'mrkdwn', text: `*Accounts:* ${synced} synced, ${failed} failed, ${skipped} skipped` }
       });
+      const transactions = this._transactionsSummary(content);
+      if (transactions) {
+        payload.blocks.push({
+          type: 'section',
+          text: { type: 'mrkdwn', text: `*Transactions:* ${transactions}` }
+        });
+      }
       let accountsText = '';
       if (synced > 0) {
         accountsText += `*✅ Synced:*\n${this._joinCapped(content.succeededAccounts.map(n => `• ${n}`), 900)}`;
@@ -430,6 +471,10 @@ class MessageFormatter {
     const skipped = content.skippedAccounts.length;
     if (synced || failed || skipped) {
       fields.push({ name: 'Accounts', value: `${synced} synced, ${failed} failed, ${skipped} skipped` });
+      const transactions = this._transactionsSummary(content);
+      if (transactions) {
+        fields.push({ name: 'Transactions', value: transactions });
+      }
       if (synced > 0) {
         fields.push({ name: '✅ Synced Accounts', value: this._joinCapped(content.succeededAccounts.map(n => `• ${n}`), 1000) });
       }

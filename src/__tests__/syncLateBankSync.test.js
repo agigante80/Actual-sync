@@ -47,6 +47,7 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false }
         return null;
     });
     const persist = jest.fn();
+    const notifySync = jest.fn().mockResolvedValue(undefined);
     const actual = {
         init: jest.fn().mockResolvedValue(undefined),
         downloadBudget: jest.fn().mockResolvedValue(undefined),
@@ -84,7 +85,7 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false }
         HealthCheckService: function () { this.updateSyncStatus = jest.fn(); this.broadcastLog = jest.fn(); }
     }));
     jest.doMock('../services/notificationService', () => ({
-        NotificationService: function () { this.recordSyncResult = jest.fn(); this.notifySync = jest.fn().mockResolvedValue(undefined); }
+        NotificationService: function () { this.recordSyncResult = jest.fn(); this.notifySync = notifySync; }
     }));
     jest.doMock('../lib/scheduleAlertsStep', () => ({
         maybeRunScheduleAlerts: maybeRun,
@@ -112,7 +113,7 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false }
             await until(() => recordSync.mock.calls.length > 0 || i > 3);
         }
         expect(exit).not.toHaveBeenCalled();
-        return { recorded: recordSync.mock.calls[0]?.[0], actual, persist };
+        return { recorded: recordSync.mock.calls[0]?.[0], actual, persist, notified: notifySync.mock.calls[0]?.[0] };
     } finally {
         process.argv = argv;
         exit.mockRestore();
@@ -205,5 +206,52 @@ describe('payment snapshot wiring in the real sync (#260)', () => {
         const { persist } = await runSync(['a1'], { a1: () => never.promise },
             async (advance, started) => { await started(); await advance(60000); await advance(3000); });
         expect(persist).not.toHaveBeenCalled();
+    });
+});
+
+describe('transaction counts from runBankSync (#391)', () => {
+    afterEach(() => jest.dontMock('@actual-app/api'));
+
+    const started = async (advance, begin) => { await begin(); await advance(1000); };
+
+    test('counts accumulate across accounts into history and the notification', async () => {
+        const { recorded, notified } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.resolve({ newTransactions: ['t1', 't2'], matchedTransactions: ['t3'], updatedAccounts: ['a1'] }),
+            a2: () => Promise.resolve({ newTransactions: ['t4'], matchedTransactions: [], updatedAccounts: ['a2'] })
+        }, started);
+        expect(recorded).toMatchObject({ status: 'success', transactionsAdded: 3, transactionsUpdated: 1 });
+        expect(notified).toMatchObject({ status: 'success', transactionsAdded: 3, transactionsUpdated: 1 });
+    });
+
+    test('an api that resolves undefined (pre-26.11.0) gives 0 and 0 without error', async () => {
+        const { recorded, notified } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.resolve(undefined),
+            a2: () => Promise.resolve(undefined)
+        }, started);
+        expect(recorded).toMatchObject({ status: 'success', accountsSucceeded: 2, transactionsAdded: 0, transactionsUpdated: 0 });
+        expect(notified).toMatchObject({ transactionsAdded: 0, transactionsUpdated: 0 });
+    });
+
+    test('a timed-out account that settles late contributes 0; the run still completes', async () => {
+        const slow = deferred();
+        const { recorded, notified } = await runSync(['a1', 'a2'], {
+            a1: () => slow.promise,
+            a2: () => Promise.resolve({ newTransactions: ['t9'], matchedTransactions: ['t8', 't7'] })
+        }, async (advance, begin) => {
+            await begin();
+            await advance(60000);
+            slow.resolve({ newTransactions: ['late1', 'late2', 'late3'], matchedTransactions: ['late4'] });
+            await advance(2000);
+        });
+        expect(recorded).toMatchObject({ status: 'success', accountsSucceeded: 2, transactionsAdded: 1, transactionsUpdated: 2 });
+        expect(notified).toMatchObject({ transactionsAdded: 1, transactionsUpdated: 2 });
+    });
+
+    test('a failed account contributes 0 while the others are counted', async () => {
+        const { recorded } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.reject(new Error('bank said no')),
+            a2: () => Promise.resolve({ newTransactions: ['t1'], matchedTransactions: [] })
+        }, started);
+        expect(recorded).toMatchObject({ status: 'partial', transactionsAdded: 1, transactionsUpdated: 0 });
     });
 });

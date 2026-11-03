@@ -33,6 +33,13 @@ Every sync notification (across Telegram/text, Slack, Discord and email) explain
 the per-account outcome, on **both** success and failure:
 
 - An **`Accounts: N synced, M failed, K skipped`** summary line.
+- A **`Transactions: N new, M updated`** line: how many transactions the bank
+  sync imported, and how many existing ones it matched and updated, summed over
+  the run. It appears only when at least one count is nonzero, so a quiet sync
+  looks exactly as it did before the line existed. The counts come from Actual
+  itself (`runBankSync`, `@actual-app/api` 26.11.0 or later). An account whose
+  bank sync finished after its 60 s timeout adds 0, because its result arrived
+  too late to be read.
 - **✅ Synced** — bank-linked accounts that synced.
 - **❌ Failed** — accounts whose bank sync errored (with the error). This appears on
   the failure path too — e.g. a single rate-limited account shows up here rather
@@ -209,12 +216,18 @@ The JSON payload:
   "durationMs": 1200,
   "message": "Sync Successful",
   "accounts": { "synced": 9, "failed": 0, "skipped": 3 },
+  "transactionsAdded": 2,
+  "transactionsUpdated": 1,
   "succeededAccounts": ["..."],
   "failedAccounts": [{ "name": "...", "error": "..." }],
   "skippedAccounts": [{ "name": "...", "reason": "not-linked" }],
   "timestamp": "<ISO8601>"
 }
 ```
+
+`transactionsAdded` and `transactionsUpdated` are integers and always present:
+`0` when nothing was imported or updated, or when the bank sync did not report
+counts. They are counts only; no transaction ids, payees or amounts are sent.
 
 #### ntfy Settings
 
