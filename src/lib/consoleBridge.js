@@ -30,10 +30,25 @@ const MESSAGE = 'Actual API console output';
 let depth = 0;
 let saved = null; // { console: {method: fn}, log: fn }
 let ownWrite = 0;
-let active = null; // { logger, verbose }
+let active = null; // { logger, child, verbose }
+
+/**
+ * Run fn with the bridge bypassed. The logger's own async diagnostics (a
+ * syslog send callback, a transport onError) run after log() returned, so the
+ * prototype wrap does not cover them; without this they would be captured,
+ * logged to the failing sink again and loop for the whole session (#426).
+ */
+function passThrough(fn) {
+    ownWrite++;
+    try {
+        return fn();
+    } finally {
+        ownWrite--;
+    }
+}
 
 function emit(method, args) {
-    const { logger, verbose } = active;
+    const { logger, child, verbose } = active;
     const meta = { event: 'third_party.console' };
     if (verbose) {
         const masked = logger.maskSecrets(util.format(...args));
@@ -42,8 +57,6 @@ function emit(method, args) {
     // Pass-through guard: the child logger writes to console itself.
     ownWrite++;
     try {
-        const child = logger.child({ component: 'actual-api' });
-        child.broadcastCallback = null; // never to /ws/logs
         child[METHOD_LEVEL[method]](MESSAGE, meta);
     } finally {
         ownWrite--;
@@ -98,7 +111,11 @@ function uninstall() {
 function installConsoleBridge(logger, options = {}) {
     if (depth === 0) install(logger);
     depth++;
-    active = { logger, verbose: options.verbose === true };
+    // One child per install, not per upstream line: building a logger with a
+    // logDir probes the directory on disk each time.
+    const child = logger.child({ component: 'actual-api' });
+    child.broadcastCallback = null; // never to /ws/logs
+    active = { logger, child, verbose: options.verbose === true };
     let done = false;
     return function restore() {
         if (done) return;
@@ -108,4 +125,4 @@ function installConsoleBridge(logger, options = {}) {
     };
 }
 
-module.exports = { installConsoleBridge };
+module.exports = { installConsoleBridge, passThrough };
