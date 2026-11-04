@@ -350,17 +350,17 @@ class Logger {
         const timestamp = new Date().toISOString();
         safeContext = withoutReserved(safeContext);
         safeMeta = withoutReserved(safeMeta);
-        // Reserved keys are written last so they always win (#433).
+        // Logger-owned keys were stripped above, so caller fields cannot
+        // overwrite them; they lead the record to match docs/LOGGING.md (#433).
         const logEntry = {
-            ...safeContext,
-            ...safeMeta,
             timestamp,
             level: level.toUpperCase(),
             service: this.serviceName,
             message: safeMessage
         };
-
+        Object.assign(logEntry, safeContext, safeMeta);
         if (this.correlationId) {
+            // Not reserved, but the logger's own id still wins, as before #433.
             logEntry.correlationId = this.correlationId;
         }
 
@@ -676,6 +676,5 @@ module.exports = {
     Logger,
     createLogger,
     LOG_LEVELS,
-    LEVEL_NAMES,
-    RESERVED_KEYS
+    LEVEL_NAMES
 };
