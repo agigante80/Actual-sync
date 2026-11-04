@@ -67,7 +67,8 @@ function seeder(clock, hc, history) {
      * @param {number} minutesAgo
      * @param {{ status?: 'success'|'partial'|'failure', succeeded?: number,
      *   failed?: number, skipped?: number, durationMs?: number, error?: string,
-     *   errorCode?: string, historyOnly?: boolean }} opts
+     *   errorCode?: string, historyOnly?: boolean,
+     *   accountResults?: Object[] }} opts (accountResults: the syncService shape, #429)
      */
     sync(serverName, minutesAgo, opts = {}) {
       const status = opts.status || 'success';
@@ -82,7 +83,8 @@ function seeder(clock, hc, history) {
           accountsSkipped: opts.skipped ?? 0,
           errorMessage: opts.error || null,
           errorCode: opts.errorCode || null,
-          correlationId: `fixture-${serverName}-${minutesAgo}`
+          correlationId: `fixture-${serverName}-${minutesAgo}`,
+          accountResults: opts.accountResults
         });
         if (opts.historyOnly) return;
         hc.updateSyncStatus({
