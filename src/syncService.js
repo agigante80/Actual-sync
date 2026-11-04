@@ -848,6 +848,7 @@ async function runSyncBank(server, options = {}) {
                 accountsSkipped: skippedAccounts.length,
                 transactionsAdded,
                 transactionsUpdated,
+                accountResults: buildAccountResults(),
                 errorMessage,
                 correlationId
             });
@@ -1003,6 +1004,7 @@ async function runSyncBank(server, options = {}) {
                 accountsSkipped: skippedAccounts.length,
                 transactionsAdded,
                 transactionsUpdated,
+                accountResults: buildAccountResults(),
                 errorMessage: errorMessage,
                 errorCode: errorCode,
                 correlationId

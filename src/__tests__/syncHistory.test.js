@@ -1205,4 +1205,117 @@ describe('SyncHistoryService', () => {
       expect(allRows().map(r => r.action)).toEqual(['new']);
     });
   });
+  describe('per-account results (#429)', () => {
+    const three = [
+      { id: 'a1', name: 'Checking', status: 'synced', added: 5, updated: 1, countsKnown: true },
+      { id: 'a2', name: 'Savings', status: 'synced', added: 0, updated: 0, countsKnown: true },
+      { id: 'a3', name: 'Card', status: 'synced', added: 15, updated: 2, countsKnown: true }
+    ];
+    const childRows = () => syncHistory.db.prepare('SELECT * FROM sync_history_account ORDER BY rowid').all();
+
+    test('writes one child row per processed account with its counts', () => {
+      const id = syncHistory.recordSync({ serverName: 'Vega', status: 'success', accountResults: three });
+      const rows = childRows();
+      expect(rows).toHaveLength(3);
+      expect(rows.map(r => [r.sync_id, r.account_id, r.account_name, r.status, r.transactions_added, r.transactions_updated]))
+        .toEqual([
+          [id, 'a1', 'Checking', 'synced', 5, 1],
+          [id, 'a2', 'Savings', 'synced', 0, 0],
+          [id, 'a3', 'Card', 'synced', 15, 2]
+        ]);
+    });
+
+    test('unknown counts (late success, skipped) are NULL, never 0', () => {
+      syncHistory.recordSync({
+        serverName: 'Vega',
+        status: 'partial',
+        accountResults: [
+          { id: 'a1', name: 'Late', status: 'synced', added: 0, updated: 0, countsKnown: false },
+          { id: 'a2', name: 'Man', status: 'skipped', added: 0, updated: 0, countsKnown: false }
+        ]
+      });
+      const rows = childRows();
+      expect(rows.map(r => [r.transactions_added, r.transactions_updated])).toEqual([[null, null], [null, null]]);
+    });
+
+    test('a record without accountResults writes no child rows', () => {
+      syncHistory.recordSync({ serverName: 'Vega', status: 'success' });
+      expect(childRows()).toEqual([]);
+    });
+
+    test('a bad account row rolls back the parent row too (one transaction)', () => {
+      expect(() => syncHistory.recordSync({
+        serverName: 'Vega',
+        status: 'success',
+        accountResults: [{ id: 'a1', status: 'synced', added: 1, updated: 0, countsKnown: true }, { id: { toString() { throw new Error('boom'); } }, status: 'synced' }]
+      })).toThrow('boom');
+      expect(syncHistory.db.prepare('SELECT COUNT(*) c FROM sync_history').get().c).toBe(0);
+      expect(childRows()).toEqual([]);
+    });
+
+    test('getHistory attaches accounts only when includeAccounts is set', () => {
+      syncHistory.recordSync({ serverName: 'Vega', status: 'success', accountResults: three });
+      syncHistory.recordSync({ serverName: 'Vega', status: 'success' });
+      const plain = syncHistory.getHistory({});
+      expect(plain.every(r => !('accounts' in r))).toBe(true);
+      const withAcc = syncHistory.getHistory({ includeAccounts: true });
+      expect(withAcc.map(r => r.accounts.length).sort()).toEqual([0, 3]);
+      const rich = withAcc.find(r => r.accounts.length === 3);
+      expect(rich.accounts[2]).toEqual({
+        account_id: 'a3', account_name: 'Card', status: 'synced', transactions_added: 15, transactions_updated: 2
+      });
+    });
+
+    test('getLastAccountResults returns the latest sync of that server only', () => {
+      let t = Date.parse('2026-01-01T00:00:00Z');
+      syncHistory.now = () => new Date(t);
+      syncHistory.recordSync({ serverName: 'Vega', status: 'success', accountResults: three });
+      t += 60000;
+      syncHistory.recordSync({ serverName: 'Vega', status: 'success', accountResults: [three[0]] });
+      t += 60000;
+      syncHistory.recordSync({ serverName: 'Other', status: 'success', accountResults: three });
+      expect(syncHistory.getLastAccountResults('Vega').map(a => a.account_id)).toEqual(['a1']);
+      expect(syncHistory.getLastAccountResults('Nope')).toEqual([]);
+    });
+
+    test('cleanup removes child rows of expired syncs and keeps recent ones', () => {
+      const old = new Date(); old.setDate(old.getDate() - 35);
+      const oldId = syncHistory.db.prepare(
+        'INSERT INTO sync_history (timestamp, server_name, status) VALUES (?, ?, ?)'
+      ).run(old.toISOString(), 'Vega', 'success').lastInsertRowid;
+      syncHistory.db.prepare(
+        "INSERT INTO sync_history_account (sync_id, account_id, status) VALUES (?, 'x', 'synced')"
+      ).run(oldId);
+      const keepId = syncHistory.recordSync({ serverName: 'Vega', status: 'success', accountResults: three });
+      syncHistory.cleanup();
+      expect(childRows().map(r => r.sync_id)).toEqual([keepId, keepId, keepId]);
+    });
+
+    test('resetServerHistory deletes that server child rows only; resetAllHistory all', async () => {
+      syncHistory.recordSync({ serverName: 'Vega', status: 'success', accountResults: three });
+      const other = syncHistory.recordSync({ serverName: 'Other', status: 'success', accountResults: [three[0]] });
+      await syncHistory.resetServerHistory('Vega');
+      expect(childRows().map(r => r.sync_id)).toEqual([other]);
+      await syncHistory.resetAllHistory();
+      expect(childRows()).toEqual([]);
+    });
+
+    test('migrates an existing database without the table, keeping rows', () => {
+      const legacyPath = path.join(__dirname, 'test-sha-migration.db');
+      [legacyPath, legacyPath + '-wal', legacyPath + '-shm'].forEach(f => { if (fs.existsSync(f)) fs.unlinkSync(f); });
+      try {
+        const seed = new SyncHistoryService({ dbPath: legacyPath, loggerConfig: { level: 'ERROR' } });
+        seed.recordSync({ serverName: 'Old', status: 'success' });
+        seed.db.exec('DROP TABLE sync_history_account');
+        seed.close();
+        const migrated = new SyncHistoryService({ dbPath: legacyPath, loggerConfig: { level: 'ERROR' } });
+        expect(migrated.getHistory({ includeAccounts: true })).toMatchObject([{ server_name: 'Old', accounts: [] }]);
+        migrated.recordSync({ serverName: 'Old', status: 'success', accountResults: [three[0]] });
+        expect(migrated.getLastAccountResults('Old')).toHaveLength(1);
+        migrated.close();
+      } finally {
+        [legacyPath, legacyPath + '-wal', legacyPath + '-shm'].forEach(f => { if (fs.existsSync(f)) fs.unlinkSync(f); });
+      }
+    });
+  });
 });

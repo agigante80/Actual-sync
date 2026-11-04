@@ -273,6 +273,15 @@ describe('accountResults for notifications (#427)', () => {
         expect(notified.succeededAccounts).toEqual(['a1', 'a2']);
     });
 
+    test('#429 recordSync receives the same accountResults as the notification', async () => {
+        const { notified, recorded } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.resolve({ newTransactions: ['t1'], matchedTransactions: [] }),
+            a2: () => Promise.resolve({ newTransactions: [], matchedTransactions: [] })
+        }, drive);
+        expect(recorded.accountResults).toEqual(notified.accountResults);
+        expect(recorded.accountResults).toHaveLength(2);
+    });
+
     test('#98 "No new transactions" is synced with known zero counts', async () => {
         const { notified } = await runSync(['a1'], {
             a1: () => Promise.reject(new Error('No new transactions'))

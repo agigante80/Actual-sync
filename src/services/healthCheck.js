@@ -838,11 +838,13 @@ class HealthCheckService {
           const configuredServers = this.getServers();
           // Initialize all servers with default status
           configuredServers.forEach(server => {
-            const serverStatus = this.status.serverStatuses[server.name] || {
+            // A copy: the fields added below (history, per-account names) must
+            // not land on the live object, which the open /metrics returns (#429).
+            const serverStatus = { ...(this.status.serverStatuses[server.name] || {
               status: 'pending',
               lastSync: null,
               error: null
-            };
+            }) };
             
             // Get last sync status from sync history if available
             if (this.syncHistory) {
@@ -862,6 +864,10 @@ class HealthCheckService {
                     added: lastSync.transactions_added,
                     updated: lastSync.transactions_updated
                   };
+                  // Per-account counts of that sync (#429); NULL counts are unknown
+                  if (typeof this.syncHistory.getLastAccountResults === 'function') {
+                    serverStatus.lastAccountResults = this.syncHistory.getLastAccountResults(server.name);
+                  }
                 }
               } catch (error) {
                 this.logger.debug('Failed to get last sync status for server', { 
@@ -1517,6 +1523,8 @@ This test verifies that notifications are configured correctly and can reach the
       try {
         const limit = parseInt(req.query.limit) || 10;
         const filters = { limit };
+        // Opt-in per-account rows (#429); without the flag the response is unchanged.
+        if (['1', 'true'].includes(req.query.includeAccounts)) filters.includeAccounts = true;
         // The History tab's server filter (#288). A repeated ?serverName=a&serverName=b
         // arrives as an array; only a single non-empty string is a filter.
         const { serverName } = req.query;
