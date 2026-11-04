@@ -1513,7 +1513,7 @@ async function loadRecentActivity() {
                 <div style="padding: 8px 0; border-bottom: 1px solid #334155;">
                     <span style="color: ${color};">${icon}</span>
                     <span style="color: #e2e8f0;">${formatTime(record.timestamp)}</span>
-                    <span style="color: #94a3b8;"> - ${record.server_name}</span>
+                    <span style="color: #94a3b8;"> - ${escapeHtml(record.server_name)}</span>
                     <span style="color: #64748b;"> ${duration}</span>
                     ${countsDisplay}${txDisplay}
                 </div>
