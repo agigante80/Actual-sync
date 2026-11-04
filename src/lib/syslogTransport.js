@@ -81,7 +81,12 @@ class SyslogStreamTransport {
         // frames in the socket buffer for ever: destroy on a write stall, which
         // triggers 'close' and the normal reconnect.
         socket.setTimeout(this.stallTimeoutMs, () => {
-            if (this.socket === socket && this.waitingDrain) socket.destroy();
+            // Decide on bytes actually pending, not the drain flag: small writes
+            // below the high-water mark never set it. An idle healthy socket has 0.
+            if (this.socket === socket && socket.writableLength > 0) {
+                this._report(new Error('syslog collector stalled; reconnecting'));
+                socket.destroy();
+            }
         });
         socket.on(this.useTls ? 'secureConnect' : 'connect', () => {
             if (this.socket !== socket) return;
