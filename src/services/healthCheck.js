@@ -149,7 +149,12 @@ class HealthCheckService {
     this.getCronSchedules = options.getCronSchedules;
     this.dashboardConfig = options.dashboardConfig || { enabled: true, auth: { type: 'none' } };
     this.metricsAuthConfig = options.metricsAuth || { type: 'none' };
-    this.logger = createLogger(options.loggerConfig || {});
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    const loggerConfig = options.loggerConfig || {};
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'HealthCheck' })
+      : createLogger(loggerConfig);
     
     this.app = express();
     // Opt-in only (#245). Behind a reverse proxy every request comes from the

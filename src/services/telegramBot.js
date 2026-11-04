@@ -41,10 +41,11 @@ class TelegramBotService {
     };
 
     this.services = services;
-    this.logger = createLogger({
-      component: 'TelegramBot',
-      ...loggerConfig
-    });
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'TelegramBot' })
+      : createLogger({ component: 'TelegramBot', ...loggerConfig });
 
     this.lastUpdateId = 0;
     this.polling = false;

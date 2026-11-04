@@ -122,6 +122,7 @@ try {
         dbPath: config.syncHistory?.dbPath,
         retentionDays: config.syncHistory?.retentionDays || 90,
         loggerConfig: {
+            parent: logger,
             level: config.logging.level,
             format: config.logging.format,
             logDir: config.logging.logDir
@@ -134,6 +135,7 @@ try {
             syncHistory: syncHistory,
             includeDefaultMetrics: config.prometheus?.includeDefaultMetrics !== false,
             loggerConfig: {
+                parent: logger,
                 level: config.logging.level,
                 format: config.logging.format,
                 logDir: config.logging.logDir
@@ -146,6 +148,7 @@ try {
     notificationService = new NotificationService(
         config.notifications || {},
         {
+            parent: logger,
             level: config.logging.level,
             format: config.logging.format,
             logDir: config.logging.logDir
@@ -181,6 +184,7 @@ try {
                 notificationService: notificationService // /notify must reach the dispatch path (#169)
             },
             {
+                parent: logger,
                 level: config.logging.level,
                 format: config.logging.format,
                 logDir: config.logging.logDir
@@ -229,6 +233,7 @@ try {
             }));
         },
         loggerConfig: {
+            parent: logger,
             level: config.logging.level,
             format: config.logging.format,
             logDir: config.logging.logDir
