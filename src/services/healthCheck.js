@@ -849,6 +849,12 @@ class HealthCheckService {
                     failed: lastSync.accounts_failed,
                     skipped: lastSync.accounts_skipped
                   };
+                  // Per-sync transaction totals (#424). NULL on rows that
+                  // predate the columns; the dashboard renders that as '-'.
+                  serverStatus.lastSyncTransactions = {
+                    added: lastSync.transactions_added,
+                    updated: lastSync.transactions_updated
+                  };
                 }
               } catch (error) {
                 this.logger.debug('Failed to get last sync status for server', { 
