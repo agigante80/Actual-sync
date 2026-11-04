@@ -33,6 +33,8 @@ The dashboard loads nothing from the internet. Chart.js is a regular npm depende
 
 The Live Logs panel streams from `/ws/logs`, which is authenticated like the rest of the dashboard. Before each connect the page fetches a single-use, 30 second ticket from `/api/dashboard/ws-ticket` using the same credentials as every other dashboard request, then opens the stream with it. You do not configure anything for this.
 
+The stream does not carry DEBUG records unless the viewer asks for them: a client opts in by sending the text message `{"type":"subscribe","debug":true}` (and out again with `"debug":false`). The dashboard page does not send it today. A client whose send buffer grows past 1 MiB (a stalled or very slow connection) is disconnected, and the server logs one WARN line without client details; the page's normal reconnect then restores the stream.
+
 If the panel keeps showing "Disconnected from log stream. Reconnecting...", look at the service log and the browser's network tab:
 
 - **No `WebSocket handshake refused` line, and a failing `/api/dashboard/ws-ticket` request** (401, 429 or 5xx): the ticket request never reached the handshake, so nothing is logged for it. Look for `Dashboard authentication failed` or `Dashboard authentication throttled` instead, then reload the page and sign in again.
