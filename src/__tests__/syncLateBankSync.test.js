@@ -152,7 +152,9 @@ describe('sys_startup wiring (#443)', () => {
         const { loggers, recorded } = await oneSync({ sinksThrow: true });
         expect(recorded).toBeDefined();
         expect(loggers[0].security.mock.calls.filter((c) => c[0] === 'sys_startup')).toHaveLength(0);
-        expect(loggers[0].warn).toHaveBeenCalledWith('Could not write the sys_startup record', { errorName: 'TypeError' });
+        expect(loggers[0].warn).toHaveBeenCalledWith('Could not write the sys_startup record', {
+            error: expect.objectContaining({ type: 'TypeError', category: 'internal' })
+        });
     });
 });
 
@@ -216,8 +218,38 @@ describe('a timed-out runBankSync that settles late (#284)', () => {
             await advance(2000);
         });
         expect(recorded.accountsFailed).toBe(1);
-        expect(recorded.errorMessage).toContain('bank said no');
+        // The real error is reported, not the timeout; its text is classified, never echoed (#438).
+        expect(recorded.errorMessage).toContain('Unexpected error (details withheld)');
+        expect(recorded.errorMessage).not.toContain('bank said no');
         expect(recorded.errorMessage).not.toMatch(/timed out/i);
+    });
+});
+
+describe('upstream error text stays out of every sink (#438)', () => {
+    afterEach(() => jest.dontMock('@actual-app/api'));
+
+    test('SENTINEL_PAYEE in a bank error reaches no log call, no history row and no notification', async () => {
+        const slow = deferred();
+        const upstream = Object.assign(new Error("Category 'SENTINEL_PAYEE' already exists"), {
+            reason: 'SENTINEL_PAYEE', cause: new Error('SENTINEL_PAYEE')
+        });
+        const { loggers, recorded, notified } = await runSync(['a1'], {
+            a1: () => slow.promise
+        }, async (advance, started) => {
+            await started();
+            await advance(60000);
+            slow.reject(upstream);
+            await advance(2000);
+        });
+        expect(recorded.accountsFailed).toBe(1);
+        expect(notified.status).toBe('failure');
+        const logged = JSON.stringify(loggers.map(l => ['error', 'warn', 'info', 'debug'].map(m => l[m].mock.calls)));
+        expect(logged).toContain('Error syncing bank for account');
+        for (const sink of [logged, JSON.stringify(recorded), JSON.stringify(notified)]) {
+            expect(sink).not.toContain('SENTINEL_PAYEE');
+        }
+        expect(recorded.errorMessage).toContain('Conflict with existing data');
+        expect(notified.failedAccounts[0].error).toBe('Conflict with existing data');
     });
 });
 
@@ -287,6 +319,21 @@ describe('transaction counts from runBankSync (#391)', () => {
             a2: () => Promise.resolve({ newTransactions: ['t1'], matchedTransactions: [] })
         }, started);
         expect(recorded).toMatchObject({ status: 'partial', transactionsAdded: 1, transactionsUpdated: 0 });
+    });
+    test('the logged failedAccounts keep the classified error, so the allowlist drops nothing', async () => {
+        const { loggers } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.reject(new Error('Failed syncing account "SENTINEL_PAYEE".')),
+            a2: () => Promise.resolve({ newTransactions: ['t1'], matchedTransactions: [] })
+        }, started);
+        const { sanitizeFields } = require('../lib/logFields');
+        const metaOf = (method, message) => loggers
+            .flatMap((l) => l[method].mock.calls)
+            .find(([m]) => m === message)[1];
+        for (const meta of [metaOf('info', 'Sync completed'), metaOf('warn', 'Partial sync completed with some account failures')]) {
+            expect(meta.failedAccounts).toEqual([{ name: 'a1', error: expect.objectContaining({ category: 'internal' }) }]);
+            expect(sanitizeFields({ failedAccounts: meta.failedAccounts }).dropped).toBe(0);
+            expect(JSON.stringify(meta)).not.toContain('SENTINEL_PAYEE');
+        }
     });
 });
 
@@ -401,5 +448,19 @@ describe('api.init verbose flag (#425)', () => {
     test('a non-boolean value never enables verbose', async () => {
         const { actual } = await runSync(['a1'], calls, drive, { logging: { actualApiVerbose: 'yes' } });
         expect(actual.init).toHaveBeenCalledWith(expect.objectContaining({ verbose: false }));
+    });
+
+    test('a failed account keeps its upstream code for the operator (#438 M3)', async () => {
+        const slow = deferred();
+        const upstream = Object.assign(new Error('SENTINEL_PAYEE'), { code: 'ITEM_LOGIN_REQUIRED' });
+        const { notified } = await runSync(['a1'], {
+            a1: () => slow.promise
+        }, async (advance, started) => {
+            await started();
+            await advance(60000);
+            slow.reject(upstream);
+            await advance(2000);
+        });
+        expect(notified.failedAccounts[0].error).toBe('Authentication failed (ITEM_LOGIN_REQUIRED)');
     });
 });

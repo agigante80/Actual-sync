@@ -127,17 +127,18 @@ describe('sanitizeFields', () => {
     });
 
     test('a personal child inside an allowed object follows includePersonal too', () => {
-        const input = { failedAccounts: [{ name: 'Alice Joint', error: 'boom' }] };
+        const input = { failedAccounts: [{ name: 'Alice Joint', error: { category: 'auth', safeMessage: 'x' } }] };
         expect(sanitizeFields(input).fields).toEqual(input);
         expect(sanitizeFields(input, { includePersonal: false }).fields).toEqual({});
     });
 
-    test('the classified error object and the legacy string both pass', () => {
+    test('the classified error object passes; a string error is dropped (#438)', () => {
         const obj = { type: 'Error', code: 'E1', httpStatus: 503, category: 'timeout', safeMessage: 'x', stack: 'frames' };
         const out = sanitizeFields({ error: obj });
         expect(out.fields.error).toEqual({ type: 'Error', code: 'E1', httpStatus: 503, category: 'timeout', safeMessage: 'x' });
         expect(out.dropped).toBe(1);
-        expect(sanitizeFields({ error: 'boom' })).toEqual({ fields: { error: 'boom' }, dropped: 0 });
+        expect(sanitizeFields({ error: 'boom' })).toEqual({ fields: {}, dropped: 1 });
+        takeDroppedFields();
     });
 
     test('non-object input gives no fields', () => {

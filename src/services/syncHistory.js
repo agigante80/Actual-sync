@@ -10,8 +10,11 @@ const path = require('path');
 const fs = require('fs');
 const moment = require('moment-timezone');
 const { createLogger } = require('../lib/logger');
+const { classifyError } = require('../lib/errorClassifier');
 const { muteEndsAt } = require('../lib/scheduleAlertRules');
 
+// PRAGMA user_version once sync_history.error_message holds classified text (#438).
+const ERROR_MESSAGES_CLASSIFIED = 1;
 const REDACTED = '[redacted]';
 
 // Field denylist for config_audit.changes_json (#259): case-insensitive
@@ -413,11 +416,39 @@ class SyncHistoryService {
       this.logger.info('Migrated schedule_alerts: added channel column');
     }
 
+    this.migrateErrorMessages();
+
     // NOTE: account_metadata and schedule_alerts are created via CREATE TABLE
     // IF NOT EXISTS in createTables() (so a missing table is added to
     // existing DBs). If a NEW COLUMN is ever added to either, add an ALTER
     // guard here too, since CREATE TABLE IF NOT EXISTS will not add columns
     // to an existing table. (#99, #258)
+  }
+
+  /**
+   * One-time rewrite (#438, D5): rows written before errors were classified
+   * hold raw upstream text ("Category 'Rent to Marco' already exists", IBANs).
+   * Each such error_message becomes the category's own text; the raw text is
+   * only read to pick the category and is never copied. Runs once, tracked in
+   * PRAGMA user_version (this database used no other version marker); rows
+   * written afterwards are already classified.
+   */
+  migrateErrorMessages() {
+    const version = this.db.pragma('user_version', { simple: true });
+    if (version >= ERROR_MESSAGES_CLASSIFIED) return;
+    const rows = this.db.prepare(
+      'SELECT id, error_message FROM sync_history WHERE error_message IS NOT NULL'
+    ).all();
+    const update = this.db.prepare('UPDATE sync_history SET error_message = ? WHERE id = ?');
+    this.db.transaction(() => {
+      for (const row of rows) update.run(classifyError(row.error_message).safeMessage, row.id);
+      this.db.pragma(`user_version = ${ERROR_MESSAGES_CLASSIFIED}`);
+    })();
+    if (rows.length > 0) {
+      this.logger.info('Migrated sync_history: error messages rewritten to their category', {
+        rows: rows.length
+      });
+    }
   }
 
   /**

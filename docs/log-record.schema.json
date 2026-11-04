@@ -73,7 +73,7 @@
       "description": "Registered log fields (src/lib/logFields.js). Keys outside the registry never reach a record."
     },
     "error": {
-      "description": "The classified error object. A plain string is still accepted while older call sites log error.message (#438 moves them to the object).",
+      "description": "The classified error object (#438). The logger turns any Error or string logged under error into this shape, so upstream text never appears.",
       "oneOf": [
         {
           "type": "object",
@@ -110,9 +110,6 @@
               "type": "string"
             }
           }
-        },
-        {
-          "type": "string"
         }
       ]
     },

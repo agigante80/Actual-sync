@@ -175,12 +175,14 @@ describe('logger field allowlist (#437)', () => {
         takeDroppedFields();
     });
 
-    test('logger.error(err) logs the class and code, not the frames or a message field', () => {
-        const logger = makeLogger();
+    test('logger.error(err) logs the classified error, not its message (#438)', () => {
+        const logger = makeLogger({ level: 'INFO' });
         const err = Object.assign(new Error('Category Rent to Marco already exists'), { code: 'E_DUP' });
         logger.error(err);
         const rec = JSON.parse(consoleOut[0]);
-        expect(rec.fields).toEqual({ errorType: 'Error', errorCode: 'E_DUP' });
+        expect(rec.error).toEqual({ type: 'Error', code: 'E_DUP', category: 'conflict', safeMessage: 'Conflict with existing data' });
+        expect(rec.fields).toBeUndefined();
+        expect(consoleOut[0]).not.toContain('Marco');
         expect(consoleOut[0]).not.toContain('at Object');
         expect(takeDroppedFields()).toEqual([]);
     });
