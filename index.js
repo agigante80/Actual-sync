@@ -17,7 +17,7 @@ const ConfigLoader = require('./src/lib/configLoader');
 const { resolveVersion } = require('./src/lib/version');
 const VERSION = resolveVersion();
 
-bootstrap.info(`Starting Actual-sync v${VERSION}`);
+bootstrap.info('Starting Actual-sync', { version: VERSION });
 
 // Validate environment and configuration before starting
 function validateStartup() {

@@ -110,7 +110,11 @@ describe('bootstrap logger (#442)', () => {
         walk('src');
         const offenders = files.filter(f => !allowed.has(f) &&
             /\bconsole\.(log|info|warn|error|debug|group|groupCollapsed|trace)\s*\(/.test(
-                fs.readFileSync(path.join(root, f), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')));
+                fs.readFileSync(path.join(root, f), 'utf8').replace(/\/\*[\s\S]*?\*\/|^\s*\/\/.*$/gm, '')));
+        // Only whole-line // comments are stripped: a trailing `//.*$` would also
+        // eat the rest of a line after a URL in a string ('http://...'), hiding a
+        // console call there. A console call in a trailing comment fails the test,
+        // which is the safe direction.
         expect(offenders).toEqual([]);
     });
 });
