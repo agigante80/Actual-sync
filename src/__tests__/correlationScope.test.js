@@ -124,4 +124,27 @@ describe('correlation scopes (#441)', () => {
         expect(lines[0].correlationId).toBeTruthy();
         expect(lines[0].correlationId).not.toBe(lines[1].correlationId);
     });
+
+    test('a security.suppressed summary spanning many requests carries no single request id', () => {
+        cap = capturingRoot();
+        for (let i = 1; i <= 30; i++) {
+            withCorrelation(() => cap.root.security('authn_login_fail', { remoteAddress: '10.0.0.9' }), `req-${i}`);
+        }
+        withCorrelation(() => cap.root.flushSecurity(), 'req-31');
+        const summary = cap.lines.find(r => r.message === 'security.suppressed');
+        expect(summary).toBeDefined();
+        expect(summary.suppressedCount).toBeGreaterThan(0);
+        expect(summary.correlationId).toBeUndefined();
+        cap.root.close && cap.root.close();
+    });
+
+    test('the /ws/logs broadcast carries the correlation id of the scope', () => {
+        cap = capturingRoot();
+        const sent = [];
+        cap.root.setBroadcastCallback((level, message, meta) => sent.push(meta));
+        withCorrelation(() => cap.root.child({ component: 'sync' }).info('inside'), 'sync-1');
+        cap.root.info('outside');
+        expect(sent[0].correlationId).toBe('sync-1');
+        expect(sent[1].correlationId).toBeUndefined();
+    });
 });

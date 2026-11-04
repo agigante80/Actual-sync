@@ -23,8 +23,9 @@ const { resolveTimezone } = require('../lib/timezone');
 // markParser tags an error with fromBodyParser so jsonBodyErrors can tell a
 // body-parser failure from a 4xx raised by a route. A corrupt gzip body arrives
 // as createError(400, zlibErr) with no `type`, so only a marker works. (#259)
-// body-parser resumes from socket events, which drop the request's correlation
-// scope, so the rest of the chain is re-entered inside it. (#441)
+// The rest of the chain is re-entered in the request's correlation scope as a
+// safeguard (#441): raw-body 3 already keeps it, but a parser that resumes from
+// plain socket events would drop it.
 const markParser = (parser) => (req, res, next) =>
   parser(req, res, (e) => withCorrelation(() => next(e && Object.assign(e, { fromBodyParser: true })), req.correlationId));
 
@@ -162,6 +163,14 @@ class HealthCheckService {
       : createLogger(loggerConfig);
     
     this.app = express();
+    // One correlation scope per request (#441), first in the chain so every line
+    // a request logs carries its id, the X-Forwarded-For warning below included.
+    // markParser re-enters it after body parsing as a safeguard: raw-body 3
+    // already binds its callback with AsyncResource, so the scope survives today.
+    this.app.use((req, res, next) => {
+      if (!req.correlationId) req.correlationId = randomUUID();
+      withCorrelation(next, req.correlationId);
+    });
     // Opt-in only (#245). Behind a reverse proxy every request comes from the
     // proxy's address, so the per-IP rate limit becomes one shared bucket and
     // auth-failure logs name the proxy. Trusting X-Forwarded-For on a directly
@@ -212,12 +221,6 @@ class HealthCheckService {
     // "Tested up to" = the installed @actual-app/api client version (#154).
     this.testedUpTo = null;
     
-    // One correlation scope per request (#441); markParser re-enters it after body parsing.
-    const requestScope = (req, res, next) => {
-      if (!req.correlationId) req.correlationId = randomUUID();
-      withCorrelation(next, req.correlationId);
-    };
-    this.app.use(requestScope);
 
     // Security headers first, so every response carries them: static assets,
     // the 401 from the auth middleware, and body-parser's own errors. (#243)

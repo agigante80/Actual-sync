@@ -635,7 +635,9 @@ class Logger {
         if (broadcast && !this.broadcastState.active) {
             this.broadcastState.active = true;
             try {
-                broadcast(level.toUpperCase(), safeMessage, safeMeta);
+                // The live view gets the correlation id too, so it can group lines (#441).
+                const id = this.correlationId;
+                broadcast(level.toUpperCase(), safeMessage, id ? { ...safeMeta, correlationId: id } : safeMeta);
             } catch (error) {
                 // Don't let broadcast errors break logging
                 console.error('Failed to broadcast log:', error.message);
@@ -750,13 +752,16 @@ class Logger {
         const sources = this.securityState.sources;
         if (sources.get(key) === entry) sources.delete(key);
         if (entry.suppressed > 0) {
-            this.log('WARN', 'security.suppressed', {
+            // The count spans many requests, so no single correlation id fits it:
+            // write it outside any scope rather than under whichever request
+            // happened to trigger the flush (#441).
+            correlationScope.exit(() => this.log('WARN', 'security.suppressed', {
                 ...entry.fields,
                 event: 'security.suppressed',
                 category: 'security',
                 suppressedEvent: entry.event,
                 suppressedCount: entry.suppressed
-            }, { audit: true });
+            }, { audit: true }));
             entry.suppressed = 0;
         }
     }
