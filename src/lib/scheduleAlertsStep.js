@@ -41,8 +41,8 @@
  */
 
 const moment = require('moment-timezone');
-const { getRules, mergeRules, ruleState, matchedScheduleIdsByRule } = require('./scheduleAlertRules');
-const { evaluate, skipKey, MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS, CADENCE_DATE_FORMAT } = require('./scheduleAlerts');
+const { getRules, mergeRules, ruleState, matchedScheduleIdsByRule, expandRules } = require('./scheduleAlertRules');
+const { evaluate, skipKey, occurrenceWindow, MAX_LOOKBACK_DAYS, LINKED_EARLY_WINDOW_DAYS, CADENCE_DATE_FORMAT } = require('./scheduleAlerts');
 const { getRecurringDescription } = require('./vendor/actualSchedules');
 const { validateScheduleAlert } = require('./scheduleAlertValidation');
 const { deliver } = require('./scheduleAlertDelivery');
@@ -139,6 +139,55 @@ function activeRules(configRules, block, serverName, syncHistory, logger) {
         logger.warn('Dashboard payment rules excluded: they no longer validate', { server: serverName, ruleIds: excluded });
     }
     return active;
+}
+
+/**
+ * #298: the occurrence dates of every schedule a rule is bound to, expanded by
+ * Actual itself (`api.getScheduleDates`, @actual-app/api 26.11.0) over
+ * `occurrenceWindow()`, so a schedule fires on exactly the days Actual shows.
+ *
+ * Each schedule is read once, in its own try: a failure is stored as the
+ * Error, and `evaluate()` turns it into a `cannotCheck` (reason `error`) for
+ * that schedule alone. A phase timeout is the exception: the session is
+ * stuck, so every later read would wait out the same timeout. It is rethrown
+ * and fails the whole evaluation, like the other Actual reads above.
+ *
+ * The timeout only cuts off a call that waits. Actual expands the rule
+ * synchronously, and a schedule with an occurrence count is walked from its
+ * first date on every call, so a long one can block the process for seconds;
+ * no timer fires meanwhile. A call slower than SLOW_SCHEDULE_DATES_MS is
+ * logged with the schedule id, so the cause is visible.
+ *
+ * @returns {Promise<Object<string, string[]|Error>>} keyed by schedule id
+ */
+const SLOW_SCHEDULE_DATES_MS = 3000;
+
+async function readOccurrenceDates({ api, rules, schedules, now, timezone, logger }) {
+    const { start, end } = occurrenceWindow(now, timezone);
+    const byId = {};
+    for (const binding of expandRules(rules, schedules)) {
+        if (binding.unmatched || binding.completedOneOff) continue;
+        const schedule = binding.schedule;
+        if (Object.prototype.hasOwnProperty.call(byId, schedule.id)) continue;
+        const startedAt = Date.now();
+        try {
+            byId[schedule.id] = await api.getScheduleDates(schedule.date, { start, end });
+        } catch (error) {
+            if (error && error.code === 'PHASE_TIMEOUT') throw tagError(error, 'actual_read_failed');
+            logger.warn('Could not read schedule occurrence dates from Actual', {
+                scheduleId: schedule.id, error: error && error.message
+            });
+            byId[schedule.id] = error instanceof Error ? error : new Error(String(error));
+        } finally {
+            const elapsedMs = Date.now() - startedAt;
+            if (elapsedMs > SLOW_SCHEDULE_DATES_MS) {
+                logger.warn('Reading schedule occurrence dates from Actual was slow', {
+                    scheduleId: schedule.id, elapsedMs
+                });
+            }
+        }
+    }
+    return byId;
 }
 
 /**
@@ -266,6 +315,10 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
         }
     }
 
+    const occurrencesBySchedule = await readOccurrenceDates({
+        api, rules: scheduleAlertRules, schedules: hydratedSchedules, now: alertNow, timezone, logger
+    });
+
     const { events, evaluations, warnings, skipDecisions, completedSchedules } = evaluate({
         rules: scheduleAlertRules,
         schedules: hydratedSchedules,
@@ -273,7 +326,8 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
         accounts: accountsForAlerts,
         now: alertNow,
         timezone,
-        skips
+        skips,
+        occurrencesBySchedule
     });
 
     for (const warning of warnings) {

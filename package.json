@@ -76,8 +76,6 @@
   },
   "dependencies": {
     "@actual-app/api": "^26.11.0",
-    "@rschedule/core": "1.5.0",
-    "@rschedule/standard-date-adapter": "1.5.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-sqlite3": "^13.0.3",

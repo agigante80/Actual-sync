@@ -61,7 +61,7 @@ describe('timedActual (#272)', () => {
 
     test('bounds every server-facing method, including shutdown', () => {
         expect(TIMED_METHODS).toEqual(
-            expect.arrayContaining(['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown'])
+            expect.arrayContaining(['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync', 'shutdown', 'getSchedules', 'getScheduleDates'])
         );
     });
 
