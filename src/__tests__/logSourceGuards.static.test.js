@@ -43,17 +43,17 @@ const CONSOLE_ALLOWED = {
 // caller already had to write as a literal.
 const MESSAGE_ALLOWED = {
     'src/lib/bootstrapLogger.js :: r.message': 'replays a buffered bootstrap record',
-    "src/lib/configLoader.js :: `⚠️  ${message}\\n` +": "bootstrap: schema validation text: schema paths and rule messages, no config values",
-    "src/lib/configLoader.js :: `⚠️  Configuration has ${unknownKeys.length === 1 ? 'an unknown property' : 'unknown properties'} ` +": "bootstrap: unknown config key names",
-    "src/lib/configLoader.js :: `⚠️  Warning: Server \"${server.name}\" uses unencrypted HTTP connection.\\n` +": "bootstrap: server name and url from config; the bootstrap redact() masks user:pass@ and ?token=",
-    "src/lib/configLoader.js :: `⚠️  Warning: Server \"${server.name}\" has a weak password (< 8 characters).\\n` +": "bootstrap: server name from config, never the password",
-    "src/lib/configLoader.js :: `⚠️  Warning: Server \"${server.name}\" appears to use a default/example password.\\n` +": "bootstrap: server name from config, never the password",
-    "src/lib/configLoader.js :: `⚠️  Warning: the same budget (url + syncId) is configured more than once: ${groups.join('; ')}.\\n` +": "bootstrap: server names from config",
-    "src/lib/configLoader.js :: `⚠️  Warning: multiple servers share the same data directory: ${dupDirs.join(', ')}.\\n` +": "bootstrap: dataDir paths from config (operator paths, pre-logger startup output)",
-    "src/lib/configLoader.js :: `⚠️  Warning: healthCheck.host is set to \"${hcHost}\".\\n` +": "bootstrap: healthCheck.host from config",
-    "src/lib/configLoader.js :: `scheduleAlerts template (server \"${server.name}\") fails on a channel that is not configured; ` +": "bootstrap: server name and the template validation text of operator-written config",
+    "src/lib/configLoader.js :: `⚠️ ${message}\\n` + `CONFIG_STRICT is off: downgraded to a warning — fix these; they hard-fail once the escape hatch is removed. ` + `(CONFIG_STRICT only affects schema validation, not the business-logic checks below.)`": "bootstrap: schema validation text: schema paths and rule messages, no config values",
+    "src/lib/configLoader.js :: `⚠️ Configuration has ${unknownKeys.length === 1 ? 'an unknown property' : 'unknown properties'} ` + `(advisory — likely a typo; unknown keys are ignored, not fatal):\\n${unknownKeys.join('\\n')}`": "bootstrap: unknown config key names",
+    "src/lib/configLoader.js :: `⚠️ Warning: Server \"${server.name}\" uses unencrypted HTTP connection.\\n` + ` Consider using HTTPS for production: ${server.url}`": "bootstrap: server name and url from config; the bootstrap redact() masks user:pass@ and ?token=",
+    "src/lib/configLoader.js :: `⚠️ Warning: Server \"${server.name}\" has a weak password (< 8 characters).\\n` + ` Consider using a stronger password for security.`": "bootstrap: server name from config, never the password",
+    "src/lib/configLoader.js :: `⚠️ Warning: Server \"${server.name}\" appears to use a default/example password.\\n` + ` Please change to a secure password before production use.`": "bootstrap: server name from config, never the password",
+    "src/lib/configLoader.js :: `⚠️ Warning: the same budget (url + syncId) is configured more than once: ${groups.join('; ')}.\\n` + ` It will be synced multiple times (duplicate bank-syncs, notifications and dashboard entries). Remove the duplicate entry.`": "bootstrap: server names from config",
+    "src/lib/configLoader.js :: `⚠️ Warning: multiple servers share the same data directory: ${dupDirs.join(', ')}.\\n` + ` Each server needs its own dataDir to avoid budget-cache collisions.`": "bootstrap: dataDir paths from config (operator paths, pre-logger startup output)",
+    "src/lib/configLoader.js :: `⚠️ Warning: healthCheck.host is set to \"${hcHost}\".\\n` + ` In containers use \"0.0.0.0\" — a specific host IP may not be bindable (EADDRNOTAVAIL) and the dashboard will be unreachable.`": "bootstrap: healthCheck.host from config",
+    "src/lib/configLoader.js :: `scheduleAlerts template (server \"${server.name}\") fails on a channel that is not configured; ` + `dashboard rules without a channels restriction will be skipped at sync: ${allChannels.template.message}`": "bootstrap: server name and the template validation text of operator-written config",
     "index.js :: warning": "bootstrap: startup validation warnings built in index.js from literals and package names",
-    "index.js :: error": "bootstrap: startup validation errors; includes fs and JSON.parse messages on config.json, which can quote a short snippet near a syntax error (known, pre-existing; not secrets by design)",
+    "index.js :: error": "bootstrap: startup validation errors; includes fs and JSON.parse messages on config.json, which can quote a short snippet near a syntax error (known, pre-existing: an unquoted password in config.json can appear in that snippet; not fixed here)",
     'src/lib/crashHandlers.js :: message': 'crash handler picks one of its own constants',
     'src/lib/logger.js :: message': 'the level methods forward their caller\'s message',
     'src/lib/logger.js :: event': 'security(): the event name is the message, one of the caller\'s constants',
@@ -161,9 +161,10 @@ describe('logging source guards (#450)', () => {
                 if (node.type !== 'CallExpression' && node.type !== 'OptionalCallExpression') return;
                 const arg = messageArg(node);
                 if (!arg || isLiteralMessage(arg)) return;
-                // Keyed by the first source line of the argument, so a message
-                // split over lines with + still has a short key.
-                const key = `${rel(file)} :: ${code.slice(arg.start, arg.end).split('\n')[0].trim()}`;
+                // Keyed by the whole argument with whitespace collapsed: a key on
+                // the first line only would let data added on a later line of a
+                // split message pass unnoticed (#450 round 2).
+                const key = `${rel(file)} :: ${code.slice(arg.start, arg.end).replace(/\s+/g, ' ').trim()}`;
                 if (MESSAGE_ALLOWED[key]) { used.add(key); return; }
                 violations.push(`${rel(file)}:${arg.loc.start.line} ${code.slice(arg.start, arg.end)}`);
             });
