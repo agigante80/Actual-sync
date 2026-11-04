@@ -8,8 +8,10 @@
  *
  * The handlers are installed first in index.js, before the logger exists.
  * Until setCrashLogger() is called, a crash is written as one JSON line to
- * stderr with a synchronous write. The process keeps running afterwards,
- * exactly as before.
+ * stderr with a synchronous write and the process exits 1: a crash while
+ * the service is still loading (a module that fails to load, a bad top-level
+ * statement) cannot be survived, and Node itself would have exited 1. Once
+ * the logger is set, the service keeps running afterwards, as before.
  */
 
 const fs = require('fs');
@@ -52,9 +54,10 @@ function framesOf(error) {
     return frames.length ? frames.join('\n') : undefined;
 }
 
-function writeStderr(level, event, message, error) {
+function writeStderr(level, event, message, error, stack) {
     const line = JSON.stringify({
-        timestamp: new Date().toISOString(), level, event, message, error
+        timestamp: new Date().toISOString(), level, event, message, error,
+        ...(stack ? { stack } : {})
     }) + '\n';
     try {
         fs.writeSync(2, line);
@@ -69,8 +72,22 @@ function emit(logger, level, event, message, error) {
     logger[level](message, { event, error });
 }
 
+// Before the logger exists nothing is loaded yet, so there is no budget data
+// to leak: the frames go into the stderr record and the process exits 1.
+function crashBeforeLogger(message, reason) {
+    writeStderr('ERROR', 'sys_crash', message, describeCrash(reason), framesOf(reason));
+    process.exit(1);
+}
+
+function logFrames(logger, message, reason) {
+    const stack = framesOf(reason);
+    if (stack) logger.debug(message, { event: 'sys_crash.stack', stack });
+}
+
 function handleUncaughtException(logger, error) {
+    if (!logger) return crashBeforeLogger('Uncaught exception during startup, exiting', error);
     emit(logger, 'error', 'sys_crash', 'Uncaught exception, service continues', describeCrash(error));
+    logFrames(logger, 'Uncaught exception stack', error);
 }
 
 function handleUnhandledRejection(logger, reason) {
@@ -81,11 +98,9 @@ function handleUnhandledRejection(logger, reason) {
         emit(logger, 'warn', 'process.rejection_benign', 'Unhandled promise rejection already reported by the sync path', error);
         return;
     }
+    if (!logger) return crashBeforeLogger('Unhandled promise rejection during startup, exiting', reason);
     emit(logger, 'error', 'sys_crash', 'Unhandled promise rejection, service continues', error);
-    const stack = framesOf(reason);
-    if (logger && stack) {
-        logger.debug('Unhandled promise rejection stack', { event: 'sys_crash.stack', stack });
-    }
+    logFrames(logger, 'Unhandled promise rejection stack', reason);
 }
 
 function handleWarning(logger, warning) {
@@ -100,6 +115,9 @@ function installCrashHandlers() {
     installed = true;
     process.on('uncaughtException', (error) => handleUncaughtException(crashLogger, error));
     process.on('unhandledRejection', (reason) => handleUnhandledRejection(crashLogger, reason));
+    // Node's own warning printer is a listener too and prints the raw text:
+    // remove it so only the classified record is written.
+    process.removeAllListeners('warning');
     process.on('warning', (warning) => handleWarning(crashLogger, warning));
 }
 

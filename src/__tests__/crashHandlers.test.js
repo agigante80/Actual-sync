@@ -119,15 +119,57 @@ describe('warning', () => {
 });
 
 describe('before a logger exists', () => {
-    test('a crash writes one classified JSON line to stderr', () => {
+    test('a crash writes one classified JSON line to stderr and exits 1', () => {
         const spy = jest.spyOn(require('fs'), 'writeSync').mockImplementation(() => 0);
+        const exit = jest.spyOn(process, 'exit').mockImplementation(() => {});
         handleUnhandledRejection(null, { payee: 'SENTINEL_PAYEE' }, Promise.resolve());
         expect(spy).toHaveBeenCalledTimes(1);
         const [fd, line] = spy.mock.calls[0];
         expect(fd).toBe(2);
         expect(JSON.parse(line)).toEqual(expect.objectContaining({ event: 'sys_crash', level: 'ERROR' }));
         expect(line).not.toMatch(/SENTINEL/);
+        expect(exit).toHaveBeenCalledWith(1);
         spy.mockRestore();
+        exit.mockRestore();
+    });
+
+    const { spawnSync } = require('child_process');
+    const modPath = require.resolve('../lib/crashHandlers');
+    const run = (code) => spawnSync(process.execPath, ['-e',
+        `require(${JSON.stringify(modPath)}).installCrashHandlers(); ${code}`], { encoding: 'utf8' });
+
+    test('a throw while loading exits 1 with the frames, as Node did before', () => {
+        const r = run("setImmediate(() => { notDefinedSentinel(); });");
+        expect(r.status).toBe(1);
+        const rec = JSON.parse(r.stderr.trim().split('\n').pop());
+        expect(rec.event).toBe('sys_crash');
+        expect(rec.stack).toMatch(/^\s*at /);
+        expect(r.stderr).not.toMatch(/notDefinedSentinel is not defined/);
+    });
+
+    test('an early rejection exits 1', () => {
+        const r = run("Promise.reject(new Error('SENTINEL_MESSAGE'));");
+        expect(r.status).toBe(1);
+        expect(r.stderr).not.toMatch(/SENTINEL_MESSAGE/);
+    });
+
+    test('a warning is printed once, without Node\'s raw text', () => {
+        const r = run("process.emitWarning('SENTINEL_WARNING text');");
+        expect(r.status).toBe(0);
+        expect(r.stderr).not.toMatch(/SENTINEL_WARNING/);
+        expect(r.stderr.trim().split('\n')).toHaveLength(1);
+    });
+});
+
+describe('uncaught exception with a logger', () => {
+    test('frames go to a separate DEBUG record, never the message', () => {
+        const logger = makeLogger();
+        const e = new TypeError('SENTINEL_MESSAGE');
+        e.stack = 'TypeError: SENTINEL_MESSAGE\n    at ourCode (/app/src/x.js:1:1)';
+        handleUncaughtException(logger, e);
+        expect(logger.debug).toHaveBeenCalledTimes(1);
+        expect(logger.debug.mock.calls[0][1]).toEqual({ event: 'sys_crash.stack', stack: '    at ourCode (/app/src/x.js:1:1)' });
+        expect(allLogged(logger)).not.toMatch(/SENTINEL_MESSAGE/);
     });
 });
 
