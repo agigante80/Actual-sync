@@ -35,7 +35,11 @@ function captureLogger(serverLog) {
     serverLog.push({ level, message, meta });
     if (process.env.E2E_VERBOSE) console.log(`[server ${level}] ${message}`, meta || '');
   };
-  return { debug: entry('DEBUG'), info: entry('INFO'), warn: entry('WARN'), error: entry('ERROR') };
+  // security() is the audit floor every auth check calls (#444).
+  return {
+    debug: entry('DEBUG'), info: entry('INFO'), warn: entry('WARN'), error: entry('ERROR'),
+    security: (event, fields) => entry('SECURITY')(event, fields)
+  };
 }
 
 function loadState(stateName) {
