@@ -212,6 +212,33 @@ const FIELDS = Object.freeze({
     status: op('string'),
     schedule: op('string'),
     timezone: op('string'),
+    // sys_startup record (#443, D8). Every value is built field by field from
+    // fixed sets, booleans and counts; see src/lib/startupRecord.js.
+    appVersion: op('string', { pattern: VERSION_PATTERN }),
+    nodeVersion: op('string', { pattern: /^v\d{1,3}\.\d{1,3}\.\d{1,3}$/ }),
+    actualApiVersion: op('string', { pattern: VERSION_PATTERN }),
+    pid: op('number'),
+    platform: op('string', { pattern: /^[a-z0-9]{1,16}$/ }),
+    container: op('boolean'),
+    utcOffset: op('string', { pattern: /^[+-]\d{2}:\d{2}$/ }),
+    logLevel: op('string', { oneOf: ['DEBUG', 'INFO', 'WARN', 'ERROR'] }),
+    actualApiVerbose: op('boolean'),
+    sinks: op('array', { items: { type: 'string', oneOf: ['console', 'file', 'syslog', 'websocket'] } }),
+    customLogDir: op('boolean'),
+    customDataDir: op('boolean'),
+    cronSchedules: op('array', { items: 'string' }),
+    channelsEnabled: op('object', { children: {
+        email: op('boolean'), telegram: op('boolean'), slack: op('boolean'),
+        discord: op('boolean'), webhook: op('boolean'), ntfy: op('boolean')
+    } }),
+    dashboardEnabled: op('boolean'),
+    dashboardBind: op('string'),
+    dashboardAuth: op('string'),
+    tls: op('boolean'),
+    timeouts: op('object', { children: { phaseTimeoutSeconds: op('number') } }),
+    configSchemaVersion: op('number'),
+    // An Error class name (TypeError, RangeError), never its message.
+    errorName: op('string', { pattern: /^[A-Za-z][A-Za-z0-9_]{0,63}$/ }),
     currentTime: op('string'),
     cutoffDate: op('string'),
     mutedUntil: op('string'),

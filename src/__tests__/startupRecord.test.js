@@ -49,8 +49,8 @@ describe('buildStartupRecord (#443)', () => {
             customDataDir: true,
             retentionDays: null,
             serverCount: 2,
-            schedules: ['0 5 * * 2', '0 6 * * *'],
-            channels: { email: false, telegram: true, slack: true, discord: false, webhook: false, ntfy: false },
+            cronSchedules: ['0 5 * * 2', '0 6 * * *'],
+            channelsEnabled: { email: false, telegram: true, slack: true, discord: false, webhook: false, ntfy: false },
             dashboardBind: '0.0.0.0:3000',
             dashboardEnabled: true,
             dashboardAuth: 'basic',
@@ -149,7 +149,7 @@ describe('buildStartupRecord (#443)', () => {
         const r = buildStartupRecord({ servers: [{ name: 'A', dataDir: 'data/a' }] }, makeLogger(), {});
         expect(r.serverCount).toBe(1);
         expect(r.dashboardAuth).toBe('none');
-        expect(r.channels).toEqual({ email: false, telegram: false, slack: false, discord: false, webhook: false, ntfy: false });
+        expect(r.channelsEnabled).toEqual({ email: false, telegram: false, slack: false, discord: false, webhook: false, ntfy: false });
     });
 
     test('sentinel: no URL, password, token, path or sync id in the serialized record', () => {
@@ -175,5 +175,23 @@ describe('buildStartupRecord (#443)', () => {
 describe('Logger.activeSinks (#443)', () => {
     test('console only by default', () => {
         expect(makeLogger().activeSinks()).toEqual(['console']);
+    });
+});
+
+describe('sys_startup and the field allowlist (#437 x #443)', () => {
+    test('every startup field is registered: nothing is dropped', () => {
+        const lines = [];
+        const spy = jest.spyOn(console, 'log').mockImplementation((l) => lines.push(l));
+        const logger = makeLogger();
+        logger.setBroadcastCallback(() => {});
+        try {
+            logger.security('sys_startup', buildStartupRecord(makeConfig(), logger, {}));
+        } finally {
+            spy.mockRestore();
+            logger.close();
+        }
+        const rec = JSON.parse(lines[0]);
+        expect(rec.droppedFieldCount).toBeUndefined();
+        expect(rec.fields).toMatchObject({ serverCount: 2, sinks: ['console', 'websocket'], channelsEnabled: { telegram: true }, timeouts: { phaseTimeoutSeconds: 120 } });
     });
 });

@@ -247,8 +247,8 @@ still carries upstream text until #438 moves every call site to the object.
 | time | `timezone`, `utcOffset` (`+01:00`; cron schedules use this zone) |
 | logging | `logLevel`, `actualApiVerbose`, `sinks` (`console`, `file`, `syslog`, `websocket`), `customLogDir`, `customDataDir` (booleans, never paths), `retentionDays` (`null` when file logging is off). `sinks` lists configured sinks, not reached ones: `websocket` is listed when the dashboard is enabled, even before a client connects |
 | privacy | `actualApiVerbose` (`includeAccountNames` arrives with #448) |
-| sync | `serverCount`, `schedules` (unique cron strings), `timeouts.phaseTimeoutSeconds` |
-| channels | `channels.{email,telegram,slack,discord,webhook,ntfy}` (booleans) |
+| sync | `serverCount`, `cronSchedules` (unique cron strings), `timeouts.phaseTimeoutSeconds` |
+| channels | `channelsEnabled.{email,telegram,slack,discord,webhook,ntfy}` (booleans) |
 | dashboard | `dashboardEnabled`, `dashboardBind` (`host:port`), `dashboardAuth` (`none`, `basic`, `token`), `tls` |
 | config | `configSchemaVersion` (an integer in `startupRecord.js`, bumped when `config.schema.json` changes; never a hash of values) |
 
