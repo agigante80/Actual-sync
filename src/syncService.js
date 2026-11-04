@@ -20,7 +20,7 @@ const { createShutdownGate, resolveShutdownWaitMs } = require('./lib/shutdownGat
 const { createAutoRetry } = require('./lib/autoRetry');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, prepareSession, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts, persistPaymentSnapshot } = require('./lib/scheduleAlertsStep');
-const { bankSyncCounts } = require('./lib/bankSyncCounts');
+const { bankSyncCounts, describeResultLengths } = require('./lib/bankSyncCounts');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -600,14 +600,18 @@ async function runSyncBank(server, options = {}) {
                     // can resolve before background sync operations fully complete
                     await new Promise(resolve => setTimeout(resolve, 500));
                     
-                    // The result carries transaction ids: keep them at debug level
-                    // and let only the two counts leave this loop. (#391)
+                    // The result carries transaction data and its shape depends on the
+                    // @actual-app/api version. Log only the two counts, the key names
+                    // and array lengths, never the result itself. (#391, #434)
+                    const counts = bankSyncCounts(result);
                     serverLogger.debug('runBankSync result', {
                         accountId: account.id,
                         accountName: account.name,
-                        result: result
+                        added: counts.added,
+                        updated: counts.updated,
+                        keys: result && typeof result === 'object' ? Object.keys(result) : [],
+                        lengths: describeResultLengths(result)
                     });
-                    const counts = bankSyncCounts(result);
                     transactionsAdded += counts.added;
                     transactionsUpdated += counts.updated;
                     accountsSucceeded++;
