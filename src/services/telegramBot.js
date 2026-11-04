@@ -218,7 +218,6 @@ class TelegramBotService {
 
     this.polling = true;
     this.logger.info('Telegram bot started', {
-      chatId: this.config.chatId,
       notifyOnSuccess: this.config.notifyOnSuccess
     });
 
@@ -279,7 +278,7 @@ class TelegramBotService {
       // A poll that works again after a persistent failure is worth one line, and
       // clears the suppression so a future failure is reported afresh. (#172)
       if (this.lastPollErrorKey) {
-        this.logger.info('Telegram polling recovered', { previousError: this.lastPollErrorKey });
+        this.logger.info('Telegram polling recovered', {});
         this.lastPollErrorKey = null;
       }
 
@@ -731,8 +730,7 @@ class TelegramBotService {
 
       // Trigger the sync (manual, so isAutomated=false and no retry)
       this.logger.info('Manual sync triggered via Telegram', {
-        server: serverName,
-        chatId: this.config.chatId
+        server: serverName
       });
 
       // Not awaited: syncs run one at a time (#265), so this can wait behind other

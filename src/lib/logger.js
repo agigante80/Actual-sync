@@ -10,6 +10,7 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { createStream } = require('rotating-file-stream');
 const { passThrough } = require('./consoleBridge');
+const { sanitizeFields, splitEnvelope } = require('./logFields');
 
 // Log dir owner-only, log files owner read/write (D10, #446).
 const LOG_DIR_MODE = 0o700;
@@ -146,6 +147,9 @@ class Logger {
         // Only use provided logDir if it's not undefined (null is valid for disabling)
         this.logDir = (options.logDir !== undefined) ? options.logDir : defaultLogDir;
         this.serviceName = options.serviceName || 'actual-sync';
+        // Field allowlist (D3, #437): class `personal` is emitted unless this is
+        // false. The default flips to false with logging.includeAccountNames (#448).
+        this.includePersonal = options.includePersonal !== false;
         this.correlationId = null;
         this.broadcastCallback = options.broadcastCallback || null;
         // A child resolves the callback through its parent at log time, so one set
@@ -468,7 +472,13 @@ class Logger {
             seq,
             schema: RECORD_SCHEMA
         };
-        Object.assign(logEntry, safeContext, safeMeta);
+        // Envelope keys stay at the top; every other registered key moves under
+        // `fields` (D4, #437).
+        const ctxParts = splitEnvelope(safeContext);
+        const metaParts = splitEnvelope(safeMeta);
+        Object.assign(logEntry, ctxParts.envelope, metaParts.envelope);
+        const fields = { ...ctxParts.fields, ...metaParts.fields };
+        if (Object.keys(fields).length > 0) logEntry.fields = fields;
         if (this.correlationId) {
             // Not reserved, but the logger's own id still wins, as before #433.
             logEntry.correlationId = this.correlationId;
@@ -608,10 +618,19 @@ class Logger {
             safeMessage = this.maskSecrets(message);
             safeContext = this.redact(this.context);
             safeMeta = this.redact(meta);
+            // Allowlist after redaction: only registered fields reach a sink (D3).
+            const ctx = sanitizeFields(safeContext, { includePersonal: this.includePersonal });
+            const fld = sanitizeFields(safeMeta, { includePersonal: this.includePersonal });
+            safeContext = ctx.fields;
+            safeMeta = fld.fields;
+            // Count only, never the key names (D3): a spread can turn data into keys.
+            const dropped = ctx.dropped + fld.dropped;
+            if (dropped > 0) safeMeta.droppedFieldCount = dropped;
         } catch (error) {
+            // The error text is not logged: it can echo the value that failed.
             safeMessage = typeof message === 'string' ? message : String(message);
             safeContext = {};
-            safeMeta = { logRedactionError: error.message };
+            safeMeta = { droppedFieldCount: 1 };
         }
 
         // Console uses the human-friendly format; the file uses the (default JSON)
@@ -665,11 +684,12 @@ class Logger {
     error(message, meta = {}) {
         // Handle Error objects
         if (message instanceof Error) {
+            // The class and code only: upstream error text and frames are not
+            // fields (D3, D5). The message below still carries the text until
+            // the classifier lands (#438).
             meta = {
                 ...meta,
-                errorName: message.name,
-                errorMessage: message.message,
-                errorStack: message.stack,
+                errorType: message.name,
                 errorCode: message.code
             };
             message = message.message;
@@ -786,6 +806,7 @@ class Logger {
             logDir: this.logDir,
             serviceName: this.serviceName,
             context: { ...this.context, ...context },
+            includePersonal: this.includePersonal,
             rotation: this.rotation,
             syslog: this.syslog,
             // Do not open new streams; the child shares the parent's below. (#106)

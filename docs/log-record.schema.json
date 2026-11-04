@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/agigante80/Actual-sync/docs/log-record.schema.json",
   "title": "Actual-sync log record",
-  "description": "One JSON log record, convention version 1 (docs/LOGGING.md). Today context and meta keys are written flat; the field allowlist (#437) moves them under `fields` and will close additionalProperties.",
+  "description": "One JSON log record, convention version 1 (docs/LOGGING.md). Context and metadata keys must be registered in src/lib/logFields.js; the registered ones are written under `fields`, so the record is closed.",
   "type": "object",
   "required": [
     "timestamp",
@@ -64,8 +64,13 @@
     "server": {
       "type": "string"
     },
+    "category": {
+      "type": "string",
+      "description": "\"security\" on the OWASP events (D7)."
+    },
     "fields": {
-      "type": "object"
+      "type": "object",
+      "description": "Registered log fields (src/lib/logFields.js). Keys outside the registry never reach a record."
     },
     "error": {
       "description": "The classified error object. A plain string is still accepted while older call sites log error.message (#438 moves them to the object).",
@@ -127,5 +132,5 @@
       "minimum": 0
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

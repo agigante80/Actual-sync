@@ -6,6 +6,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { Logger, createLogger, LOG_LEVELS, LEVEL_NAMES } = require('../lib/logger');
+
+// This file feeds the logger arbitrary shapes on purpose (redaction, formats,
+// sinks). The field allowlist is tested in logFields.test.js (#437).
+jest.mock('../lib/logFields', () => require('./helpers/openLogFields'));
 const {
     createTempDir,
     cleanupTempDir,
@@ -285,9 +289,10 @@ describe('Logger', () => {
             expect(console.error).toHaveBeenCalled();
             const call = console.error.mock.calls[0][0];
             const parsed = JSON.parse(call);
-            expect(parsed.errorMessage).toBe('Test error');
+            expect(parsed.message).toBe('Test error');
+            expect(parsed.errorType).toBe('Error');
             expect(parsed.errorCode).toBe('TEST_CODE');
-            expect(parsed.errorStack).toBeDefined();
+            expect(parsed.errorStack).toBeUndefined();
         });
     });
 

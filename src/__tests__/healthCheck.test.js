@@ -1139,7 +1139,7 @@ describe('HealthCheckService', () => {
       const hc = tokenService({ authFailureLimit: 1000 });
       hc.logger.format = 'json';
       const written = [];
-      const grab = (line) => { try { written.push(JSON.parse(line)); } catch { /* not a record */ } };
+      const grab = (line) => { try { const r = JSON.parse(line); written.push({ ...r, ...r.fields }); } catch { /* not a record */ } };
       const spies = ['log', 'warn', 'error'].map(m => jest.spyOn(console, m).mockImplementation(grab));
       await hc.start();
       try {

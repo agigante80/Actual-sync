@@ -711,7 +711,6 @@ class NotificationService {
       });
 
       this.logger.debug('Email sent', {
-        messageId: info.messageId,
         recipients: this.config.email.to.length
       });
 
@@ -900,8 +899,8 @@ class NotificationService {
       // rather than silently shipping a corrupted link. (#114)
       if (icon !== rawIcon) {
         this.logger.warn('ntfy icon URL contained characters invalid in an HTTP header and was altered', {
-          configured: rawIcon,
-          sent: icon
+          // Counts, not the URLs: a log never carries a URL (D8, #437)
+          removedChars: rawIcon.length - icon.length
         });
       }
       headers['Icon'] = icon; // ntfy shows this icon in the notification (#114)
@@ -944,7 +943,6 @@ class NotificationService {
       });
 
       this.logger.debug('Email sent', {
-        messageId: info.messageId,
         recipients: this.config.email.to.length
       });
 
