@@ -86,6 +86,24 @@ describe('SyslogStreamTransport over TCP', () => {
         t.close();
     });
 
+    test('a collector that stops reading cannot grow memory: backpressure keeps the queue bounded, stall destroys the socket', async () => {
+        const stalled = [];
+        const slow = net.createServer((s) => { stalled.push(s); s.pause(); });
+        const slowPort = await listen(slow);
+        const t = new SyslogStreamTransport({ host: '127.0.0.1', port: slowPort, protocol: 'tcp', maxQueue: 10, stallTimeoutMs: 200 });
+        await waitFor(() => t.connected);
+        const big = 'x'.repeat(64 * 1024);
+        for (let i = 0; i < 500; i++) t.write(big);
+        expect(t.waitingDrain).toBe(true);
+        expect(t.queue.length).toBeLessThanOrEqual(10);
+        expect(t.dropped).toBeGreaterThan(0);
+        expect(t.socket.writableLength).toBeLessThan(500 * big.length);
+        await waitFor(() => !t.connected, 3000);
+        t.close();
+        stalled.forEach(s => s.destroy());
+        await new Promise(r => slow.close(r));
+    });
+
     test('write never throws, even after close or with odd input, or if onError throws', () => {
         const t = new SyslogStreamTransport({ host: '127.0.0.1', port, protocol: 'tcp', onError: () => { throw new Error('x'); } });
         expect(() => t.write(undefined)).not.toThrow();

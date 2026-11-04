@@ -30,6 +30,8 @@ class SyslogStreamTransport {
         this.maxQueue = opts.maxQueue || 1000;
         this.minBackoffMs = opts.minBackoffMs || 1000;
         this.maxBackoffMs = opts.maxBackoffMs || 30000;
+        this.stallTimeoutMs = opts.stallTimeoutMs || 30000;
+        this.waitingDrain = false;
         this.onError = opts.onError || (() => {});
         this.queue = [];
         this.dropped = 0;
@@ -68,7 +70,19 @@ class SyslogStreamTransport {
             return;
         }
         this.socket = socket;
+        this.waitingDrain = false;
         socket.setKeepAlive(true);
+        socket.on('drain', () => {
+            if (this.socket !== socket) return;
+            this.waitingDrain = false;
+            this._flush();
+        });
+        // A collector that accepts the connection but stops reading would hold
+        // frames in the socket buffer for ever: destroy on a write stall, which
+        // triggers 'close' and the normal reconnect.
+        socket.setTimeout(this.stallTimeoutMs, () => {
+            if (this.socket === socket && this.waitingDrain) socket.destroy();
+        });
         socket.on(this.useTls ? 'secureConnect' : 'connect', () => {
             if (this.socket !== socket) return;
             this.connected = true;
@@ -100,10 +114,12 @@ class SyslogStreamTransport {
     }
 
     _flush() {
-        while (this.connected && this.queue.length > 0 && this.socket) {
+        // Respect backpressure: once write() returns false, leave the rest in the
+        // bounded queue (so maxQueue and the drop counter apply) until 'drain'.
+        while (this.connected && !this.waitingDrain && this.queue.length > 0 && this.socket) {
             const frame = this.queue.shift();
             try {
-                this.socket.write(frame);
+                if (!this.socket.write(frame)) this.waitingDrain = true;
             } catch (err) {
                 this.queue.unshift(frame);
                 this._report(err);
