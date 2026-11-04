@@ -41,10 +41,11 @@ class TelegramBotService {
     };
 
     this.services = services;
-    this.logger = createLogger({
-      component: 'TelegramBot',
-      ...loggerConfig
-    });
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'TelegramBot' })
+      : createLogger({ component: 'TelegramBot', ...loggerConfig });
 
     this.lastUpdateId = 0;
     this.polling = false;
@@ -353,10 +354,8 @@ class TelegramBotService {
         }
         this._authzWarned.delete(key);
         this._authzWarned.set(key, now);
-        this.logger.warn('Message from unauthorized chat rejected', {
-          event: 'authz_fail',
-          authorized: false
-        });
+        // Audit floor: written whatever logging.level is (D7, #444).
+        this.logger.security('authz_fail', { authorized: false });
       }
       return;
     }

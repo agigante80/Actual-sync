@@ -92,7 +92,12 @@ class SyncHistoryService {
     // need the day-window queries to agree. Must return a fresh Date each call,
     // since the cutoff code mutates it.
     this.now = options.now || (() => new Date());
-    this.logger = createLogger(options.loggerConfig || {});
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    const loggerConfig = options.loggerConfig || {};
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'SyncHistory' })
+      : createLogger(loggerConfig);
     this.db = null;
     
     this.initialize();
@@ -328,10 +333,27 @@ class SyncHistoryService {
       'CREATE INDEX IF NOT EXISTS idx_account_meta_server ON account_metadata(server_name)',
       'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_lookup ON schedule_alerts(server, alert_id, schedule_id, occurrence_date, event)',
       'CREATE INDEX IF NOT EXISTS idx_schedule_alerts_recorded_at ON schedule_alerts(recorded_at)',
-      'CREATE INDEX IF NOT EXISTS idx_config_audit_at ON config_audit(at)'
+      'CREATE INDEX IF NOT EXISTS idx_config_audit_at ON config_audit(at)',
+      'CREATE INDEX IF NOT EXISTS idx_sha_account ON sync_history_account(account_id)'
     ];
 
+    // Per-account results of each sync (#429). Counts are NULL when unknown
+    // (late success, #284), never 0. Child rows are deleted explicitly by
+    // cleanup and the resets: foreign_keys is not enabled on this connection.
+    const createSyncHistoryAccountTable = `
+      CREATE TABLE IF NOT EXISTS sync_history_account (
+        sync_id INTEGER NOT NULL REFERENCES sync_history(id) ON DELETE CASCADE,
+        account_id TEXT NOT NULL,
+        account_name TEXT,
+        status TEXT NOT NULL,
+        transactions_added INTEGER,
+        transactions_updated INTEGER,
+        PRIMARY KEY (sync_id, account_id)
+      )
+    `;
+
     this.db.exec(createSyncHistoryTable);
+    this.db.exec(createSyncHistoryAccountTable);
     this.db.exec(createAccountMetadataTable);
     this.db.exec(createScheduleAlertsTable);
     this.db.exec(createPaymentAlertStatusTable);
@@ -566,10 +588,19 @@ class SyncHistoryService {
    * @param {string} record.errorMessage - Error message if failed
    * @param {string} record.errorCode - Error code if failed
    * @param {string} record.correlationId - Correlation ID for tracking
+   * @param {Array} [record.accountResults] - Per-account { id, name, status, added, updated, countsKnown } (#427);
+   *   stored as sync_history_account rows in the same transaction (#429)
    * @returns {number} - Inserted record ID
    */
   recordSync(record) {
     try {
+      const insertAccount = this.db.prepare(`
+        INSERT OR REPLACE INTO sync_history_account (
+          sync_id, account_id, account_name, status, transactions_added, transactions_updated
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      const count = (v) => (Number.isFinite(v) ? Math.trunc(v) : null);
+      const accountResults = Array.isArray(record.accountResults) ? record.accountResults : [];
       const stmt = this.db.prepare(`
         INSERT INTO sync_history (
           timestamp,
@@ -588,21 +619,37 @@ class SyncHistoryService {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
-      const result = stmt.run(
-        this.now().toISOString(),
-        record.serverName,
-        record.status,
-        record.durationMs || null,
-        record.accountsProcessed || 0,
-        record.accountsSucceeded || 0,
-        record.accountsFailed || 0,
-        record.accountsSkipped || 0,
-        record.transactionsAdded || 0,
-        record.transactionsUpdated || 0,
-        record.errorMessage || null,
-        record.errorCode || null,
-        record.correlationId || null
-      );
+      const write = this.db.transaction(() => {
+        const r = stmt.run(
+          this.now().toISOString(),
+          record.serverName,
+          record.status,
+          record.durationMs || null,
+          record.accountsProcessed || 0,
+          record.accountsSucceeded || 0,
+          record.accountsFailed || 0,
+          record.accountsSkipped || 0,
+          record.transactionsAdded || 0,
+          record.transactionsUpdated || 0,
+          record.errorMessage || null,
+          record.errorCode || null,
+          record.correlationId || null
+        );
+        for (const a of accountResults) {
+          if (!a || a.id === undefined || a.id === null || !a.status) continue;
+          const known = a.countsKnown === true;
+          insertAccount.run(
+            r.lastInsertRowid,
+            String(a.id),
+            a.name === undefined || a.name === null ? null : String(a.name),
+            String(a.status),
+            known ? count(a.added) : null,
+            known ? count(a.updated) : null
+          );
+        }
+        return r;
+      });
+      const result = write();
 
       this.logger.debug('Sync operation recorded', {
         id: result.lastInsertRowid,
@@ -867,6 +914,7 @@ class SyncHistoryService {
    * @param {number} filters.days - Number of days to look back
    * @param {number} filters.limit - Maximum number of records to return
    * @param {number} filters.offset - Offset for pagination
+   * @param {boolean} filters.includeAccounts - Attach `accounts` (per-account rows) to each record (#429)
    * @returns {Array} - Array of sync records
    */
   getHistory(filters = {}) {
@@ -906,6 +954,26 @@ class SyncHistoryService {
       const stmt = this.db.prepare(query);
       const records = stmt.all(...params);
 
+      if (filters.includeAccounts) {
+        const byId = new Map();
+        const ids = records.map(r => r.id);
+        // Chunked to stay under SQLite's bound-parameter limit.
+        for (let i = 0; i < ids.length; i += 500) {
+          const chunk = ids.slice(i, i + 500);
+          const rows = this.db.prepare(`
+            SELECT sync_id, account_id, account_name, status, transactions_added, transactions_updated
+            FROM sync_history_account
+            WHERE sync_id IN (${chunk.map(() => '?').join(',')})
+            ORDER BY rowid
+          `).all(...chunk);
+          for (const row of rows) {
+            if (!byId.has(row.sync_id)) byId.set(row.sync_id, []);
+            byId.get(row.sync_id).push(this._accountFromRow(row));
+          }
+        }
+        for (const r of records) r.accounts = byId.get(r.id) || [];
+      }
+
       this.logger.debug('Retrieved sync history', {
         count: records.length,
         filters
@@ -919,6 +987,34 @@ class SyncHistoryService {
       });
       throw error;
     }
+  }
+
+  _accountFromRow(row) {
+    return {
+      account_id: row.account_id,
+      account_name: row.account_name,
+      status: row.status,
+      transactions_added: row.transactions_added,
+      transactions_updated: row.transactions_updated
+    };
+  }
+
+  /**
+   * Per-account results of the server's most recent sync (#429).
+   * NULL counts mean unknown, never 0. Returns [] when there is no sync or
+   * the sync recorded no account rows (e.g. recorded before #429).
+   * @param {string} serverName
+   * @returns {Array<{account_id:string,account_name:?string,status:string,transactions_added:?number,transactions_updated:?number}>}
+   */
+  getLastAccountResults(serverName) {
+    const last = this.db.prepare(
+      'SELECT id FROM sync_history WHERE server_name = ? ORDER BY timestamp DESC, id DESC LIMIT 1'
+    ).get(serverName);
+    if (!last) return [];
+    return this.db.prepare(`
+      SELECT account_id, account_name, status, transactions_added, transactions_updated
+      FROM sync_history_account WHERE sync_id = ? ORDER BY rowid
+    `).all(last.id).map(r => this._accountFromRow(r));
   }
 
   /**
@@ -1194,7 +1290,15 @@ class SyncHistoryService {
         WHERE timestamp < ?
       `);
 
-      const result = stmt.run(cutoffDate.toISOString());
+      // Child rows first, in the same transaction (#429); foreign_keys is off.
+      const purge = this.db.transaction((cutoff) => {
+        this.db.prepare(`
+          DELETE FROM sync_history_account
+          WHERE sync_id IN (SELECT id FROM sync_history WHERE timestamp < ?)
+        `).run(cutoff);
+        return stmt.run(cutoff);
+      });
+      const result = purge(cutoffDate.toISOString());
 
       if (result.changes > 0) {
         this.logger.info('Cleaned up old sync history records', {
@@ -1292,6 +1396,9 @@ class SyncHistoryService {
       // badges, half-cleared state, or a ledger that still blocks a "missing"
       // alert this reset was meant to let re-fire. (#99, #258)
       const delHistory = this.db.prepare('DELETE FROM sync_history WHERE server_name = ?');
+      const delHistoryAccounts = this.db.prepare(
+        'DELETE FROM sync_history_account WHERE sync_id IN (SELECT id FROM sync_history WHERE server_name = ?)'
+      );
       const delMeta = this.db.prepare('DELETE FROM account_metadata WHERE server_name = ?');
       const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts WHERE server = ?');
       const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status WHERE server = ?');
@@ -1307,6 +1414,7 @@ class SyncHistoryService {
       // the record of earlier configuration changes. It appends one
       // history_reset row, in this transaction, with the deleted counts.
       const reset = this.db.transaction((s) => {
+        delHistoryAccounts.run(s); // before the parents, so no orphans (#429)
         const r = delHistory.run(s);
         const deleted = {
           sync_history: r.changes,
@@ -1352,6 +1460,7 @@ class SyncHistoryService {
       // Clear all sync history, all account snapshots and the whole schedule
       // alert ledger atomically. (#99, #258)
       const delHistory = this.db.prepare('DELETE FROM sync_history');
+      const delHistoryAccounts = this.db.prepare('DELETE FROM sync_history_account');
       const delMeta = this.db.prepare('DELETE FROM account_metadata');
       const delScheduleAlerts = this.db.prepare('DELETE FROM schedule_alerts');
       const delPaymentItems = this.db.prepare('DELETE FROM payment_alert_status');
@@ -1364,6 +1473,7 @@ class SyncHistoryService {
       );
       // config_audit is kept and gets one history_reset row (see resetServerHistory).
       const reset = this.db.transaction(() => {
+        delHistoryAccounts.run(); // (#429)
         const r = delHistory.run();
         const deleted = {
           sync_history: r.changes,

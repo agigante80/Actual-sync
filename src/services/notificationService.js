@@ -114,10 +114,11 @@ class NotificationService {
       }
     };
 
-    this.logger = createLogger({
-      component: 'NotificationService',
-      ...loggerConfig
-    });
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'NotificationService' })
+      : createLogger({ component: 'NotificationService', ...loggerConfig });
 
     // Test seam only (#257): never read from config, so a fake-channel server
     // can be swapped in without a config key someone could point at production.

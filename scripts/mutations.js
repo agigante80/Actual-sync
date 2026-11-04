@@ -1247,8 +1247,8 @@ module.exports = [
         id: '246-token-failure-uncounted', ticket: '#246',
         desc: 'wrong tokens no longer count, so brute force is unthrottled',
         file: 'src/services/healthCheck.js',
-        anchor: "    res.locals.authFailed = true;\n    this.logger.warn(`${realm} token authentication failed`, {",
-        mutant: "    this.logger.warn(`${realm} token authentication failed`, {",
+        anchor: "    res.locals.authFailed = true;\n    this.logger.security('authn_login_fail', {",
+        mutant: "    this.logger.security('authn_login_fail', {",
         tests: 'healthCheck'
     },
     {
@@ -1305,8 +1305,8 @@ module.exports = [
         id: '286-username-logged', ticket: '#286',
         desc: 'a failed basic login logs the typed username again, which may be a pasted password',
         file: 'src/services/healthCheck.js',
-        anchor: "      this.logger.warn(`${realm} authentication failed`, {\n        remoteAddress",
-        mutant: "      this.logger.warn(`${realm} authentication failed`, {\n        username: Buffer.from((req.headers.authorization || '').slice(6), 'base64').toString('utf8'),\n        remoteAddress",
+        anchor: "      this.logger.security('authn_login_fail', {\n        reason: 'invalid_credentials',",
+        mutant: "      this.logger.security('authn_login_fail', {\n        username: Buffer.from((req.headers.authorization || '').slice(6), 'base64').toString('utf8'),\n        reason: 'invalid_credentials',",
         tests: 'healthCheck'
     },
 
