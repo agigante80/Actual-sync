@@ -157,6 +157,11 @@ per source; when the limiter trips it writes one `security.suppressed`
 record with `suppressedCount`, so a guess loop never looks like it stopped.
 WARN, ERROR and security records are never sampled.
 
+A rejection the classifier allowlists as benign (an already-handled
+@actual-app/api rejection, #105) is the dotted event
+`process.rejection_benign` at WARN in both projects, since OWASP has no term
+for it.
+
 | Event | Actual-sync | actual-mcp-server |
 |---|---|---|
 | `authn_login_success` | dashboard login accepted (once per session) | bearer or OIDC accepted (once per session) |
@@ -231,7 +236,8 @@ catalogue, the error categories, the D7 table and the D8 field groups. Revisit
 if the copies drift.
 
 The convention fixes `event`, `severity`, `schema`, `error.*` and the D8
-groups. `docs/LOGGING.md` carries a convention version; each repo states the
+groups. `docs/LOGGING.md` carries a convention version (the first published
+one is `1`); each repo states the
 version it follows, so drift is visible in a diff. Each project maps its own
 context keys:
 
