@@ -41,6 +41,14 @@ function logOwnStack(log, error) {
     if (stack) log.debug('Error stack', { frames: stack });
 }
 
+/**
+ * failedAccounts as the log allowlist takes them: `error` is the classified
+ * object (#437, #438). The string form stays for notifications and history.
+ */
+function failedAccountsForLog(failedAccounts) {
+    return failedAccounts.map((a) => ({ name: a.name, error: a.errorInfo }));
+}
+
 function formatNextSync(nextInvocation) {
     // Ensure nextInvocation is a Date object
     if (!nextInvocation) return 'not scheduled';
@@ -723,7 +731,8 @@ async function runSyncBank(server, options = {}) {
                     accountsFailed++;
                     failedAccounts.push({
                         name: account.name,
-                        error: failureInfo.code ? `${errorMsg} (${failureInfo.code})` : errorMsg
+                        error: failureInfo.code ? `${errorMsg} (${failureInfo.code})` : errorMsg,
+                        errorInfo: failureInfo
                     });
                     recordAccountResult(account, 'failed');
                     accountTimer();
@@ -740,7 +749,8 @@ async function runSyncBank(server, options = {}) {
                         accountsFailed++;
                         failedAccounts.push({
                             name: skipped.name,
-                            error: 'Skipped: an earlier bank sync is still running in the session'
+                            error: 'Skipped: an earlier bank sync is still running in the session',
+                            errorInfo: { category: 'timeout', safeMessage: 'Skipped: an earlier bank sync is still running in the session' }
                         });
                         recordAccountResult(skipped, 'failed');
                     }
@@ -834,7 +844,7 @@ async function runSyncBank(server, options = {}) {
             transactionsAdded,
             transactionsUpdated,
             succeededAccounts: succeededAccounts.length > 0 ? succeededAccounts : undefined,
-            failedAccounts: failedAccounts.length > 0 ? failedAccounts : undefined,
+            failedAccounts: failedAccounts.length > 0 ? failedAccountsForLog(failedAccounts) : undefined,
             encrypted: isEncrypted,
             durationMs
         });
@@ -894,7 +904,7 @@ async function runSyncBank(server, options = {}) {
                     serverName: name,
                     succeededCount: accountsSucceeded,
                     failedCount: accountsFailed,
-                    failedAccounts: failedAccounts.map(a => `${a.name}: ${a.error}`)
+                    failedAccounts: failedAccountsForLog(failedAccounts)
                 });
             }
             

@@ -320,6 +320,21 @@ describe('transaction counts from runBankSync (#391)', () => {
         }, started);
         expect(recorded).toMatchObject({ status: 'partial', transactionsAdded: 1, transactionsUpdated: 0 });
     });
+    test('the logged failedAccounts keep the classified error, so the allowlist drops nothing', async () => {
+        const { loggers } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.reject(new Error('Failed syncing account "SENTINEL_PAYEE".')),
+            a2: () => Promise.resolve({ newTransactions: ['t1'], matchedTransactions: [] })
+        }, started);
+        const { sanitizeFields } = require('../lib/logFields');
+        const metaOf = (method, message) => loggers
+            .flatMap((l) => l[method].mock.calls)
+            .find(([m]) => m === message)[1];
+        for (const meta of [metaOf('info', 'Sync completed'), metaOf('warn', 'Partial sync completed with some account failures')]) {
+            expect(meta.failedAccounts).toEqual([{ name: 'a1', error: expect.objectContaining({ category: 'internal' }) }]);
+            expect(sanitizeFields({ failedAccounts: meta.failedAccounts }).dropped).toBe(0);
+            expect(JSON.stringify(meta)).not.toContain('SENTINEL_PAYEE');
+        }
+    });
 });
 
 describe('accountResults for notifications (#427)', () => {
