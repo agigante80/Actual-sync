@@ -15,7 +15,8 @@ const {
   truncateCodePoints,
   truncateWithEllipsis,
   DISCORD_CONTENT_MAX,
-  SLACK_TEXT_MAX
+  SLACK_TEXT_MAX,
+  TELEGRAM_TEXT_MAX
 } = require('../lib/channelEscape');
 
 // Public icon + name used to brand notifications. Recipient services (Slack/
@@ -462,6 +463,7 @@ class NotificationService {
    * @param {number} result.accountsFailed - Failed account count
    * @param {Array} result.succeededAccounts - Successful account names
    * @param {Array} result.failedAccounts - Failed accounts with errors
+   * @param {Array} result.accountResults - Per-account { id, name, status, added, updated, countsKnown } (#427)
    * @param {number} result.transactionsAdded - Transactions the bank sync imported (#391)
    * @param {number} result.transactionsUpdated - Existing transactions it matched and updated (#391)
    * @param {string} result.error - Error message (for failures)
@@ -481,6 +483,7 @@ class NotificationService {
       succeededAccounts = [],
       failedAccounts = [],
       skippedAccounts = [],
+      accountResults = [],
       transactionsAdded = 0,
       transactionsUpdated = 0,
       error,
@@ -557,6 +560,7 @@ class NotificationService {
       succeededAccounts,
       failedAccounts,
       skippedAccounts,
+      accountResults,
       transactionsAdded,
       transactionsUpdated,
       error,
@@ -591,7 +595,9 @@ class NotificationService {
 
       // Send Telegram
       if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) && allow('telegram')) {
-        const success = await this.sendTelegramMessage(formatted.text);
+        // Plain text (no parse_mode); a long per-account list must not exceed
+        // Telegram's 4096 limit, or the API rejects the whole message (#427).
+        const success = await this.sendTelegramMessage(truncateWithEllipsis(formatted.text, TELEGRAM_TEXT_MAX));
         results.telegram = success;
       }
 
@@ -1364,7 +1370,9 @@ Please investigate and resolve the issue.
 
       // Send Telegram
       if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) && allow('telegram')) {
-        const success = await this.sendTelegramMessage(formatted.text);
+        // Plain text (no parse_mode); a long per-account list must not exceed
+        // Telegram's 4096 limit, or the API rejects the whole message (#427).
+        const success = await this.sendTelegramMessage(truncateWithEllipsis(formatted.text, TELEGRAM_TEXT_MAX));
         results.telegram = success;
       }
 
