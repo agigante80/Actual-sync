@@ -330,27 +330,26 @@ class TelegramBotService {
 
     const message = update.message;
     const text = message.text.trim();
-    const from = message.from;
 
-    // Log all incoming messages
-    this.logger.info('Telegram message received', {
-      from: `${from.first_name} ${from.last_name || ''}`.trim(),
-      username: from.username,
-      chatId: message.chat.id,
-      text: text
-    });
+    const command = text.split(' ')[0].toLowerCase();
+    const authorized = message.chat.id.toString() === this.config.chatId.toString();
 
-    // Check if it's from the configured chat
-    if (message.chat.id.toString() !== this.config.chatId.toString()) {
-      this.logger.warn('Message from unauthorized chat', {
-        chatId: message.chat.id,
-        configuredChatId: this.config.chatId
+    // Never log sender name, username, message text or chat ids (#435).
+    // The command name is logged only when it is one of the bot's own commands.
+    if (!authorized) {
+      this.logger.warn('Message from unauthorized chat rejected', {
+        event: 'authz_fail',
+        authorized: false
       });
       return;
     }
 
+    this.logger.info('Telegram message received', {
+      command: this.commands[command] ? command : 'unknown',
+      authorized: true
+    });
+
     // Check if it's a command
-    const command = text.split(' ')[0].toLowerCase();
     if (this.commands[command]) {
       try {
         const args = text.split(' ').slice(1);
@@ -364,7 +363,7 @@ class TelegramBotService {
       }
     } else {
       // Not a recognized command
-      this.logger.info('Non-command message received', { text });
+      this.logger.info('Non-command message received');
       await this.sendMessage(
         `I received your message: "${text}"\n\n` +
         `I don't understand that command. Type /help to see available commands.`
