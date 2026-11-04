@@ -178,6 +178,10 @@ The file line is always a single line, even when the console is `pretty`.
 
 ---
 
+## Actual API console output
+
+`@actual-app/api` prints warnings and errors straight to the console, whatever `actualApiVerbose` says. During each sync session Actual-sync routes that output through its own logger as one static record per call: `event: "third_party.console"`, `component: "actual-api"`, message `Actual API console output`. The upstream arguments are dropped (they can carry transactions or upstream text), so the record has the configured level, format and redaction but no payload. `console.error` maps to ERROR, `warn` to WARN, `log`/`info`/`group` to INFO and `debug` to DEBUG. With `actualApiVerbose: true` a masked `consolePreview` (first 300 characters) is added; these records are never sent to `/ws/logs`.
+
 ## 🔒 Secret Redaction
 
 Every value is redacted before it is written to **any** destination (console, file, syslog, and the dashboard WebSocket). You never have to remember to scrub metadata.
