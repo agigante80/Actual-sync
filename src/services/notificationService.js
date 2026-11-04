@@ -15,7 +15,8 @@ const {
   truncateCodePoints,
   truncateWithEllipsis,
   DISCORD_CONTENT_MAX,
-  SLACK_TEXT_MAX
+  SLACK_TEXT_MAX,
+  TELEGRAM_TEXT_MAX
 } = require('../lib/channelEscape');
 
 // Public icon + name used to brand notifications. Recipient services (Slack/
@@ -591,7 +592,9 @@ class NotificationService {
 
       // Send Telegram
       if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) && allow('telegram')) {
-        const success = await this.sendTelegramMessage(formatted.text);
+        // Plain text (no parse_mode); a long per-account list must not exceed
+        // Telegram's 4096 limit, or the API rejects the whole message (#427).
+        const success = await this.sendTelegramMessage(truncateWithEllipsis(formatted.text, TELEGRAM_TEXT_MAX));
         results.telegram = success;
       }
 
@@ -1358,7 +1361,9 @@ Please investigate and resolve the issue.
 
       // Send Telegram
       if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) && allow('telegram')) {
-        const success = await this.sendTelegramMessage(formatted.text);
+        // Plain text (no parse_mode); a long per-account list must not exceed
+        // Telegram's 4096 limit, or the API rejects the whole message (#427).
+        const success = await this.sendTelegramMessage(truncateWithEllipsis(formatted.text, TELEGRAM_TEXT_MAX));
         results.telegram = success;
       }
 

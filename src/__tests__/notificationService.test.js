@@ -1397,6 +1397,20 @@ describe('NotificationService', () => {
 
     const SINKS = ['email', 'slack', 'discord', 'generic', 'ntfy', 'telegram'];
 
+    test('a long per-account list is capped to the Telegram limit (#427)', async () => {
+      const service = allSinks({ notifyOnSuccess: 'always' });
+      const t = spyTransports(service);
+      const accountResults = Array.from({ length: 400 }, (_, i) => ({
+        id: `a${i}`, name: `Account with a fairly long name ${i}`,
+        status: 'synced', added: i, updated: 0, countsKnown: true
+      }));
+      const succeededAccounts = accountResults.map(a => a.name);
+      await runSync(service, 'success', { accountsProcessed: 400, succeededAccounts, accountResults });
+      const text = t.telegramSpy.mock.calls[0][0];
+      expect(text).toContain("Account with a fairly long name 0");
+      expect([...text].length).toBeLessThanOrEqual(4096);
+    });
+
     describe('always sends on every status', () => {
       test.each(['success', 'partial', 'failure'])('%s', async (status) => {
         const service = allSinks({ notifyOnSuccess: 'always' });
