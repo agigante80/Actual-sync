@@ -138,6 +138,12 @@ class Logger {
         this.serviceName = options.serviceName || 'actual-sync';
         this.correlationId = null;
         this.broadcastCallback = options.broadcastCallback || null;
+        // A child resolves the callback through its parent at log time, so one set
+        // after the child was created (syncService attaches it last) still applies.
+        // broadcastState is shared by the whole family: while a callback runs, any
+        // log it triggers (e.g. a failed WebSocket send) is not broadcast again. (#440)
+        this.broadcastParent = null;
+        this.broadcastState = { active: false };
         this.context = options.context || {};
         // Rate-limit state for security(); children share the parent's. (#444)
         this.securityState = { sources: new Map() };
@@ -252,6 +258,11 @@ class Logger {
      */
     setBroadcastCallback(callback) {
         this.broadcastCallback = callback;
+    }
+
+    getBroadcastCallback() {
+        if (this.broadcastCallback) return this.broadcastCallback;
+        return this.broadcastParent ? this.broadcastParent.getBroadcastCallback() : null;
     }
 
     /**
@@ -616,12 +627,16 @@ class Logger {
         }
 
         // Broadcast to WebSocket clients if callback is set (already-redacted). (#103)
-        if (this.broadcastCallback) {
+        const broadcast = this.getBroadcastCallback();
+        if (broadcast && !this.broadcastState.active) {
+            this.broadcastState.active = true;
             try {
-                this.broadcastCallback(level.toUpperCase(), safeMessage, safeMeta);
+                broadcast(level.toUpperCase(), safeMessage, safeMeta);
             } catch (error) {
                 // Don't let broadcast errors break logging
                 console.error('Failed to broadcast log:', error.message);
+            } finally {
+                this.broadcastState.active = false;
             }
         }
     }
@@ -763,7 +778,8 @@ class Logger {
             }
         });
         childLogger.correlationId = this.correlationId;
-        childLogger.broadcastCallback = this.broadcastCallback;
+        childLogger.broadcastParent = this;
+        childLogger.broadcastState = this.broadcastState;
         childLogger.securityState = this.securityState;
         // Share the parent's redaction set (including any custom keys)
         childLogger.redactIndicators = this.redactIndicators;

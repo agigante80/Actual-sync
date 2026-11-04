@@ -151,7 +151,12 @@ class HealthCheckService {
     this.getCronSchedules = options.getCronSchedules;
     this.dashboardConfig = options.dashboardConfig || { enabled: true, auth: { type: 'none' } };
     this.metricsAuthConfig = options.metricsAuth || { type: 'none' };
-    this.logger = createLogger(options.loggerConfig || {});
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    const loggerConfig = options.loggerConfig || {};
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'HealthCheck' })
+      : createLogger(loggerConfig);
     
     this.app = express();
     // Opt-in only (#245). Behind a reverse proxy every request comes from the
@@ -1259,7 +1264,8 @@ This test verifies that notifications are configured correctly and can reach the
               hasConfig: !!this.notificationService?.config,
               hasEmailConfig: !!this.notificationService?.config?.email,
               emailHost: this.notificationService?.config?.email?.host,
-              emailTo: this.notificationService?.config?.email?.to,
+              // A count, not the addresses: this line now reaches /ws/logs too (#440)
+              emailRecipients: [].concat(this.notificationService?.config?.email?.to || []).length,
               hasEmailTransporter: !!this.notificationService?.emailTransporter
             });
             if (!this.notificationService?.config?.email?.host || 

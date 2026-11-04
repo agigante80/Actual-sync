@@ -5,6 +5,9 @@
  * Entry point for the application
  */
 
+// Crash handlers first, so an early crash is a classified record, not Node's raw printer (#439)
+require('./src/lib/crashHandlers').installCrashHandlers();
+
 const fs = require('fs');
 const path = require('path');
 const { ensureConfig, resolveSchemaPath } = require('./src/lib/configBootstrap');
