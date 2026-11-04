@@ -355,6 +355,11 @@
           "description": "UNSAFE. When true, the @actual-app/api library prints its own verbose output, which includes transactions (payees, amounts, notes), to the console. Default false: Actual-sync passes verbose:false to api.init. Global only.",
           "default": false
         },
+        "includeAccountNames": {
+          "type": "boolean",
+          "description": "When true, Actual account names appear in the logs. Default false: logs carry the account id only, and the name is omitted. Server names you choose are always logged. Notifications are not logs and keep account names. Global only.",
+          "default": false
+        },
         "logDir": {
           "type": ["string", "null"],
           "description": "Directory for log files (set to null to disable file logging). For Docker deployments, use /app/logs. Defaults to './logs' if not specified.",

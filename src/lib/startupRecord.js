@@ -106,9 +106,9 @@ function buildStartupRecord(config, logger, opts = {}) {
         customLogDir: fileLogging && path.resolve(logger.logDir) !== path.resolve(DEFAULT_LOG_DIR),
         customDataDir: usesCustomDataDir(servers),
         retentionDays: fileLogging && rotation.enabled !== false ? (rotation.maxFiles ?? DEFAULT_RETENTION_DAYS) : null,
-        // includeAccountNames is left out on purpose until #448 adds the setting
-        // and the gate that reads it: today account names are always logged, so
-        // reporting `false` would mislead a supporter (#443 review M1).
+        // The logger's own gate, not the raw config: a logger built without the
+        // option omits names whatever the config says (#448).
+        includeAccountNames: logger.includeAccountNames === true,
         serverCount: servers.length,
         cronSchedules: uniqueSchedules(cfg),
         channelsEnabled: enabledChannels(config.notifications),

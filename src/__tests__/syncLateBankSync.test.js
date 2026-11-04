@@ -330,7 +330,7 @@ describe('transaction counts from runBankSync (#391)', () => {
             .flatMap((l) => l[method].mock.calls)
             .find(([m]) => m === message)[1];
         for (const meta of [metaOf('info', 'Sync completed'), metaOf('warn', 'Partial sync completed with some account failures')]) {
-            expect(meta.failedAccounts).toEqual([{ name: 'a1', error: expect.objectContaining({ category: 'internal' }) }]);
+            expect(meta.failedAccounts).toEqual([{ id: 'a1', name: 'a1', error: expect.objectContaining({ category: 'internal' }) }]);
             expect(sanitizeFields({ failedAccounts: meta.failedAccounts }).dropped).toBe(0);
             expect(JSON.stringify(meta)).not.toContain('SENTINEL_PAYEE');
         }

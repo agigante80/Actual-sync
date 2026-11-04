@@ -187,7 +187,8 @@ gives each key a data class, a type and, for objects, the allowed child keys
 |---|---|---|
 | `op` | always | `durationMs`, `added`, `updated`, `attempt` |
 | `id` | always | `accountId`, `serverName`, `syncId` |
-| `personal` | by default; withheld when the logger has `includePersonal: false`. `remoteAddress` is the exception: security (audit) records keep it either way | `accountName`, `remoteAddress`, `dataDir` |
+| `account-name` | only with `logging.includeAccountNames: true` (default `false`); otherwise left out of the record without counting in `droppedFieldCount` | `accountName`, `succeededAccounts`, `name` inside `failedAccounts` and `skippedAccounts` |
+| `personal` | by default; withheld when the logger has `includePersonal: false`. `remoteAddress` is the exception: security (audit) records keep it either way | `remoteAddress`, `dataDir` |
 | `upstream` | never | transaction rows, payees, notes, upstream error text |
 | `financial` | never | amounts, balances, account numbers |
 | `secret` | never | passwords, tokens, webhook URLs, chat ids |
@@ -200,8 +201,14 @@ gives each key a data class, a type and, for objects, the allowed child keys
 - To log a new field, register it in `src/lib/logFields.js` with its class.
   The test setup fails any test that drops a field, so a missing registration
   shows up as a failing test, not as silently missing data.
-- Whether the `personal` class is emitted by default is decided in #448; until
-  then it is emitted.
+- Account names have their own gate, `logging.includeAccountNames` (default
+  `false`, #448), separate from `personal` because that class also covers paths
+  and addresses, which this setting must not switch on. With the default, a
+  sync log carries `accountId`, `succeededAccountIds` and an `id` in each
+  `failedAccounts` / `skippedAccounts` entry, and no account names. Server
+  names are chosen by the operator and are always logged. Notifications are
+  not logs and keep account names. The `sys_startup` record reports the
+  effective value as `includeAccountNames`.
 - `logging.redact` and the secret masking still run first. With the allowlist
   they are defence in depth: they catch a secret-looking value under a
   registered key.
@@ -265,7 +272,7 @@ the dashboard and every notification, so the three never disagree (#438):
 | versions | `appVersion`, `nodeVersion`, `actualApiVersion` (resolved), `pid`, `platform`, `container` |
 | time | `timezone`, `utcOffset` (`+01:00`; cron schedules use this zone) |
 | logging | `logLevel`, `actualApiVerbose`, `sinks` (`console`, `file`, `syslog`, `websocket`), `customLogDir`, `customDataDir` (booleans, never paths), `retentionDays` (`null` when file logging is off). `sinks` lists configured sinks, not reached ones: `websocket` is listed when the dashboard is enabled, even before a client connects |
-| privacy | `actualApiVerbose` (`includeAccountNames` arrives with #448) |
+| privacy | `actualApiVerbose`, `includeAccountNames` (the effective value the logger gate uses) |
 | sync | `serverCount`, `cronSchedules` (unique cron strings), `timeouts.phaseTimeoutSeconds` |
 | channels | `channelsEnabled.{email,telegram,slack,discord,webhook,ntfy}` (booleans) |
 | dashboard | `dashboardEnabled`, `dashboardBind` (`host:port`), `dashboardAuth` (`none`, `basic`, `token`), `tls` |

@@ -60,9 +60,30 @@ describe('buildStartupRecord (#443)', () => {
         });
         expect(typeof r.actualApiVersion === 'string' || r.actualApiVersion === null).toBe(true);
         expect(Number.isInteger(CONFIG_SCHEMA_VERSION)).toBe(true);
-        // Until #448 there is no setting that stops account names being logged,
-        // so the record must not claim one (#443 review M1).
-        expect(r).not.toHaveProperty('includeAccountNames');
+        expect(r.includeAccountNames).toBe(false);
+    });
+
+    test('includeAccountNames reports the value the logger gate uses (#448)', () => {
+        const { buildLoggerConfig } = require('../lib/loggerConfig');
+        for (const flag of [undefined, false, true]) {
+            const cfg = makeConfig();
+            if (flag !== undefined) cfg.logging.includeAccountNames = flag;
+            const logger = makeLogger(buildLoggerConfig(cfg.logging));
+            const r = buildStartupRecord(cfg, logger, {});
+            // the record and an actual log line must agree
+            const lines = [];
+            const spy = jest.spyOn(console, 'log').mockImplementation((l) => lines.push(l));
+            try { logger.info('m', { accountName: 'Alice Joint', accountId: 'a1' }); } finally { spy.mockRestore(); }
+            expect(r.includeAccountNames).toBe(flag === true);
+            expect(lines.join('\n').includes('Alice Joint')).toBe(r.includeAccountNames);
+        }
+        // a logger built without the option reports false even if the raw config says true
+        const cfg = makeConfig();
+        cfg.logging.includeAccountNames = true;
+        expect(buildStartupRecord(cfg, makeLogger(), {}).includeAccountNames).toBe(false);
+        // and the record's field passes the allowlist
+        const out = makeLogger({ includeAccountNames: true });
+        expect(buildStartupRecord(cfg, out, {}).includeAccountNames).toBe(true);
     });
 
     test('file fields follow the logger, not the raw config (#443 review L1)', () => {

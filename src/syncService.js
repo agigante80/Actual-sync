@@ -46,7 +46,7 @@ function logOwnStack(log, error) {
  * object (#437, #438). The string form stays for notifications and history.
  */
 function failedAccountsForLog(failedAccounts) {
-    return failedAccounts.map((a) => ({ name: a.name, error: a.errorInfo }));
+    return failedAccounts.map((a) => ({ id: a.id, name: a.name, error: a.errorInfo }));
 }
 
 function formatNextSync(nextInvocation) {
@@ -383,6 +383,7 @@ async function runSyncBank(server, options = {}) {
     let transactionsAdded = 0;
     let transactionsUpdated = 0;
     const succeededAccounts = [];
+    const succeededAccountIds = []; // same order; the log keeps ids when names are off (#448)
     const failedAccounts = [];
     let skippedAccounts = []; // accounts skipped (manual / closed) — see partitionSyncableAccounts (#98)
     // Per-account outcome for the notifications (#427), in processing order. The
@@ -599,7 +600,7 @@ async function runSyncBank(server, options = {}) {
         });
         if (skippedAccounts.length > 0) {
             serverLogger.info('Skipping non-syncable accounts', {
-                skipped: skippedAccounts.map(a => `${a.name} (${a.reason})`)
+                skippedAccounts: skippedAccounts.map(a => ({ id: a.id, name: a.name, reason: a.reason }))
             });
         }
 
@@ -665,6 +666,7 @@ async function runSyncBank(server, options = {}) {
                     transactionsUpdated += counts.updated;
                     accountsSucceeded++;
                     succeededAccounts.push(account.name);
+                    succeededAccountIds.push(account.id);
                     recordAccountResult(account, 'synced', counts);
                     const accountDuration = accountTimer();
                     serverLogger.info('Bank sync completed for account', { 
@@ -683,6 +685,7 @@ async function runSyncBank(server, options = {}) {
                         if (!sessionStuck && lateBankSync === 'ok') {
                             accountsSucceeded++;
                             succeededAccounts.push(account.name);
+                            succeededAccountIds.push(account.id);
                             recordAccountResult(account, 'synced'); // late: counts unknown
                             accountTimer();
                             // Its result arrived after withTimeout gave up, so its
@@ -714,6 +717,7 @@ async function runSyncBank(server, options = {}) {
                     if (rawMsg && /no new transactions|no transactions found|nothing to sync/i.test(rawMsg)) {
                         accountsSucceeded++;
                         succeededAccounts.push(account.name);
+                        succeededAccountIds.push(account.id);
                         recordAccountResult(account, 'synced', { added: 0, updated: 0 });
                         accountTimer();
                         serverLogger.info('No new transactions for account', {
@@ -730,6 +734,7 @@ async function runSyncBank(server, options = {}) {
                     });
                     accountsFailed++;
                     failedAccounts.push({
+                        id: account.id,
                         name: account.name,
                         error: failureInfo.code ? `${errorMsg} (${failureInfo.code})` : errorMsg,
                         errorInfo: failureInfo
@@ -748,6 +753,7 @@ async function runSyncBank(server, options = {}) {
                         accountsProcessed++;
                         accountsFailed++;
                         failedAccounts.push({
+                            id: skipped.id,
                             name: skipped.name,
                             error: 'Skipped: an earlier bank sync is still running in the session',
                             errorInfo: { category: 'timeout', safeMessage: 'Skipped: an earlier bank sync is still running in the session' }
@@ -844,6 +850,7 @@ async function runSyncBank(server, options = {}) {
             transactionsAdded,
             transactionsUpdated,
             succeededAccounts: succeededAccounts.length > 0 ? succeededAccounts : undefined,
+            succeededAccountIds: succeededAccountIds.length > 0 ? succeededAccountIds : undefined,
             failedAccounts: failedAccounts.length > 0 ? failedAccountsForLog(failedAccounts) : undefined,
             encrypted: isEncrypted,
             durationMs

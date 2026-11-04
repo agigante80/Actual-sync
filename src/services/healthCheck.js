@@ -18,6 +18,7 @@ const moment = require('moment-timezone');
 const { ruleState } = require('../lib/scheduleAlertRules');
 const { registerPaymentRuleRoutes, activeRules, configuredChannels } = require('./paymentRuleRoutes');
 const { resolveTimezone } = require('../lib/timezone');
+const { classifyError } = require('../lib/errorClassifier');
 
 // 16 KB JSON parser for configuration writes (#259), used by configWrite().
 // markParser tags an error with fromBodyParser so jsonBodyErrors can tell a
@@ -1909,10 +1910,18 @@ This test verifies that notifications are configured correctly and can reach the
         error: errorText
       };
       
+      // The allowlist takes `error` only as the classified object (#438). A
+      // string comes from syncService, which builds it from classifier text
+      // (never upstream text, so no account name, #448); an Error is classified.
+      // Only classifier text may be passed here as a string: it is copied into
+      // safeMessage as is.
+      const errorRecord = syncResult.error instanceof Error
+        ? classifyError(syncResult.error)
+        : (errorText ? { type: 'Error', category: 'internal', safeMessage: errorText } : undefined);
       this.logger.error('Sync status updated', { 
         serverName: syncResult.serverName,
         status: 'failure',
-        error: errorText,
+        error: errorRecord,
         totalSyncs: this.status.syncCount
       });
     }
