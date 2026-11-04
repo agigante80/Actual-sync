@@ -100,7 +100,11 @@ done
 code=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$BASE/dashboard" || true)
 [ "$code" = 200 ] || fail "GET /dashboard returned $code"
 
-docker exec "$NAME" sh -c 'test -s /app/logs/actual-sync.log' || fail "log file missing or empty"
+# The log dir is 0700 and its files 0600, owned by the PUID (#446). With every
+# capability dropped, root has no DAC override, so read them as the PUID.
+docker exec -u 1234:1234 "$NAME" sh -c 'test -s /app/logs/actual-sync.log' || fail "log file missing or empty"
+MODES=$(docker exec -u 1234:1234 "$NAME" sh -c 'stat -c %a /app/logs /app/logs/actual-sync.log' | tr '\n' ' ' || true)
+[ "$MODES" = "700 600 " ] || fail "log dir/file modes are '$MODES', want '700 600'"
 docker exec "$NAME" sh -c 'test -s /app/data/sync-history.db' || fail "history database missing"
 OWNER=$(docker exec "$NAME" sh -c "stat -c %u:%g /app/data/sync-history.db" || true)
 [ "$OWNER" = "1234:1234" ] || fail "history database owned by $OWNER, expected 1234:1234"

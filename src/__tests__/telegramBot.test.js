@@ -577,6 +577,75 @@ describe('TelegramBotService', () => {
       
       expect(mockRequest.write).not.toHaveBeenCalled();
     });
+
+    describe('log privacy (#435)', () => {
+      const mk = (chat, text) => ({
+        update_id: 1,
+        message: {
+          message_id: 1,
+          from: { id: 1, first_name: 'Sensitive', last_name: 'Person', username: 'secretuser' },
+          chat: { id: chat },
+          text
+        }
+      });
+      const allLogged = (b) => JSON.stringify(
+        ['error', 'warn', 'info', 'debug'].map(l => b.logger[l].mock.calls)
+      );
+      const makeBot = () => {
+        const b = new TelegramBotService({ botToken: '123:ABC', chatId: '456' }, {});
+        b.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+        return b;
+      };
+
+      test('known command logs its name and authorized flag only', async () => {
+        const b = makeBot();
+        await b.processUpdate(mk('456', '/ping'));
+        expect(b.logger.info).toHaveBeenCalledWith(
+          'Telegram message received', { command: '/ping', authorized: true }
+        );
+        const out = allLogged(b);
+        expect(out).not.toMatch(/Sensitive|Person|secretuser/);
+      });
+
+      test('free text and unknown commands are logged as unknown without the text', async () => {
+        const b = makeBot();
+        await b.processUpdate(mk('456', '/s3cret-token hunter2'));
+        await b.processUpdate(mk('456', 'my password is hunter2'));
+        expect(b.logger.info).toHaveBeenCalledWith(
+          'Telegram message received', { command: 'unknown', authorized: true }
+        );
+        expect(allLogged(b)).not.toMatch(/hunter2|s3cret|password/);
+      });
+
+      test('unauthorized chat logs a static warn with no chat id, names or text', async () => {
+        const b = makeBot();
+        await b.processUpdate(mk('789', '/ping hunter2'));
+        expect(b.logger.warn).toHaveBeenCalledTimes(1);
+        expect(b.logger.warn.mock.calls[0][1]).toEqual({ event: 'authz_fail', authorized: false });
+        const out = allLogged(b);
+        expect(out).not.toMatch(/789|456|Sensitive|Person|secretuser|hunter2|ping/);
+      });
+
+      test('an unauthorized chat gets at most one WARN per hour, other chats still warn', async () => {
+        const b = makeBot();
+        const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+        for (let i = 0; i < 100; i++) await b.processUpdate(mk('789', '/ping'));
+        expect(b.logger.warn).toHaveBeenCalledTimes(1);
+        await b.processUpdate(mk('790', '/ping'));
+        expect(b.logger.warn).toHaveBeenCalledTimes(2);
+        now.mockReturnValue(1_000_000 + 60 * 60 * 1000);
+        await b.processUpdate(mk('789', '/ping'));
+        expect(b.logger.warn).toHaveBeenCalledTimes(3);
+        expect(JSON.stringify([...b._authzWarned.keys()])).not.toMatch(/789|790/);
+        now.mockRestore();
+      });
+
+      test('the per-chat limiter memory is bounded', async () => {
+        const b = makeBot();
+        for (let i = 0; i < 1100; i++) await b.processUpdate(mk(String(10000 + i), '/ping'));
+        expect(b._authzWarned.size).toBeLessThanOrEqual(1000);
+      });
+    });
   });
   
   describe('/sync command', () => {
