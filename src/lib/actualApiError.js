@@ -1,3 +1,5 @@
+const { classifyError, markOwnError } = require('./errorClassifier');
+
 /**
  * Explains an opaque "No budget file is open" failure (#155).
  *
@@ -130,6 +132,10 @@ function enhanceActualApiError(error, context, logger) {
         : originalError;
 
     const enhancedError = new Error(enhancedMessage);
+    // The message above embeds upstream text. What may be shown is our own
+    // headline for the matched failure, else the classified category (#438).
+    const upstream = classifyError(originalError);
+    markOwnError(enhancedError, errorDetails.length > 0 ? errorDetails[0] : upstream.safeMessage, upstream.category);
     enhancedError.originalError = error;
     enhancedError.phase = phase;
     enhancedError.code = error?.code;

@@ -200,7 +200,25 @@ the change that emits them.
 A logged error is `error: { type, code, httpStatus, category, safeMessage }`.
 `category` is one of `timeout`, `auth`, `upstream_unavailable`, `rate_limited`,
 `not_found`, `validation`, `conflict`, `cancelled`, `internal`. Raw upstream
-error text is never logged.
+error text is never logged, at any level.
+
+One classifier (`src/lib/errorClassifier.js`) feeds the log, `sync_history`,
+the dashboard and every notification, so the three never disagree (#438):
+
+- `safeMessage` is our own text for the category, our own text from an error
+  we marked (`markOwnError`, for example the phase timeout), or a full-string
+  match on a small allowlist (`503 Service Unavailable`, Actual reasons such as
+  `network-failure`). A partial match is not a match. Keywords in an upstream
+  message may choose the category; the text is never copied.
+- The logger classifies every `error`, `originalError` and `err` value (an
+  `Error` or a string) and every `Error` nested in a field. It drops
+  `errorMessage`, `errorStack` and `errorName`. A `stack` field keeps its frames
+  only (no message line).
+- Frames are logged at DEBUG only, and only for our own errors (first frame
+  not inside `node_modules` or `@actual-app/api`).
+- `sync_history.error_message`, the per-account failures in a notification and
+  the Telegram error replies carry the classified text. A one-time migration
+  (`PRAGMA user_version = 1`) rewrote older rows to their category text.
 
 ### Startup record groups
 

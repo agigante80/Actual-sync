@@ -16,9 +16,9 @@
 
 const fs = require('fs');
 const { classifyRejection } = require('./rejectionClassifier');
+const { classifyError } = require('./errorClassifier');
 
 const SAFE_CODE = /^[A-Za-z0-9_.-]{1,40}$/;
-const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNABORTED', 'UND_ERR_CONNECT_TIMEOUT']);
 
 let crashLogger = null;
 let installed = false;
@@ -27,25 +27,8 @@ function setCrashLogger(logger) {
     crashLogger = logger || null;
 }
 
-/**
- * Reduce any thrown value to { type, code?, category, safeMessage }.
- * Only our own static text is used for safeMessage.
- */
-function describeCrash(reason) {
-    const isError = reason instanceof Error;
-    const type = isError
-        ? String(reason.name || 'Error').slice(0, 60)
-        : reason === null ? 'null' : typeof reason;
-    const out = { type };
-    const code = isError || (typeof reason === 'object' && reason !== null) ? reason.code : undefined;
-    if ((typeof code === 'string' || typeof code === 'number') && SAFE_CODE.test(String(code))) {
-        out.code = code;
-    }
-    const timedOut = out.code !== undefined && TIMEOUT_CODES.has(String(out.code));
-    out.category = timedOut ? 'timeout' : 'internal';
-    out.safeMessage = timedOut ? 'Operation timed out' : 'Unexpected error (details withheld)';
-    return out;
-}
+/** One classifier for every error record (#438): see errorClassifier.js. */
+const describeCrash = classifyError;
 
 // Frames only: the first stack line repeats the message.
 function framesOf(error) {

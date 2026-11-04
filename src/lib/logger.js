@@ -10,6 +10,7 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { createStream } = require('rotating-file-stream');
 const { passThrough } = require('./consoleBridge');
+const { classifyError, ownFrames, sanitizeErrorMeta } = require('./errorClassifier');
 
 // Log dir owner-only, log files owner read/write (D10, #446).
 const LOG_DIR_MODE = 0o700;
@@ -368,30 +369,10 @@ class Logger {
         if (value === null || typeof value !== 'object') {
             return value;
         }
-        // Errors serialize to {} via JSON (message/stack are non-enumerable), so
-        // lift the useful fields explicitly. message/stack are masked; code, cause,
-        // and enumerable custom fields (statusCode, errno, syscall, ...) are kept
-        // and redacted. cause is followed cycle-safely.
+        // An Error is classified, never echoed: its message can be upstream text
+        // that secret masking does not catch (#438, D5).
         if (value instanceof Error) {
-            if (seen.has(value)) {
-                return '[Circular]';
-            }
-            seen.add(value);
-            const out = {
-                name: value.name,
-                message: this.maskSecrets(value.message),
-                stack: this.maskSecrets(value.stack)
-            };
-            if (value.code !== undefined) out.code = this.redactSafe(value.code, seen);
-            if (value.cause !== undefined) out.cause = this.redactSafe(value.cause, seen);
-            for (const key of Object.keys(value)) {
-                if (key in out) continue;
-                out[key] = this.shouldRedactKey(key)
-                    ? '[REDACTED]'
-                    : this.redactSafe(value[key], seen);
-            }
-            seen.delete(value);
-            return out;
+            return classifyError(value);
         }
         // Only clone/recurse into plain objects and arrays. Pass other object types
         // (Date, Buffer, RegExp, class instances) through unchanged so their
@@ -605,6 +586,8 @@ class Logger {
         // can never crash a log call. (#103, perf)
         let safeMessage, safeContext, safeMeta;
         try {
+            // Error-carrying keys are classified first: upstream text never reaches a record (#438).
+            meta = sanitizeErrorMeta(meta);
             safeMessage = this.maskSecrets(message);
             safeContext = this.redact(this.context);
             safeMeta = this.redact(meta);
@@ -663,16 +646,12 @@ class Logger {
      * Log error
      */
     error(message, meta = {}) {
-        // Handle Error objects
+        // Handle Error objects: classify, never echo the message (#438).
         if (message instanceof Error) {
-            meta = {
-                ...meta,
-                errorName: message.name,
-                errorMessage: message.message,
-                errorStack: message.stack,
-                errorCode: message.code
-            };
-            message = message.message;
+            const error = classifyError(message);
+            const stack = this.shouldLog('DEBUG') ? ownFrames(message) : undefined;
+            meta = { ...meta, error, ...(stack ? { stack } : {}) };
+            message = error.safeMessage;
         }
         this.log('ERROR', message, meta);
     }

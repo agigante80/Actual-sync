@@ -21,7 +21,8 @@ describe('describeCrash', () => {
         const e = new Error("Category 'Rent to Marco' already exists");
         const d = describeCrash(e);
         expect(JSON.stringify(d)).not.toMatch(/Marco/);
-        expect(d).toEqual(expect.objectContaining({ type: 'Error', category: 'internal' }));
+        // "already exists" is a conflict: the keyword picks the category, its text is not copied.
+        expect(d).toEqual(expect.objectContaining({ type: 'Error', category: 'conflict' }));
         expect(typeof d.safeMessage).toBe('string');
     });
 

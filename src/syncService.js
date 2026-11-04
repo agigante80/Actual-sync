@@ -21,6 +21,7 @@ const { createAutoRetry } = require('./lib/autoRetry');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, prepareSession, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts, persistPaymentSnapshot } = require('./lib/scheduleAlertsStep');
 const { bankSyncCounts, describeResultLengths } = require('./lib/bankSyncCounts');
+const { classifyError, ownFrames } = require('./lib/errorClassifier');
 const { installConsoleBridge } = require('./lib/consoleBridge');
 
 // Get version from environment (CI build-arg) or package.json (#132)
@@ -32,6 +33,12 @@ const VERSION = resolveVersion();
  * @param {Date} nextInvocation - Next scheduled invocation time
  * @returns {string} Human-readable format
  */
+/** Stack frames of our own errors, at DEBUG only (#438, D5). */
+function logOwnStack(log, error) {
+    const stack = ownFrames(error);
+    if (stack) log.debug('Error stack', { stack });
+}
+
 function formatNextSync(nextInvocation) {
     // Ensure nextInvocation is a Date object
     if (!nextInvocation) return 'not scheduled';
@@ -489,7 +496,7 @@ async function runSyncBank(server, options = {}) {
             if (error instanceof PhaseTimeoutError) throw error;
             downloadError = error;
             serverLogger.warn('Budget download failed, retrying once before clearing cache', {
-                error: error?.reason || error?.message || String(error),
+                error: classifyError(error),
             });
         }
 
@@ -516,7 +523,7 @@ async function runSyncBank(server, options = {}) {
                 } catch (cleanupErr) {
                     serverLogger.warn('Failed to clear local budget cache', {
                         dataDir,
-                        error: cleanupErr.message,
+                        error: classifyError(cleanupErr),
                     });
                 }
                 const enhancedError = enhanceActualApiError(downloadError, {
@@ -558,7 +565,7 @@ async function runSyncBank(server, options = {}) {
             }
         } catch (loadErr) {
             if (loadErr instanceof PhaseTimeoutError) throw loadErr;
-            serverLogger.debug('loadBudget workaround skipped', { error: loadErr.message });
+            serverLogger.debug('loadBudget workaround skipped', { error: classifyError(loadErr) });
         }
 
         serverLogger.debug('Fetching accounts...');
@@ -682,12 +689,17 @@ async function runSyncBank(server, options = {}) {
                             failure = lateBankError;
                         }
                     }
-                    const errorMsg = failure?.message || failure?.toString() || String(failure) || 'Unknown error';
+                    // The raw text is read here to recognise a healthy outcome and
+                    // goes no further: every record, the history row and the
+                    // notification get the classified safe text. (#438)
+                    const rawMsg = failure?.message || failure?.toString() || String(failure) || 'Unknown error';
+                    const failureInfo = classifyError(failure);
+                    const errorMsg = failureInfo.safeMessage;
 
                     // "No new transactions" is a healthy outcome, not a failure -
                     // count it as a success so a quiet linked account isn't reported
                     // as failed. (#98)
-                    if (errorMsg && /no new transactions|no transactions found|nothing to sync/i.test(errorMsg)) {
+                    if (rawMsg && /no new transactions|no transactions found|nothing to sync/i.test(rawMsg)) {
                         accountsSucceeded++;
                         succeededAccounts.push(account.name);
                         recordAccountResult(account, 'synced', { added: 0, updated: 0 });
@@ -702,9 +714,7 @@ async function runSyncBank(server, options = {}) {
                     serverLogger.warn('runBankSync threw error', {
                         accountId: account.id,
                         accountName: account.name,
-                        error: errorMsg,
-                        errorCode: failure?.code || 'UNKNOWN',
-                        errorStack: failure?.stack || 'No stack trace available'
+                        error: failureInfo
                     });
                     accountsFailed++;
                     failedAccounts.push({
@@ -716,10 +726,9 @@ async function runSyncBank(server, options = {}) {
                     serverLogger.error('Error syncing bank for account', {
                         accountId: account.id,
                         accountName: account.name,
-                        error: errorMsg,
-                        errorCode: failure?.code || 'UNKNOWN',
-                        errorStack: failure?.stack || 'No stack trace available'
+                        error: failureInfo
                     });
+                    logOwnStack(serverLogger, failure);
                 }
                 if (sessionStuck) {
                     for (const skipped of accounts.slice(accountIndex + 1)) {
@@ -907,7 +916,7 @@ async function runSyncBank(server, options = {}) {
                 });
             } catch (notifyError) {
                 logger.error('Failed to send sync notification', { 
-                    error: notifyError.message,
+                    error: classifyError(notifyError),
                     correlationId
                 });
             }
@@ -915,78 +924,44 @@ async function runSyncBank(server, options = {}) {
         
     } catch (error) {
         syncOutcome = 'failure';
-        let durationMs = endTimer({ error: error.message || String(error) });
+        let durationMs = endTimer({ error: classifyError(error) });
         
         // Fallback to manual calculation if performance tracking is disabled
         if (durationMs === undefined || isNaN(durationMs)) {
             durationMs = Date.now() - syncStartTime;
         }
         
-        // Normalize error information
-        // Check if message exists and is not empty, otherwise use toString
-        let errorMessage = error?.message;
-        
-        // Log error structure for debugging
-        serverLogger.debug('Error structure for debugging', {
-            hasMessage: !!errorMessage,
-            errorMessage: errorMessage,
-            toString: error?.toString(),
-            hasStack: !!error?.stack,
-            stackFirstLine: error?.stack?.split('\n')[0],
-            errorType: error?.constructor?.name
-        });
-        
-        if (!errorMessage || errorMessage.trim() === '' || errorMessage === 'Error') {
-            // Try to extract from stack trace first
-            if (error?.stack) {
-                const stackLines = error.stack.split('\n');
-                const firstLine = stackLines[0];
-                // Remove "Error: " prefix if present
-                if (firstLine && firstLine.startsWith('Error: ')) {
-                    errorMessage = firstLine.substring(7); // Remove "Error: "
-                } else {
-                    errorMessage = firstLine;
-                }
-                
-                // If still just "Error", look for originalError
-                if (errorMessage === 'Error' && error?.originalError) {
-                    errorMessage = error.originalError.message || error.originalError.toString() || 'Unknown sync error';
-                }
-            }
-            
-            // Try toString as fallback
-            if (!errorMessage || errorMessage === 'Error') {
-                const errorString = error?.toString() || String(error);
-                if (errorString && errorString !== '[object Object]' && errorString !== 'Error') {
-                    errorMessage = errorString.replace(/^Error: /, '');
-                } else {
-                    errorMessage = 'Unknown sync error';
-                }
-            }
-        }
-        let errorCode = error?.code || error?.errorCode || 'UNKNOWN';
-        const errorStack = error?.stack || 'No stack trace available';
+        // Normalize error information (#438): the classifier is the only source
+        // of error text for the record, the history row and the notification.
+        // Upstream text is never echoed; our own text comes from errors marked
+        // with markOwnError.
+        const errorInfo = classifyError(error);
+        let errorMessage = errorInfo.safeMessage;
+        let errorCode = errorInfo.code || 'UNKNOWN';
+        let errorRecord = errorInfo;
 
         // "No budget file is open" is opaque and usually a server/client version
-        // mismatch — explain it and set a stable errorCode using the versions
+        // mismatch: explain it and set a stable errorCode using the versions
         // captured at connect (#155). Applies wherever the error was thrown
         // (e.g. the bare aqlQuery), not just the enhanceActualApiError paths.
-        if (typeof errorMessage === 'string' && errorMessage.includes('No budget file is open')) {
+        // The explanation is our own text.
+        const rawMessage = typeof error?.message === 'string' ? error.message : '';
+        if (rawMessage.includes('No budget file is open')) {
             const explained = explainBudgetNotOpen({ serverVersion, clientVersion, verdict: versionVerdict });
             errorMessage = explained.message;
             errorCode = explained.errorCode;
+            errorRecord = { ...errorInfo, code: explained.errorCode, safeMessage: explained.message };
         }
 
         serverLogger.error(`Error syncing bank for server`, {
-            error: errorMessage,
-            errorCode: errorCode,
-            errorStack: errorStack,
+            error: errorRecord,
             accountsProcessed,
             accountsSucceeded,
             accountsFailed,
             encrypted: isEncrypted,
             phase: accountsProcessed === 0 ? 'initialization' : accountsSucceeded > 0 ? 'final-sync' : 'bank-sync'
         });
+        logOwnStack(serverLogger, error);
         
         // Update health check with failed sync
         if (healthCheck) {
@@ -1057,10 +1032,9 @@ async function runSyncBank(server, options = {}) {
                     bypassThresholds: false
                 });
             } catch (notifyError) {
-                const notifyErrorMessage = notifyError?.message || String(notifyError) || 'Unknown notification error';
                 logger.error('Failed to send sync notification', {
-                    error: notifyErrorMessage,
-                    originalError: errorMessage,
+                    error: classifyError(notifyError),
+                    originalError: errorRecord,
                     correlationId
                 });
             }
@@ -1080,9 +1054,8 @@ async function runSyncBank(server, options = {}) {
                 await api.shutdown();
                 serverLogger.debug('Shutdown complete');
             } catch (shutdownError) {
-                const shutdownErrorMessage = shutdownError?.message || String(shutdownError) || 'Unknown shutdown error';
                 serverLogger.error('Error during shutdown', {
-                    error: shutdownErrorMessage
+                    error: classifyError(shutdownError)
                 });
             }
             // The catch above swallows shutdown errors, so this always runs.
@@ -1206,7 +1179,7 @@ async function run() {
         
         // Start health check service (must be after scheduledJobsRef is populated)
         healthCheck.start().catch((error) => {
-            logger.error('Failed to start health check service', { error: error.message });
+            logger.error('Failed to start health check service', { error: classifyError(error) });
         });
         
         // Start Telegram bot if enabled
@@ -1215,7 +1188,7 @@ async function run() {
                 telegramBot.start();
                 logger.info('Telegram bot started and polling for commands');
             } catch (error) {
-                logger.error('Failed to start Telegram bot', { error: error.message });
+                logger.error('Failed to start Telegram bot', { error: classifyError(error) });
             }
         }
         
@@ -1254,7 +1227,7 @@ async function run() {
                 }
                 
             } catch (error) {
-                logger.error('Failed to send startup notification', { error: error.message });
+                logger.error('Failed to send startup notification', { error: classifyError(error) });
             }
         }
     }
@@ -1295,7 +1268,7 @@ async function gracefulShutdown(signal) {
             if (!finished) {
                 logger.warn('Sync still running after the shutdown wait; closing the Actual session');
                 try { await actual.shutdown(); } catch (shutdownError) {
-                    logger.error('Error closing the Actual session', { error: shutdownError?.message });
+                    logger.error('Error closing the Actual session', { error: classifyError(shutdownError) });
                 }
             }
         }
@@ -1304,7 +1277,7 @@ async function gracefulShutdown(signal) {
         syncHistory.close();
         process.exit(0);
     } catch (error) {
-        logger.error('Error during shutdown', { error: error.message });
+        logger.error('Error during shutdown', { error: classifyError(error) });
         process.exit(1);
     }
 }
@@ -1316,7 +1289,8 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // first in index.js (crashHandlers, #439); they only need the logger from here.
 
 run().catch((error) => {
-    logger.error('Fatal error during service initialization', { error: error.message, stack: error.stack });
+    logger.error('Fatal error during service initialization', { error: classifyError(error) });
+    logOwnStack(logger, error);
     process.exit(1);
 });
 

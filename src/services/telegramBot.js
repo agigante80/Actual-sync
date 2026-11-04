@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
+const { classifyError } = require('../lib/errorClassifier');
 const { resolveTimezone } = require('../lib/timezone');
 
 const AUTHZ_WARN_INTERVAL_MS = 60 * 60 * 1000;
@@ -375,7 +376,7 @@ class TelegramBotService {
           command,
           error: error.message
         });
-        await this.sendMessage(`❌ Error executing command: ${error.message}`);
+        await this.sendMessage(`❌ Error executing command: ${classifyError(error).safeMessage}`);
       }
     } else {
       // Not a recognized command
@@ -465,7 +466,7 @@ class TelegramBotService {
 
       await this.sendMessage(message);
     } catch (error) {
-      await this.sendMessage(`❌ Error getting status: ${error.message}`);
+      await this.sendMessage(`❌ Error getting status: ${classifyError(error).safeMessage}`);
     }
   }
 
@@ -507,7 +508,7 @@ class TelegramBotService {
 
       await this.sendMessage(message);
     } catch (error) {
-      await this.sendMessage(`❌ Error getting history: ${error.message}`);
+      await this.sendMessage(`❌ Error getting history: ${classifyError(error).safeMessage}`);
     }
   }
 
@@ -541,7 +542,7 @@ class TelegramBotService {
 
       await this.sendMessage(message);
     } catch (error) {
-      await this.sendMessage(`❌ Error getting statistics: ${error.message}`);
+      await this.sendMessage(`❌ Error getting statistics: ${classifyError(error).safeMessage}`);
     }
   }
 
@@ -574,7 +575,7 @@ class TelegramBotService {
 
       await this.sendMessage(message);
     } catch (error) {
-      await this.sendMessage(`❌ Error getting servers: ${error.message}`);
+      await this.sendMessage(`❌ Error getting servers: ${classifyError(error).safeMessage}`);
     }
   }
 
@@ -674,7 +675,7 @@ class TelegramBotService {
 
       await this.sendMessage(message);
     } catch (error) {
-      await this.sendMessage(`❌ Error getting errors: ${error.message}`);
+      await this.sendMessage(`❌ Error getting errors: ${classifyError(error).safeMessage}`);
     }
   }
 
@@ -745,7 +746,7 @@ class TelegramBotService {
             error: error.message,
             errorCode: error.code
           });
-          await this.sendMessage(`❌ Sync failed: ${error.message}`);
+          await this.sendMessage(`❌ Sync failed: ${classifyError(error).safeMessage}`);
         });
 
       // The sync result is reported by notificationService.notifySync(), which now
@@ -759,7 +760,7 @@ class TelegramBotService {
         error: error.message,
         errorCode: error.code
       });
-      await this.sendMessage(`❌ Sync failed: ${error.message}`);
+      await this.sendMessage(`❌ Sync failed: ${classifyError(error).safeMessage}`);
     }
   }
 
