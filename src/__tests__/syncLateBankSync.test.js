@@ -22,8 +22,6 @@ function makeLogger() {
         level: 'info',
         info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(),
         startTimer: () => () => 1,
-        generateCorrelationId: () => 'cid',
-        setCorrelationId: jest.fn(), clearCorrelationId: jest.fn(),
         setBroadcastCallback: jest.fn()
     };
     l.child = () => l;
@@ -73,7 +71,7 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false, 
         });
     });
     const loggers = [];
-    jest.doMock('../lib/logger', () => ({ createLogger: () => { const l = makeLogger(); loggers.push(l); return l; } }));
+    jest.doMock('../lib/logger', () => ({ ...jest.requireActual('../lib/logger'), createLogger: () => { const l = makeLogger(); loggers.push(l); return l; } }));
     jest.doMock('../lib/versionInfo', () => ({
         fetchServerVersion: async () => null,
         getClientVersion: () => '1.0.0',
@@ -122,6 +120,19 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false, 
         fs.rmSync(dataDir, { recursive: true, force: true });
     }
 }
+
+describe('sync correlation scope (#441)', () => {
+    afterEach(() => jest.dontMock('@actual-app/api'));
+
+    test('the id recorded in history is the scope the Actual calls run in', async () => {
+        let seen = null;
+        const { recorded } = await runSync(['a1'], {
+            a1: () => { seen = require('../lib/logger').currentCorrelationId(); return Promise.resolve(); }
+        }, async (advance, started) => { await started(); await advance(10); });
+        expect(recorded.correlationId).toMatch(/^[a-f0-9-]{36}$/);
+        expect(seen).toBe(recorded.correlationId);
+    });
+});
 
 describe('a timed-out runBankSync that settles late (#284)', () => {
     afterEach(() => jest.dontMock('@actual-app/api'));

@@ -8,8 +8,27 @@ const path = require('path');
 // Node's built-in v4 UUID generator — no external dependency (replaces `uuid`,
 // which went ESM-only at v14 and could not be required under the CJS test runner). (#56)
 const { randomUUID } = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
 const { createStream } = require('rotating-file-stream');
 const { passThrough } = require('./consoleBridge');
+
+// One scope per sync, HTTP request, Telegram update and scheduled job. Every
+// record written inside it carries its correlationId, whichever logger or
+// child wrote it, so overlapping work can be told apart. (#441, D4)
+const correlationScope = new AsyncLocalStorage();
+
+/**
+ * Run fn inside a correlation scope. Returns whatever fn returns, so an async
+ * fn stays awaitable. A nested scope replaces the outer id for its own span.
+ */
+function withCorrelation(fn, correlationId = randomUUID()) {
+    return correlationScope.run(correlationId, fn);
+}
+
+/** The correlationId of the running scope, or null outside any. */
+function currentCorrelationId() {
+    return correlationScope.getStore() || null;
+}
 
 // Log dir owner-only, log files owner read/write (D10, #446).
 const LOG_DIR_MODE = 0o700;
@@ -136,7 +155,6 @@ class Logger {
         // Only use provided logDir if it's not undefined (null is valid for disabling)
         this.logDir = (options.logDir !== undefined) ? options.logDir : defaultLogDir;
         this.serviceName = options.serviceName || 'actual-sync';
-        this.correlationId = null;
         this.broadcastCallback = options.broadcastCallback || null;
         // A child resolves the callback through its parent at log time, so one set
         // after the child was created (syncService attaches it last) still applies.
@@ -282,25 +300,11 @@ class Logger {
     }
 
     /**
-     * Set correlation ID for tracking related log entries
+     * The correlation ID of the scope this call runs in (see withCorrelation).
+     * A logger holds none of its own, so a child never copies a stale one. (#441)
      */
-    setCorrelationId(id) {
-        this.correlationId = id || randomUUID();
-        return this.correlationId;
-    }
-
-    /**
-     * Clear correlation ID
-     */
-    clearCorrelationId() {
-        this.correlationId = null;
-    }
-
-    /**
-     * Generate correlation ID
-     */
-    generateCorrelationId() {
-        return randomUUID();
+    get correlationId() {
+        return currentCorrelationId();
     }
 
     /**
@@ -777,7 +781,6 @@ class Logger {
                 thresholds: this.performanceThresholds
             }
         });
-        childLogger.correlationId = this.correlationId;
         childLogger.broadcastParent = this;
         childLogger.broadcastState = this.broadcastState;
         childLogger.securityState = this.securityState;
@@ -806,11 +809,8 @@ class Logger {
                         : duration > this.performanceThresholds.slow ? 'INFO' 
                         : 'DEBUG';
             
-            // Temporarily restore correlation ID if it changed
-            const currentCorrelationId = this.correlationId;
-            this.correlationId = startCorrelationId;
-            
-            this.log(level, `Performance: ${operationName}`, {
+            // Report under the id the timer started in, even if it stops elsewhere.
+            const emitTimed = () => this.log(level, `Performance: ${operationName}`, {
                 ...metadata,
                 duration,
                 durationMs: duration,
@@ -818,10 +818,12 @@ class Logger {
                 slow: duration > this.performanceThresholds.slow,
                 verySlow: duration > this.performanceThresholds.verySlow
             });
-            
-            // Restore current correlation ID
-            this.correlationId = currentCorrelationId;
-            
+            if (startCorrelationId) {
+                withCorrelation(emitTimed, startCorrelationId);
+            } else {
+                emitTimed();
+            }
+
             return duration;
         };
     }
@@ -898,6 +900,8 @@ function createLogger(options = {}) {
 module.exports = {
     Logger,
     createLogger,
+    withCorrelation,
+    currentCorrelationId,
     escapeControlChars,
     LOG_LEVELS,
     LEVEL_NAMES

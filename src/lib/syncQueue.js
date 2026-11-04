@@ -1,3 +1,5 @@
+const { withCorrelation } = require('./logger');
+
 /**
  * Serialise every sync that touches @actual-app/api. (#265)
  *
@@ -46,7 +48,10 @@ class SyncQueue {
             const entry = { key, startedAt: this.now().toISOString() };
             this.active = entry;
             try {
-                return await task();
+                // Each task is its own correlation scope, opened when it starts
+                // (the queue runs it from the previous task's continuation, which
+                // would otherwise lend it that task's id). (#441)
+                return await withCorrelation(task);
             } finally {
                 if (this.active === entry) this.active = null;
             }

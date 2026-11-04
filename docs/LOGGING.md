@@ -315,6 +315,13 @@ Search by correlation ID:
 grep "a1b2c3d4" logs/actual-sync-2025-12-09.log
 ```
 
+Every sync, HTTP request, Telegram update and scheduled job runs in its own
+scope (Node `AsyncLocalStorage`). Every record written inside it carries that
+scope's `correlationId`, from any logger or child, without passing a logger
+around. A sync started by a scheduled job or a Telegram command gets its own id
+for its own lines (the id stored in sync history). Child loggers carry
+`component` and similar bindings only, never a correlation id.
+
 ---
 
 ## 👶 Child Loggers & Context

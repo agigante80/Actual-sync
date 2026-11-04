@@ -9,7 +9,8 @@ const express = require('express');
 const helmet = require('helmet');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const path = require('path');
-const { createLogger } = require('../lib/logger');
+const { randomUUID } = require('crypto');
+const { createLogger, withCorrelation } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 const { resolveVersion } = require('../lib/version');
 const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
@@ -22,8 +23,10 @@ const { resolveTimezone } = require('../lib/timezone');
 // markParser tags an error with fromBodyParser so jsonBodyErrors can tell a
 // body-parser failure from a 4xx raised by a route. A corrupt gzip body arrives
 // as createError(400, zlibErr) with no `type`, so only a marker works. (#259)
+// body-parser resumes from socket events, which drop the request's correlation
+// scope, so the rest of the chain is re-entered inside it. (#441)
 const markParser = (parser) => (req, res, next) =>
-  parser(req, res, (e) => next(e && Object.assign(e, { fromBodyParser: true })));
+  parser(req, res, (e) => withCorrelation(() => next(e && Object.assign(e, { fromBodyParser: true })), req.correlationId));
 
 // A /ws/logs client with more than this queued is dropped (#445)
 const WS_MAX_BUFFERED_BYTES = 1024 * 1024;
@@ -209,6 +212,13 @@ class HealthCheckService {
     // "Tested up to" = the installed @actual-app/api client version (#154).
     this.testedUpTo = null;
     
+    // One correlation scope per request (#441); markParser re-enters it after body parsing.
+    const requestScope = (req, res, next) => {
+      if (!req.correlationId) req.correlationId = randomUUID();
+      withCorrelation(next, req.correlationId);
+    };
+    this.app.use(requestScope);
+
     // Security headers first, so every response carries them: static assets,
     // the 401 from the auth middleware, and body-parser's own errors. (#243)
     this.app.disable('x-powered-by');
