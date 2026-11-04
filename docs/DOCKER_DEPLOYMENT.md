@@ -529,7 +529,7 @@ actual-sync:
     driver: "json-file"
     options:
       max-size: "10m"
-      max-file: "3"
+      max-file: "5"
 ```
 
 ### 6. Backup Strategy

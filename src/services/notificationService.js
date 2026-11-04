@@ -226,9 +226,12 @@ class NotificationService {
         && isMuted('telegram')) muted.push('telegram');
 
     for (const channel of ['slack', 'discord', 'generic']) {
-      for (const entry of this.config.webhooks?.[channel] || []) {
+      const entries = this.config.webhooks?.[channel] || [];
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
         if (entry.enabled === false) continue;
-        if (isMuted(channel, entry)) muted.push(`webhooks.${channel}[${entry.name || entry.url}]`);
+        // Label only, never the URL: the secret lives in the path (#431).
+        if (isMuted(channel, entry)) muted.push(`webhooks.${channel}[${entry.name || `${channel}#${i}`}]`);
       }
     }
 
@@ -1122,15 +1125,18 @@ Please investigate and resolve the issue.
     this._brandPayload(payload, 'icon_url');
 
     const results = [];
-    for (const webhook of this.config.webhooks.slack) {
+    for (const [i, webhook] of this.config.webhooks.slack.entries()) {
       if (webhook.enabled === false) continue; // #169: enabled:false wins everywhere
       try {
         const result = await this.sendWebhook(webhook.url, payload);
         results.push({ webhook: webhook.name || webhook.url, success: true, result });
       } catch (error) {
+        // Never log the URL: the secret is in the path (#431). Channel + status only.
         this.logger.error('Failed to send Slack webhook', {
-          webhook: webhook.name || webhook.url,
-          error: error.message
+          channel: 'slack',
+          label: webhook.name || `slack#${i}`,
+          statusCode: error.statusCode,
+          code: error.code
         });
         results.push({ webhook: webhook.name || webhook.url, success: false, error: error.message });
       }
@@ -1186,15 +1192,18 @@ Please investigate and resolve the issue.
     this._suppressDiscordMentions(payload);
 
     const results = [];
-    for (const webhook of this.config.webhooks.discord) {
+    for (const [i, webhook] of this.config.webhooks.discord.entries()) {
       if (webhook.enabled === false) continue; // #169: enabled:false wins everywhere
       try {
         const result = await this.sendWebhook(webhook.url, payload);
         results.push({ webhook: webhook.name || webhook.url, success: true, result });
       } catch (error) {
+        // Never log the URL: the secret is in the path (#431). Channel + status only.
         this.logger.error('Failed to send Discord webhook', {
-          webhook: webhook.name || webhook.url,
-          error: error.message
+          channel: 'discord',
+          label: webhook.name || `discord#${i}`,
+          statusCode: error.statusCode,
+          code: error.code
         });
         results.push({ webhook: webhook.name || webhook.url, success: false, error: error.message });
       }
@@ -1258,7 +1267,7 @@ Please investigate and resolve the issue.
         });
       });
 
-      req.on('timeout', () => req.destroy(new Error('Webhook request timed out')));
+      req.on('timeout', () => req.destroy(Object.assign(new Error('Webhook request timed out'), { code: 'ETIMEDOUT' })));
       req.on('error', reject);
       req.write(body);
       req.end();

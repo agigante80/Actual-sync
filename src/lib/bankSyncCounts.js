@@ -20,4 +20,21 @@ function bankSyncCounts(result) {
     };
 }
 
-module.exports = { bankSyncCounts };
+/**
+ * Length of every array-valued key of a runBankSync result, for DEBUG logs (#434).
+ * Values are never returned, only key names and lengths.
+ *
+ * @param {*} result - What runBankSync resolved to
+ * @returns {Object<string, number>}
+ */
+function describeResultLengths(result) {
+    const lengths = {};
+    if (result && typeof result === 'object') {
+        for (const key of Object.keys(result)) {
+            if (Array.isArray(result[key])) lengths[key] = result[key].length;
+        }
+    }
+    return lengths;
+}
+
+module.exports = { bankSyncCounts, describeResultLengths };

@@ -2,7 +2,7 @@
  * Tests for src/lib/channelEscape.js (#257)
  */
 
-const { escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml, truncateCodePoints, truncateWithEllipsis } = require('../lib/channelEscape');
+const { escapeHtml, escapeSlack, escapeDiscordMarkdown, truncateTelegramHtml, truncateCodePoints, truncateWithEllipsis } = require('../lib/channelEscape');
 
 describe('escapeSlack', () => {
   test('escapes &, < and >', () => {
@@ -162,5 +162,15 @@ describe('truncateWithEllipsis', () => {
     expect(out.isWellFormed()).toBe(true);
     expect([...out]).toHaveLength(2000);
     expect(out.endsWith('\u{1F600}\u2026')).toBe(true);
+  });
+});
+
+describe('escapeHtml (#428)', () => {
+  test('escapes & < > " and \'', () => {
+    expect(escapeHtml(`<a href="x">Tom & 'J'</a>`)).toBe('&lt;a href=&quot;x&quot;&gt;Tom &amp; &#39;J&#39;&lt;/a&gt;');
+  });
+  test('does not double-escape in a single pass and coerces non-strings', () => {
+    expect(escapeHtml('&lt;')).toBe('&amp;lt;');
+    expect(escapeHtml(5)).toBe('5');
   });
 });

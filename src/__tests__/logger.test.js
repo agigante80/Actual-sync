@@ -477,6 +477,21 @@ describe('Logger', () => {
             expect(meta.server.encryptionPassword).toBe('e2e-secret'); // original untouched
         });
 
+        test.each([
+            ['Slack hook', 'POST https://hooks.slack.com/services/T0AAA/B0BBB/SECRETxyz failed', 'SECRETxyz'],
+            ['Discord hook', 'https://discord.com/api/webhooks/123456789/SECRETxyz', 'SECRETxyz'],
+            ['Slack trigger', 'https://hooks.slack.com/triggers/E0AAA/12345/SECRETxyz', 'SECRETxyz'],
+            ['Slack workflow', 'https://hooks.slack.com/workflows/T0AAA/A0BBB/12345/SECRETxyz', 'SECRETxyz'],
+            ['Slack gov hook', 'https://hooks.slack-gov.com/services/T0AAA/B0BBB/SECRETxyz', 'SECRETxyz'],
+            ['Discord slack-compat hook', 'https://discord.com/api/webhooks/123456789/SECRETxyz/slack', 'SECRETxyz'],
+            ['discordapp hook','https://discordapp.com/api/v10/webhooks/123456789/SECRETxyz?wait=true', 'SECRETxyz']
+        ])('masks path-style %s secret (#431)', (_n, text, secret) => {
+            const logger = new Logger({ logDir: null });
+            const line = emit(logger, text, { url: text }, 'json');
+            expect(line).not.toContain(secret);
+            expect(line).toContain('[REDACTED]');
+        });
+
         test('masks bot-token URLs embedded in string values', () => {
             const logger = new Logger({ logDir: null });
             const line = emit(logger, 'x', {

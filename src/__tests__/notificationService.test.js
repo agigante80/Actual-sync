@@ -1631,4 +1631,58 @@ describe('NotificationService', () => {
       });
     });
   });
+  describe('webhook failure logs never carry the URL (#431)', () => {
+    const notification = { serverName: 'S', timestamp: 't', errorMessage: 'e', consecutiveFailures: 1, thresholds: { failureRate: 0, consecutiveExceeded: false, rateExceeded: false } };
+    const SLACK = 'https://hooks.slack.com/services/T0AAA/B0BBB/SECRETslacktoken';
+    const DISCORD = 'https://discord.com/api/webhooks/123456789/SECRETdiscordtoken';
+
+    test('two unnamed slack webhooks, second 404s: log line labels it slack#1', async () => {
+      const service = new NotificationService({ webhooks: { slack: [{ url: SLACK }, { url: SLACK + 'B' }] } });
+      const err = new Error('Webhook failed with status 404: nope');
+      err.statusCode = 404;
+      jest.spyOn(service, 'sendWebhook').mockResolvedValueOnce({ statusCode: 200 }).mockRejectedValueOnce(err);
+      const error = jest.spyOn(service.logger, 'error').mockImplementation(() => {});
+      await service.sendSlackWebhooks(notification);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0][1]).toEqual(expect.objectContaining({ channel: 'slack', label: 'slack#1', statusCode: 404 }));
+      expect(JSON.stringify(error.mock.calls)).not.toContain('SECRETslacktoken');
+    });
+
+    test('mutedChannels labels an unnamed generic webhook by index, never its URL', () => {
+      const url = 'https://ha.example/api/webhook/HASECRETID';
+      const service = new NotificationService({ webhooks: { generic: [{ url, notifyOnSuccess: 'never' }] } });
+      const muted = service.mutedChannels();
+      expect(muted).toEqual(['webhooks.generic[generic#0]']);
+      expect(JSON.stringify(muted)).not.toContain('HASECRETID');
+    });
+
+    test('sendWebhook timeout error carries code ETIMEDOUT', async () => {
+      const server = require('http').createServer(() => {});
+      await new Promise(r => server.listen(0, '127.0.0.1', r));
+      const service = new NotificationService({});
+      try {
+        await expect(service.sendWebhook(`http://127.0.0.1:${server.address().port}/x`, {}, { timeout: 50 }))
+          .rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise(r => server.close(r));
+      }
+    });
+
+    test.each([
+      ['slack', 'sendSlackWebhooks', SLACK, 'SECRETslacktoken'],
+      ['discord', 'sendDiscordWebhooks', DISCORD, 'SECRETdiscordtoken']
+    ])('%s failure log has channel and status, not the unnamed webhook URL', async (channel, method, url, secret) => {
+      const service = new NotificationService({ webhooks: { [channel]: [{ url }] } });
+      const err = new Error('Webhook failed with status 404: nope');
+      err.statusCode = 404;
+      jest.spyOn(service, 'sendWebhook').mockRejectedValue(err);
+      const error = jest.spyOn(service.logger, 'error').mockImplementation(() => {});
+      await service[method](notification);
+      const logged = JSON.stringify(error.mock.calls);
+      expect(logged).not.toContain(secret);
+      expect(logged).not.toContain(url);
+      expect(error.mock.calls[0][1]).toEqual(expect.objectContaining({ channel, statusCode: 404 }));
+    });
+  });
 });

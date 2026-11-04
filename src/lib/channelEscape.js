@@ -39,6 +39,24 @@ function escapeTelegramHtml(text) {
 }
 
 /**
+ * Escape the five characters that matter in HTML text and quoted attribute
+ * values (`&`, `<`, `>`, `"`, `'`). Used by the email HTML body in
+ * messageFormatter, where server names, account names and upstream error text
+ * are interpolated directly. (#428)
+ *
+ * @param {*} text
+ * @returns {string}
+ */
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
  * Backslash-escape the characters Discord's Markdown parser treats specially,
  * so a rendered value cannot turn into bold/italic/strikethrough/code/quote/
  * masked-link markup, or a mention-like `>` the operator did not write.
@@ -205,6 +223,7 @@ function truncateTelegramHtml(text, max = 4096) {
 module.exports = {
   escapeSlack,
   escapeTelegramHtml,
+  escapeHtml,
   escapeDiscordMarkdown,
   truncateTelegramHtml,
   truncateCodePoints,

@@ -23,3 +23,15 @@ describe('bankSyncCounts (#391)', () => {
         expect(bankSyncCounts({ newTransactions: [], matchedTransactions: [] })).toEqual({ added: 0, updated: 0 });
     });
 });
+
+describe('describeResultLengths (#434)', () => {
+    const { describeResultLengths } = require('../lib/bankSyncCounts');
+    test('returns array lengths only, never values', () => {
+        expect(describeResultLengths({ newTransactions: ['a', 'b'], payee: 'X', matchedTransactions: [] }))
+            .toEqual({ newTransactions: 2, matchedTransactions: 0 });
+    });
+    test('non-objects give {}', () => {
+        expect(describeResultLengths(undefined)).toEqual({});
+        expect(describeResultLengths('str')).toEqual({});
+    });
+});
