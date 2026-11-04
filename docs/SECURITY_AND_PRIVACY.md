@@ -208,7 +208,7 @@ const limiter = rateLimit({
 3. **Sync Service → Logs**: Account IDs and sync status (no balances/amounts)
 
 **Privacy Controls**:
-- ✅ Sync service doesn't log transaction amounts
+- ✅ Sync service doesn't log transaction amounts, payees or the raw `runBankSync` result, even at DEBUG (only counts, key names and array lengths; covered by `src/__tests__/debugResultLeak.test.js`)
 - ✅ Sync service doesn't log account balances
 - ✅ Sync service doesn't log account numbers
 - ✅ Data cached locally in isolated directories per server
