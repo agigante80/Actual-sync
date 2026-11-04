@@ -2,6 +2,9 @@
 const fs = require('fs');
 const path = require('path');
 const ConfigLoader = require('../src/lib/configLoader');
+const bootstrap = require('../src/lib/bootstrapLogger');
+// ConfigLoader warnings are buffered; write them to stderr as JSON lines at exit (#442)
+bootstrap.installExitDump();
 const { resolveSchemaPath } = require('../src/lib/configBootstrap');
 
 /**
