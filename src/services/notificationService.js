@@ -1122,9 +1122,12 @@ Please investigate and resolve the issue.
         const result = await this.sendWebhook(webhook.url, payload);
         results.push({ webhook: webhook.name || webhook.url, success: true, result });
       } catch (error) {
+        // Never log the URL: the secret is in the path (#431). Channel + status only.
         this.logger.error('Failed to send Slack webhook', {
-          webhook: webhook.name || webhook.url,
-          error: error.message
+          channel: 'slack',
+          name: webhook.name,
+          statusCode: error.statusCode,
+          code: error.code
         });
         results.push({ webhook: webhook.name || webhook.url, success: false, error: error.message });
       }
@@ -1186,9 +1189,12 @@ Please investigate and resolve the issue.
         const result = await this.sendWebhook(webhook.url, payload);
         results.push({ webhook: webhook.name || webhook.url, success: true, result });
       } catch (error) {
+        // Never log the URL: the secret is in the path (#431). Channel + status only.
         this.logger.error('Failed to send Discord webhook', {
-          webhook: webhook.name || webhook.url,
-          error: error.message
+          channel: 'discord',
+          name: webhook.name,
+          statusCode: error.statusCode,
+          code: error.code
         });
         results.push({ webhook: webhook.name || webhook.url, success: false, error: error.message });
       }
