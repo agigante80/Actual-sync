@@ -1,0 +1,165 @@
+/**
+ * Source guards (#450, D9). Two rules that no runtime test can enforce for a
+ * call site that only runs in production:
+ *
+ *  1. No `console.*` outside the console bridge, the logger's own console sink
+ *     and the browser script served by dashboard.js. Everything else logs
+ *     through the logger so redaction, the field allowlist and CWE-117
+ *     escaping apply.
+ *  2. The first argument of a logger call is a string literal (or a template
+ *     literal without interpolation, or a conditional of those). A message
+ *     built from data is a leak channel the field allowlist never sees.
+ *
+ * The third guard of D9, "every logged key is registered in logFields.js",
+ * lives in logFieldKeys.static.test.js.
+ *
+ * Existing exceptions are listed below with the reason. Adding to a list needs
+ * a reviewer's agreement; removing a stale entry is required (the guards fail
+ * on an entry that no longer matches anything).
+ */
+const fs = require('fs');
+const path = require('path');
+const parser = require('@babel/parser');
+
+const ROOT = path.join(__dirname, '..', '..');
+const SRC = path.join(ROOT, 'src');
+
+// ---- Guard 1: console ------------------------------------------------------
+const CONSOLE_ALLOWED = {
+    // The bridge wraps the global console on purpose (#426).
+    'src/lib/consoleBridge.js': 'the console bridge itself',
+    // The logger's console sink: its own output, and the last-resort reports of
+    // a sink that failed (they cannot go through the logger that just failed).
+    'src/lib/logger.js': 'the logger console sink and its sink-failure reports',
+    // Served to the browser as a client script; its console is the browser's.
+    'src/services/dashboard.js': 'browser script served to the dashboard'
+    // bootstrapLogger.js writes with fs.writeSync(2, ...), not console, so it needs no entry.
+};
+
+// ---- Guard 2: first argument ----------------------------------------------
+// Keyed by "file :: source text of the first argument". Each is a message that
+// is not a literal today. None interpolates a payee, amount, secret or account
+// name (checked 2026-11-04). Pass-through wrappers forward a message their
+// caller already had to write as a literal.
+const MESSAGE_ALLOWED = {
+    'src/lib/bootstrapLogger.js :: r.message': 'replays a buffered bootstrap record',
+    'src/lib/crashHandlers.js :: message': 'crash handler picks one of its own constants',
+    'src/lib/logger.js :: message': 'the level methods forward their caller\'s message',
+    'src/lib/logger.js :: event': 'security(): the event name is the message, one of the caller\'s constants',
+    'src/lib/logger.js :: `Performance: ${operationName}`': 'timer label chosen by the caller, a constant',
+    'src/lib/scheduleAlertsStep.js :: warning.message': 'built in scheduleAlerts.evaluate from the rule id and numeric config only; the schedule name and error text were removed from it (#450)',
+    'src/lib/syncQueue.js :: message': 'the queue forwards its owner\'s message',
+    'src/services/syncHistory.js :: `Migrated sync_history: added ${column} column`': 'column name from the migration list',
+    'src/syncService.js :: message': 'queue and late-call wrappers forward their message',
+    'src/syncService.js :: timezoneWarning': 'text from describeTimezoneFallback (config timezone name only)',
+    'src/syncService.js :: `Starting ${syncType} sync for server: ${name}`': 'server name is operator config, syncType is a constant',
+    'src/syncService.js :: `Checking if data directory exists: ${dataDir}`': 'operator-configured path',
+    'src/syncService.js :: `${signal} received, shutting down gracefully...`': 'signal name from the OS'
+};
+
+const LEVEL_METHODS = new Set(['info', 'warn', 'error', 'debug', 'security']);
+
+function walk(node, visit) {
+    if (!node || typeof node.type !== 'string') return;
+    visit(node);
+    for (const key of Object.keys(node)) {
+        if (key === 'loc' || key === 'leadingComments' || key === 'trailingComments') continue;
+        const child = node[key];
+        if (Array.isArray(child)) child.forEach((c) => c && typeof c === 'object' && walk(c, visit));
+        else if (child && typeof child === 'object') walk(child, visit);
+    }
+}
+
+function sourceFiles(dir) {
+    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+            return ['__tests__', 'node_modules', 'vendor'].includes(e.name) ? [] : sourceFiles(full);
+        }
+        return e.name.endsWith('.js') ? [full] : [];
+    });
+}
+
+const productionFiles = () => [...sourceFiles(SRC), path.join(ROOT, 'index.js')].filter(f => fs.existsSync(f));
+const rel = (file) => path.relative(ROOT, file).split(path.sep).join('/');
+const parse = (code) => parser.parse(code, { sourceType: 'unambiguous', errorRecovery: true });
+
+function rootName(node) {
+    if (node.type === 'Identifier') return node.name;
+    if (node.type === 'ThisExpression') return 'thislog';
+    if ((node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') && !node.computed && node.property.type === 'Identifier') {
+        return node.property.name === 'logger' || /log$/i.test(node.property.name) ? node.property.name : '';
+    }
+    return '';
+}
+
+/** The message argument of a logger call, or null when the call is not one. */
+function messageArg(call) {
+    const callee = call.callee;
+    if (callee.type !== 'MemberExpression' && callee.type !== 'OptionalMemberExpression') return null;
+    if (!/logger|log$/i.test(rootName(callee.object))) return null;
+    const args = call.arguments;
+    if (callee.computed) return args[0] || null; // logger[level](msg, meta)
+    if (callee.property.type !== 'Identifier') return null;
+    if (LEVEL_METHODS.has(callee.property.name)) return args[0] || null;
+    // this.log(level, msg, meta) has the level first; log(msg, meta) does not.
+    if (callee.property.name === 'log') return (args.length >= 3 ? args[1] : args[0]) || null;
+    return null;
+}
+
+function isLiteralMessage(node) {
+    if (node.type === 'StringLiteral') return true;
+    if (node.type === 'TemplateLiteral') return node.expressions.length === 0;
+    if (node.type === 'ConditionalExpression') return isLiteralMessage(node.consequent) && isLiteralMessage(node.alternate);
+    return false;
+}
+
+describe('logging source guards (#450)', () => {
+    test('no console.* outside the bridge, the logger sink and the dashboard script', () => {
+        const used = new Set();
+        const violations = [];
+        for (const file of productionFiles()) {
+            const code = fs.readFileSync(file, 'utf8');
+            walk(parse(code).program, (node) => {
+                const isConsole = (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') &&
+                    node.object.type === 'Identifier' && node.object.name === 'console';
+                if (!isConsole) return;
+                if (CONSOLE_ALLOWED[rel(file)]) { used.add(rel(file)); return; }
+                violations.push(`${rel(file)}:${node.loc.start.line} console.${node.property.name || '?'}`);
+            });
+        }
+        expect(violations).toEqual([]);
+        // an exception that no longer matches must be removed
+        expect(Object.keys(CONSOLE_ALLOWED).filter(f => !used.has(f))).toEqual([]);
+    });
+
+    test('the first argument of every logger call is a string literal', () => {
+        const used = new Set();
+        const violations = [];
+        for (const file of productionFiles()) {
+            const code = fs.readFileSync(file, 'utf8');
+            walk(parse(code).program, (node) => {
+                if (node.type !== 'CallExpression' && node.type !== 'OptionalCallExpression') return;
+                const arg = messageArg(node);
+                if (!arg || isLiteralMessage(arg)) return;
+                const key = `${rel(file)} :: ${code.slice(arg.start, arg.end)}`;
+                if (MESSAGE_ALLOWED[key]) { used.add(key); return; }
+                violations.push(`${rel(file)}:${arg.loc.start.line} ${code.slice(arg.start, arg.end)}`);
+            });
+        }
+        expect(violations).toEqual([]);
+        expect(Object.keys(MESSAGE_ALLOWED).filter(k => !used.has(k))).toEqual([]);
+    });
+
+    test('the guards detect a violation (self-check on synthetic source)', () => {
+        const code = 'console.log(x); logger.info(`id ${payee}`); logger.warn(a ? "x" : "y"); this.log("INFO", msg, {});';
+        const bad = [];
+        walk(parse(code).program, (node) => {
+            if (node.type === 'CallExpression') {
+                const arg = messageArg(node);
+                if (arg && !isLiteralMessage(arg)) bad.push(code.slice(arg.start, arg.end));
+            }
+        });
+        expect(bad).toEqual(['`id ${payee}`', 'msg']);
+    });
+});
