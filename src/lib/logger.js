@@ -32,8 +32,15 @@ const RESERVED_KEYS = new Set([
     'service', 'version', 'component', 'seq', 'schema'
 ]);
 
+// `event` and `component` are reserved names in the record shape, but the
+// caller sets them (D1 component children, D7 audit events such as
+// authz_fail), so they pass through. Only the keys the logger itself writes
+// are stripped from context and meta.
+const CALLER_SET_KEYS = new Set(['event', 'component']);
+const LOGGER_OWNED_KEYS = new Set([...RESERVED_KEYS].filter((k) => !CALLER_SET_KEYS.has(k)));
+
 const withoutReserved = (obj) => Object.fromEntries(
-    Object.entries(obj || {}).filter(([k]) => !RESERVED_KEYS.has(k))
+    Object.entries(obj || {}).filter(([k]) => !LOGGER_OWNED_KEYS.has(k))
 );
 
 class Logger {

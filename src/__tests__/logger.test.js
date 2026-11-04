@@ -1105,9 +1105,16 @@ describe('Logger', () => {
             expect(out.message).toBe('real');
             expect(out.service).toBe('svc');
             expect(out.timestamp).not.toBe('x');
-            for (const k of ['severity', 'seq', 'schema', 'event', 'version']) {
+            for (const k of ['severity', 'seq', 'schema', 'version']) {
                 expect(out).not.toHaveProperty(k);
             }
+        });
+
+        test('event and component are caller-set: they pass through (D1, D7)', () => {
+            const logger = new Logger({ context: { component: 'telegram' } });
+            const out = emit(logger, 'WARN', 'm', { event: 'authz_fail' });
+            expect(out.event).toBe('authz_fail');
+            expect(out.component).toBe('telegram');
         });
 
         test('non-reserved context and meta still pass through', () => {
