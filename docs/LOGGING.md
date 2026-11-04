@@ -145,6 +145,79 @@ Reserved fields `timestamp`, `level`, `severity`, `message`, `service`, `version
 
 ---
 
+## Record contract (convention version 1)
+
+This section is the shared convention with actual-mcp-server. Both repos keep a
+copy; each states the version it follows, so drift shows in a diff.
+
+**Convention version: 1.** Actual-sync follows version 1. Design:
+`docs/plans/logging-architecture.md`.
+
+### Record schema
+
+Every JSON record validates against [`log-record.schema.json`](log-record.schema.json).
+Required: `timestamp` (UTC ISO 8601, milliseconds), `level`, `severity`
+(OpenTelemetry SeverityNumber: ERROR 17, WARN 13, INFO 9, DEBUG 5), `service`,
+`version` (app version), `message`, `seq` (per-process counter starting at 1,
+so gaps and reordering are visible) and `schema` (`1`). Optional: `component`,
+`event`, `correlationId`, `server`, `fields`, `error`.
+
+- `message` is a string literal, never interpolated. Data goes in fields.
+- `event` is a dotted name from the catalogue below, so alerting does not
+  depend on wording.
+- The keys `timestamp`, `level`, `severity`, `message`, `service`, `version`,
+  `seq` and `schema` are written by the logger and cannot be overwritten by
+  context or fields. `event` and `component` are reserved names that callers
+  set (child loggers, audit events).
+- Context and fields are still written flat. The field allowlist (#437) moves
+  them under `fields` and closes the schema.
+
+### Event catalogue
+
+| Event | Level | Meaning |
+|---|---|---|
+| `sync.account.completed` | INFO | One account finished syncing |
+| `third_party.console` | per call | `@actual-app/api` console output through the bridge |
+| `process.rejection_benign` | WARN | An allowlisted, already-handled rejection (#105). Same name in actual-mcp-server |
+| `security.suppressed` | WARN | The security rate limiter tripped; carries `suppressedCount` |
+| `authn_login_success` | INFO | Dashboard login accepted (once per session) |
+| `authn_login_fail` | WARN | Dashboard login refused |
+| `authz_fail` | WARN | Unauthorized Telegram chat or refused origin |
+| `input_validation_fail` | WARN | Rejected API input |
+| `sys_startup`, `sys_shutdown` | INFO | Process lifecycle |
+| `sys_crash` | ERROR | Uncaught exception or rejection |
+| `sys_config_change` | INFO | A setting, payment rule or server changed (our name; OWASP has no exact term) |
+
+Security events use the OWASP Logging Vocabulary names verbatim, carry
+`category: "security"`, may carry `remoteAddress`, and never carry request
+bodies, message text or user names. New events are added to this table with
+the change that emits them.
+
+### Error categories
+
+A logged error is `error: { type, code, httpStatus, category, safeMessage }`.
+`category` is one of `timeout`, `auth`, `upstream_unavailable`, `rate_limited`,
+`not_found`, `validation`, `conflict`, `cancelled`, `internal`. Raw upstream
+error text is never logged.
+
+### Startup record groups
+
+`sys_startup` carries these groups: versions (app, Node, @actual-app/api, pid,
+platform, container flag); timezone and UTC offset; log level, effective api
+verbose and active sinks; whether a custom log dir and data dir are set
+(booleans, not paths) and retention days; effective privacy flags; server count
+and schedules; enabled notification channels (booleans); dashboard bind
+address, auth mode and TLS; timeouts; config schema version.
+
+### Key mapping with actual-mcp-server
+
+| Concept | Actual-sync | actual-mcp-server |
+|---|---|---|
+| component | `component` | `module` |
+| correlation | `correlationId` | `sessionId`, `requestId` |
+
+---
+
 ## 🎨 Output Formats
 
 ### Pretty Format (Default)

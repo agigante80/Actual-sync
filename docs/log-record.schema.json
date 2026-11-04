@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/agigante80/Actual-sync/docs/log-record.schema.json",
+  "title": "Actual-sync log record",
+  "description": "One JSON log record, convention version 1 (docs/LOGGING.md). Today context and meta keys are written flat; the field allowlist (#437) moves them under `fields` and will close additionalProperties.",
+  "type": "object",
+  "required": ["timestamp", "level", "severity", "service", "version", "message", "seq", "schema"],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "description": "UTC ISO 8601 with milliseconds."
+    },
+    "level": { "enum": ["ERROR", "WARN", "INFO", "DEBUG"] },
+    "severity": {
+      "enum": [17, 13, 9, 5],
+      "description": "OpenTelemetry SeverityNumber: ERROR 17, WARN 13, INFO 9, DEBUG 5."
+    },
+    "service": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "component": { "type": "string", "minLength": 1 },
+    "event": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "description": "Dotted lower-case name from the catalogue in docs/LOGGING.md. OWASP security names are kept verbatim."
+    },
+    "message": { "type": "string", "description": "A string literal, never interpolated. Data goes in fields." },
+    "correlationId": { "type": "string" },
+    "server": { "type": "string" },
+    "fields": { "type": "object" },
+    "error": {
+      "type": "object",
+      "required": ["category"],
+      "properties": {
+        "type": { "type": "string" },
+        "code": { "type": ["string", "number"] },
+        "httpStatus": { "type": "integer" },
+        "category": {
+          "enum": ["timeout", "auth", "upstream_unavailable", "rate_limited", "not_found", "validation", "conflict", "cancelled", "internal"]
+        },
+        "safeMessage": { "type": "string" }
+      }
+    },
+    "seq": { "type": "integer", "minimum": 1, "description": "Per-process counter, so gaps and reordering are visible." },
+    "schema": { "const": 1 },
+    "truncated": { "type": "boolean" },
+    "droppedFieldCount": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": true
+}

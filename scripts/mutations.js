@@ -598,8 +598,8 @@ module.exports = [
         id: '187-file-line-unredacted', ticket: '#187',
         desc: 'the FILE line is serialized from raw values while the console stays masked',
         file: 'src/lib/logger.js',
-        anchor: '                const fileLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.fileFormat);',
-        mutant: '                const fileLine = this.safeSerialize(level, message, this.context, meta, this.fileFormat);',
+        anchor: '                const fileLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.fileFormat, seq);',
+        mutant: '                const fileLine = this.safeSerialize(level, message, this.context, meta, this.fileFormat, seq);',
         tests: 'logger'
     },
 
