@@ -83,7 +83,9 @@ function buildStartupRecord(config, logger, opts = {}) {
     const cfg = { ...config, servers };
     const logging = config.logging || {};
     const timezone = resolveTimezone(config);
-    const fileLogging = logging.logDir !== null;
+    // Effective state from the logger, not the raw config: the logger turns file
+    // logging off when the directory is not writable (#443 review L1).
+    const fileLogging = Boolean(logger.logDir);
     const rotation = logging.rotation || {};
     const dashboard = config.healthCheck?.dashboard || {};
 
@@ -98,11 +100,15 @@ function buildStartupRecord(config, logger, opts = {}) {
         utcOffset: moment.tz(opts.now || new Date(), timezone).format('Z'),
         logLevel: String(logging.level || 'INFO').toUpperCase(),
         actualApiVerbose: logging.actualApiVerbose === true,
-        sinks: logger.activeSinks(),
-        customLogDir: fileLogging && typeof logging.logDir === 'string' && logging.logDir !== DEFAULT_LOG_DIR,
+        // Configured sinks. With the dashboard off, /ws/logs refuses every client,
+        // so websocket is not a sink (#443 review L2).
+        sinks: logger.activeSinks().filter((s) => s !== 'websocket' || dashboard.enabled !== false),
+        customLogDir: fileLogging && path.resolve(logger.logDir) !== path.resolve(DEFAULT_LOG_DIR),
         customDataDir: usesCustomDataDir(servers),
         retentionDays: fileLogging && rotation.enabled !== false ? (rotation.maxFiles ?? DEFAULT_RETENTION_DAYS) : null,
-        includeAccountNames: logging.includeAccountNames === true,
+        // includeAccountNames is left out on purpose until #448 adds the setting
+        // and the gate that reads it: today account names are always logged, so
+        // reporting `false` would mislead a supporter (#443 review M1).
         serverCount: servers.length,
         schedules: uniqueSchedules(cfg),
         channels: enabledChannels(config.notifications),

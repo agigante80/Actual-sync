@@ -212,8 +212,8 @@ error text is never logged.
 |---|---|
 | versions | `appVersion`, `nodeVersion`, `actualApiVersion` (resolved), `pid`, `platform`, `container` |
 | time | `timezone`, `utcOffset` (`+01:00`; cron schedules use this zone) |
-| logging | `logLevel`, `actualApiVerbose`, `sinks` (`console`, `file`, `syslog`, `websocket`), `customLogDir`, `customDataDir` (booleans, never paths), `retentionDays` (`null` when file logging is off) |
-| privacy | `actualApiVerbose`, `includeAccountNames` |
+| logging | `logLevel`, `actualApiVerbose`, `sinks` (`console`, `file`, `syslog`, `websocket`), `customLogDir`, `customDataDir` (booleans, never paths), `retentionDays` (`null` when file logging is off). `sinks` lists configured sinks, not reached ones: `websocket` is listed when the dashboard is enabled, even before a client connects |
+| privacy | `actualApiVerbose` (`includeAccountNames` arrives with #448) |
 | sync | `serverCount`, `schedules` (unique cron strings), `timeouts.phaseTimeoutSeconds` |
 | channels | `channels.{email,telegram,slack,discord,webhook,ntfy}` (booleans) |
 | dashboard | `dashboardEnabled`, `dashboardBind` (`host:port`), `dashboardAuth` (`none`, `basic`, `token`), `tls` |

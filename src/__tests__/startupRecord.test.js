@@ -45,10 +45,9 @@ describe('buildStartupRecord (#443)', () => {
             logLevel: 'INFO',
             actualApiVerbose: false,
             sinks: ['console'],
-            customLogDir: true,
+            customLogDir: false,
             customDataDir: true,
-            retentionDays: 14,
-            includeAccountNames: false,
+            retentionDays: null,
             serverCount: 2,
             schedules: ['0 5 * * 2', '0 6 * * *'],
             channels: { email: false, telegram: true, slack: true, discord: false, webhook: false, ntfy: false },
@@ -61,6 +60,46 @@ describe('buildStartupRecord (#443)', () => {
         });
         expect(typeof r.actualApiVersion === 'string' || r.actualApiVersion === null).toBe(true);
         expect(Number.isInteger(CONFIG_SCHEMA_VERSION)).toBe(true);
+        // Until #448 there is no setting that stops account names being logged,
+        // so the record must not claim one (#443 review M1).
+        expect(r).not.toHaveProperty('includeAccountNames');
+    });
+
+    test('file fields follow the logger, not the raw config (#443 review L1)', () => {
+        const fs = require('fs'); const os = require('os'); const p = require('path');
+        const dir = fs.mkdtempSync(p.join(os.tmpdir(), 'startup-'));
+        const cfg = makeConfig();
+        cfg.logging.logDir = dir;
+        const writable = makeLogger({ logDir: dir });
+        try {
+            const r = buildStartupRecord(cfg, writable, {});
+            expect(r).toMatchObject({ customLogDir: true, retentionDays: 14 });
+        } finally {
+            writable.close();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+        // An unwritable dir: the logger turns file logging off, so no retention claim.
+        cfg.logging.logDir = '/nonexistent-root-dir/logs';
+        const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+        try {
+            const off = makeLogger({ logDir: '/nonexistent-root-dir/logs' });
+            const r = buildStartupRecord(cfg, off, {});
+            expect(r.sinks).not.toContain('file');
+            expect(r).toMatchObject({ customLogDir: false, retentionDays: null });
+        } finally {
+            errSpy.mockRestore(); warnSpy.mockRestore(); logSpy.mockRestore();
+        }
+    });
+
+    test('websocket is not a sink when the dashboard is disabled (#443 review L2)', () => {
+        const logger = makeLogger();
+        logger.setBroadcastCallback(() => {});
+        const cfg = makeConfig();
+        expect(buildStartupRecord(cfg, logger, {}).sinks).toContain('websocket');
+        cfg.healthCheck.dashboard.enabled = false;
+        expect(buildStartupRecord(cfg, logger, {}).sinks).toEqual(['console']);
     });
 
     test('UTC offset follows the configured timezone', () => {
