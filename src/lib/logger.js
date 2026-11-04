@@ -97,10 +97,9 @@ const LOGGER_OWNED_KEYS = new Set([...RESERVED_KEYS].filter((k) => !CALLER_SET_K
 // are fixed by the convention.
 const RECORD_SCHEMA = 1;
 const SEVERITY_NUMBERS = { ERROR: 17, WARN: 13, INFO: 9, DEBUG: 5 };
-let APP_VERSION = 'unknown';
-try {
-    APP_VERSION = require('../../package.json').version || 'unknown';
-} catch { /* package.json missing: keep 'unknown' */ }
+// resolveVersion() honours the VERSION build arg, so a dev image reports
+// 1.x.y-dev+sha like the rest of the app, not the package.json release.
+const APP_VERSION = require('./version').resolveVersion() || 'unknown';
 let recordSeq = 0;
 
 const withoutReserved = (obj) => Object.fromEntries(

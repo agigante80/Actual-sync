@@ -33,10 +33,11 @@ describe('log record contract', () => {
             logger.warn('Warn line', { event: 'authz_fail', category: 'security' });
             logger.error('Error line', { error: { category: 'timeout', safeMessage: 'x' } });
             logger.error(new Error('boom'));
+            logger.error('Legacy error line', { error: 'SQLITE_BUSY' });
             child.info('Child line', { event: 'sync.account.completed' });
             logger.info('Reserved attempt', { seq: 999, schema: 7, version: 'x', severity: 1 });
         });
-        expect(records).toHaveLength(7);
+        expect(records).toHaveLength(8);
         for (const r of records) {
             expect(validate(r) ? null : validate.errors).toBeNull();
         }
@@ -78,12 +79,16 @@ describe('log record contract', () => {
         const doc = fs.readFileSync(path.join(__dirname, '../../docs/LOGGING.md'), 'utf8');
         expect(doc).toMatch(/\*\*Convention version: 1\.\*\*/);
         const section = doc.split('### Event catalogue')[1].split('### Error categories')[0];
-        const names = [...section.matchAll(/`([a-z][a-z0-9_.]*)`/g)].map((m) => m[1]);
+        // Every backticked name in the Event column, whatever its case, so a bad
+        // name such as `Sys-Crash` fails instead of being skipped.
+        const names = section.split('\n')
+            .filter((l) => l.startsWith('| `'))
+            .flatMap((l) => [...l.split('|')[1].matchAll(/`([^`]+)`/g)].map((m) => m[1]));
         expect(names).toEqual(expect.arrayContaining(['process.rejection_benign', 'authz_fail', 'sys_crash']));
         for (const n of names) {
             expect(schema.properties.event.pattern && new RegExp(schema.properties.event.pattern).test(n)).toBe(true);
         }
-        for (const c of schema.properties.error.properties.category.enum) {
+        for (const c of schema.properties.error.oneOf.find((s) => s.type === "object").properties.category.enum) {
             expect(doc).toContain(`\`${c}\``);
         }
     });
