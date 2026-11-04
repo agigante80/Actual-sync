@@ -17,12 +17,14 @@ function deferred() {
     return { promise, resolve, reject };
 }
 
-function makeLogger() {
+function makeLogger({ sinksThrow = false } = {}) {
     const l = {
         level: 'info',
         info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(),
         startTimer: () => () => 1,
-        setBroadcastCallback: jest.fn()
+        setBroadcastCallback: jest.fn(),
+        security: jest.fn(),
+        activeSinks: () => { if (sinksThrow) throw new TypeError('boom /srv/alice-private'); return ['console']; }
     };
     l.child = () => l;
     return l;
@@ -33,7 +35,7 @@ function makeLogger() {
  * `script(actual, advance)` drives the late settlements.
  * Resolves to { recorded, actual }.
  */
-async function runSync(accountIds, bankCalls, script, { failEvaluation = false, logging = {} } = {}) {
+async function runSync(accountIds, bankCalls, script, { failEvaluation = false, logging = {}, sinksThrow = false } = {}) {
     jest.resetModules();
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'late-bank-'));
@@ -71,7 +73,7 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false, 
         });
     });
     const loggers = [];
-    jest.doMock('../lib/logger', () => ({ ...jest.requireActual('../lib/logger'), createLogger: () => { const l = makeLogger(); loggers.push(l); return l; } }));
+    jest.doMock('../lib/logger', () => ({ ...jest.requireActual('../lib/logger'), createLogger: () => { const l = makeLogger({ sinksThrow }); loggers.push(l); return l; } }));
     jest.doMock('../lib/versionInfo', () => ({
         fetchServerVersion: async () => null,
         getClientVersion: () => '1.0.0',
@@ -131,6 +133,26 @@ describe('sync correlation scope (#441)', () => {
         }, async (advance, started) => { await started(); await advance(10); });
         expect(recorded.correlationId).toMatch(/^[a-f0-9-]{36}$/);
         expect(seen).toBe(recorded.correlationId);
+    });
+});
+
+describe('sys_startup wiring (#443)', () => {
+    afterEach(() => jest.dontMock('@actual-app/api'));
+    const oneSync = (opts) => runSync(['a1'], { a1: () => Promise.resolve() },
+        async (advance, started) => { await started(); await advance(10); }, opts);
+
+    test('the record is written exactly once at startup', async () => {
+        const { loggers } = await oneSync();
+        const calls = loggers[0].security.mock.calls.filter((c) => c[0] === 'sys_startup');
+        expect(calls).toHaveLength(1);
+        expect(calls[0][1]).toMatchObject({ serverCount: 1, sinks: ['console'] });
+    });
+
+    test('a throwing builder keeps startup alive and warns with the error name only', async () => {
+        const { loggers, recorded } = await oneSync({ sinksThrow: true });
+        expect(recorded).toBeDefined();
+        expect(loggers[0].security.mock.calls.filter((c) => c[0] === 'sys_startup')).toHaveLength(0);
+        expect(loggers[0].warn).toHaveBeenCalledWith('Could not write the sys_startup record', { errorName: 'TypeError' });
     });
 });
 

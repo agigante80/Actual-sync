@@ -288,6 +288,15 @@ class Logger {
         this.broadcastCallback = callback;
     }
 
+    /** Names of the destinations a record reaches now, for the sys_startup record (#443). */
+    activeSinks() {
+        const sinks = ['console'];
+        if (this.logDir) sinks.push('file');
+        if (this.syslog.enabled) sinks.push('syslog');
+        if (this.getBroadcastCallback()) sinks.push('websocket');
+        return sinks;
+    }
+
     getBroadcastCallback() {
         if (this.broadcastCallback) return this.broadcastCallback;
         return this.broadcastParent ? this.broadcastParent.getBroadcastCallback() : null;
