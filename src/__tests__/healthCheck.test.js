@@ -1772,6 +1772,77 @@ describe('HealthCheckService', () => {
     });
   });
 
+  describe('broadcastLog backpressure and DEBUG opt-in (#445)', () => {
+    const mkClient = (extra = {}) => ({
+      readyState: 1, bufferedAmount: 0, send: jest.fn(), terminate: jest.fn(), ...extra
+    });
+    const mkHc = () => {
+      const hc = makeService({ port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' } });
+      hc.logger = { warn: jest.fn(), error: jest.fn(), info: jest.fn(), debug: jest.fn() };
+      return hc;
+    };
+
+    it('drops a client over the buffer limit, removes it and warns once with no client data', () => {
+      const hc = mkHc();
+      const slow = mkClient({ bufferedAmount: 2 * 1024 * 1024 });
+      const slow2 = mkClient({ bufferedAmount: 5 * 1024 * 1024 });
+      const ok = mkClient();
+      [slow, slow2, ok].forEach(c => hc.wsClients.add(c));
+      hc.broadcastLog('INFO', 'hello', {});
+      expect(slow.terminate).toHaveBeenCalled();
+      expect(slow.send).not.toHaveBeenCalled();
+      expect(hc.wsClients.has(slow)).toBe(false);
+      expect(hc.wsClients.has(slow2)).toBe(false);
+      expect(ok.send).toHaveBeenCalledTimes(1);
+      expect(hc.logger.warn).toHaveBeenCalledTimes(1);
+      expect(hc.logger.warn.mock.calls[0]).toHaveLength(1);
+    });
+
+    it('keeps a client at or under the limit', () => {
+      const hc = mkHc();
+      const c = mkClient({ bufferedAmount: 1024 * 1024 });
+      hc.wsClients.add(c);
+      hc.broadcastLog('INFO', 'x');
+      expect(c.send).toHaveBeenCalled();
+      expect(c.terminate).not.toHaveBeenCalled();
+      expect(hc.logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('does not send DEBUG unless the client opted in', () => {
+      const hc = mkHc();
+      const off = mkClient();
+      const on = mkClient({ wantsDebug: true });
+      hc.wsClients.add(off);
+      hc.wsClients.add(on);
+      hc.broadcastLog('debug', 'd');
+      hc.broadcastLog('DEBUG', 'd2');
+      expect(off.send).not.toHaveBeenCalled();
+      expect(on.send).toHaveBeenCalledTimes(2);
+      hc.broadcastLog('INFO', 'i');
+      expect(off.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('a subscribe message over a real socket turns DEBUG on', async () => {
+      const WebSocket = require('ws');
+      const hc = makeService({ port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' } });
+      await hc.start();
+      const ws = new WebSocket(`ws://127.0.0.1:${testPort}/ws/logs`);
+      const seen = [];
+      ws.on('message', (d) => seen.push(JSON.parse(d).message));
+      await new Promise(r => ws.on('open', r));
+      await new Promise(r => setTimeout(r, 50));
+      hc.broadcastLog('DEBUG', 'dbg-before');
+      ws.send(JSON.stringify({ type: 'subscribe', debug: true }));
+      await new Promise(r => setTimeout(r, 100));
+      hc.broadcastLog('DEBUG', 'dbg-after');
+      await new Promise(r => setTimeout(r, 100));
+      ws.close();
+      await hc.stop();
+      expect(seen).not.toContain('dbg-before');
+      expect(seen).toContain('dbg-after');
+    });
+  });
+
   /**
    * Notification statistics on the dashboard (#188).
    *
