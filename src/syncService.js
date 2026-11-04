@@ -21,6 +21,7 @@ const { createAutoRetry } = require('./lib/autoRetry');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, prepareSession, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts, persistPaymentSnapshot } = require('./lib/scheduleAlertsStep');
 const { bankSyncCounts, describeResultLengths } = require('./lib/bankSyncCounts');
+const { installConsoleBridge } = require('./lib/consoleBridge');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -308,6 +309,7 @@ async function runSyncBank(server, options = {}) {
     // Set once this sync touches the session; until then its finally must not
     // call shutdown(), which would close a session a late call still uses.
     let sessionOpened = false;
+    let restoreConsole = null; // undoes the #426 console bridge
     // Set by the schedule-alerts read phase (#295 review, M3) while the
     // session is still open; the write phase runs after the session is shut
     // down and after endTimer()/recordSync(), see the call after `finally` below.
@@ -420,6 +422,9 @@ async function runSyncBank(server, options = {}) {
 
         serverLogger.info(`Connecting to Actual server`, { url });
         sessionOpened = true;
+        // @actual-app/api prints warn/error to the global console whatever
+        // `verbose` says; route it through our logger for this session. (#426)
+        restoreConsole = installConsoleBridge(serverLogger, { verbose: config.logging?.actualApiVerbose === true });
         await api.init({
             serverURL: url,
             password: password,
@@ -1073,6 +1078,8 @@ async function runSyncBank(server, options = {}) {
                     error: shutdownErrorMessage
                 });
             }
+            // The catch above swallows shutdown errors, so this always runs.
+            if (restoreConsole) restoreConsole();
         }
         serverLogger.clearCorrelationId();
     }

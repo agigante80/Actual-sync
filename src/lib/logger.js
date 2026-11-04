@@ -9,6 +9,7 @@ const path = require('path');
 // which went ESM-only at v14 and could not be required under the CJS test runner). (#56)
 const { randomUUID } = require('crypto');
 const { createStream } = require('rotating-file-stream');
+const { passThrough } = require('./consoleBridge');
 
 // Log dir owner-only, log files owner read/write (D10, #446).
 const LOG_DIR_MODE = 0o700;
@@ -228,7 +229,7 @@ class Logger {
                     port: this.syslog.port,
                     protocol: proto,
                     ca: this.syslog.ca,
-                    onError: (err) => console.error('Syslog transport error:', err.message)
+                    onError: (err) => passThrough(() => console.error('Syslog transport error:', err.message))
                 });
             } else {
                 this.syslogClient = dgram.createSocket('udp4');
@@ -544,7 +545,7 @@ class Logger {
                 this.syslog.host,
                 (err) => {
                     if (err) {
-                        console.error('Failed to send to syslog:', err.message);
+                        passThrough(() => console.error('Failed to send to syslog:', err.message));
                     }
                 }
             );
