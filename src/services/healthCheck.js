@@ -27,6 +27,8 @@ const markParser = (parser) => (req, res, next) =>
 
 // A /ws/logs client with more than this queued is dropped (#445)
 const WS_MAX_BUFFERED_BYTES = 1024 * 1024;
+// A good dashboard login is logged once per source per hour (#444).
+const AUTH_SUCCESS_DEDUPE_MS = 60 * 60 * 1000;
 
 const configJson = markParser(express.json({ limit: '16kb' }));
 
@@ -369,7 +371,9 @@ class HealthCheckService {
         // only swept on a timer), so check resetTime or a lockout lasts up to
         // two windows.
         if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {
-          this.logger.warn(`${realm} authentication throttled after repeated failures`, {
+          this.logger.security('authn_login_fail', {
+            reason: 'throttled',
+            realm: realm.toLowerCase(),
             remoteAddress: req.ip,
             limit: this.authFailureLimit,
             windowMinutes: Math.round(this.authFailureWindowMs / 60000)
@@ -411,7 +415,8 @@ class HealthCheckService {
         ok = this.isAllowedOrigin(candidate, req.headers.host);
       }
       if (ok) return next();
-      this.logger.warn('Request refused: origin not allowed', {
+      this.logger.security('authz_fail', {
+        reason: 'origin_not_allowed',
         method: req.method,
         path: req.path,
         origin: typeof candidate === 'string' ? candidate.slice(0, 200) : null,
@@ -628,7 +633,14 @@ class HealthCheckService {
    */
   checkRequestCredentials(req, res, next, authConfig, authType, realm) {
     const result = checkCredentials(req.headers, authConfig);
-    if (result.ok) return next();
+    if (result.ok) {
+      // Once per source per hour: Basic and bearer credentials have no session,
+      // so this stands in for "once per session". (#444)
+      this.logger.security('authn_login_success', {
+        realm: realm.toLowerCase(), remoteAddress: req.ip
+      }, { dedupeMs: AUTH_SUCCESS_DEDUPE_MS });
+      return next();
+    }
 
     if (result.reason === 'config') {
       return res.status(500).json({ error: 'Invalid authentication configuration' });
@@ -641,8 +653,8 @@ class HealthCheckService {
       }
       res.locals.authFailed = true;
       // Never log the username: users paste passwords into that field. (#286)
-      this.logger.warn(`${realm} authentication failed`, {
-        remoteAddress: req.ip
+      this.logger.security('authn_login_fail', {
+        reason: 'invalid_credentials', realm: realm.toLowerCase(), remoteAddress: req.ip
       });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -652,8 +664,8 @@ class HealthCheckService {
       return res.status(401).json({ error: 'Authentication required' });
     }
     res.locals.authFailed = true;
-    this.logger.warn(`${realm} token authentication failed`, {
-      remoteAddress: req.ip
+    this.logger.security('authn_login_fail', {
+      reason: 'invalid_token', realm: realm.toLowerCase(), remoteAddress: req.ip
     });
     return res.status(401).json({ error: 'Invalid token' });
   }

@@ -589,11 +589,11 @@ describe('TelegramBotService', () => {
         }
       });
       const allLogged = (b) => JSON.stringify(
-        ['error', 'warn', 'info', 'debug'].map(l => b.logger[l].mock.calls)
+        ['error', 'warn', 'info', 'debug', 'security'].map(l => b.logger[l].mock.calls)
       );
       const makeBot = () => {
         const b = new TelegramBotService({ botToken: '123:ABC', chatId: '456' }, {});
-        b.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
+        b.logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn(), security: jest.fn() };
         return b;
       };
 
@@ -620,8 +620,8 @@ describe('TelegramBotService', () => {
       test('unauthorized chat logs a static warn with no chat id, names or text', async () => {
         const b = makeBot();
         await b.processUpdate(mk('789', '/ping hunter2'));
-        expect(b.logger.warn).toHaveBeenCalledTimes(1);
-        expect(b.logger.warn.mock.calls[0][1]).toEqual({ event: 'authz_fail', authorized: false });
+        expect(b.logger.security).toHaveBeenCalledTimes(1);
+        expect(b.logger.security).toHaveBeenCalledWith('authz_fail', { authorized: false });
         const out = allLogged(b);
         expect(out).not.toMatch(/789|456|Sensitive|Person|secretuser|hunter2|ping/);
       });
@@ -630,12 +630,12 @@ describe('TelegramBotService', () => {
         const b = makeBot();
         const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
         for (let i = 0; i < 100; i++) await b.processUpdate(mk('789', '/ping'));
-        expect(b.logger.warn).toHaveBeenCalledTimes(1);
+        expect(b.logger.security).toHaveBeenCalledTimes(1);
         await b.processUpdate(mk('790', '/ping'));
-        expect(b.logger.warn).toHaveBeenCalledTimes(2);
+        expect(b.logger.security).toHaveBeenCalledTimes(2);
         now.mockReturnValue(1_000_000 + 60 * 60 * 1000);
         await b.processUpdate(mk('789', '/ping'));
-        expect(b.logger.warn).toHaveBeenCalledTimes(3);
+        expect(b.logger.security).toHaveBeenCalledTimes(3);
         expect(JSON.stringify([...b._authzWarned.keys()])).not.toMatch(/789|790/);
         now.mockRestore();
       });

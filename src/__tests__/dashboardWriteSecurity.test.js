@@ -63,7 +63,7 @@ async function makeService({ dashboard = {}, service = {}, noHistory = false, st
     ...service
   });
   // Quiet: expected 4xx/5xx paths log errors. The startup-notice tests spy on these.
-  svc.logger = { debug() {}, info() {}, warn() {}, error() {} };
+  svc.logger = { debug() {}, info() {}, warn() {}, security() {}, error() {} };
   live.push(svc);
   svc.status.serverStatuses.Main = { error: 'boom' };
   if (start) await svc.start();
@@ -820,7 +820,7 @@ describe('unmapped body-parser errors and the final error handler (#259)', () =>
   test('a thrown route error is a JSON 500 internal_error, logged, with no stack', async () => {
     const ctx = await makeService();
     const logged = [];
-    ctx.svc.logger = { debug() {}, info() {}, warn() {}, error: (...a) => logged.push(a) };
+    ctx.svc.logger = { debug() {}, info() {}, warn() {}, security() {}, error: (...a) => logged.push(a) };
     // configRouter is mounted before the final handler, so a throw reaches it.
     ctx.svc.configRouter.get('/__boom', () => { throw new Error('kaboom at secret/path.js'); });
     const res = await request(ctx.svc, { path: '/__boom' });

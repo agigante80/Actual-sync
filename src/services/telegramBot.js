@@ -353,10 +353,8 @@ class TelegramBotService {
         }
         this._authzWarned.delete(key);
         this._authzWarned.set(key, now);
-        this.logger.warn('Message from unauthorized chat rejected', {
-          event: 'authz_fail',
-          authorized: false
-        });
+        // Audit floor: written whatever logging.level is (D7, #444).
+        this.logger.security('authz_fail', { authorized: false });
       }
       return;
     }

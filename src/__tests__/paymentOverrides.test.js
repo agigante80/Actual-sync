@@ -359,7 +359,7 @@ describe('payment alert state routes (#261)', () => {
       syncHistory: history, getServers: () => servers,
       dashboardConfig: { enabled: true, allowConfigWrites: true, auth: BASIC, ...dashboard }
     });
-    svc.logger = { debug() {}, info() {}, warn() {}, error() {} };
+    svc.logger = { debug() {}, info() {}, warn() {}, security() {}, error() {} };
     await svc.start();
   }
 
