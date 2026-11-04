@@ -135,7 +135,7 @@ Manually syncing bank transactions is tedious and error-prone. Actual-sync runs 
 - ✅ **Interactive Telegram Bot** - Real-time commands (`/status`, `/history`, `/errors`, `/sync`) with notifications
 - ✅ **Multi-Channel Alerts** - Email (SMTP), Telegram, ntfy, and webhooks (Slack, Discord, and a generic JSON webhook for Gotify/Home Assistant/n8n/custom)
 - ✅ **Honest Account Reporting** - Every notification shows which accounts synced, failed (with the error), or were skipped and why (closed / not bank-linked)
-- ✅ **Per-Channel Notification Mode** - `notifyOnSuccess` (`always` / `errors_only` / `never`) set globally, per channel, or per webhook, so an alert channel can skip routine successes
+- ✅ **Per-Channel Notification Mode** - `notifyOnSuccess` (`always` / `errors_only` / `activity_only` / `never`) set globally, per channel, or per webhook, so an alert channel can skip routine successes
 - ✅ **Smart Thresholds** - Configurable failure detection (consecutive failures, failure rate) applied to failures
 - ✅ **Rate Limiting** - Failure-notification spam prevention with configurable intervals
 - ✅ **Missing-Payment Alerts** - Compares Actual's own schedules against posted transactions per server and notifies when an expected payment is late, missing, wrong-amount, or cannot be checked (stale bank connection); see [Missing-Payment Alerts](#-missing-payment-alerts)
@@ -497,7 +497,7 @@ If you've configured the Telegram bot, you can interact with the service:
 - `/stats` - Show sync statistics
 - `/servers` - List configured servers
 - `/sync ServerName` - Trigger manual sync for specific server
-- `/notify [always|errors|never]` - Change notification preferences at runtime (the command's `errors` is the config's `errors_only`)
+- `/notify [always|errors|activity|never]` - Change notification preferences at runtime (the command's `errors` is the config's `errors_only`, `activity` is `activity_only`)
 - `/help` - Show all available commands
 - `/ping` - Test bot connectivity
 - `/stats` - Show sync statistics
@@ -886,6 +886,7 @@ Actual-sync can send notifications on sync results — success, partial, or fail
 
 - **`always`** (default) — notify on every sync
 - **`errors_only`** — notify on failures and partial syncs, stay silent on clean successes
+- **`activity_only`** — like `errors_only`, plus successful syncs that imported or updated transactions
 - **`never`** — turn the channel off entirely, failures included
 
 ```json

@@ -16,7 +16,7 @@ class TelegramBotService {
    * @param {Object} config - Telegram bot configuration
    * @param {string} config.botToken - Telegram bot token
    * @param {string} config.chatId - Telegram chat ID
-   * @param {string} config.notifyOnSuccess - Notify on successful syncs ('always', 'never', 'errors_only')
+   * @param {string} config.notifyOnSuccess - Notify on successful syncs ('always', 'never', 'errors_only', 'activity_only')
    * @param {Object} services - Service dependencies
    * @param {Object} services.syncHistory - Sync history service
    * @param {Object} services.healthCheck - Health check service
@@ -29,7 +29,7 @@ class TelegramBotService {
     // notification path both support it) so a chatIds-only config still binds the
     // interactive bot rather than silently failing to start. (#114)
     this.config = {
-      notifyOnSuccess: 'errors_only', // 'always', 'never', 'errors_only'
+      notifyOnSuccess: 'errors_only', // 'always', 'never', 'errors_only', 'activity_only'
       pollInterval: 2000, // Poll every 2 seconds
       ...config,
       botToken: config.botToken || process.env.TELEGRAM_BOT_TOKEN || '',
@@ -85,7 +85,7 @@ class TelegramBotService {
         handler: this.handleServers.bind(this)
       },
       '/notify': {
-        description: 'Change notification settings (always/errors/never)',
+        description: 'Change notification settings (always/errors/activity/never)',
         handler: this.handleNotify.bind(this)
       },
       '/errors': {
@@ -568,14 +568,15 @@ class TelegramBotService {
    */
   async handleNotify(args) {
     const mode = args[0]?.toLowerCase();
-    const validModes = ['always', 'errors', 'never'];
+    const validModes = ['always', 'errors', 'activity', 'never'];
 
     if (!mode || !validModes.includes(mode)) {
       await this.sendMessage(
         `⚙️ Current notification mode: ${this.config.notifyOnSuccess}\n\n` +
-        `Usage: /notify [always|errors|never]\n\n` +
+        `Usage: /notify [always|errors|activity|never]\n\n` +
         `• always - Notify on all syncs (default)\n` +
         `• errors - Notify only on failures and partial syncs\n` +
+        `• activity - Failures and partial syncs, plus successful syncs that imported or updated transactions\n` +
         `• never - No notifications at all, INCLUDING failures (commands still work)`
       );
       return;
@@ -584,6 +585,7 @@ class TelegramBotService {
     const modeMap = {
       'always': 'always',
       'errors': 'errors_only',
+      'activity': 'activity_only',
       'never': 'never'
     };
 
@@ -603,6 +605,7 @@ class TelegramBotService {
     const effect = {
       never: '⚠️ You will receive NO sync notifications, including failures.',
       errors_only: 'You will receive notifications for failures and partial syncs only.',
+      activity_only: 'You will receive notifications for failures, partial syncs, and successful syncs that imported or updated transactions.',
       always: 'You will receive notifications for every sync.'
     }[this.config.notifyOnSuccess];
 

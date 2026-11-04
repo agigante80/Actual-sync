@@ -186,7 +186,7 @@ Multi-channel alerts on sync results. See **[docs/NOTIFICATIONS.md](NOTIFICATION
 
 **Cross-cutting controls:**
 
-- **`notifyOnSuccess`** (`always` / `errors_only` / `never`) — which sync results reach a channel. Set it on `notifications` as the global default and override it per channel, or per entry inside `webhooks.slack[]` / `webhooks.discord[]` / `webhooks.generic[]`. Defaults to `always`. `never` turns a channel off entirely (failures included); dashboard test notifications always send.
+- **`notifyOnSuccess`** (`always` / `errors_only` / `activity_only` / `never`) — which sync results reach a channel. Set it on `notifications` as the global default and override it per channel, or per entry inside `webhooks.slack[]` / `webhooks.discord[]` / `webhooks.generic[]`. Defaults to `always`. `activity_only` adds a successful sync only when it imported or updated transactions. `never` turns a channel off entirely (failures included); dashboard test notifications always send.
 - **`thresholds`** (when to alert) and **`rateLimit`** (anti-spam): both apply to **`failure` results only**. They do not affect success or partial results; use `notifyOnSuccess` for those.
 
 ### scheduleAlerts (optional, per server)

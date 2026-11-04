@@ -156,7 +156,7 @@ describe('documented notification options exist in the schema (#169)', () => {
     const enumAt = (node) => node && node.enum;
 
     it('notifications.notifyOnSuccess is declared as the global default', () => {
-        expect(enumAt(NOTIF.properties.notifyOnSuccess)).toEqual(['always', 'errors_only', 'never']);
+        expect(enumAt(NOTIF.properties.notifyOnSuccess)).toEqual(['always', 'errors_only', 'activity_only', 'never']);
     });
 
     // Every sink the notification service dispatches to must accept the override,
@@ -165,7 +165,7 @@ describe('documented notification options exist in the schema (#169)', () => {
     for (const channel of OBJECT_CHANNELS) {
         it(`notifications.${channel} accepts a notifyOnSuccess override`, () => {
             expect(enumAt(NOTIF.properties[channel].properties.notifyOnSuccess))
-                .toEqual(['always', 'errors_only', 'never']);
+                .toEqual(['always', 'errors_only', 'activity_only', 'never']);
         });
     }
 
@@ -173,7 +173,7 @@ describe('documented notification options exist in the schema (#169)', () => {
     for (const channel of ARRAY_CHANNELS) {
         it(`notifications.webhooks.${channel}[] accepts a per-entry notifyOnSuccess`, () => {
             expect(enumAt(NOTIF.properties.webhooks.properties[channel].items.properties.notifyOnSuccess))
-                .toEqual(['always', 'errors_only', 'never']);
+                .toEqual(['always', 'errors_only', 'activity_only', 'never']);
         });
 
         // Defect B: the senders have always honoured `enabled`, but the slack and

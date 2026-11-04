@@ -47,8 +47,8 @@ module.exports = [
         id: '169-bypass-ignored', ticket: '#169',
         desc: 'dashboard test notifications no longer bypass the gate',
         file: 'src/services/notificationService.js',
-        anchor: '      bypassThresholds || this.shouldNotifyChannel(channel, status, entry);',
-        mutant: '      this.shouldNotifyChannel(channel, status, entry);',
+        anchor: '      bypassThresholds || this.shouldNotifyChannel(channel, status, entry, { transactionsAdded, transactionsUpdated });',
+        mutant: '      this.shouldNotifyChannel(channel, status, entry, { transactionsAdded, transactionsUpdated });',
         tests: 'notificationService'
     },
     {
@@ -4184,5 +4184,47 @@ module.exports = [
         anchor: ' && r.item.source === source).length;',
         mutant: ' ).length;',
         tests: 'dashboardPayments'
+    },
+
+    // ---- #392 notifyOnSuccess activity_only -----------------------------------
+    {
+        id: '392-activity-ignores-counts', ticket: '#392',
+        desc: 'activity_only sends every success, quiet ones included (the transaction counts are ignored)',
+        file: 'src/services/notificationService.js',
+        anchor: "      return status !== 'success' || (counts?.transactionsAdded ?? 0) + (counts?.transactionsUpdated ?? 0) > 0;",
+        mutant: '      return true;',
+        tests: 'notificationService'
+    },
+    {
+        id: '392-activity-drops-updated', ticket: '#392',
+        desc: 'activity_only counts only imported transactions, so a success that only updated existing ones is suppressed',
+        file: 'src/services/notificationService.js',
+        anchor: " + (counts?.transactionsUpdated ?? 0) > 0;",
+        mutant: ' > 0;',
+        tests: 'notificationService'
+    },
+    {
+        id: '392-activity-suppresses-failure', ticket: '#392',
+        desc: 'activity_only suppresses a failure or partial sync with no transaction activity',
+        file: 'src/services/notificationService.js',
+        anchor: "      return status !== 'success' || (counts",
+        mutant: "      return (counts",
+        tests: 'notificationService'
+    },
+    {
+        id: '392-counts-not-passed', ticket: '#392',
+        desc: 'notifySync does not pass the run counts to the gate, so activity_only never sends a success',
+        file: 'src/services/notificationService.js',
+        anchor: 'this.shouldNotifyChannel(channel, status, entry, { transactionsAdded, transactionsUpdated });',
+        mutant: 'this.shouldNotifyChannel(channel, status, entry);',
+        tests: 'notificationService'
+    },
+    {
+        id: '392-telegram-activity-unmapped', ticket: '#392',
+        desc: '/notify activity is rejected as an unknown mode',
+        file: 'src/services/telegramBot.js',
+        anchor: "const validModes = ['always', 'errors', 'activity', 'never'];",
+        mutant: "const validModes = ['always', 'errors', 'never'];",
+        tests: 'telegramBot'
     }
 ];

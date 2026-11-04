@@ -321,7 +321,7 @@ class NotificationService {
    *
    * `never` means the channel is off entirely (it suppresses failures too) — it is
    * an explicit user opt-out, not a noise filter. The narrower invariant that must
-   * hold is that `always` and `errors_only` never suppress a failure.
+   * hold is that `always`, `errors_only` and `activity_only` never suppress a failure.
    *
    * `partial` counts as an error for `errors_only`: a partial sync is a failure
    * signal, and this matches MessageFormatter, which already maps partial to
@@ -329,10 +329,16 @@ class NotificationService {
    *
    * @param {string} channel - 'email' | 'telegram' | 'ntfy' | 'slack' | 'discord' | 'generic'
    * @param {string} status - 'success' | 'partial' | 'failure' | 'startup'
+   * `activity_only` (#392) behaves like `errors_only` for `failure` and
+   * `partial`, and sends a `success` only when the run imported or updated at
+   * least one transaction (`counts`, from #391; missing counts read as 0, so an
+   * api version that reports none never sends a success under this mode).
+   *
    * @param {Object} [entry] - Webhook array entry, for per-entry overrides
+   * @param {{transactionsAdded?: number, transactionsUpdated?: number}} [counts] - The run's transaction counts (#392)
    * @returns {boolean} True if the notification should be dispatched
    */
-  shouldNotifyChannel(channel, status, entry) {
+  shouldNotifyChannel(channel, status, entry, counts) {
     const mode =
       entry?.notifyOnSuccess ??
       this.config[channel]?.notifyOnSuccess ??
@@ -343,6 +349,9 @@ class NotificationService {
     // Startup has no sync status, so errors_only has nothing to filter on.
     if (status === 'startup') return true;
     if (mode === 'errors_only') return status !== 'success';
+    if (mode === 'activity_only') {
+      return status !== 'success' || (counts?.transactionsAdded ?? 0) + (counts?.transactionsUpdated ?? 0) > 0;
+    }
     return true;
   }
 
@@ -515,7 +524,7 @@ class NotificationService {
     // bypassThresholds:true — this branch is exercised only by tests. It is kept
     // so the invariant holds if that route is ever migrated onto notifySync().
     const allow = (channel, entry) =>
-      bypassThresholds || this.shouldNotifyChannel(channel, status, entry);
+      bypassThresholds || this.shouldNotifyChannel(channel, status, entry, { transactionsAdded, transactionsUpdated });
 
     const anyActive =
       allow('email') || allow('ntfy') || allow('telegram') ||
