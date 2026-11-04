@@ -170,6 +170,7 @@ Logging configuration. See **[docs/LOGGING.md](LOGGING.md)** for the full refere
 - **level** (string, default: `"INFO"`) — verbosity: `"DEBUG"`, `"INFO"`, `"WARN"`, `"ERROR"`.
 - **format** (string, default: `"pretty"`) — console format: `"pretty"` or `"json"`.
 - **fileFormat** (string, default: `"json"`) — log-file format; single-line JSON is recommended for shipping. Independent of `format`.
+- **actualApiVerbose** (boolean, default `false`) - UNSAFE. The `@actual-app/api` library is verbose by default and prints transactions (payees, amounts, notes) to the console. Actual-sync passes `verbose: false` to `api.init`. Set `true` only to debug the library, and never in shared or collected logs. Global only.
 - **redact** (array) — extra metadata key names to mask, on top of the always-on defaults. The default indicators are matched as case-insensitive substrings: `password`, `passwd`, `token`, `secret`, `apikey`, `api_key`, `authorization`, `credential`, `chatid` — so keys like `encryptionPassword` and `botToken` are covered too. Redaction applies across console/file/syslog/dashboard.
 - **logDir** (string|null, default: `"./logs"`) — log directory; `null` disables file logging.
 - **rotation** (object) — `enabled`, `maxSize` (`"10M"`), `interval` (`"1d"`, daily), `maxFiles` (retention), `compress` (`"gzip"`).

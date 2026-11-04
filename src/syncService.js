@@ -407,6 +407,9 @@ async function runSyncBank(server, options = {}) {
             serverURL: url,
             password: password,
             dataDir: dataDir,
+            // The library defaults to verbose and prints transactions (payees,
+            // amounts, notes). Off unless logging.actualApiVerbose is true. (#425)
+            verbose: config.logging?.actualApiVerbose === true,
         });
         serverLogger.info('Connected to Actual server');
 

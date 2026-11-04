@@ -34,6 +34,7 @@ Configure global logging in `config/config.json`:
     "format": "pretty",       // console format (pretty | json)
     "fileFormat": "json",     // file format (json recommended; single line per entry)
     "redact": [],             // extra secret key names to mask (defaults always apply)
+    "actualApiVerbose": false, // UNSAFE if true: @actual-app/api prints transactions (payees, amounts, notes)
     "logDir": "./logs",
     "rotation": {
       "enabled": true,      // Default: true (recommended)

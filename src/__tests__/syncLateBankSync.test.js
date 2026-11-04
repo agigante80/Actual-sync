@@ -35,7 +35,7 @@ function makeLogger() {
  * `script(actual, advance)` drives the late settlements.
  * Resolves to { recorded, actual }.
  */
-async function runSync(accountIds, bankCalls, script, { failEvaluation = false } = {}) {
+async function runSync(accountIds, bankCalls, script, { failEvaluation = false, logging = {} } = {}) {
     jest.resetModules();
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'late-bank-'));
@@ -68,7 +68,7 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false }
             servers: [{ name: 's1', url: 'http://x', password: 'p', syncId: 'b', dataDir }],
             // 1 s phase timeout: also the length of the drain after a call timeout
             sync: { maxRetries: 0, baseRetryDelayMs: 1, schedule: '0 0 * * *', phaseTimeoutSeconds: 1 },
-            logging: { level: 'error', format: 'text' },
+            logging: { level: 'error', format: 'text', ...logging },
             prometheus: { enabled: false }
         });
     });
@@ -253,5 +253,26 @@ describe('transaction counts from runBankSync (#391)', () => {
             a2: () => Promise.resolve({ newTransactions: ['t1'], matchedTransactions: [] })
         }, started);
         expect(recorded).toMatchObject({ status: 'partial', transactionsAdded: 1, transactionsUpdated: 0 });
+    });
+});
+
+describe('api.init verbose flag (#425)', () => {
+    afterEach(() => jest.dontMock('@actual-app/api'));
+    const drive = async (advance, begun) => { await begun(); await advance(1000); };
+    const calls = { a1: () => Promise.resolve() };
+
+    test('defaults to verbose:false so loot-core does not print transactions', async () => {
+        const { actual } = await runSync(['a1'], calls, drive);
+        expect(actual.init).toHaveBeenCalledWith(expect.objectContaining({ verbose: false }));
+    });
+
+    test('logging.actualApiVerbose:true opts in to verbose:true', async () => {
+        const { actual } = await runSync(['a1'], calls, drive, { logging: { actualApiVerbose: true } });
+        expect(actual.init).toHaveBeenCalledWith(expect.objectContaining({ verbose: true }));
+    });
+
+    test('a non-boolean value never enables verbose', async () => {
+        const { actual } = await runSync(['a1'], calls, drive, { logging: { actualApiVerbose: 'yes' } });
+        expect(actual.init).toHaveBeenCalledWith(expect.objectContaining({ verbose: false }));
     });
 });

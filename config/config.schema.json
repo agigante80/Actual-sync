@@ -350,6 +350,11 @@
           "description": "Additional metadata key names to mask as [REDACTED] in all log output, on top of the always-on defaults. The defaults are matched as case-insensitive substrings: password, passwd, token, secret, apikey, api_key, authorization, credential, chatid (so encryptionPassword, botToken, etc. are covered).",
           "items": { "type": "string", "minLength": 1 }
         },
+        "actualApiVerbose": {
+          "type": "boolean",
+          "description": "UNSAFE. When true, the @actual-app/api library prints its own verbose output, which includes transactions (payees, amounts, notes), to the console. Default false: Actual-sync passes verbose:false to api.init. Global only.",
+          "default": false
+        },
         "logDir": {
           "type": ["string", "null"],
           "description": "Directory for log files (set to null to disable file logging). For Docker deployments, use /app/logs. Defaults to './logs' if not specified.",
