@@ -105,7 +105,12 @@ try {
 
     logger = createLogger(loggerConfig);
     
-    logger.info('Configuration loaded successfully', { 
+    // Static message only: the flag makes @actual-app/api print transactions. (#425)
+    if (config.logging?.actualApiVerbose === true) {
+        logger.warn('logging.actualApiVerbose is on: @actual-app/api will print transaction data to stdout');
+    }
+
+    logger.info('Configuration loaded successfully', {
         serverCount: config.servers.length 
     });
 

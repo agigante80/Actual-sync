@@ -72,7 +72,8 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false, 
             prometheus: { enabled: false }
         });
     });
-    jest.doMock('../lib/logger', () => ({ createLogger: () => makeLogger() }));
+    const loggers = [];
+    jest.doMock('../lib/logger', () => ({ createLogger: () => { const l = makeLogger(); loggers.push(l); return l; } }));
     jest.doMock('../lib/versionInfo', () => ({
         fetchServerVersion: async () => null,
         getClientVersion: () => '1.0.0',
@@ -113,7 +114,7 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false, 
             await until(() => recordSync.mock.calls.length > 0 || i > 3);
         }
         expect(exit).not.toHaveBeenCalled();
-        return { recorded: recordSync.mock.calls[0]?.[0], actual, persist, notified: notifySync.mock.calls[0]?.[0] };
+        return { loggers, recorded: recordSync.mock.calls[0]?.[0], actual, persist, notified: notifySync.mock.calls[0]?.[0] };
     } finally {
         process.argv = argv;
         exit.mockRestore();
@@ -269,6 +270,22 @@ describe('api.init verbose flag (#425)', () => {
     test('logging.actualApiVerbose:true opts in to verbose:true', async () => {
         const { actual } = await runSync(['a1'], calls, drive, { logging: { actualApiVerbose: true } });
         expect(actual.init).toHaveBeenCalledWith(expect.objectContaining({ verbose: true }));
+    });
+
+    const verboseWarns = (loggers) => loggers
+        .flatMap(l => l.warn.mock.calls)
+        .filter(c => String(c[0]).includes('actualApiVerbose'));
+
+    test('startup logs one static WARN when the unsafe flag is on', async () => {
+        const { loggers } = await runSync(['a1'], calls, drive, { logging: { actualApiVerbose: true } });
+        const warns = verboseWarns(loggers);
+        expect(warns).toHaveLength(1);
+        expect(warns[0]).toEqual(['logging.actualApiVerbose is on: @actual-app/api will print transaction data to stdout']);
+    });
+
+    test('no WARN when the flag is off', async () => {
+        const { loggers } = await runSync(['a1'], calls, drive);
+        expect(verboseWarns(loggers)).toHaveLength(0);
     });
 
     test('a non-boolean value never enables verbose', async () => {
