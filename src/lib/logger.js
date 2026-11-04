@@ -78,6 +78,23 @@ const LEVEL_NAMES = {
     3: 'DEBUG'
 };
 
+// Keys owned by the logger; context and meta cannot set them (#433, design D1).
+const RESERVED_KEYS = new Set([
+    'timestamp', 'level', 'severity', 'message', 'event',
+    'service', 'version', 'component', 'seq', 'schema'
+]);
+
+// `event` and `component` are reserved names in the record shape, but the
+// caller sets them (D1 component children, D7 audit events such as
+// authz_fail), so they pass through. Only the keys the logger itself writes
+// are stripped from context and meta.
+const CALLER_SET_KEYS = new Set(['event', 'component']);
+const LOGGER_OWNED_KEYS = new Set([...RESERVED_KEYS].filter((k) => !CALLER_SET_KEYS.has(k)));
+
+const withoutReserved = (obj) => Object.fromEntries(
+    Object.entries(obj || {}).filter(([k]) => !LOGGER_OWNED_KEYS.has(k))
+);
+
 class Logger {
     constructor(options = {}) {
         this.level = options.level || 'INFO';
@@ -405,16 +422,19 @@ class Logger {
      */
     serialize(level, safeMessage, safeContext, safeMeta, format) {
         const timestamp = new Date().toISOString();
+        safeContext = withoutReserved(safeContext);
+        safeMeta = withoutReserved(safeMeta);
+        // Logger-owned keys were stripped above, so caller fields cannot
+        // overwrite them; they lead the record to match docs/LOGGING.md (#433).
         const logEntry = {
             timestamp,
             level: level.toUpperCase(),
             service: this.serviceName,
-            message: safeMessage,
-            ...safeContext,
-            ...safeMeta
+            message: safeMessage
         };
-
+        Object.assign(logEntry, safeContext, safeMeta);
         if (this.correlationId) {
+            // Not reserved, but the logger's own id still wins, as before #433.
             logEntry.correlationId = this.correlationId;
         }
 
@@ -636,9 +656,9 @@ class Logger {
     /**
      * Create child logger with additional context
      */
-    child(context = {}) {
+    child(context = {}, options = {}) {
         const childLogger = new Logger({
-            level: this.level,
+            level: options.level || this.level,
             format: this.format,
             fileFormat: this.fileFormat,
             logDir: this.logDir,
