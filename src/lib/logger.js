@@ -207,8 +207,8 @@ class Logger {
             .replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot[REDACTED]')
             // Path-style webhook secrets (#431): Slack /services/T/B/<secret>,
             // Discord /api[/vN]/webhooks/<id>/<token> (discord.com, discordapp.com)
-            .replace(/(hooks\.slack\.com\/services\/)[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+){0,2}/gi, '$1[REDACTED]')
-            .replace(/(discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/)[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_.-]+)?/gi, '$1[REDACTED]')
+            .replace(/(hooks\.slack(?:-gov)?\.com\/)[^\s"'?#<>]+/gi, '$1[REDACTED]')
+            .replace(/(discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/)[^\s"'?#<>]+/gi, '$1[REDACTED]')
             // URL userinfo credentials: scheme://user:secret@host  ->  user:[REDACTED]@host
             .replace(/(\/\/[^/:@\s]+):[^/@\s]+@/g, '$1:[REDACTED]@')
             // Authorization: Bearer <token>
