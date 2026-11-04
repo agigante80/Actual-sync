@@ -21,6 +21,7 @@ const { createAutoRetry } = require('./lib/autoRetry');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, prepareSession, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts, persistPaymentSnapshot } = require('./lib/scheduleAlertsStep');
 const { bankSyncCounts, describeResultLengths } = require('./lib/bankSyncCounts');
+const { installConsoleBridge } = require('./lib/consoleBridge');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -313,6 +314,7 @@ async function runSyncBank(server, options = {}) {
     // Set once this sync touches the session; until then its finally must not
     // call shutdown(), which would close a session a late call still uses.
     let sessionOpened = false;
+    let restoreConsole = null; // undoes the #426 console bridge
     // Set by the schedule-alerts read phase (#295 review, M3) while the
     // session is still open; the write phase runs after the session is shut
     // down and after endTimer()/recordSync(), see the call after `finally` below.
@@ -362,6 +364,26 @@ async function runSyncBank(server, options = {}) {
     const succeededAccounts = [];
     const failedAccounts = [];
     let skippedAccounts = []; // accounts skipped (manual / closed) — see partitionSyncableAccounts (#98)
+    // Per-account outcome for the notifications (#427), in processing order. The
+    // shape is shared with #429 (persistence) and #430 (dashboard): keep it as is.
+    const processedResults = [];
+    const recordAccountResult = (account, status, counts = null) => {
+        processedResults.push({
+            id: account.id,
+            name: account.name,
+            status,
+            added: counts ? counts.added : 0,
+            updated: counts ? counts.updated : 0,
+            countsKnown: Boolean(counts)
+        });
+    };
+    // Processed accounts first, then the ones that were never attempted.
+    const buildAccountResults = () => [
+        ...processedResults,
+        ...skippedAccounts.map(a => ({
+            id: a.id, name: a.name, status: 'skipped', added: 0, updated: 0, countsKnown: false
+        }))
+    ];
     // Version compatibility (#154): populated at connect time, reused by the error
     // path (#155) to explain a server-ahead "No budget file is open" failure.
     let serverVersion = null;
@@ -405,6 +427,9 @@ async function runSyncBank(server, options = {}) {
 
         serverLogger.info(`Connecting to Actual server`, { url });
         sessionOpened = true;
+        // @actual-app/api prints warn/error to the global console whatever
+        // `verbose` says; route it through our logger for this session. (#426)
+        restoreConsole = installConsoleBridge(serverLogger, { verbose: config.logging?.actualApiVerbose === true });
         await api.init({
             serverURL: url,
             password: password,
@@ -621,6 +646,7 @@ async function runSyncBank(server, options = {}) {
                     transactionsUpdated += counts.updated;
                     accountsSucceeded++;
                     succeededAccounts.push(account.name);
+                    recordAccountResult(account, 'synced', counts);
                     const accountDuration = accountTimer();
                     serverLogger.info('Bank sync completed for account', { 
                         accountId: account.id,
@@ -638,6 +664,7 @@ async function runSyncBank(server, options = {}) {
                         if (!sessionStuck && lateBankSync === 'ok') {
                             accountsSucceeded++;
                             succeededAccounts.push(account.name);
+                            recordAccountResult(account, 'synced'); // late: counts unknown
                             accountTimer();
                             // Its result arrived after withTimeout gave up, so its
                             // transaction counts are not known and add 0. (#391)
@@ -663,6 +690,7 @@ async function runSyncBank(server, options = {}) {
                     if (errorMsg && /no new transactions|no transactions found|nothing to sync/i.test(errorMsg)) {
                         accountsSucceeded++;
                         succeededAccounts.push(account.name);
+                        recordAccountResult(account, 'synced', { added: 0, updated: 0 });
                         accountTimer();
                         serverLogger.info('No new transactions for account', {
                             accountId: account.id,
@@ -683,6 +711,7 @@ async function runSyncBank(server, options = {}) {
                         name: account.name,
                         error: errorMsg
                     });
+                    recordAccountResult(account, 'failed');
                     accountTimer();
                     serverLogger.error('Error syncing bank for account', {
                         accountId: account.id,
@@ -700,6 +729,7 @@ async function runSyncBank(server, options = {}) {
                             name: skipped.name,
                             error: 'Skipped: an earlier bank sync is still running in the session'
                         });
+                        recordAccountResult(skipped, 'failed');
                     }
                     serverLogger.error('A timed-out bank sync is still running; skipped the remaining accounts', {
                         skipped: accounts.length - accountIndex - 1
@@ -823,6 +853,7 @@ async function runSyncBank(server, options = {}) {
                 accountsSkipped: skippedAccounts.length,
                 transactionsAdded,
                 transactionsUpdated,
+                accountResults: buildAccountResults(),
                 errorMessage,
                 correlationId
             });
@@ -865,6 +896,7 @@ async function runSyncBank(server, options = {}) {
                     succeededAccounts: succeededAccounts,
                     failedAccounts: failedAccounts,
                     skippedAccounts: skippedAccounts,
+                    accountResults: buildAccountResults(),
                     transactionsAdded,
                     transactionsUpdated,
                     error: errorMessage,
@@ -977,6 +1009,7 @@ async function runSyncBank(server, options = {}) {
                 accountsSkipped: skippedAccounts.length,
                 transactionsAdded,
                 transactionsUpdated,
+                accountResults: buildAccountResults(),
                 errorMessage: errorMessage,
                 errorCode: errorCode,
                 correlationId
@@ -1009,6 +1042,7 @@ async function runSyncBank(server, options = {}) {
                     succeededAccounts: succeededAccounts,
                     failedAccounts: failedAccounts,
                     skippedAccounts: skippedAccounts,
+                    accountResults: buildAccountResults(),
                     transactionsAdded,
                     transactionsUpdated,
                     error: errorMessage,
@@ -1051,6 +1085,8 @@ async function runSyncBank(server, options = {}) {
                     error: shutdownErrorMessage
                 });
             }
+            // The catch above swallows shutdown errors, so this always runs.
+            if (restoreConsole) restoreConsole();
         }
         serverLogger.clearCorrelationId();
     }

@@ -18,6 +18,7 @@ class MessageFormatter {
    * @param {number} result.accountsFailed - Failed account count
    * @param {Array} result.succeededAccounts - Successful account names
    * @param {Array} result.failedAccounts - Failed accounts with errors
+   * @param {Array} result.accountResults - Per-account { id, name, status, added, updated, countsKnown } (#427)
    * @param {number} result.transactionsAdded - Transactions the bank sync imported (#391)
    * @param {number} result.transactionsUpdated - Existing transactions it matched and updated (#391)
    * @param {string} result.error - Error message (for failures)
@@ -65,6 +66,7 @@ class MessageFormatter {
       succeededAccounts: result.succeededAccounts || [],
       failedAccounts: result.failedAccounts || [],
       skippedAccounts: result.skippedAccounts || [],
+      accountResults: Array.isArray(result.accountResults) ? result.accountResults : [],
       transactionsAdded: this._count(result.transactionsAdded),
       transactionsUpdated: this._count(result.transactionsUpdated)
     };
@@ -96,6 +98,8 @@ class MessageFormatter {
         succeededAccounts: content.succeededAccounts,
         failedAccounts: content.failedAccounts,
         skippedAccounts: content.skippedAccounts,
+        // Additive (#427): per-account counts; succeededAccounts stays as names.
+        accountResults: content.accountResults,
         timestamp: new Date().toISOString()
       },
       ntfy: {
@@ -169,6 +173,35 @@ class MessageFormatter {
     return `${content.transactionsAdded} new, ${content.transactionsUpdated} updated`;
   }
 
+  /**
+   * The synced accounts as [{ name, text }], where text is the count wording:
+   * "5 new transactions", "1 new transaction, 2 updated", "no new transactions"
+   * or "synced, count unknown" (a late success, #284). Falls back to the bare
+   * names (text null) when the caller passed no accountResults. (#427)
+   */
+  static _syncedEntries(content) {
+    const synced = content.accountResults.filter(a => a && a.status === 'synced');
+    if (synced.length === 0) {
+      return content.succeededAccounts.map(name => ({ name, text: null }));
+    }
+    return synced.map(a => ({ name: a.name, text: this._accountCountText(a) }));
+  }
+
+  static _accountCountText(account) {
+    if (!account.countsKnown) return 'synced, count unknown';
+    const added = this._count(account.added);
+    const updated = this._count(account.updated);
+    if (!added && !updated) return 'no new transactions';
+    const base = `${added} new transaction${added === 1 ? '' : 's'}`;
+    return updated ? `${base}, ${updated} updated` : base;
+  }
+
+  // One synced line; `esc` escapes the account name for the target channel.
+  static _syncedLine(entry, esc = (v) => v) {
+    const name = esc(String(entry.name));
+    return entry.text ? `${name}: ${entry.text}` : name;
+  }
+
   static _truncateError(error) {
     if (!error) return '';
     return error.length > 80 ? error.substring(0, 77) + '...' : error;
@@ -238,8 +271,8 @@ class MessageFormatter {
 
       if (synced > 0) {
         text += `\n✅ Synced:\n`;
-        content.succeededAccounts.forEach(name => {
-          text += `  • ${name}\n`;
+        this._syncedEntries(content).forEach(entry => {
+          text += `  • ${this._syncedLine(entry)}\n`;
         });
       }
 
@@ -340,8 +373,8 @@ class MessageFormatter {
       <div class="field">
         <span class="label">✅ Synced Accounts:</span>
         <ul class="account-list">`;
-        content.succeededAccounts.forEach(name => {
-          html += `<li class="account-item">• ${escapeHtml(name)}</li>`;
+        this._syncedEntries(content).forEach(entry => {
+          html += `<li class="account-item">• ${escapeHtml(this._syncedLine(entry))}</li>`;
         });
         html += `</ul>
       </div>`;
@@ -435,7 +468,7 @@ class MessageFormatter {
       }
       let accountsText = '';
       if (synced > 0) {
-        accountsText += `*✅ Synced:*\n${this._joinCapped(content.succeededAccounts.map(n => `• ${escapeSlack(n)}`), 900)}`;
+        accountsText += `*✅ Synced:*\n${this._joinCapped(this._syncedEntries(content).map(e => `• ${this._syncedLine(e, escapeSlack)}`), 900)}`;
       }
       if (failed > 0) {
         if (accountsText) accountsText += '\n\n';
@@ -479,7 +512,7 @@ class MessageFormatter {
         fields.push({ name: 'Transactions', value: transactions });
       }
       if (synced > 0) {
-        fields.push({ name: '✅ Synced Accounts', value: this._joinCapped(content.succeededAccounts.map(n => `• ${escapeDiscordMarkdown(n)}`), 1000) });
+        fields.push({ name: '✅ Synced Accounts', value: this._joinCapped(this._syncedEntries(content).map(e => `• ${this._syncedLine(e, escapeDiscordMarkdown)}`), 1000) });
       }
       if (failed > 0) {
         fields.push({ name: '❌ Failed Accounts', value: this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a, escapeDiscordMarkdown)), 1000) });

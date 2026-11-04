@@ -190,6 +190,7 @@ exports[`notification payload baseline (#257) formatSyncNotification failure wit
     ],
   },
   "generic": {
+    "accountResults": [],
     "accounts": {
       "failed": 0,
       "skipped": 0,
@@ -343,6 +344,7 @@ exports[`notification payload baseline (#257) formatSyncNotification failure wit
     ],
   },
   "generic": {
+    "accountResults": [],
     "accounts": {
       "failed": 2,
       "skipped": 0,
@@ -522,6 +524,7 @@ exports[`notification payload baseline (#257) formatSyncNotification success wit
     ],
   },
   "generic": {
+    "accountResults": [],
     "accounts": {
       "failed": 0,
       "skipped": 0,
@@ -705,6 +708,7 @@ exports[`notification payload baseline (#257) formatSyncNotification success wit
     ],
   },
   "generic": {
+    "accountResults": [],
     "accounts": {
       "failed": 1,
       "skipped": 1,
@@ -918,6 +922,7 @@ exports[`notification payload baseline (#257) formatSyncNotification success wit
     ],
   },
   "generic": {
+    "accountResults": [],
     "accounts": {
       "failed": 0,
       "skipped": 0,

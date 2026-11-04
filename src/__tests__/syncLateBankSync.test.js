@@ -56,7 +56,7 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false, 
         shutdown: jest.fn().mockResolvedValue(undefined),
         q: () => { const b = { filter: () => b, select: () => b }; return b; },
         aqlQuery: jest.fn().mockResolvedValue({
-            data: accountIds.map(id => ({ id, name: id, closed: false, account_sync_source: 'goCardless' }))
+            data: accountIds.map(id => ({ id, name: id, closed: false, account_sync_source: id.startsWith('manual') ? null : 'goCardless' }))
         }),
         runBankSync: jest.fn(({ accountId }) => bankCalls[accountId]())
     };
@@ -254,6 +254,83 @@ describe('transaction counts from runBankSync (#391)', () => {
             a2: () => Promise.resolve({ newTransactions: ['t1'], matchedTransactions: [] })
         }, started);
         expect(recorded).toMatchObject({ status: 'partial', transactionsAdded: 1, transactionsUpdated: 0 });
+    });
+});
+
+describe('accountResults for notifications (#427)', () => {
+    afterEach(() => jest.dontMock('@actual-app/api'));
+    const drive = async (advance, begin) => { await begin(); await advance(1000); };
+
+    test('normal sync: per-account counts, in account order', async () => {
+        const { notified } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.resolve({ newTransactions: ['t1', 't2'], matchedTransactions: ['t3'] }),
+            a2: () => Promise.resolve({ newTransactions: [], matchedTransactions: [] })
+        }, drive);
+        expect(notified.accountResults).toEqual([
+            { id: 'a1', name: 'a1', status: 'synced', added: 2, updated: 1, countsKnown: true },
+            { id: 'a2', name: 'a2', status: 'synced', added: 0, updated: 0, countsKnown: true }
+        ]);
+        expect(notified.succeededAccounts).toEqual(['a1', 'a2']);
+    });
+
+    test('#429 recordSync receives the same accountResults as the notification', async () => {
+        const { notified, recorded } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.resolve({ newTransactions: ['t1'], matchedTransactions: [] }),
+            a2: () => Promise.resolve({ newTransactions: [], matchedTransactions: [] })
+        }, drive);
+        expect(recorded.accountResults).toEqual(notified.accountResults);
+        expect(recorded.accountResults).toHaveLength(2);
+    });
+
+    test('#98 "No new transactions" is synced with known zero counts', async () => {
+        const { notified } = await runSync(['a1'], {
+            a1: () => Promise.reject(new Error('No new transactions'))
+        }, drive);
+        expect(notified.accountResults).toEqual([
+            { id: 'a1', name: 'a1', status: 'synced', added: 0, updated: 0, countsKnown: true }
+        ]);
+    });
+
+    test('#284 late success is synced with countsKnown false', async () => {
+        const slow = deferred();
+        const { notified } = await runSync(['a1'], { a1: () => slow.promise }, async (advance, begin) => {
+            await begin();
+            await advance(60000);
+            slow.resolve({ newTransactions: ['x'] });
+            await advance(2000);
+        });
+        expect(notified.accountResults).toEqual([
+            { id: 'a1', name: 'a1', status: 'synced', added: 0, updated: 0, countsKnown: false }
+        ]);
+    });
+
+    test('a failed account is status failed; the others keep their counts', async () => {
+        const { notified } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.reject(new Error('bank said no')),
+            a2: () => Promise.resolve({ newTransactions: ['t1'] })
+        }, drive);
+        expect(notified.accountResults).toEqual([
+            { id: 'a1', name: 'a1', status: 'failed', added: 0, updated: 0, countsKnown: false },
+            { id: 'a2', name: 'a2', status: 'synced', added: 1, updated: 0, countsKnown: true }
+        ]);
+    });
+
+    test('a manual account is status skipped, listed after the synced ones', async () => {
+        const { notified } = await runSync(['manual1', 'a1'], {
+            a1: () => Promise.resolve({ newTransactions: ['t1'] })
+        }, drive);
+        expect(notified.accountResults).toEqual([
+            { id: 'a1', name: 'a1', status: 'synced', added: 1, updated: 0, countsKnown: true },
+            { id: 'manual1', name: 'manual1', status: 'skipped', added: 0, updated: 0, countsKnown: false }
+        ]);
+    });
+
+    test('accounts left unstarted by a stuck session are failed', async () => {
+        const never = deferred();
+        const { notified } = await runSync(['a1', 'a2'], {
+            a1: () => never.promise, a2: () => Promise.resolve()
+        }, async (advance, begin) => { await begin(); await advance(60000); await advance(3000); });
+        expect(notified.accountResults.map(a => [a.id, a.status])).toEqual([['a1', 'failed'], ['a2', 'failed']]);
     });
 });
 
