@@ -31,6 +31,29 @@ describe('Logger.security (audit floor, #444)', () => {
     });
   });
 
+  test('sourceKey groups rotating addresses into one budget, record keeps the address', () => {
+    for (let i = 0; i < 60; i++) {
+      logger.security('authn_login_fail', { realm: 'dashboard', remoteAddress: `2001:db8::${i.toString(16)}` },
+        { sourceKey: '2001:db8::/56' });
+    }
+    const fails = lines.filter(l => l.event === 'authn_login_fail');
+    expect(fails).toHaveLength(10);
+    expect(fails[0].remoteAddress).toBe('2001:db8::0');
+  });
+
+  test('the realm is part of the key: a metrics success does not hide a dashboard one', () => {
+    logger.security('authn_login_success', { realm: 'metrics', remoteAddress: '1.2.3.4' }, { dedupeMs: 3600000 });
+    logger.security('authn_login_success', { realm: 'dashboard', remoteAddress: '1.2.3.4' }, { dedupeMs: 3600000 });
+    expect(lines.map(l => l.realm)).toEqual(['metrics', 'dashboard']);
+  });
+
+  test('flushSecurity writes a pending suppressed count before the window ends', () => {
+    for (let i = 0; i < 15; i++) logger.security('authn_login_fail', { remoteAddress: '9.9.9.9' });
+    logger.flushSecurity();
+    const sup = lines.find(l => l.event === 'security.suppressed');
+    expect(sup).toMatchObject({ suppressedCount: 5, suppressedEvent: 'authn_login_fail' });
+  });
+
   test('a success is an INFO record and also survives level ERROR', () => {
     logger.security('authn_login_success', { remoteAddress: '1.2.3.4' }, { dedupeMs: 3600000 });
     expect(lines).toHaveLength(1);

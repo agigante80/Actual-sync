@@ -650,11 +650,17 @@ class Logger {
      * @param {number} [opts.dedupeMs] - log at most once per source per this
      *   many ms and drop repeats silently ("once per session" events)
      * @param {string} [opts.level] - 'INFO' or 'WARN'; default by event
+     * @param {string} [opts.sourceKey] - limiter key for the source; callers
+     *   pass the same key as their request limiter (IPv6 grouped by /56), so
+     *   rotating addresses inside one prefix share one budget. The record keeps
+     *   the full remoteAddress.
      */
     security(event, fields = {}, opts = {}) {
         const state = this.securityState;
-        const source = String(fields.remoteAddress ?? 'unknown');
-        const key = `${event}|${source}`;
+        const source = String(opts.sourceKey ?? fields.remoteAddress ?? 'unknown');
+        // The realm is part of the key: a metrics scrape must not hide a
+        // dashboard login from the same address, nor share its budget.
+        const key = `${event}|${fields.realm ?? ''}|${source}`;
         const now = Date.now();
         const windowMs = opts.dedupeMs || SECURITY_WINDOW_MS;
         let entry = state.sources.get(key);
@@ -775,10 +781,15 @@ class Logger {
     /**
      * Close logger and cleanup resources
      */
-    close() {
+    /** Write every pending security.suppressed count now (shutdown). (#444) */
+    flushSecurity() {
         for (const [key, entry] of [...this.securityState.sources]) {
             this.flushSecurityEntry(key, entry);
         }
+    }
+
+    close() {
+        this.flushSecurity();
         if (this.rotatingStream) {
             this.rotatingStream.end();
         }

@@ -377,7 +377,7 @@ class HealthCheckService {
             remoteAddress: req.ip,
             limit: this.authFailureLimit,
             windowMinutes: Math.round(this.authFailureWindowMs / 60000)
-          });
+          }, { sourceKey: ipKeyGenerator(req.ip || '') });
           return res.status(429).json({ error: 'Too many failed authentication attempts, try again later' });
         }
         this.checkRequestCredentials(req, res, next, authConfig, authType, realm);
@@ -421,7 +421,7 @@ class HealthCheckService {
         path: req.path,
         origin: typeof candidate === 'string' ? candidate.slice(0, 200) : null,
         remoteAddress: req.ip
-      });
+      }, { sourceKey: ipKeyGenerator(req.ip || '') });
       return res.status(403).json({ error: 'origin_rejected' });
     };
     return checkOrigin;
@@ -638,7 +638,7 @@ class HealthCheckService {
       // so this stands in for "once per session". (#444)
       this.logger.security('authn_login_success', {
         realm: realm.toLowerCase(), remoteAddress: req.ip
-      }, { dedupeMs: AUTH_SUCCESS_DEDUPE_MS });
+      }, { sourceKey: ipKeyGenerator(req.ip || ''), dedupeMs: AUTH_SUCCESS_DEDUPE_MS });
       return next();
     }
 
@@ -655,7 +655,7 @@ class HealthCheckService {
       // Never log the username: users paste passwords into that field. (#286)
       this.logger.security('authn_login_fail', {
         reason: 'invalid_credentials', realm: realm.toLowerCase(), remoteAddress: req.ip
-      });
+      }, { sourceKey: ipKeyGenerator(req.ip || '') });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -666,7 +666,7 @@ class HealthCheckService {
     res.locals.authFailed = true;
     this.logger.security('authn_login_fail', {
       reason: 'invalid_token', realm: realm.toLowerCase(), remoteAddress: req.ip
-    });
+    }, { sourceKey: ipKeyGenerator(req.ip || '') });
     return res.status(401).json({ error: 'Invalid token' });
   }
 
@@ -2209,6 +2209,8 @@ This test verifies that notifications are configured correctly and can reach the
    * @returns {Promise<void>}
    */
   async stop() {
+    // A guess loop cut by SIGTERM must still show its suppressed count. (#444)
+    if (typeof this.logger?.flushSecurity === 'function') this.logger.flushSecurity();
     if (this.authFailures) this.authFailures.shutdown();
     if (this.metricsAuthFailures) this.metricsAuthFailures.shutdown();
     return new Promise((resolve, reject) => {
