@@ -371,7 +371,16 @@ class Logger {
         try {
             return this.serialize(level, safeMessage, safeContext, safeMeta, format);
         } catch (error) {
-            return `${new Date().toISOString()} [${level.toUpperCase()}] ${safeMessage} [log serialization error: ${error.message}]`;
+            // The fallback is an output path too: escape it like serialize() (#447),
+            // and keep json format valid JSON. Plain strings cannot make this throw.
+            const ts = new Date().toISOString();
+            if (format === 'json') {
+                return escapeControlChars(JSON.stringify({
+                    timestamp: ts, level: level.toUpperCase(), message: String(safeMessage),
+                    serializationError: String(error && error.message)
+                }), true);
+            }
+            return `${ts} [${level.toUpperCase()}] ${escapeControlChars(safeMessage)} [log serialization error: ${escapeControlChars(error && error.message)}]`;
         }
     }
 
@@ -390,7 +399,7 @@ class Logger {
         // values are escaped per RFC 5424 6.3.3 (\, ", ]) so quotes/brackets in the
         // value cannot terminate the structured-data element early. (#103, M5)
         const escapeSd = (s) => String(s).replace(/([\\"\]])/g, '\\$1');
-        const encode = (v) => escapeSd(v !== null && typeof v === 'object' ? JSON.stringify(v) : v);
+        const encode = (v) => escapeSd(escapeControlChars(v !== null && typeof v === 'object' ? JSON.stringify(v) : v));
         const correlationStr = this.correlationId ? `correlationId="${this.correlationId}"` : '';
         const contextStr = Object.entries(safeContext)
             .map(([k, v]) => `${k}="${encode(v)}"`)
@@ -403,7 +412,7 @@ class Logger {
             .filter(s => s)
             .join(' ');
 
-        return `<${priority}>1 ${timestamp} ${hostname} ${appName} ${pid} - [${structuredData}] ${safeMessage}`;
+        return `<${priority}>1 ${timestamp} ${hostname} ${appName} ${pid} - [${structuredData}] ${escapeControlChars(safeMessage)}`;
     }
     
     /**

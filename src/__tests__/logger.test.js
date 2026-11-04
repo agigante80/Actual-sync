@@ -1122,3 +1122,27 @@ describe('control character escaping (#447)', () => {
         expect(JSON.parse(line).message).toBe(msg);
     });
 });
+
+describe('escaping on the fallback and syslog paths (#447 review)', () => {
+    const forged = 'Sync for a\x1b[31mRED\n2026-11-04T00:00:00Z [ERROR] forged';
+    class Boom { toJSON() { throw new Error('bad\nline'); } }
+
+    test.each(['pretty', 'json'])('serialization fallback (%s) stays one escaped line', (format) => {
+        const logger = new Logger({ logDir: null });
+        const line = logger.safeSerialize('info', forged, {}, { b: new Boom() }, format);
+        expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+        if (format === 'json') {
+            const rec = JSON.parse(line);
+            expect(rec.message).toBe(forged);
+            expect(rec.level).toBe('INFO');
+        }
+    });
+
+    test('syslog message and structured data carry no raw control characters', () => {
+        const logger = new Logger({ logDir: null });
+        logger.syslog = { facility: 16 };
+        const line = logger.formatSyslog('info', forged, {}, { a: 'x\ny' });
+        expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+        expect(line).toContain('a="x\\\\x0ay"');
+    });
+});
