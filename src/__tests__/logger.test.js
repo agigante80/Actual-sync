@@ -464,7 +464,7 @@ describe('Logger', () => {
         test('masks a secret key in pretty format', () => {
             const logger = new Logger({ format: 'pretty', logDir: null });
             const line = emit(logger, 'auth', { password: 'hunter2' }, 'pretty');
-            expect(line).toContain('"password": "[REDACTED]"');
+            expect(line).toContain('"password":"[REDACTED]"');
             expect(line).not.toContain('hunter2');
         });
 
@@ -1104,5 +1104,60 @@ describe('Logger', () => {
             
             expect(closeSpy).toHaveBeenCalled();
         });
+    });
+});
+
+describe('control character escaping (#447)', () => {
+    const { escapeControlChars } = require('../lib/logger');
+    const forged = 'Sync for a\x1b[31mRED\n2026-11-04T00:00:00Z [ERROR] forged';
+
+    test('pretty: ticket string yields one line with visible escapes', () => {
+        const line = emit(new Logger({ format: 'pretty' }), forged);
+        expect(line.split('\n')).toHaveLength(1);
+        expect(line).toContain('a\\x1b[31mRED\\x0a2026-11-04T00:00:00Z [ERROR] forged');
+        expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    });
+
+    test('pretty: context and meta values stay on one line', () => {
+        const line = emit(new Logger({ format: 'pretty' }), 'm', { a: 'x\r\ny\u2028z\u202e', b: { c: '\u0085' } });
+        expect(line.split('\n')).toHaveLength(1);
+        expect(line).not.toMatch(/[\r\u0085\u2028\u202e]/);
+    });
+
+    test('escapes every listed class', () => {
+        const all = '\x00\x1f\x7f\x80\x9f\u2028\u2029\u202a\u202e\u2066\u2069';
+        expect(escapeControlChars(all)).toBe('\\x00\\x1f\\x7f\\x80\\x9f\\u2028\\u2029\\u202a\\u202e\\u2066\\u2069');
+        expect(escapeControlChars('plain text é')).toBe('plain text é');
+    });
+
+    test('json: no raw U+2028/2029, bidi, DEL or C1; still parses', () => {
+        const msg = 'a\u2028b\u2029c\u202ed\u2066e\x7ff\x85g\nh';
+        const line = emit(new Logger({ format: 'json' }), msg);
+        expect(line).not.toMatch(/[\u2028\u2029\u202a-\u202e\u2066-\u2069\x7f-\x9f]/);
+        expect(JSON.parse(line).message).toBe(msg);
+    });
+});
+
+describe('escaping on the fallback and syslog paths (#447 review)', () => {
+    const forged = 'Sync for a\x1b[31mRED\n2026-11-04T00:00:00Z [ERROR] forged';
+    class Boom { toJSON() { throw new Error('bad\nline'); } }
+
+    test.each(['pretty', 'json'])('serialization fallback (%s) stays one escaped line', (format) => {
+        const logger = new Logger({ logDir: null });
+        const line = logger.safeSerialize('info', forged, {}, { b: new Boom() }, format);
+        expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+        if (format === 'json') {
+            const rec = JSON.parse(line);
+            expect(rec.message).toBe(forged);
+            expect(rec.level).toBe('INFO');
+        }
+    });
+
+    test('syslog message and structured data carry no raw control characters', () => {
+        const logger = new Logger({ logDir: null });
+        logger.syslog = { facility: 16 };
+        const line = logger.formatSyslog('info', forged, {}, { a: 'x\ny' });
+        expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+        expect(line).toContain('a="x\\\\x0ay"');
     });
 });
