@@ -238,3 +238,32 @@ describe('running sync indicator (#284)', () => {
     expect(formatRunningSync({ key: '<img src=x>', startedAt: 'nope' })).toBe('Syncing: <img src=x>');
   });
 });
+
+describe('transaction totals per sync (#424)', () => {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'services', 'dashboard.js'), 'utf8');
+  const fn = js.match(/function formatTransactionCounts\(added, updated\) \{[\s\S]*?\n\}/);
+  // eslint-disable-next-line no-new-func
+  const formatTransactionCounts = fn && new Function(`${fn[0]}; return formatTransactionCounts;`)();
+
+  test('formats added and updated', () => {
+    expect(formatTransactionCounts(7, 3)).toBe('7 added · 3 updated');
+    expect(formatTransactionCounts(0, 2)).toBe('0 added · 2 updated');
+  });
+
+  test('is a dash when nothing was imported or the row predates the columns', () => {
+    expect(formatTransactionCounts(0, 0)).toBe('-');
+    expect(formatTransactionCounts(null, null)).toBe('-');
+    expect(formatTransactionCounts(undefined, undefined)).toBe('-');
+  });
+
+  test('coerces to numbers so markup in a value cannot pass through', () => {
+    expect(formatTransactionCounts('<b>x</b>', 1)).toBe('0 added · 1 updated');
+  });
+
+  test('the history table has a Transactions column, and the sync history rows and activity list use the helper', () => {
+    expect(html).toMatch(/<th>Transactions<\/th>/);
+    expect(js).toMatch(/formatTransactionCounts\(record\.transactions_added, record\.transactions_updated\)/);
+    expect(js).toMatch(/formatTransactionCounts\(\s*status\.lastSyncTransactions/);
+    expect(js).not.toMatch(/colspan="6"/);
+  });
+});

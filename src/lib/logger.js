@@ -79,6 +79,23 @@ const LEVEL_NAMES = {
     3: 'DEBUG'
 };
 
+// Keys owned by the logger; context and meta cannot set them (#433, design D1).
+const RESERVED_KEYS = new Set([
+    'timestamp', 'level', 'severity', 'message', 'event',
+    'service', 'version', 'component', 'seq', 'schema'
+]);
+
+// `event` and `component` are reserved names in the record shape, but the
+// caller sets them (D1 component children, D7 audit events such as
+// authz_fail), so they pass through. Only the keys the logger itself writes
+// are stripped from context and meta.
+const CALLER_SET_KEYS = new Set(['event', 'component']);
+const LOGGER_OWNED_KEYS = new Set([...RESERVED_KEYS].filter((k) => !CALLER_SET_KEYS.has(k)));
+
+const withoutReserved = (obj) => Object.fromEntries(
+    Object.entries(obj || {}).filter(([k]) => !LOGGER_OWNED_KEYS.has(k))
+);
+
 class Logger {
     constructor(options = {}) {
         this.level = options.level || 'INFO';
@@ -406,33 +423,38 @@ class Logger {
      */
     serialize(level, safeMessage, safeContext, safeMeta, format) {
         const timestamp = new Date().toISOString();
+        safeContext = withoutReserved(safeContext);
+        safeMeta = withoutReserved(safeMeta);
+        // Logger-owned keys were stripped above, so caller fields cannot
+        // overwrite them; they lead the record to match docs/LOGGING.md (#433).
         const logEntry = {
             timestamp,
             level: level.toUpperCase(),
             service: this.serviceName,
-            message: safeMessage,
-            ...safeContext,
-            ...safeMeta
+            message: safeMessage
         };
-
+        Object.assign(logEntry, safeContext, safeMeta);
         if (this.correlationId) {
+            // Not reserved, but the logger's own id still wins, as before #433.
             logEntry.correlationId = this.correlationId;
         }
 
         if (format === 'json') {
-            return JSON.stringify(logEntry);
+            // JSON.stringify leaves U+2028/2029, DEL, C1 and bidi raw; they can only
+            // occur inside strings, so escaping the output keeps it valid JSON. (#447)
+            return escapeControlChars(JSON.stringify(logEntry), true);
         }
 
         // Pretty format for console
         const correlationStr = this.correlationId ? ` [${this.correlationId.substring(0, 8)}]` : '';
         const contextStr = Object.keys(safeContext).length > 0
-            ? ` [${JSON.stringify(safeContext)}]`
+            ? ` [${escapeControlChars(JSON.stringify(safeContext))}]`
             : '';
         const metaStr = Object.keys(safeMeta).length > 0
-            ? ` ${JSON.stringify(safeMeta, null, 2)}`
+            ? ` ${escapeControlChars(JSON.stringify(safeMeta))}`
             : '';
 
-        return `${timestamp} [${level.toUpperCase()}]${correlationStr}${contextStr} ${safeMessage}${metaStr}`;
+        return `${timestamp} [${level.toUpperCase()}]${correlationStr}${contextStr} ${escapeControlChars(safeMessage)}${metaStr}`;
     }
 
     /**
@@ -444,7 +466,16 @@ class Logger {
         try {
             return this.serialize(level, safeMessage, safeContext, safeMeta, format);
         } catch (error) {
-            return `${new Date().toISOString()} [${level.toUpperCase()}] ${safeMessage} [log serialization error: ${error.message}]`;
+            // The fallback is an output path too: escape it like serialize() (#447),
+            // and keep json format valid JSON. Plain strings cannot make this throw.
+            const ts = new Date().toISOString();
+            if (format === 'json') {
+                return escapeControlChars(JSON.stringify({
+                    timestamp: ts, level: level.toUpperCase(), message: String(safeMessage),
+                    serializationError: String(error && error.message)
+                }), true);
+            }
+            return `${ts} [${level.toUpperCase()}] ${escapeControlChars(safeMessage)} [log serialization error: ${escapeControlChars(error && error.message)}]`;
         }
     }
 
@@ -463,7 +494,7 @@ class Logger {
         // values are escaped per RFC 5424 6.3.3 (\, ", ]) so quotes/brackets in the
         // value cannot terminate the structured-data element early. (#103, M5)
         const escapeSd = (s) => String(s).replace(/([\\"\]])/g, '\\$1');
-        const encode = (v) => escapeSd(v !== null && typeof v === 'object' ? JSON.stringify(v) : v);
+        const encode = (v) => escapeSd(escapeControlChars(v !== null && typeof v === 'object' ? JSON.stringify(v) : v));
         const correlationStr = this.correlationId ? `correlationId="${escapeSd(this.correlationId)}"` : '';
         const contextStr = Object.entries(safeContext)
             .map(([k, v]) => `${k}="${encode(v)}"`)
@@ -476,7 +507,7 @@ class Logger {
             .filter(s => s)
             .join(' ');
 
-        return `<${priority}>1 ${timestamp} ${hostname} ${appName} ${pid} - [${structuredData}] ${safeMessage}`;
+        return `<${priority}>1 ${timestamp} ${hostname} ${appName} ${pid} - [${structuredData}] ${escapeControlChars(safeMessage)}`;
     }
     
     /**
@@ -626,9 +657,9 @@ class Logger {
     /**
      * Create child logger with additional context
      */
-    child(context = {}) {
+    child(context = {}, options = {}) {
         const childLogger = new Logger({
-            level: this.level,
+            level: options.level || this.level,
             format: this.format,
             fileFormat: this.fileFormat,
             logDir: this.logDir,
@@ -704,6 +735,26 @@ class Logger {
 }
 
 /**
+ * Replace control and line-breaking characters with visible escapes so one log
+ * call is exactly one line and cannot forge entries or drive the terminal
+ * (CWE-117). Covers C0 (incl. CR/LF/ESC), DEL, C1, U+2028/2029 and the bidi
+ * controls U+202A-202E and U+2066-2069. (#447)
+ * @param {*} value Coerced with String().
+ * @param {boolean} [json] Always use \\uNNNN (valid inside a JSON string).
+ * @returns {string}
+ */
+function escapeControlChars(value, json = false) {
+    return String(value).replace(
+        /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
+        (c) => {
+            const code = c.charCodeAt(0);
+            const hex = code.toString(16).padStart(json || code > 0xff ? 4 : 2, '0');
+            return (json || code > 0xff ? '\\u' : '\\x') + hex;
+        }
+    );
+}
+
+/**
  * Create default logger instance
  */
 function createLogger(options = {}) {
@@ -734,6 +785,7 @@ function createLogger(options = {}) {
 module.exports = {
     Logger,
     createLogger,
+    escapeControlChars,
     LOG_LEVELS,
     LEVEL_NAMES
 };
