@@ -267,3 +267,37 @@ describe('transaction totals per sync (#424)', () => {
     expect(js).not.toMatch(/colspan="6"/);
   });
 });
+
+describe('per-account results (#430)', () => {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'services', 'dashboard.js'), 'utf8');
+  const fn = js.match(/function formatAccountResult\(a\) \{[\s\S]*?\n\}/);
+  // eslint-disable-next-line no-new-func
+  const formatAccountResult = fn && new Function(`${fn[0]}; return formatAccountResult;`)();
+  const synced = (added, updated) => ({ status: 'synced', transactions_added: added, transactions_updated: updated });
+
+  test('formats new, none, updated, unknown, failed and skipped', () => {
+    expect(formatAccountResult(synced(5, 0))).toBe('5 new');
+    expect(formatAccountResult(synced(15, 2))).toBe('15 new, 2 updated');
+    expect(formatAccountResult(synced(0, 0))).toBe('no new');
+    expect(formatAccountResult(synced(0, 3))).toBe('no new, 3 updated');
+    expect(formatAccountResult(synced(null, null))).toBe('count unknown');
+    expect(formatAccountResult({ status: 'failed', transactions_added: null })).toBe('failed');
+    expect(formatAccountResult({ status: 'skipped', transactions_added: null })).toBe('skipped');
+  });
+
+  test('unknown counts are never shown as "no new"', () => {
+    expect(formatAccountResult(synced(undefined, undefined))).toBe('count unknown');
+  });
+
+  test('the account lines are placed with textContent, never innerHTML', () => {
+    const body = (name) => {
+      const m = js.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+      return m ? m[0] : '';
+    };
+    for (const name of ['toggleHistoryRow', 'renderAccounts', 'textEl']) {
+      expect(body(name)).not.toBe('');
+      expect(body(name)).not.toMatch(/innerHTML|insertAdjacentHTML/);
+    }
+    expect(js).toMatch(/includeAccounts=1/);
+  });
+});

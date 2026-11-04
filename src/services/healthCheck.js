@@ -1548,7 +1548,20 @@ This test verifies that notifications are configured correctly and can reach the
       }
 
       try {
-        res.json(this.syncHistory.getAllAccountMetadata());
+        const groups = this.syncHistory.getAllAccountMetadata();
+        // Each account's result in its server's latest sync (#430). NULL
+        // counts mean unknown; an account absent from that sync has none.
+        const sh = this.syncHistory;
+        const canResult = typeof sh.getLastAccountResults === 'function' && typeof sh.getLastSync === 'function';
+        res.json(!canResult ? groups : groups.map((group) => {
+          const results = new Map(sh.getLastAccountResults(group.server).map(r => [r.account_id, r]));
+          const last = sh.getLastSync(group.server);
+          return {
+            ...group,
+            lastSyncAt: last ? last.timestamp : null,
+            accounts: group.accounts.map(a => ({ ...a, lastResult: results.get(a.id) || null }))
+          };
+        }));
       } catch (error) {
         this.logger.error('Failed to get account metadata', { error: error.message });
         res.status(500).json({ error: 'Failed to retrieve account metadata' });
