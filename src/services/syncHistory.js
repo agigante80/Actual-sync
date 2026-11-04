@@ -92,7 +92,12 @@ class SyncHistoryService {
     // need the day-window queries to agree. Must return a fresh Date each call,
     // since the cutoff code mutates it.
     this.now = options.now || (() => new Date());
-    this.logger = createLogger(options.loggerConfig || {});
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    const loggerConfig = options.loggerConfig || {};
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'SyncHistory' })
+      : createLogger(loggerConfig);
     this.db = null;
     
     this.initialize();

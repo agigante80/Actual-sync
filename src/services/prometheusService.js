@@ -17,7 +17,12 @@ class PrometheusService {
    */
   constructor(options = {}) {
     this.syncHistory = options.syncHistory;
-    this.logger = createLogger(options.loggerConfig || {});
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    const loggerConfig = options.loggerConfig || {};
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'Prometheus' })
+      : createLogger(loggerConfig);
     this.includeDefaultMetrics = options.includeDefaultMetrics !== false;
 
     // Create registry for this service
