@@ -43,17 +43,27 @@ const CONSOLE_ALLOWED = {
 // caller already had to write as a literal.
 const MESSAGE_ALLOWED = {
     'src/lib/bootstrapLogger.js :: r.message': 'replays a buffered bootstrap record',
+    "src/lib/configLoader.js :: `⚠️  ${message}\\n` +": "bootstrap: schema validation text: schema paths and rule messages, no config values",
+    "src/lib/configLoader.js :: `⚠️  Configuration has ${unknownKeys.length === 1 ? 'an unknown property' : 'unknown properties'} ` +": "bootstrap: unknown config key names",
+    "src/lib/configLoader.js :: `⚠️  Warning: Server \"${server.name}\" uses unencrypted HTTP connection.\\n` +": "bootstrap: server name and url from config; the bootstrap redact() masks user:pass@ and ?token=",
+    "src/lib/configLoader.js :: `⚠️  Warning: Server \"${server.name}\" has a weak password (< 8 characters).\\n` +": "bootstrap: server name from config, never the password",
+    "src/lib/configLoader.js :: `⚠️  Warning: Server \"${server.name}\" appears to use a default/example password.\\n` +": "bootstrap: server name from config, never the password",
+    "src/lib/configLoader.js :: `⚠️  Warning: the same budget (url + syncId) is configured more than once: ${groups.join('; ')}.\\n` +": "bootstrap: server names from config",
+    "src/lib/configLoader.js :: `⚠️  Warning: multiple servers share the same data directory: ${dupDirs.join(', ')}.\\n` +": "bootstrap: dataDir paths from config (operator paths, pre-logger startup output)",
+    "src/lib/configLoader.js :: `⚠️  Warning: healthCheck.host is set to \"${hcHost}\".\\n` +": "bootstrap: healthCheck.host from config",
+    "src/lib/configLoader.js :: `scheduleAlerts template (server \"${server.name}\") fails on a channel that is not configured; ` +": "bootstrap: server name and the template validation text of operator-written config",
+    "index.js :: warning": "bootstrap: startup validation warnings built in index.js from literals and package names",
+    "index.js :: error": "bootstrap: startup validation errors; includes fs and JSON.parse messages on config.json, which can quote a short snippet near a syntax error (known, pre-existing; not secrets by design)",
     'src/lib/crashHandlers.js :: message': 'crash handler picks one of its own constants',
     'src/lib/logger.js :: message': 'the level methods forward their caller\'s message',
     'src/lib/logger.js :: event': 'security(): the event name is the message, one of the caller\'s constants',
-    'src/lib/logger.js :: `Performance: ${operationName}`': 'timer label chosen by the caller, a constant',
-    'src/lib/scheduleAlertsStep.js :: warning.message': 'built in scheduleAlerts.evaluate from the rule id and numeric config only; the schedule name and error text were removed from it (#450)',
+    'src/lib/logger.js :: `Performance: ${operationName}`': 'timer label from startTimer callers: a server name or an account id (syncService.js), no names or financial data',
+    'src/lib/scheduleAlertsStep.js :: warning.message': 'built in scheduleAlerts.evaluate from fixed text and numeric config only; no rule id (a derived id is a slug of the schedule name), schedule name or error text (#450)',
     'src/lib/syncQueue.js :: message': 'the queue forwards its owner\'s message',
     'src/services/syncHistory.js :: `Migrated sync_history: added ${column} column`': 'column name from the migration list',
     'src/syncService.js :: message': 'queue and late-call wrappers forward their message',
-    'src/syncService.js :: timezoneWarning': 'text from describeTimezoneFallback (config timezone name only)',
+    'src/syncService.js :: timezoneWarning': 'text from describeTimezoneFallback: the TZ environment value only',
     'src/syncService.js :: `Starting ${syncType} sync for server: ${name}`': 'server name is operator config, syncType is a constant',
-    'src/syncService.js :: `Checking if data directory exists: ${dataDir}`': 'operator-configured path',
     'src/syncService.js :: `${signal} received, shutting down gracefully...`': 'signal name from the OS'
 };
 
@@ -97,13 +107,20 @@ function rootName(node) {
 function messageArg(call) {
     const callee = call.callee;
     if (callee.type !== 'MemberExpression' && callee.type !== 'OptionalMemberExpression') return null;
-    if (!/logger|log$/i.test(rootName(callee.object))) return null;
+    // The bootstrap logger (#442) is imported as `bootstrap`; its calls are
+    // replayed into the real logger, so they are checked too (#450 review M1).
+    if (!/logger|log$|^bootstrap$/i.test(rootName(callee.object))) return null;
     const args = call.arguments;
     if (callee.computed) return args[0] || null; // logger[level](msg, meta)
     if (callee.property.type !== 'Identifier') return null;
     if (LEVEL_METHODS.has(callee.property.name)) return args[0] || null;
-    // this.log(level, msg, meta) has the level first; log(msg, meta) does not.
-    if (callee.property.name === 'log') return (args.length >= 3 ? args[1] : args[0]) || null;
+    // this.log(level, msg, meta) has the level first, also with two arguments
+    // (Logger.log(level, message)); log(msg, meta) does not (#450 review L1).
+    if (callee.property.name === 'log') {
+        const levelFirst = args.length >= 3 ||
+            (args[0] && args[0].type === 'StringLiteral' && /^(ERROR|WARN|INFO|DEBUG)$/i.test(args[0].value));
+        return (levelFirst ? args[1] : args[0]) || null;
+    }
     return null;
 }
 
@@ -111,6 +128,8 @@ function isLiteralMessage(node) {
     if (node.type === 'StringLiteral') return true;
     if (node.type === 'TemplateLiteral') return node.expressions.length === 0;
     if (node.type === 'ConditionalExpression') return isLiteralMessage(node.consequent) && isLiteralMessage(node.alternate);
+    // A literal split over lines with +.
+    if (node.type === 'BinaryExpression' && node.operator === '+') return isLiteralMessage(node.left) && isLiteralMessage(node.right);
     return false;
 }
 
@@ -142,7 +161,9 @@ describe('logging source guards (#450)', () => {
                 if (node.type !== 'CallExpression' && node.type !== 'OptionalCallExpression') return;
                 const arg = messageArg(node);
                 if (!arg || isLiteralMessage(arg)) return;
-                const key = `${rel(file)} :: ${code.slice(arg.start, arg.end)}`;
+                // Keyed by the first source line of the argument, so a message
+                // split over lines with + still has a short key.
+                const key = `${rel(file)} :: ${code.slice(arg.start, arg.end).split('\n')[0].trim()}`;
                 if (MESSAGE_ALLOWED[key]) { used.add(key); return; }
                 violations.push(`${rel(file)}:${arg.loc.start.line} ${code.slice(arg.start, arg.end)}`);
             });
@@ -152,7 +173,8 @@ describe('logging source guards (#450)', () => {
     });
 
     test('the guards detect a violation (self-check on synthetic source)', () => {
-        const code = 'console.log(x); logger.info(`id ${payee}`); logger.warn(a ? "x" : "y"); this.log("INFO", msg, {});';
+        const code = 'console.log(x); logger.info(`id ${payee}`); logger.warn(a ? "x" : "y"); this.log("INFO", msg, {}); ' +
+            'bootstrap.warn(`w ${payee}`); logger.log("WARN", `p ${payee}`); logger.info("a" + "b");';
         const bad = [];
         walk(parse(code).program, (node) => {
             if (node.type === 'CallExpression') {
@@ -160,6 +182,6 @@ describe('logging source guards (#450)', () => {
                 if (arg && !isLiteralMessage(arg)) bad.push(code.slice(arg.start, arg.end));
             }
         });
-        expect(bad).toEqual(['`id ${payee}`', 'msg']);
+        expect(bad).toEqual(['`id ${payee}`', 'msg', '`w ${payee}`', '`p ${payee}`']);
     });
 });

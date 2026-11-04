@@ -497,7 +497,9 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
           // Print the operator's own earlyDays, plus the allowance when it is
           // what tipped the sum over (#297 round 2 L-b): the effective value
           // is never a setting they can find in config.json.
-          message: `Rule "${binding.id}": graceDays (${binding.graceDays}) + earlyDays (${binding.earlyDays}`
+          // No rule id in the text: a derived id is a slug of the schedule name
+          // (#450). The id is logged as the ruleId field.
+          message: `Schedule alert rule skipped: graceDays (${binding.graceDays}) + earlyDays (${binding.earlyDays}`
             + (effectiveEarlyDays !== binding.earlyDays
               ? `, raised to the ${LINKED_EARLY_WINDOW_DAYS}-day linked-payment allowance) >= `
               : ') >= ')
@@ -812,7 +814,7 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
         // No schedule name or error text in the message: it is logged as is,
         // and both can carry payee names or upstream text (#450). The error
         // travels as an object so the logger classifies it.
-        message: `Rule "${binding.id}" threw during evaluation and was skipped`,
+        message: 'Schedule alert rule threw during evaluation and was skipped',
         error
       });
       events.push({

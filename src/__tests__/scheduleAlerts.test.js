@@ -1320,8 +1320,8 @@ describe('#298: occurrence dates come from Actual (getScheduleDates)', () => {
     const boom = new Error('Cannot expand schedule date: boom');
     const { events, warnings } = await run({}, { occurrencesBySchedule: { s1: boom } });
     expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'error' })]);
-    // The message is logged as is, so it holds only the rule id.
-    expect(warnings[0].message).toBe('Rule "rent" threw during evaluation and was skipped');
+    // The message is logged as is, so it is fixed text; the rule id is a field.
+    expect(warnings[0].message).toBe('Schedule alert rule threw during evaluation and was skipped');
     expect(warnings[0].message).not.toContain('Rent');
     expect(warnings[0].error).toBe(boom);
   });

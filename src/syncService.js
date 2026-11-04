@@ -423,7 +423,7 @@ async function runSyncBank(server, options = {}) {
             schedule: syncConfig.schedule
         });
         
-        serverLogger.debug(`Checking if data directory exists: ${dataDir}`, { dataDir });
+        serverLogger.debug('Checking if data directory exists', { dataDir });
         await fs.mkdir(dataDir, { recursive: true });
         serverLogger.debug('Data directory ready', { dataDir });
 
