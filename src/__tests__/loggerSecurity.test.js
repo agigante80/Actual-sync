@@ -11,7 +11,8 @@ describe('Logger.security (audit floor, #444)', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     lines = [];
-    const grab = (...a) => lines.push(JSON.parse(a[0]));
+    // Registered fields sit under `fields` (#437); flatten for the assertions below.
+    const grab = (...a) => { const r = JSON.parse(a[0]); lines.push({ ...r, ...r.fields }); };
     spies = ['log', 'warn', 'error'].map(m => jest.spyOn(console, m).mockImplementation(grab));
     logger = new Logger({ level: 'ERROR', format: 'json', logDir: null });
   });
@@ -117,7 +118,7 @@ describe('Logger.security (audit floor, #444)', () => {
   });
 
   test('secrets in fields are still redacted and the message is the static event name', () => {
-    logger.security('authn_login_fail', { remoteAddress: '1.2.3.4', password: 'hunter2' });
+    logger.security('authn_login_fail', { remoteAddress: '1.2.3.4', reason: 'password=hunter2' });
     expect(JSON.stringify(lines)).not.toContain('hunter2');
   });
 

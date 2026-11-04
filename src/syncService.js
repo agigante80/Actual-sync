@@ -399,7 +399,6 @@ async function runSyncBank(server, options = {}) {
     try {
         const syncType = isAutomated ? (retryAttempt > 0 ? `automated (retry ${retryAttempt})` : 'automated') : 'manual';
         serverLogger.info(`Starting ${syncType} sync for server: ${name}`, { 
-            url, 
             dataDir,
             isAutomated,
             retryAttempt,
@@ -431,7 +430,7 @@ async function runSyncBank(server, options = {}) {
             throw busy;
         }
 
-        serverLogger.info(`Connecting to Actual server`, { url });
+        serverLogger.info(`Connecting to Actual server`);
         sessionOpened = true;
         // @actual-app/api prints warn/error to the global console whatever
         // `verbose` says; route it through our logger for this session. (#426)
@@ -455,8 +454,7 @@ async function runSyncBank(server, options = {}) {
         serverLogger[compat.level]('Version compatibility', {
             testedUpTo: compat.testedUpTo,
             serverVersion: compat.serverVersion,
-            verdict: compat.verdict,
-            message: compat.message,
+            verdict: compat.verdict
         });
         if (healthCheck && typeof healthCheck.updateServerVersion === 'function') {
             healthCheck.updateServerVersion(name, {
@@ -709,8 +707,7 @@ async function runSyncBank(server, options = {}) {
                         accountId: account.id,
                         accountName: account.name,
                         error: errorMsg,
-                        errorCode: failure?.code || 'UNKNOWN',
-                        errorStack: failure?.stack || 'No stack trace available'
+                        errorCode: failure?.code || 'UNKNOWN'
                     });
                     accountsFailed++;
                     failedAccounts.push({
@@ -723,8 +720,7 @@ async function runSyncBank(server, options = {}) {
                         accountId: account.id,
                         accountName: account.name,
                         error: errorMsg,
-                        errorCode: failure?.code || 'UNKNOWN',
-                        errorStack: failure?.stack || 'No stack trace available'
+                        errorCode: failure?.code || 'UNKNOWN'
                     });
                 }
                 if (sessionStuck) {
@@ -935,10 +931,7 @@ async function runSyncBank(server, options = {}) {
         // Log error structure for debugging
         serverLogger.debug('Error structure for debugging', {
             hasMessage: !!errorMessage,
-            errorMessage: errorMessage,
-            toString: error?.toString(),
             hasStack: !!error?.stack,
-            stackFirstLine: error?.stack?.split('\n')[0],
             errorType: error?.constructor?.name
         });
         
@@ -971,7 +964,6 @@ async function runSyncBank(server, options = {}) {
             }
         }
         let errorCode = error?.code || error?.errorCode || 'UNKNOWN';
-        const errorStack = error?.stack || 'No stack trace available';
 
         // "No budget file is open" is opaque and usually a server/client version
         // mismatch — explain it and set a stable errorCode using the versions
@@ -986,7 +978,6 @@ async function runSyncBank(server, options = {}) {
         serverLogger.error(`Error syncing bank for server`, {
             error: errorMessage,
             errorCode: errorCode,
-            errorStack: errorStack,
             accountsProcessed,
             accountsSucceeded,
             accountsFailed,
@@ -1066,7 +1057,6 @@ async function runSyncBank(server, options = {}) {
                 const notifyErrorMessage = notifyError?.message || String(notifyError) || 'Unknown notification error';
                 logger.error('Failed to send sync notification', {
                     error: notifyErrorMessage,
-                    originalError: errorMessage,
                     correlationId
                 });
             }
@@ -1319,7 +1309,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // first in index.js (crashHandlers, #439); they only need the logger from here.
 
 run().catch((error) => {
-    logger.error('Fatal error during service initialization', { error: error.message, stack: error.stack });
+    logger.error('Fatal error during service initialization', { error: error.message });
     process.exit(1);
 });
 

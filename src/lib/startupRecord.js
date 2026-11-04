@@ -110,8 +110,8 @@ function buildStartupRecord(config, logger, opts = {}) {
         // and the gate that reads it: today account names are always logged, so
         // reporting `false` would mislead a supporter (#443 review M1).
         serverCount: servers.length,
-        schedules: uniqueSchedules(cfg),
-        channels: enabledChannels(config.notifications),
+        cronSchedules: uniqueSchedules(cfg),
+        channelsEnabled: enabledChannels(config.notifications),
         dashboardEnabled: dashboard.enabled !== false,
         dashboardBind: `${config.healthCheck?.host || '0.0.0.0'}:${config.healthCheck?.port || 3000}`,
         dashboardAuth: dashboard.auth?.type || 'none',

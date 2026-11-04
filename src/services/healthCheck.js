@@ -2189,8 +2189,7 @@ This test verifies that notifications are configured correctly and can reach the
           }
           this.logger.info('Health check service started', {
             port: this.port,
-            host: this.host,
-            dashboard: `http://${this.host === '0.0.0.0' ? 'localhost' : this.host}:${this.port}/dashboard`
+            host: this.host
           });
           resolve();
         };

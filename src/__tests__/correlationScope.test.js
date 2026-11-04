@@ -133,7 +133,7 @@ describe('correlation scopes (#441)', () => {
         withCorrelation(() => cap.root.flushSecurity(), 'req-31');
         const summary = cap.lines.find(r => r.message === 'security.suppressed');
         expect(summary).toBeDefined();
-        expect(summary.suppressedCount).toBeGreaterThan(0);
+        expect(summary.fields.suppressedCount).toBeGreaterThan(0);
         expect(summary.correlationId).toBeUndefined();
         cap.root.close && cap.root.close();
     });

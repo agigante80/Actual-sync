@@ -262,8 +262,7 @@ class NotificationService {
       });
     } catch (error) {
       this.logger.error('Failed to initialize email transporter', {
-        error: error.message,
-        stack: error.stack
+        error: error.message
       });
     }
   }
@@ -681,7 +680,6 @@ class NotificationService {
     } catch (err) {
       this.logger.error('Failed to send notification', {
         error: err.message,
-        stack: err.stack,
         serverName,
         correlationId
       });
@@ -711,7 +709,6 @@ class NotificationService {
       });
 
       this.logger.debug('Email sent', {
-        messageId: info.messageId,
         recipients: this.config.email.to.length
       });
 
@@ -721,8 +718,7 @@ class NotificationService {
       };
     } catch (error) {
       this.logger.error('Failed to send email', {
-        error: error.message,
-        stack: error.stack
+        error: error.message
       });
       return {
         success: false,
@@ -900,8 +896,8 @@ class NotificationService {
       // rather than silently shipping a corrupted link. (#114)
       if (icon !== rawIcon) {
         this.logger.warn('ntfy icon URL contained characters invalid in an HTTP header and was altered', {
-          configured: rawIcon,
-          sent: icon
+          // Counts, not the URLs: a log never carries a URL (D8, #437)
+          removedChars: rawIcon.length - icon.length
         });
       }
       headers['Icon'] = icon; // ntfy shows this icon in the notification (#114)
@@ -944,7 +940,6 @@ class NotificationService {
       });
 
       this.logger.debug('Email sent', {
-        messageId: info.messageId,
         recipients: this.config.email.to.length
       });
 
@@ -954,8 +949,7 @@ class NotificationService {
       };
     } catch (error) {
       this.logger.error('Failed to send email', {
-        error: error.message,
-        stack: error.stack
+        error: error.message
       });
       return {
         success: false,
@@ -1415,8 +1409,7 @@ Please investigate and resolve the issue.
       };
     } catch (err) {
       this.logger.error('Failed to send startup notification', {
-        error: err.message,
-        stack: err.stack
+        error: err.message
       });
       throw err;
     }
