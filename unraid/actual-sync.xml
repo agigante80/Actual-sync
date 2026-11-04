@@ -16,7 +16,7 @@ Two ways to configure: (1) for a SINGLE budget, just fill in the "Actual server 
   <WebUI>http://[IP]:[PORT:3000]/dashboard</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/agigante80/Actual-sync/main/unraid/actual-sync.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/agigante80/Actual-sync/main/unraid/actual-sync-icon.png</Icon>
-  <ExtraParams>--cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges:true</ExtraParams>
+  <ExtraParams>--cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges:true --log-opt max-size=10m --log-opt max-file=5</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>
