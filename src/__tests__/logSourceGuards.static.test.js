@@ -47,7 +47,7 @@ const MESSAGE_ALLOWED = {
     'src/lib/logger.js :: message': 'the level methods forward their caller\'s message',
     'src/lib/logger.js :: event': 'security(): the event name is the message, one of the caller\'s constants',
     'src/lib/logger.js :: `Performance: ${operationName}`': 'timer label chosen by the caller, a constant',
-    'src/lib/scheduleAlertsStep.js :: warning.message': 'text produced by our own alert-rule validator (no transaction data)',
+    'src/lib/scheduleAlertsStep.js :: warning.message': 'built in scheduleAlerts.evaluate from the rule id and numeric config only; the schedule name and error text were removed from it (#450)',
     'src/lib/syncQueue.js :: message': 'the queue forwards its owner\'s message',
     'src/services/syncHistory.js :: `Migrated sync_history: added ${column} column`': 'column name from the migration list',
     'src/syncService.js :: message': 'queue and late-call wrappers forward their message',

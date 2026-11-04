@@ -809,7 +809,11 @@ function evaluate({ rules, schedules, transactions, accounts, now, timezone, ski
       warnings.push({
         ruleId: binding.id,
         scheduleId: binding.scheduleId,
-        message: `Rule "${binding.id}" (schedule "${binding.scheduleName}") threw during evaluation and was skipped: ${error.message}`
+        // No schedule name or error text in the message: it is logged as is,
+        // and both can carry payee names or upstream text (#450). The error
+        // travels as an object so the logger classifies it.
+        message: `Rule "${binding.id}" threw during evaluation and was skipped`,
+        error
       });
       events.push({
         event: 'cannotCheck',

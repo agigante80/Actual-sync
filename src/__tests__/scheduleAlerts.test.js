@@ -1316,10 +1316,14 @@ describe('#298: occurrence dates come from Actual (getScheduleDates)', () => {
     expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'error' })]);
   });
 
-  test('a failed read (stored Error) is cannotCheck (error) with its message in the warning', async () => {
-    const { events, warnings } = await run({}, { occurrencesBySchedule: { s1: new Error('Cannot expand schedule date: boom') } });
+  test('a failed read (stored Error) is cannotCheck (error); the warning carries the error, never its text or the schedule name (#450)', async () => {
+    const boom = new Error('Cannot expand schedule date: boom');
+    const { events, warnings } = await run({}, { occurrencesBySchedule: { s1: boom } });
     expect(events).toEqual([expect.objectContaining({ event: 'cannotCheck', reason: 'error' })]);
-    expect(warnings[0].message).toContain('boom');
+    // The message is logged as is, so it holds only the rule id.
+    expect(warnings[0].message).toBe('Rule "rent" threw during evaluation and was skipped');
+    expect(warnings[0].message).not.toContain('Rent');
+    expect(warnings[0].error).toBe(boom);
   });
 
   test('an invalid date string from Actual is cannotCheck (error)', async () => {
