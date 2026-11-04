@@ -466,4 +466,46 @@ describe('MessageFormatter', () => {
       expect(partial.level).toBe('failure');
     });
   });
+  describe('HTML escaping (#428)', () => {
+    const evil = '<img src=x onerror=alert(1)>';
+
+    test('escapes server, account, error and skipped values in the sync html', () => {
+      const f = MessageFormatter.formatSyncNotification({
+        status: 'failure',
+        serverName: evil,
+        duration: 1000,
+        error: 'boom <script>x</script>',
+        errorCode: 'E<1>',
+        accountsProcessed: 1,
+        accountsFailed: 1,
+        succeededAccounts: ['Tom & "Jerry\'s" <b>'],
+        failedAccounts: [{ name: '<i>bad</i>', error: '"quoted" & <u>' }],
+        skippedAccounts: [{ name: 'S<1>', reason: '<closed>' }]
+      });
+      expect(f.html).not.toContain(evil);
+      expect(f.html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      expect(f.html).toContain('Tom &amp; &quot;Jerry&#39;s&quot; &lt;b&gt;');
+      expect(f.html).toContain('&lt;i&gt;bad&lt;/i&gt;');
+      expect(f.html).toContain('&quot;quoted&quot; &amp; &lt;u&gt;');
+      expect(f.html).toContain('boom &lt;script&gt;x&lt;/script&gt;');
+      expect(f.html).toContain('E&lt;1&gt;');
+      expect(f.html).toContain('S&lt;1&gt; (&lt;closed&gt;)');
+      expect(f.html).not.toContain('<script>');
+      // text format is unchanged (raw values)
+      expect(f.text).toContain(evil);
+    });
+
+    test('escapes startup html values', () => {
+      const f = MessageFormatter.formatStartupNotification({
+        version: '1.0<x>',
+        serverNames: evil,
+        schedules: 'a & b',
+        nextSync: '<soon>'
+      });
+      expect(f.html).not.toContain(evil);
+      expect(f.html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      expect(f.html).toContain('a &amp; b');
+      expect(f.html).toContain('&lt;soon&gt;');
+    });
+  });
 });

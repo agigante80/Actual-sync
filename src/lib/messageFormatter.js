@@ -5,6 +5,8 @@
  * Each channel receives the same information, just formatted for its platform.
  */
 
+const { escapeHtml } = require('./channelEscape');
+
 class MessageFormatter {
   /**
    * Format sync success/failure notification
@@ -289,24 +291,24 @@ class MessageFormatter {
     <div class="content">
       <div class="field">
         <span class="label">Server:</span>
-        <span class="value">${content.serverName}</span>
+        <span class="value">${escapeHtml(content.serverName)}</span>
       </div>
       <div class="field">
         <span class="label">Duration:</span>
-        <span class="value">${content.duration}</span>
+        <span class="value">${escapeHtml(content.duration)}</span>
       </div>`;
     
     if (!content.isSuccess && content.error) {
       html += `
       <div class="field">
         <span class="label">Error:</span>
-        <span class="value">${content.error}</span>
+        <span class="value">${escapeHtml(content.error)}</span>
       </div>`;
       if (content.errorCode) {
         html += `
       <div class="field">
         <span class="label">Code:</span>
-        <span class="value">${content.errorCode}</span>
+        <span class="value">${escapeHtml(content.errorCode)}</span>
       </div>`;
       }
     }
@@ -327,7 +329,7 @@ class MessageFormatter {
           html += `
       <div class="field">
         <span class="label">Transactions:</span>
-        <span class="value">${transactions}</span>
+        <span class="value">${escapeHtml(transactions)}</span>
       </div>`;
         }
       }
@@ -338,7 +340,7 @@ class MessageFormatter {
         <span class="label">✅ Synced Accounts:</span>
         <ul class="account-list">`;
         content.succeededAccounts.forEach(name => {
-          html += `<li class="account-item">• ${name}</li>`;
+          html += `<li class="account-item">• ${escapeHtml(name)}</li>`;
         });
         html += `</ul>
       </div>`;
@@ -350,9 +352,9 @@ class MessageFormatter {
         <span class="label">❌ Failed Accounts:</span>
         <ul class="account-list">`;
         content.failedAccounts.forEach(account => {
-          html += `<li class="account-item">• ${account.name}`;
+          html += `<li class="account-item">• ${escapeHtml(account.name)}`;
           if (account.error) {
-            html += `<div class="error-detail">${account.error}</div>`;
+            html += `<div class="error-detail">${escapeHtml(account.error)}</div>`;
           }
           html += `</li>`;
         });
@@ -366,7 +368,7 @@ class MessageFormatter {
         <span class="label">⏭️ Skipped (not bank-linked / closed):</span>
         <ul class="account-list">`;
         content.skippedAccounts.forEach(account => {
-          html += `<li class="account-item">• ${account.name} (${account.reason})</li>`;
+          html += `<li class="account-item">• ${escapeHtml(account.name)} (${escapeHtml(account.reason)})</li>`;
         });
         html += `</ul>
       </div>`;
@@ -524,15 +526,15 @@ class MessageFormatter {
 <body>
   <div class="container">
     <div class="header">
-      <h2>${content.title}</h2>
+      <h2>${escapeHtml(content.title)}</h2>
     </div>
     <div class="content">
       <p>✅ <strong>Service is now running</strong></p>
-      <p>📦 <strong>Version:</strong> ${content.version}</p>
-      <p><strong>Servers:</strong> ${content.serverNames}</p>
+      <p>📦 <strong>Version:</strong> ${escapeHtml(content.version)}</p>
+      <p><strong>Servers:</strong> ${escapeHtml(content.serverNames)}</p>
       <h3>Schedules:</h3>
-      <pre>${content.schedules}</pre>
-      <p><strong>Next sync:</strong> ${content.nextSync}</p>
+      <pre>${escapeHtml(content.schedules)}</pre>
+      <p><strong>Next sync:</strong> ${escapeHtml(content.nextSync)}</p>
     </div>
   </div>
 </body>
