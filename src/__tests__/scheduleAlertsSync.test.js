@@ -643,6 +643,33 @@ describe('persistPaymentSnapshot and error codes (#260)', () => {
     expectedAmount: 100, nextDate: null, deadline: null, state: 'missing', occurrences: [], ...overrides
   });
 
+  test('a rule that throws is logged without the schedule name or error text, with a classified error (#450)', async () => {
+    const server_ = { scheduleAlerts: { alerts: [{ id: 'rent', schedule: 'SENTINEL Rent', channels: ['webhook'] }] } };
+    // skipWeekend without weekendSolveMode: Actual cannot expand the dates, so the rule throws.
+    const api = fakeApi({ schedules: [rentSchedule({
+      name: 'SENTINEL Rent',
+      date: { start: '2026-01-05', frequency: 'monthly', interval: 1, endMode: 'never', skipWeekend: true }
+    })] });
+    await syncOnce(server_, api);
+    const thrown = warnings.filter((w) => w.meta && w.meta.ruleId === 'rent');
+    expect(thrown).toHaveLength(1);
+    expect(JSON.stringify(thrown[0])).not.toContain('SENTINEL');
+    expect(thrown[0].message).toBe('Schedule alert rule threw during evaluation and was skipped');
+    expect(thrown[0].meta.error).toEqual(expect.objectContaining({ category: expect.any(String), safeMessage: expect.any(String) }));
+  });
+
+  test('a rule with no id (derived from the schedule name) keeps the name out of the warning message (#450)', async () => {
+    const server_ = { scheduleAlerts: { alerts: [{ schedule: 'SENTINEL Rent', channels: ['webhook'] }] } };
+    const api = fakeApi({ schedules: [rentSchedule({
+      name: 'SENTINEL Rent',
+      date: { start: '2026-01-05', frequency: 'monthly', interval: 1, endMode: 'never', skipWeekend: true }
+    })] });
+    await syncOnce(server_, api);
+    const thrown = warnings.filter((w) => w.meta && w.meta.ruleId);
+    expect(thrown).toHaveLength(1);
+    expect(thrown[0].message).not.toMatch(/sentinel/i);
+  });
+
   test('a real evaluation is stored with the state the notifications use', async () => {
     await syncOnce(configured, fakeApi());
     const { items, run } = syncHistory.getPaymentSnapshot('Main');
