@@ -4,7 +4,8 @@ const schedule = require('node-schedule'); // Import the scheduler
 const moment = require('moment-timezone');
 const cronstrue = require('cronstrue');
 const ConfigLoader = require('./lib/configLoader');
-const { createLogger } = require('./lib/logger');
+const { createLogger, withCorrelation, currentCorrelationId } = require('./lib/logger');
+const bootstrap = require('./lib/bootstrapLogger');
 const { buildLoggerConfig } = require('./lib/loggerConfig');
 const { HealthCheckService } = require('./services/healthCheck');
 const { SyncHistoryService } = require('./services/syncHistory');
@@ -105,6 +106,8 @@ try {
 
     logger = createLogger(loggerConfig);
     setCrashLogger(logger);
+    // Startup output buffered before the root logger existed (#442)
+    bootstrap.flushTo(logger);
     
     // Static message only: the flag makes @actual-app/api print transactions. (#425)
     if (config.logging?.actualApiVerbose === true) {
@@ -253,11 +256,10 @@ try {
         }
     });
 } catch (error) {
-    // Fallback to console if logger not initialized
-    console.error('❌ Failed to load configuration:');
-    console.error(error.message);
-    console.error('\nPlease ensure config/config.json exists and is valid.');
-    console.error('See config/config.example.json for reference.');
+    // The root logger may not exist: the bootstrap logger writes redacted JSON lines to stderr (#442)
+    bootstrap.error('Failed to load configuration', { error: error.message });
+    bootstrap.error('Please ensure config/config.json exists and is valid. See config/config.example.json for reference.');
+    bootstrap.dumpToStderr(); // no-op once the root logger took the records
     process.exit(1);
 }
 
@@ -327,9 +329,8 @@ async function runSyncBank(server, options = {}) {
     // `format` is deprecated and ignored: one format per sink.
     const serverLogger = logger.child({ server: name }, { level: server.logging?.level });
 
-    // Create correlation ID for this sync operation
-    const correlationId = serverLogger.generateCorrelationId();
-    serverLogger.setCorrelationId(correlationId);
+    // The scope SyncQueue opened for this task; every record of this sync carries it.
+    const correlationId = currentCorrelationId();
     
     // Cancel any pending auto-retry if this is a manual sync
     if (!isAutomated) {
@@ -1079,7 +1080,6 @@ async function runSyncBank(server, options = {}) {
             // The catch above swallows shutdown errors, so this always runs.
             if (restoreConsole) restoreConsole();
         }
-        serverLogger.clearCorrelationId();
     }
 
     // #295 review, M3: the schedule-alerts write phase runs here, after the
@@ -1122,8 +1122,6 @@ async function run() {
                     requestedServer: serverName,
                     availableServers: servers.map(s => s.name)
                 });
-                console.error(`\n❌ Error: Server "${serverName}" not found in configuration.`);
-                console.error(`\nAvailable servers: ${servers.map(s => s.name).join(', ')}\n`);
                 process.exit(1);
             }
             logger.info('Force running bank sync for specific server', { 
@@ -1159,7 +1157,7 @@ async function run() {
                 servers: serversWithSchedule.map(s => s.name) 
             });
             
-            const job = schedule.scheduleJob({ rule: scheduleStr, tz: resolveTimezone(config) }, async () => {
+            const job = schedule.scheduleJob({ rule: scheduleStr, tz: resolveTimezone(config) }, () => withCorrelation(async () => {
                 logger.info('Scheduled sync starting', { 
                     schedule: scheduleStr,
                     servers: serversWithSchedule.map(s => s.name)
@@ -1169,7 +1167,7 @@ async function run() {
                     await autoRetry.runAutomated(server);
                 }
                 logger.info('Scheduled sync completed', { schedule: scheduleStr });
-            });
+            }));
             
             scheduledJobs.push({ schedule: scheduleStr, job, servers: serversWithSchedule });
         }

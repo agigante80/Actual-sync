@@ -124,14 +124,18 @@ function createTestSchemaFile(dir) {
 }
 
 /**
- * Suppress console output during tests
+ * Suppress console output during tests. Also replaces bootstrap.warn with a
+ * jest.fn: ConfigLoader warnings go there, not to console (#442).
  * @returns {Object} Object with restore function
  */
 function suppressConsole() {
     const originalLog = console.log;
     const originalWarn = console.warn;
     const originalError = console.error;
+    const bootstrap = require('../../lib/bootstrapLogger');
+    const originalBootstrapWarn = bootstrap.warn;
 
+    bootstrap.warn = jest.fn();
     console.log = jest.fn();
     console.warn = jest.fn();
     console.error = jest.fn();
@@ -141,6 +145,7 @@ function suppressConsole() {
             console.log = originalLog;
             console.warn = originalWarn;
             console.error = originalError;
+            bootstrap.warn = originalBootstrapWarn;
         }
     };
 }

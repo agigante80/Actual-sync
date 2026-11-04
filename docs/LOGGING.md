@@ -292,6 +292,16 @@ The file line is always a single line, even when the console is `pretty`.
 
 `@actual-app/api` prints warnings and errors straight to the console, whatever `actualApiVerbose` says. During each sync session Actual-sync routes that output through its own logger as one static record per call: `event: "third_party.console"`, `component: "actual-api"`, message `Actual API console output`. The upstream arguments are dropped (they can carry transactions or upstream text), so the record has the configured level, format and redaction but no payload. `console.error` maps to ERROR, `warn` to WARN, `log`/`info`/`group` to INFO and `debug` to DEBUG. With `actualApiVerbose: true` a masked `consolePreview` (first 300 characters) is added; these records are never sent to `/ws/logs`.
 
+## Startup output before the logger exists
+
+The startup banner, config validation warnings and config load failures go
+through the bootstrap logger (`src/lib/bootstrapLogger.js`, #442), not raw
+`console` calls. It needs no config: the built-in secret redaction and control
+character escaping apply to every record. Records are buffered and replayed
+into the root logger as soon as it is created (so they follow `logging.level`
+and `logging.format`). If startup dies first (validation failure, config load
+error), the buffered records are written to stderr as JSON lines.
+
 ## 🔒 Secret Redaction
 
 Every value is redacted before it is written to **any** destination (console, file, syslog, and the dashboard WebSocket). You never have to remember to scrub metadata.
@@ -421,6 +431,13 @@ Search by correlation ID:
 ```bash
 grep "a1b2c3d4" logs/actual-sync-2025-12-09.log
 ```
+
+Every sync, HTTP request, Telegram update and scheduled job runs in its own
+scope (Node `AsyncLocalStorage`). Every record written inside it carries that
+scope's `correlationId`, from any logger or child, without passing a logger
+around. A sync started by a scheduled job or a Telegram command gets its own id
+for its own lines (the id stored in sync history). Child loggers carry
+`component` and similar bindings only, never a correlation id.
 
 ---
 

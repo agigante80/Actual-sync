@@ -8,7 +8,7 @@ The dashboard is a responsive single-page application that offers:
 
 - **📊 Overview Tab** - 2-column layout with service health, server status, per-account syncability (syncable / manual / closed badges, with a "Show closed" toggle), recent activity, and live logs
 - **�� Analytics Tab** - All-time statistics with interactive charts (success rates, duration trends, timeline)
-- **🗂️ History Tab** - Searchable sync history with server/limit filters, a per-sync account breakdown (`N synced · M failed · K skipped`), and detailed error messages
+- **🗂️ History Tab** - Searchable sync history with server/limit filters, a per-sync account breakdown (`N synced · M failed · K skipped`), a row expander listing each account of the sync (`5 new`, `no new`, `count unknown`, `failed`, `skipped`; older syncs recorded without account rows say the breakdown is not available), and detailed error messages
 - **⚙️ Settings Tab** - Date format preferences, orphaned server cleanup, and data management
 - **🔴 Live Status** - Real-time WebSocket streaming with ring buffer (500 logs, 200 displayed)
 - **🔐 Authentication** - Optional basic auth or token-based authentication
@@ -61,7 +61,9 @@ The Overview tab lists each server's accounts with a badge so you can tell, at a
 
 The data is captured during each sync (the same partition the engine uses to decide what to sync, see [ARCHITECTURE.md](ARCHITECTURE.md)) and persisted to SQLite, so the dashboard renders it **without opening a live connection to the Actual server**. It is therefore as fresh as the last sync; a server that has never synced this session shows no accounts yet.
 
-Served at `GET /api/dashboard/accounts` (subject to the dashboard's auth setting), grouped by server.
+Each open account also shows its result in that server's latest sync and when it ran, for example `last sync: 5 new, 2 updated`, `no new`, `count unknown`, `failed` or `skipped`. `count unknown` means the count could not be read, which is not the same as `no new`. Accounts that were not part of the latest sync show no result.
+
+Served at `GET /api/dashboard/accounts` (subject to the dashboard's auth setting), grouped by server. Each group has `lastSyncAt`, and each account has `lastResult` (or `null`).
 
 ![Account syncability badges](screenshots/dashboard-accounts.png)
 

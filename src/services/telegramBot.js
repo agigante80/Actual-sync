@@ -8,7 +8,7 @@ const https = require('https');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { createLogger } = require('../lib/logger');
+const { createLogger, withCorrelation } = require('../lib/logger');
 const { resolveTimezone } = require('../lib/timezone');
 
 const AUTHZ_WARN_INTERVAL_MS = 60 * 60 * 1000;
@@ -327,7 +327,12 @@ class TelegramBotService {
   /**
    * Process an update
    */
-  async processUpdate(update) {
+  processUpdate(update) {
+    // One scope per update, so its lines and the sync it may start group together (#441).
+    return withCorrelation(() => this.handleUpdate(update));
+  }
+
+  async handleUpdate(update) {
     if (!update.message || !update.message.text) {
       return;
     }

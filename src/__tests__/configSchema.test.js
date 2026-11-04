@@ -11,6 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const ConfigLoader = require('../lib/configLoader');
+const bootstrap = require('../lib/bootstrapLogger');
 const { createTempDir, cleanupTempDir, suppressConsole } = require('./helpers/testHelpers');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
@@ -409,7 +410,7 @@ describe('unknown keys are flagged but advisory-only (#123, kept warn-forever by
             const loader = new ConfigLoader(configPath, SCHEMA_PATH);
             expect(() => loader.load()).not.toThrow();
 
-            const warned = console.warn.mock.calls
+            const warned = bootstrap.warn.mock.calls
                 .map(args => String(args[0]))
                 .some(msg => msg.includes('unknown propert') && msg.includes('advisory'));
             expect(warned).toBe(true);
@@ -456,9 +457,9 @@ describe('config deliverables (#116)', () => {
             const loader = new ConfigLoader(configPath, SCHEMA_PATH);
             expect(() => loader.load()).not.toThrow();
 
-            // console.warn is a jest.fn() while suppressed. The clean example must
+            // bootstrap.warn is a jest.fn() while suppressed. The clean example must
             // emit neither a hard-schema warning nor an unknown-property advisory.
-            const schemaWarnings = console.warn.mock.calls
+            const schemaWarnings = bootstrap.warn.mock.calls
                 .map(args => String(args[0]))
                 .filter(msg => msg.includes('does not match the schema') || msg.includes('unknown propert'));
             expect(schemaWarnings).toEqual([]);
