@@ -296,6 +296,18 @@ function updateServersList(servers) {
             }
         }
         
+        // Per-sync transaction totals for the last sync (#424)
+        let transactionCountsText = '';
+        if (status.lastSyncTransactions) {
+            const txCounts = formatTransactionCounts(
+                status.lastSyncTransactions.added,
+                status.lastSyncTransactions.updated
+            );
+            if (txCounts !== '-') {
+                transactionCountsText = `<br><span style="color: #94a3b8; font-size: 0.85em;">Transactions: ${txCounts}</span>`;
+            }
+        }
+
         // Version compatibility badge (#158): each server's running version + verdict
         let versionBadge = '';
         if (status.serverVersion || status.versionVerdict) {
@@ -327,6 +339,7 @@ function updateServersList(servers) {
                 <div class="server-info">
                     Last sync: ${lastSyncText}
                     ${accountCountsText}
+                    ${transactionCountsText}
                     ${versionBadge}
                     ${scheduleInfo}
                     ${errorDisplay}
@@ -594,6 +607,16 @@ function formatAccountCounts(succeeded, failed, skipped) {
     const k = Number(skipped) || 0;
     if (s === 0 && f === 0 && k === 0) return '-';
     return `${s} synced · ${f} failed · ${k} skipped`;
+}
+
+// Render the per-sync transaction totals: "N added · M updated". Returns '-'
+// when both are zero or absent (rows written before #391 hold NULL). Values
+// are coerced to numbers, so the result is safe to place in markup (#424).
+function formatTransactionCounts(added, updated) {
+    const a = Number(added) || 0;
+    const u = Number(updated) || 0;
+    if (a === 0 && u === 0) return '-';
+    return `${a} added · ${u} updated`;
 }
 
 function formatTime(isoString) {
@@ -957,11 +980,11 @@ async function loadHistoryTab() {
         // A 401/503 reply is an error object, not rows: say so instead of
         // leaving the previous filter's rows under the new label.
         if (!Array.isArray(history)) {
-            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center;">Failed to load sync history (HTTP ${escapeHtml(response.status)})</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="7" style="text-align: center;">Failed to load sync history (HTTP ${escapeHtml(response.status)})</td></tr>`;
             return;
         }
         if (history.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No sync history available</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center;">No sync history available</td></tr>';
             return;
         }
 
@@ -975,6 +998,7 @@ async function loadHistoryTab() {
                 </td>
                 <td>${record.duration_ms ? record.duration_ms + 'ms' : '-'}</td>
                 <td>${formatAccountCounts(record.accounts_succeeded, record.accounts_failed, record.accounts_skipped)}</td>
+                <td>${formatTransactionCounts(record.transactions_added, record.transactions_updated)}</td>
                 <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(record.error_message || '-')}">
                     ${record.error_message ? `<span style="color: #ef4444;">${escapeHtml(record.error_message)}</span>` : '-'}
                 </td>
@@ -1480,14 +1504,18 @@ async function loadRecentActivity() {
             const countsDisplay = counts !== '-'
                 ? `<span style="color: #64748b;"> · ${counts}</span>`
                 : '';
+            const txCounts = formatTransactionCounts(record.transactions_added, record.transactions_updated);
+            const txDisplay = txCounts !== '-'
+                ? `<span style="color: #64748b;"> · ${txCounts}</span>`
+                : '';
 
             return `
                 <div style="padding: 8px 0; border-bottom: 1px solid #334155;">
                     <span style="color: ${color};">${icon}</span>
                     <span style="color: #e2e8f0;">${formatTime(record.timestamp)}</span>
-                    <span style="color: #94a3b8;"> - ${record.server_name}</span>
+                    <span style="color: #94a3b8;"> - ${escapeHtml(record.server_name)}</span>
                     <span style="color: #64748b;"> ${duration}</span>
-                    ${countsDisplay}
+                    ${countsDisplay}${txDisplay}
                 </div>
             `;
         }).join('');
