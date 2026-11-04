@@ -1,0 +1,113 @@
+/**
+ * Process crash handlers (#439, design D5, D6).
+ *
+ * Records are classified, never echoed: no `{...reason}` spread, no
+ * `promise.toString()`, and the upstream message is never logged. A rejection
+ * reason can be an @actual-app/api response body carrying payees, notes or
+ * amounts, and secret masking does not catch personal data.
+ *
+ * The handlers are installed first in index.js, before the logger exists.
+ * Until setCrashLogger() is called, a crash is written as one JSON line to
+ * stderr with a synchronous write. The process keeps running afterwards,
+ * exactly as before.
+ */
+
+const fs = require('fs');
+const { classifyRejection } = require('./rejectionClassifier');
+
+const SAFE_CODE = /^[A-Za-z0-9_.-]{1,40}$/;
+const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNABORTED', 'UND_ERR_CONNECT_TIMEOUT']);
+
+let crashLogger = null;
+let installed = false;
+
+function setCrashLogger(logger) {
+    crashLogger = logger || null;
+}
+
+/**
+ * Reduce any thrown value to { type, code?, category, safeMessage }.
+ * Only our own static text is used for safeMessage.
+ */
+function describeCrash(reason) {
+    const isError = reason instanceof Error;
+    const type = isError
+        ? String(reason.name || 'Error').slice(0, 60)
+        : reason === null ? 'null' : typeof reason;
+    const out = { type };
+    const code = isError || (typeof reason === 'object' && reason !== null) ? reason.code : undefined;
+    if ((typeof code === 'string' || typeof code === 'number') && SAFE_CODE.test(String(code))) {
+        out.code = code;
+    }
+    const timedOut = out.code !== undefined && TIMEOUT_CODES.has(String(out.code));
+    out.category = timedOut ? 'timeout' : 'internal';
+    out.safeMessage = timedOut ? 'Operation timed out' : 'Unexpected error (details withheld)';
+    return out;
+}
+
+// Frames only: the first stack line repeats the message.
+function framesOf(error) {
+    if (!(error instanceof Error) || typeof error.stack !== 'string') return undefined;
+    const frames = error.stack.split('\n').filter(l => l.trim().startsWith('at ')).slice(0, 15);
+    return frames.length ? frames.join('\n') : undefined;
+}
+
+function writeStderr(level, event, message, error) {
+    const line = JSON.stringify({
+        timestamp: new Date().toISOString(), level, event, message, error
+    }) + '\n';
+    try {
+        fs.writeSync(2, line);
+    } catch (_) { /* nothing left to try */ }
+}
+
+function emit(logger, level, event, message, error) {
+    if (!logger) {
+        writeStderr(level.toUpperCase(), event, message, error);
+        return;
+    }
+    logger[level](message, { event, error });
+}
+
+function handleUncaughtException(logger, error) {
+    emit(logger, 'error', 'sys_crash', 'Uncaught exception, service continues', describeCrash(error));
+}
+
+function handleUnhandledRejection(logger, reason) {
+    const error = describeCrash(reason);
+    // Already-handled @actual-app/api rejections are a WARN of their own event
+    // so they are not counted as crashes (#105).
+    if (classifyRejection(reason) === 'debug') {
+        emit(logger, 'warn', 'process.rejection_benign', 'Unhandled promise rejection already reported by the sync path', error);
+        return;
+    }
+    emit(logger, 'error', 'sys_crash', 'Unhandled promise rejection, service continues', error);
+    const stack = framesOf(reason);
+    if (logger && stack) {
+        logger.debug('Unhandled promise rejection stack', { event: 'sys_crash.stack', stack });
+    }
+}
+
+function handleWarning(logger, warning) {
+    emit(logger, 'warn', 'process.warning', 'Process warning',
+        { type: String((warning && warning.name) || 'Warning').slice(0, 60),
+          ...(warning && SAFE_CODE.test(String(warning.code)) ? { code: warning.code } : {}) });
+}
+
+/** Register the handlers once. Safe to call from index.js before any config. */
+function installCrashHandlers() {
+    if (installed) return;
+    installed = true;
+    process.on('uncaughtException', (error) => handleUncaughtException(crashLogger, error));
+    process.on('unhandledRejection', (reason) => handleUnhandledRejection(crashLogger, reason));
+    process.on('warning', (warning) => handleWarning(crashLogger, warning));
+}
+
+module.exports = {
+    describeCrash,
+    handleUncaughtException,
+    handleUnhandledRejection,
+    handleWarning,
+    installCrashHandlers,
+    setCrashLogger
+};

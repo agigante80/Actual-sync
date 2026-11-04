@@ -141,6 +141,8 @@ Reserved fields `timestamp`, `level`, `severity`, `message`, `service`, `version
 - `INFO`: INFO + WARN + ERROR (default)
 - `DEBUG`: All messages
 
+**Crash records (#439):** `uncaughtException`, `unhandledRejection` and `warning` handlers are installed first in `index.js`. They log a static message with `event: sys_crash` (or `process.warning`) and a classified `error: { type, code, category, safeMessage }`. The upstream message and the rejection object are never logged; frames appear only in a DEBUG record. An already-handled `@actual-app/api` rejection is `process.rejection_benign` at WARN. Before the logger exists, one JSON line goes to stderr.
+
 **Level discipline (keep the error log honest):** `ERROR` is for problems that need a human. A failure the service *recovered* from (a retry, a transient remote 429/5xx, a network blip) is `WARN` or `DEBUG`, never `ERROR`. Logging expected, self-healing events at `ERROR` buries the real failures and inflates alerts. For example, transient Telegram polling failures and already-handled `@actual-app/api` rejections are logged at `DEBUG`.
 
 ---
