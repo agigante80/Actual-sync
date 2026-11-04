@@ -450,6 +450,8 @@ class NotificationService {
    * @param {number} result.accountsFailed - Failed account count
    * @param {Array} result.succeededAccounts - Successful account names
    * @param {Array} result.failedAccounts - Failed accounts with errors
+   * @param {number} result.transactionsAdded - Transactions the bank sync imported (#391)
+   * @param {number} result.transactionsUpdated - Existing transactions it matched and updated (#391)
    * @param {string} result.error - Error message (for failures)
    * @param {string} result.errorCode - Error code (for failures)
    * @param {string} result.correlationId - Correlation ID
@@ -467,6 +469,8 @@ class NotificationService {
       succeededAccounts = [],
       failedAccounts = [],
       skippedAccounts = [],
+      transactionsAdded = 0,
+      transactionsUpdated = 0,
       error,
       errorCode,
       correlationId,
@@ -541,6 +545,8 @@ class NotificationService {
       succeededAccounts,
       failedAccounts,
       skippedAccounts,
+      transactionsAdded,
+      transactionsUpdated,
       error,
       errorCode
     });
