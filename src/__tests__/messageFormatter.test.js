@@ -466,4 +466,114 @@ describe('MessageFormatter', () => {
       expect(partial.level).toBe('failure');
     });
   });
+
+  describe('per-account transaction counts (#427)', () => {
+    const r = (id, name, added, updated = 0, extra = {}) =>
+      ({ id, name, status: 'synced', added, updated, countsKnown: true, ...extra });
+    const build = (accountResults, extra = {}) => MessageFormatter.formatSyncNotification({
+      status: 'success',
+      serverName: 'Vega II',
+      duration: 1000,
+      accountsProcessed: accountResults.length,
+      accountsFailed: 0,
+      succeededAccounts: accountResults.map(a => a.name),
+      transactionsAdded: 20,
+      transactionsUpdated: 0,
+      accountResults,
+      ...extra
+    });
+    const three = [r('1', 'Account 1', 5), r('2', 'Account 2', 0), r('3', 'Account 3', 15)];
+
+    test('text lists each synced account with its count', () => {
+      const { text } = build(three);
+      expect(text).toContain('  • Account 1: 5 new transactions\n');
+      expect(text).toContain('  • Account 2: no new transactions\n');
+      expect(text).toContain('  • Account 3: 15 new transactions\n');
+      expect(text).toContain('Transactions: 20 new, 0 updated');
+    });
+
+    test('singular for one, and updated only when above 0', () => {
+      const { text } = build([r('1', 'A', 1, 2), r('2', 'B', 1), r('3', 'C', 0, 3)]);
+      expect(text).toContain('• A: 1 new transaction, 2 updated\n');
+      expect(text).toContain('• B: 1 new transaction\n');
+      expect(text).toContain('• C: 0 new transactions, 3 updated\n');
+    });
+
+    test('a late success reads count unknown, never no new transactions', () => {
+      const { text, html, slack, discord } = build([r('1', 'Late', 0, 0, { countsKnown: false })]);
+      expect(text).toContain('• Late: synced, count unknown');
+      expect(text).not.toContain('no new transactions');
+      expect(html).toContain('Late: synced, count unknown');
+      expect(JSON.stringify(slack)).toContain('Late: synced, count unknown');
+      expect(JSON.stringify(discord)).toContain('Late: synced, count unknown');
+    });
+
+    test('html, slack and discord carry the per-account lines', () => {
+      const { html, slack, discord } = build(three);
+      expect(html).toContain('Account 1: 5 new transactions');
+      expect(html).toContain('Account 3: 15 new transactions');
+      const slackText = JSON.stringify(slack);
+      expect(slackText).toContain('Account 2: no new transactions');
+      const field = discord.embeds[0].fields.find(f => f.name.includes('Synced'));
+      expect(field.value).toContain('Account 1: 5 new transactions');
+    });
+
+    test('failed and skipped accounts keep their lines and are not in the synced list', () => {
+      const { text } = build([r('1', 'Good', 2), { id: '2', name: 'Bad', status: 'failed', added: 0, updated: 0, countsKnown: false }], {
+        failedAccounts: [{ name: 'Bad', error: 'boom' }],
+        skippedAccounts: [{ name: 'Manual', reason: 'not-linked' }],
+        accountsFailed: 1
+      });
+      expect(text).toContain('• Good: 2 new transactions');
+      expect(text).toContain('  • Bad\n    boom');
+      expect(text).toContain('• Manual (not-linked)');
+      expect(text).not.toContain('Bad: ');
+    });
+
+    test('without accountResults the synced list is the bare names as before', () => {
+      const { text } = MessageFormatter.formatSyncNotification({
+        status: 'success', serverName: 's', duration: 5, accountsProcessed: 1, accountsFailed: 0,
+        succeededAccounts: ['Checking']
+      });
+      expect(text).toContain('  • Checking\n');
+      expect(text).not.toContain('Checking:');
+    });
+
+    test('account names are escaped in html, slack and discord lines', () => {
+      const evil = '<b>x</b> & *y* @everyone';
+      const { html, slack, discord } = build([r('1', evil, 1)]);
+      expect(html).not.toContain('<b>x</b>');
+      expect(html).toContain('&lt;b&gt;x&lt;/b&gt; &amp;');
+      expect(JSON.stringify(slack)).toContain('&lt;b&gt;x&lt;/b&gt; &amp;');
+      const field = discord.embeds[0].fields.find(f => f.name.includes('Synced'));
+      expect(field.value).not.toContain('@everyone');
+      expect(field.value).toContain('\\*y\\*');
+    });
+
+    test('40 accounts stay within the Discord field and Slack section limits with "and N more"', () => {
+      const many = Array.from({ length: 40 }, (_, i) => r(String(i), `Account number ${i}`, i));
+      const { slack, discord } = build(many);
+      const field = discord.embeds[0].fields.find(f => f.name.includes('Synced'));
+      expect(field.value.length).toBeLessThanOrEqual(1024);
+      expect(field.value).toMatch(/…and \d+ more$/);
+      const section = slack.blocks.find(b => b.text && b.text.text.includes('Synced:'));
+      expect(section.text.text.length).toBeLessThanOrEqual(3000);
+      expect(section.text.text).toMatch(/…and \d+ more/);
+    });
+
+    test('generic payload adds accountResults and keeps the existing fields', () => {
+      const { generic } = build(three);
+      expect(generic.accountResults).toEqual(three);
+      expect(generic.succeededAccounts).toEqual(['Account 1', 'Account 2', 'Account 3']);
+      expect(generic.transactionsAdded).toBe(20);
+      expect(generic.accounts).toEqual({ synced: 3, failed: 0, skipped: 0 });
+    });
+
+    test('generic accountResults is an empty array when the caller passes none', () => {
+      const { generic } = MessageFormatter.formatSyncNotification({
+        status: 'success', serverName: 's', duration: 5, accountsProcessed: 0, accountsFailed: 0
+      });
+      expect(generic.accountResults).toEqual([]);
+    });
+  });
 });
