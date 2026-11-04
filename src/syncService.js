@@ -316,18 +316,10 @@ async function runSyncBank(server, options = {}) {
     // the auto-retry policy reads this status instead of waiting for an error.
     let syncOutcome = 'failure';
     
-    // Create server-specific logger with per-server log level if configured
-    const serverLogger = server.logging ? logger.child({
-        server: name,
-        ...(server.logging.level && { level: server.logging.level }),
-        ...(server.logging.format && { format: server.logging.format })
-    }) : logger.child({ server: name });
-    
-    // Override logger level if server-specific level is set
-    if (server.logging?.level) {
-        serverLogger.level = server.logging.level;
-    }
-    
+    // Per-server level is a child option, never a log field (#433). Per-server
+    // `format` is deprecated and ignored: one format per sink.
+    const serverLogger = logger.child({ server: name }, { level: server.logging?.level });
+
     // Create correlation ID for this sync operation
     const correlationId = serverLogger.generateCorrelationId();
     serverLogger.setCorrelationId(correlationId);

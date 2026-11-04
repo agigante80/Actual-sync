@@ -26,6 +26,16 @@ const LEVEL_NAMES = {
     3: 'DEBUG'
 };
 
+// Keys owned by the logger; context and meta cannot set them (#433, design D1).
+const RESERVED_KEYS = new Set([
+    'timestamp', 'level', 'severity', 'message', 'event',
+    'service', 'version', 'component', 'seq', 'schema'
+]);
+
+const withoutReserved = (obj) => Object.fromEntries(
+    Object.entries(obj || {}).filter(([k]) => !RESERVED_KEYS.has(k))
+);
+
 class Logger {
     constructor(options = {}) {
         this.level = options.level || 'INFO';
@@ -331,13 +341,16 @@ class Logger {
      */
     serialize(level, safeMessage, safeContext, safeMeta, format) {
         const timestamp = new Date().toISOString();
+        safeContext = withoutReserved(safeContext);
+        safeMeta = withoutReserved(safeMeta);
+        // Reserved keys are written last so they always win (#433).
         const logEntry = {
+            ...safeContext,
+            ...safeMeta,
             timestamp,
             level: level.toUpperCase(),
             service: this.serviceName,
-            message: safeMessage,
-            ...safeContext,
-            ...safeMeta
+            message: safeMessage
         };
 
         if (this.correlationId) {
@@ -547,9 +560,9 @@ class Logger {
     /**
      * Create child logger with additional context
      */
-    child(context = {}) {
+    child(context = {}, options = {}) {
         const childLogger = new Logger({
-            level: this.level,
+            level: options.level || this.level,
             format: this.format,
             fileFormat: this.fileFormat,
             logDir: this.logDir,
@@ -656,5 +669,6 @@ module.exports = {
     Logger,
     createLogger,
     LOG_LEVELS,
-    LEVEL_NAMES
+    LEVEL_NAMES,
+    RESERVED_KEYS
 };

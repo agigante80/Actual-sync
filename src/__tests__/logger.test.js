@@ -1090,4 +1090,43 @@ describe('Logger', () => {
             expect(closeSpy).toHaveBeenCalled();
         });
     });
+
+    describe('reserved keys (#433)', () => {
+        const emit = (logger, level, msg, meta) =>
+            JSON.parse(logger.serialize(level, msg, logger.context, meta, 'json'));
+
+        test('context and meta cannot overwrite reserved keys', () => {
+            const logger = new Logger({
+                serviceName: 'svc',
+                context: { level: 'debug', service: 'evil', timestamp: 'x', message: 'ctx', severity: 'z', seq: 9, schema: 's', event: 'e', version: 'v', component: 'c' }
+            });
+            const out = emit(logger, 'WARN', 'real', { level: 'trace', message: 'meta', service: 'm', component: 'm2' });
+            expect(out.level).toBe('WARN');
+            expect(out.message).toBe('real');
+            expect(out.service).toBe('svc');
+            expect(out.timestamp).not.toBe('x');
+            for (const k of ['severity', 'seq', 'schema', 'event', 'version']) {
+                expect(out).not.toHaveProperty(k);
+            }
+        });
+
+        test('non-reserved context and meta still pass through', () => {
+            const logger = new Logger({ context: { server: 'A' } });
+            const out = emit(logger, 'INFO', 'm', { a: 1 });
+            expect(out.server).toBe('A');
+            expect(out.a).toBe(1);
+        });
+
+        test('child() level option sets the level without touching context', () => {
+            const parent = new Logger({ level: 'INFO' });
+            const child = parent.child({ server: 'A' }, { level: 'DEBUG' });
+            expect(child.level).toBe('DEBUG');
+            expect(child.context).toEqual({ server: 'A' });
+            expect(parent.level).toBe('INFO');
+        });
+
+        test('child() without options inherits the level', () => {
+            expect(new Logger({ level: 'WARN' }).child({}).level).toBe('WARN');
+        });
+    });
 });

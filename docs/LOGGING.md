@@ -72,8 +72,7 @@ Override log levels for specific servers:
       "name": "Main Budget",
       "url": "https://actual.example.com",
       "logging": {
-        "level": "DEBUG",
-        "format": "json"
+        "level": "DEBUG"
       }
     },
     {
@@ -90,7 +89,10 @@ Override log levels for specific servers:
 Use cases:
 - **DEBUG for problematic servers**: Get detailed logs for servers with issues
 - **WARN for stable servers**: Reduce noise from well-functioning servers
-- **JSON for automated analysis**: Use structured output for specific servers
+
+**Deprecated: per-server `format`.** It is still accepted so existing configs load, but it is ignored (it never took effect). Output format is chosen per sink with `logging.format` (console) and `logging.fileFormat` (file). Remove `format` from your `servers[].logging` blocks.
+
+Reserved fields (`timestamp`, `level`, `severity`, `message`, `event`, `service`, `version`, `component`, `seq`, `schema`) are set by the logger and cannot be overwritten by context or metadata; such keys passed in metadata are dropped.
 
 ### Configuration Options
 
