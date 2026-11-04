@@ -187,7 +187,7 @@ gives each key a data class, a type and, for objects, the allowed child keys
 |---|---|---|
 | `op` | always | `durationMs`, `added`, `updated`, `attempt` |
 | `id` | always | `accountId`, `serverName`, `syncId` |
-| `personal` | by default; withheld when the logger has `includePersonal: false` | `accountName`, `remoteAddress`, `dataDir` |
+| `personal` | by default; withheld when the logger has `includePersonal: false`. `remoteAddress` is the exception: security (audit) records keep it either way | `accountName`, `remoteAddress`, `dataDir` |
 | `upstream` | never | transaction rows, payees, notes, upstream error text |
 | `financial` | never | amounts, balances, account numbers |
 | `secret` | never | passwords, tokens, webhook URLs, chat ids |
@@ -232,7 +232,8 @@ the change that emits them.
 A logged error is `error: { type, code, httpStatus, category, safeMessage }`.
 `category` is one of `timeout`, `auth`, `upstream_unavailable`, `rate_limited`,
 `not_found`, `validation`, `conflict`, `cancelled`, `internal`. Raw upstream
-error text is never logged.
+error text is never logged. The string form of `error` (an `error.message`)
+still carries upstream text until #438 moves every call site to the object.
 
 ### Startup record groups
 
@@ -407,12 +408,7 @@ Automatically log operation duration:
 
 Output:
 ```
-2025-12-09T13:00:05.891Z [INFO] Performance: sync-Main {
-  "duration": 5368,
-  "operation": "sync-Main",
-  "slow": true,
-  "verySlow": true
-}
+{"timestamp":"2025-12-09T13:00:05.891Z","level":"INFO","message":"Performance: sync-Main","fields":{"duration":5368,"durationMs":5368,"operation":"sync-Main","slow":true,"verySlow":true}}
 ```
 
 ---

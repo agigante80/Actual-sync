@@ -623,8 +623,8 @@ class Logger {
             safeContext = this.redact(this.context);
             safeMeta = this.redact(meta);
             // Allowlist after redaction: only registered fields reach a sink (D3).
-            const ctx = sanitizeFields(safeContext, { includePersonal: this.includePersonal });
-            const fld = sanitizeFields(safeMeta, { includePersonal: this.includePersonal });
+            const ctx = sanitizeFields(safeContext, { includePersonal: this.includePersonal, audit });
+            const fld = sanitizeFields(safeMeta, { includePersonal: this.includePersonal, audit });
             safeContext = ctx.fields;
             safeMeta = fld.fields;
             // Count only, never the key names (D3): a spread can turn data into keys.

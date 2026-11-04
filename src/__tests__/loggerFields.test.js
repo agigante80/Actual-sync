@@ -132,6 +132,27 @@ describe('logger field allowlist (#437)', () => {
         expect(takeDroppedFields()).toEqual(['accountName']);
     });
 
+    test('with includePersonal: false a security record keeps remoteAddress, a plain record does not (M3)', () => {
+        const logger = makeLogger({ includePersonal: false });
+        logger.security('authn_login_fail', { remoteAddress: '10.0.0.9' });
+        logger.info('m', { remoteAddress: '10.0.0.8' });
+        const [sec, plain] = consoleOut.map((l) => JSON.parse(l));
+        expect(sec.fields.remoteAddress).toBe('10.0.0.9');
+        expect(plain.fields).toBeUndefined();
+        expect(plain.droppedFieldCount).toBe(1);
+        takeDroppedFields();
+    });
+
+    test('with includePersonal: false security.suppressed keeps remoteAddress (M3)', () => {
+        const logger = makeLogger({ includePersonal: false });
+        for (let i = 0; i < 30; i++) logger.security('authn_login_fail', { remoteAddress: '10.0.0.9' });
+        consoleOut.length = 0;
+        logger.flushSecurity();
+        const rec = consoleOut.map((l) => JSON.parse(l)).find((r) => r.message === 'security.suppressed');
+        expect(rec.fields.remoteAddress).toBe('10.0.0.9');
+        takeDroppedFields();
+    });
+
     test('a child logger inherits includePersonal', () => {
         const child = makeLogger({ includePersonal: false }).child({ component: 'x' });
         child.info('m', { accountName: 'Alice Joint' });

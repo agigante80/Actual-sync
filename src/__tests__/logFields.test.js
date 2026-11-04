@@ -27,6 +27,18 @@ describe('registry', () => {
         expect(FIELDS.errorStack.class).toBe(CLASS.UPSTREAM);
         expect(FIELDS.chatId.class).toBe(CLASS.SECRET);
     });
+
+    test('stack is upstream (never emitted); frames is the op key for our own frames (H1)', () => {
+        expect(FIELDS.stack.class).toBe(CLASS.UPSTREAM);
+        expect(sanitizeFields({ stack: 'Error: SENTINEL_MESSAGE\n at x' })).toEqual({ fields: {}, dropped: 1 });
+        expect(FIELDS.frames.class).toBe(CLASS.OP);
+        expect(sanitizeFields({ frames: '    at ourCode (/app/src/x.js:1:1)' }).dropped).toBe(0);
+    });
+
+    test('operational timer, queue and alert keys are registered (M1)', () => {
+        const input = { operation: 'sync-Main', slow: true, verySlow: false, ahead: 2, events: 3 };
+        expect(sanitizeFields(input)).toEqual({ fields: input, dropped: 0 });
+    });
 });
 
 describe('sanitizeFields', () => {
@@ -135,6 +147,9 @@ describe('sanitizeFields', () => {
     });
 
     test('the drop observer sees paths, and a throwing observer never breaks logging', () => {
+        // The observer is global (M2): put the harness's back afterwards.
+        const key = Symbol.for('actual-sync.logFields.dropObserver');
+        const harness = globalThis[key];
         jest.isolateModules(() => {
             const fresh = require('../lib/logFields');
             const seen = [];
@@ -144,6 +159,7 @@ describe('sanitizeFields', () => {
             fresh.setDropObserver(() => { throw new Error('observer'); });
             expect(() => fresh.sanitizeFields({ nope: 1 })).not.toThrow();
         });
+        globalThis[key] = harness;
     });
 });
 
@@ -152,5 +168,43 @@ describe('splitEnvelope', () => {
         const { envelope, fields } = splitEnvelope({ event: 'e', component: 'c', server: 's', durationMs: 5, error: 'x' });
         expect(envelope).toEqual({ event: 'e', component: 'c', server: 's', error: 'x' });
         expect(fields).toEqual({ durationMs: 5 });
+    });
+});
+
+describe('keys and lengths accept only the known result names (L1)', () => {
+    test('known names pass', () => {
+        const input = {
+            keys: ['newTransactions', 'matchedTransactions', 'updatedAccounts', 'errors'],
+            lengths: { newTransactions: 2, matchedTransactions: 0, updatedAccounts: 1, errors: 0 }
+        };
+        expect(sanitizeFields(input)).toEqual({ fields: input, dropped: 0 });
+    });
+
+    test('other names are dropped and counted, never written', () => {
+        const out = sanitizeFields({
+            keys: ['newTransactions', 'SENTINEL_KEY'],
+            lengths: { newTransactions: 2, SENTINEL_LEN: 5 }
+        });
+        expect(out.fields).toEqual({ keys: ['newTransactions'], lengths: { newTransactions: 2 } });
+        expect(out.dropped).toBe(2);
+        expect(JSON.stringify(out)).not.toMatch(/SENTINEL/);
+    });
+});
+
+describe('drop observer survives jest.resetModules (M2)', () => {
+    test('a re-required logFields still reports to the harness', () => {
+        jest.resetModules();
+        const fresh = require('../lib/logFields');
+        takeDroppedFields();
+        fresh.sanitizeFields({ bogusKeyAfterReset: 1 });
+        expect(takeDroppedFields()).toEqual(['bogusKeyAfterReset']);
+    });
+});
+
+describe('audit records keep remoteAddress without includePersonal (M3)', () => {
+    test('sanitizeFields keeps a keepOnAudit key only when audit is true', () => {
+        const input = { remoteAddress: '10.0.0.9', accountName: 'Alice' };
+        expect(sanitizeFields(input, { includePersonal: false, audit: true }).fields).toEqual({ remoteAddress: '10.0.0.9' });
+        expect(sanitizeFields(input, { includePersonal: false }).fields).toEqual({});
     });
 });

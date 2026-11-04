@@ -80,8 +80,8 @@ function crashBeforeLogger(message, reason) {
 }
 
 function logFrames(logger, message, reason) {
-    const stack = framesOf(reason);
-    if (stack) logger.debug(message, { event: 'sys_crash.stack', stack });
+    const frames = framesOf(reason);
+    if (frames) logger.debug(message, { event: 'sys_crash.stack', frames });
 }
 
 function handleUncaughtException(logger, error) {

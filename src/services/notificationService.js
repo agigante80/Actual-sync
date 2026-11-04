@@ -262,8 +262,7 @@ class NotificationService {
       });
     } catch (error) {
       this.logger.error('Failed to initialize email transporter', {
-        error: error.message,
-        stack: error.stack
+        error: error.message
       });
     }
   }
@@ -681,7 +680,6 @@ class NotificationService {
     } catch (err) {
       this.logger.error('Failed to send notification', {
         error: err.message,
-        stack: err.stack,
         serverName,
         correlationId
       });
@@ -720,8 +718,7 @@ class NotificationService {
       };
     } catch (error) {
       this.logger.error('Failed to send email', {
-        error: error.message,
-        stack: error.stack
+        error: error.message
       });
       return {
         success: false,
@@ -952,8 +949,7 @@ class NotificationService {
       };
     } catch (error) {
       this.logger.error('Failed to send email', {
-        error: error.message,
-        stack: error.stack
+        error: error.message
       });
       return {
         success: false,
@@ -1413,8 +1409,7 @@ Please investigate and resolve the issue.
       };
     } catch (err) {
       this.logger.error('Failed to send startup notification', {
-        error: err.message,
-        stack: err.stack
+        error: err.message
       });
       throw err;
     }

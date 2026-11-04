@@ -425,7 +425,7 @@ async function runSyncBank(server, options = {}) {
             throw busy;
         }
 
-        serverLogger.info(`Connecting to Actual server`, { url });
+        serverLogger.info(`Connecting to Actual server`);
         sessionOpened = true;
         // @actual-app/api prints warn/error to the global console whatever
         // `verbose` says; route it through our logger for this session. (#426)
@@ -449,8 +449,7 @@ async function runSyncBank(server, options = {}) {
         serverLogger[compat.level]('Version compatibility', {
             testedUpTo: compat.testedUpTo,
             serverVersion: compat.serverVersion,
-            verdict: compat.verdict,
-            message: compat.message,
+            verdict: compat.verdict
         });
         if (healthCheck && typeof healthCheck.updateServerVersion === 'function') {
             healthCheck.updateServerVersion(name, {
@@ -1305,7 +1304,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // first in index.js (crashHandlers, #439); they only need the logger from here.
 
 run().catch((error) => {
-    logger.error('Fatal error during service initialization', { error: error.message, stack: error.stack });
+    logger.error('Fatal error during service initialization', { error: error.message });
     process.exit(1);
 });
 

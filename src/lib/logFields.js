@@ -56,6 +56,9 @@ const ERROR_SPEC = op(['string', 'object'], {
     }
 });
 
+// The top-level result names runBankSync is known to return (#434, L1).
+const RESULT_KEYS = Object.freeze(['newTransactions', 'matchedTransactions', 'updatedAccounts', 'errors']);
+
 const FIELDS = Object.freeze({
     // --- envelope ---
     event: op('string'),
@@ -89,7 +92,9 @@ const FIELDS = Object.freeze({
     failedAccounts: personal('array', {
         items: { type: 'object', children: { name: personal(), error: ERROR_SPEC } }
     }),
-    remoteAddress: personal(),
+    // Kept on audit records (security events) even with includePersonal: false:
+    // the source address is the point of an audit record (M3).
+    remoteAddress: personal('string', { keepOnAudit: true }),
     sourceKey: personal(),
     origin: personal(['string']),
     allowedOrigins: personal('array', { items: 'string' }),
@@ -182,7 +187,7 @@ const FIELDS = Object.freeze({
     sent: op(['boolean', 'number']),
     skipped: op(['boolean', 'number']),
     success: op('boolean'),
-    syncable: op('boolean'),
+    syncable: op(['boolean', 'number']),
     telegram: op('boolean'),
     email: op('boolean'),
 
@@ -211,9 +216,22 @@ const FIELDS = Object.freeze({
     retryTime: op('string'),
     // Names of the top-level keys of a runBankSync result and the length of
     // each array under them (#434): counts and key names, never values.
-    keys: op('array', { items: 'string' }),
-    lengths: op('object', { mapOf: 'number' }),
-    stack: op('string'),
+    // Only the known result names are accepted (L1): any other key name could
+    // be data, so it is dropped and counted.
+    keys: op('array', { items: { type: 'string', oneOf: RESULT_KEYS } }),
+    lengths: op('object', { children: Object.fromEntries(RESULT_KEYS.map((k) => [k, op('number')])) }),
+    // Our own stack frames, never the upstream error text (see `stack` below).
+    frames: op('string'),
+    // performance timer (logger.js), sync queue, schedule alert result
+    operation: op('string'),
+    // version compatibility record (syncService); versions are parsed digits
+    testedUpTo: op('string'),
+    serverVersion: op('string'),
+    verdict: op('string'),
+    slow: op('boolean'),
+    verySlow: op('boolean'),
+    ahead: op('number'),
+    events: op('number'),
 
     webhooks: op('object', { children: { slack: op('number'), discord: op('number') } }),
     filters: op('object', {
@@ -249,6 +267,7 @@ const FIELDS = Object.freeze({
     dashboard: never(CLASS.SECRET),
     errorMessage: never(CLASS.UPSTREAM),
     errorStack: never(CLASS.UPSTREAM),
+    stack: never(CLASS.UPSTREAM),
     stackFirstLine: never(CLASS.UPSTREAM),
     toString: never(CLASS.UPSTREAM),
     originalError: never(CLASS.UPSTREAM),
@@ -266,9 +285,11 @@ const MAP_KEY = /^[A-Za-z0-9_.-]{1,64}$/;
 
 // The test harness registers an observer so that a dropped field fails the
 // test. Production never records key names (D3).
-let dropObserver = null;
+// It lives on globalThis so that a module re-required after
+// jest.resetModules() still reports to the harness (M2).
+const OBSERVER_KEY = Symbol.for('actual-sync.logFields.dropObserver');
 function setDropObserver(fn) {
-    dropObserver = typeof fn === 'function' ? fn : null;
+    globalThis[OBSERVER_KEY] = typeof fn === 'function' ? fn : null;
 }
 
 const DROP = Symbol('drop');
@@ -292,6 +313,7 @@ function sanitizeValue(spec, value, path, depth, ctx) {
     if (value === undefined) return undefined;
     if (value === null) return null;
     if (!typeMatches(spec, value)) return reject(ctx, path);
+    if (spec.oneOf && !spec.oneOf.includes(value)) return reject(ctx, path);
 
     const kind = typeOfValue(value);
     if (kind === 'array') {
@@ -334,13 +356,13 @@ function sanitizeValue(spec, value, path, depth, ctx) {
 
 function reject(ctx, path) {
     ctx.dropped++;
-    if (dropObserver) ctx.paths.push(path);
+    if (globalThis[OBSERVER_KEY]) ctx.paths.push(path);
     return DROP;
 }
 
 function admitted(spec, ctx) {
     if (NEVER_EMITTED.has(spec.class)) return false;
-    if (spec.class === CLASS.PERSONAL && !ctx.includePersonal) return false;
+    if (spec.class === CLASS.PERSONAL && !ctx.includePersonal && !(spec.keepOnAudit && ctx.audit)) return false;
     return true;
 }
 
@@ -349,11 +371,13 @@ function admitted(spec, ctx) {
  * @param {Object} input - context or metadata, already secret-redacted
  * @param {Object} [options]
  * @param {boolean} [options.includePersonal=true] - emit class `personal`
+ * @param {boolean} [options.audit=false] - an audit record: keys marked
+ *   keepOnAudit (remoteAddress) are emitted even without includePersonal
  * @returns {{fields: Object, dropped: number}} the allowed fields (flat) and
  *   how many keys, items or values were refused
  */
-function sanitizeFields(input, { includePersonal = true } = {}) {
-    const ctx = { dropped: 0, paths: [], includePersonal };
+function sanitizeFields(input, { includePersonal = true, audit = false } = {}) {
+    const ctx = { dropped: 0, paths: [], includePersonal, audit };
     const fields = {};
     if (input && typeof input === 'object' && !Array.isArray(input)) {
         for (const key of Object.keys(input)) {
@@ -364,8 +388,9 @@ function sanitizeFields(input, { includePersonal = true } = {}) {
     } else if (input !== undefined && input !== null) {
         reject(ctx, '(non-object metadata)');
     }
-    if (ctx.dropped > 0 && dropObserver) {
-        try { dropObserver(ctx.paths); } catch { /* an observer must never break logging */ }
+    const observer = globalThis[OBSERVER_KEY];
+    if (ctx.dropped > 0 && observer) {
+        try { observer(ctx.paths); } catch { /* an observer must never break logging */ }
     }
     return { fields, dropped: ctx.dropped };
 }

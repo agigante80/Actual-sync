@@ -168,7 +168,7 @@ describe('uncaught exception with a logger', () => {
         e.stack = 'TypeError: SENTINEL_MESSAGE\n    at ourCode (/app/src/x.js:1:1)';
         handleUncaughtException(logger, e);
         expect(logger.debug).toHaveBeenCalledTimes(1);
-        expect(logger.debug.mock.calls[0][1]).toEqual({ event: 'sys_crash.stack', stack: '    at ourCode (/app/src/x.js:1:1)' });
+        expect(logger.debug.mock.calls[0][1]).toEqual({ event: 'sys_crash.stack', frames: '    at ourCode (/app/src/x.js:1:1)' });
         expect(allLogged(logger)).not.toMatch(/SENTINEL_MESSAGE/);
     });
 });
