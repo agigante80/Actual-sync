@@ -345,19 +345,21 @@ class Logger {
         }
 
         if (format === 'json') {
-            return JSON.stringify(logEntry);
+            // JSON.stringify leaves U+2028/2029, DEL, C1 and bidi raw; they can only
+            // occur inside strings, so escaping the output keeps it valid JSON. (#447)
+            return escapeControlChars(JSON.stringify(logEntry), true);
         }
 
         // Pretty format for console
         const correlationStr = this.correlationId ? ` [${this.correlationId.substring(0, 8)}]` : '';
         const contextStr = Object.keys(safeContext).length > 0
-            ? ` [${JSON.stringify(safeContext)}]`
+            ? ` [${escapeControlChars(JSON.stringify(safeContext))}]`
             : '';
         const metaStr = Object.keys(safeMeta).length > 0
-            ? ` ${JSON.stringify(safeMeta, null, 2)}`
+            ? ` ${escapeControlChars(JSON.stringify(safeMeta))}`
             : '';
 
-        return `${timestamp} [${level.toUpperCase()}]${correlationStr}${contextStr} ${safeMessage}${metaStr}`;
+        return `${timestamp} [${level.toUpperCase()}]${correlationStr}${contextStr} ${escapeControlChars(safeMessage)}${metaStr}`;
     }
 
     /**
@@ -625,6 +627,26 @@ class Logger {
 }
 
 /**
+ * Replace control and line-breaking characters with visible escapes so one log
+ * call is exactly one line and cannot forge entries or drive the terminal
+ * (CWE-117). Covers C0 (incl. CR/LF/ESC), DEL, C1, U+2028/2029 and the bidi
+ * controls U+202A-202E and U+2066-2069. (#447)
+ * @param {*} value Coerced with String().
+ * @param {boolean} [json] Always use \\uNNNN (valid inside a JSON string).
+ * @returns {string}
+ */
+function escapeControlChars(value, json = false) {
+    return String(value).replace(
+        /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
+        (c) => {
+            const code = c.charCodeAt(0);
+            const hex = code.toString(16).padStart(json || code > 0xff ? 4 : 2, '0');
+            return (json || code > 0xff ? '\\u' : '\\x') + hex;
+        }
+    );
+}
+
+/**
  * Create default logger instance
  */
 function createLogger(options = {}) {
@@ -655,6 +677,7 @@ function createLogger(options = {}) {
 module.exports = {
     Logger,
     createLogger,
+    escapeControlChars,
     LOG_LEVELS,
     LEVEL_NAMES
 };
