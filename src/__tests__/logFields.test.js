@@ -119,17 +119,28 @@ describe('sanitizeFields', () => {
     });
 
     test('class personal follows includePersonal', () => {
-        const input = { accountName: 'Alice Joint', remoteAddress: '10.0.0.1', accountId: 'a1' };
+        const input = { remoteAddress: '10.0.0.1', dataDir: '/srv/x', accountId: 'a1' };
         expect(sanitizeFields(input).fields).toEqual(input);
         const off = sanitizeFields(input, { includePersonal: false });
         expect(off.fields).toEqual({ accountId: 'a1' });
         expect(off.dropped).toBe(2);
     });
 
-    test('a personal child inside an allowed object follows includePersonal too', () => {
-        const input = { failedAccounts: [{ name: 'Alice Joint', error: 'boom' }] };
-        expect(sanitizeFields(input).fields).toEqual(input);
-        expect(sanitizeFields(input, { includePersonal: false }).fields).toEqual({});
+    test('class account-name follows includeAccountNames only, and is omitted without a drop count (#448)', () => {
+        const input = { accountName: 'Alice Joint', succeededAccounts: ['Alice Joint'], accountId: 'a1', dataDir: '/srv/x' };
+        const off = sanitizeFields(input);
+        expect(off).toEqual({ fields: { accountId: 'a1', dataDir: '/srv/x' }, dropped: 0 });
+        expect(sanitizeFields(input, { includeAccountNames: true }).fields).toEqual(input);
+        // includePersonal does not switch names on, and the names flag does not switch personal on
+        expect(sanitizeFields(input, { includePersonal: true }).fields).not.toHaveProperty('accountName');
+        const both = sanitizeFields(input, { includeAccountNames: true, includePersonal: false });
+        expect(both.fields).toEqual({ accountName: 'Alice Joint', succeededAccounts: ['Alice Joint'], accountId: 'a1' });
+    });
+
+    test('a name child inside failedAccounts is omitted, its id and error stay (#448)', () => {
+        const input = { failedAccounts: [{ id: 'a1', name: 'Alice Joint', error: 'boom' }] };
+        expect(sanitizeFields(input).fields).toEqual({ failedAccounts: [{ id: 'a1', error: 'boom' }] });
+        expect(sanitizeFields(input, { includeAccountNames: true }).fields).toEqual(input);
     });
 
     test('the classified error object and the legacy string both pass', () => {

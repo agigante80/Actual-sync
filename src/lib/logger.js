@@ -167,8 +167,11 @@ class Logger {
         this.logDir = (options.logDir !== undefined) ? options.logDir : defaultLogDir;
         this.serviceName = options.serviceName || 'actual-sync';
         // Field allowlist (D3, #437): class `personal` is emitted unless this is
-        // false. The default flips to false with logging.includeAccountNames (#448).
+        // false. Account names have their own gate (#448): `personal` also covers
+        // paths and addresses, which logging.includeAccountNames must not enable.
         this.includePersonal = options.includePersonal !== false;
+        // Class `account-name` is omitted unless this is exactly true (default off).
+        this.includeAccountNames = options.includeAccountNames === true;
         this.broadcastCallback = options.broadcastCallback || null;
         // A child resolves the callback through its parent at log time, so one set
         // after the child was created (syncService attaches it last) still applies.
@@ -632,8 +635,8 @@ class Logger {
             safeContext = this.redact(this.context);
             safeMeta = this.redact(meta);
             // Allowlist after redaction: only registered fields reach a sink (D3).
-            const ctx = sanitizeFields(safeContext, { includePersonal: this.includePersonal, audit });
-            const fld = sanitizeFields(safeMeta, { includePersonal: this.includePersonal, audit });
+            const ctx = sanitizeFields(safeContext, { includePersonal: this.includePersonal, includeAccountNames: this.includeAccountNames, audit });
+            const fld = sanitizeFields(safeMeta, { includePersonal: this.includePersonal, includeAccountNames: this.includeAccountNames, audit });
             safeContext = ctx.fields;
             safeMeta = fld.fields;
             // Count only, never the key names (D3): a spread can turn data into keys.
@@ -825,6 +828,7 @@ class Logger {
             serviceName: this.serviceName,
             context: { ...this.context, ...context },
             includePersonal: this.includePersonal,
+            includeAccountNames: this.includeAccountNames,
             rotation: this.rotation,
             syslog: this.syslog,
             // Do not open new streams; the child shares the parent's below. (#106)
@@ -939,6 +943,7 @@ function createLogger(options = {}) {
                 fileFormat: config.logging.fileFormat || 'json',
                 logDir: config.logging.logDir || null,
                 redact: config.logging.redact,
+                includeAccountNames: config.logging.includeAccountNames,
                 rotation: config.logging.rotation,
                 ...options
             };

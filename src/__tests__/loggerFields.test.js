@@ -117,19 +117,34 @@ describe('logger field allowlist (#437)', () => {
         expect(fileText()).toContain('password=[REDACTED]');
     });
 
-    test('class personal is emitted by default and withheld with includePersonal: false', () => {
-        const on = makeLogger();
-        on.info('m', { accountName: 'Alice Joint', accountId: 'a1' });
-        expect(JSON.parse(consoleOut[0]).fields).toEqual({ accountName: 'Alice Joint', accountId: 'a1' });
-
-        consoleOut.length = 0;
-        const off = makeLogger({ includePersonal: false });
+    test('account names are withheld by default and written with includeAccountNames: true (#448)', () => {
+        const off = makeLogger();
         off.info('m', { accountName: 'Alice Joint', accountId: 'a1' });
         const rec = JSON.parse(consoleOut[0]);
         expect(rec.fields).toEqual({ accountId: 'a1' });
-        expect(rec.droppedFieldCount).toBe(1);
+        expect(rec).not.toHaveProperty('droppedFieldCount');
         expect(consoleOut[0]).not.toContain('Alice');
-        expect(takeDroppedFields()).toEqual(['accountName']);
+
+        consoleOut.length = 0;
+        const on = makeLogger({ includeAccountNames: true });
+        on.info('m', { accountName: 'Alice Joint', accountId: 'a1' });
+        expect(JSON.parse(consoleOut[0]).fields).toEqual({ accountName: 'Alice Joint', accountId: 'a1' });
+        expect(on.child({ component: 'x' }).includeAccountNames).toBe(true);
+    });
+
+    test('class personal is emitted by default and withheld with includePersonal: false', () => {
+        const on = makeLogger();
+        on.info('m', { dataDir: '/srv/alice', accountId: 'a1' });
+        expect(JSON.parse(consoleOut[0]).fields).toEqual({ dataDir: '/srv/alice', accountId: 'a1' });
+
+        consoleOut.length = 0;
+        const off = makeLogger({ includePersonal: false });
+        off.info('m', { dataDir: '/srv/alice', accountId: 'a1' });
+        const rec = JSON.parse(consoleOut[0]);
+        expect(rec.fields).toEqual({ accountId: 'a1' });
+        expect(rec.droppedFieldCount).toBe(1);
+        expect(consoleOut[0]).not.toContain('alice');
+        expect(takeDroppedFields()).toEqual(['dataDir']);
     });
 
     test('with includePersonal: false a security record keeps remoteAddress, a plain record does not (M3)', () => {

@@ -12,7 +12,13 @@
  *     scalar is registered, an unregistered child key) is dropped;
  *   - a key of class upstream, financial or secret is dropped, always;
  *   - a key of class personal is dropped when the logger runs with
- *     includePersonal: false.
+ *     includePersonal: false;
+ *   - a key of class account-name (an account's display name) is omitted
+ *     unless the logger runs with includeAccountNames: true (#448). It has its
+ *     own gate because `personal` also covers paths and addresses, which
+ *     logging.includeAccountNames must not switch on. The omission is a
+ *     configured choice, so it is neither counted in droppedFieldCount nor
+ *     reported to the test observer.
  *
  * Add a key here in the same change that logs it. The source of truth for the
  * classes is docs/LOGGING.md ("Field allowlist").
@@ -22,6 +28,7 @@ const CLASS = Object.freeze({
     OP: 'op',
     ID: 'id',
     PERSONAL: 'personal',
+    ACCOUNT_NAME: 'account-name',
     UPSTREAM: 'upstream',
     FINANCIAL: 'financial',
     SECRET: 'secret'
@@ -41,6 +48,7 @@ const ENVELOPE_KEYS = Object.freeze(['event', 'component', 'correlationId', 'ser
 const op = (type, extra) => ({ class: CLASS.OP, type, ...extra });
 const id = (type = 'string', extra) => ({ class: CLASS.ID, type, ...extra });
 const personal = (type = 'string', extra) => ({ class: CLASS.PERSONAL, type, ...extra });
+const accountName = (type = 'string', extra) => ({ class: CLASS.ACCOUNT_NAME, type, ...extra });
 const never = (klass, type = 'string') => ({ class: klass, type });
 
 // The classified error object (D5). A plain string is accepted while the
@@ -88,12 +96,21 @@ const FIELDS = Object.freeze({
     requestedServer: id(),
     ruleIds: id('array', { items: 'string' }),
 
-    // --- personal (off with includePersonal: false) ---
-    accountName: personal(),
-    succeededAccounts: personal('array', { items: 'string' }),
-    failedAccounts: personal('array', {
-        items: { type: 'object', children: { name: personal(), error: ERROR_SPEC } }
+    // --- account names (off unless includeAccountNames: true, #448) ---
+    // Every record that carries a name also carries the id (accountId,
+    // succeededAccountIds, the id inside each failed/skipped entry), so a log
+    // stays useful with the names omitted.
+    accountName: accountName(),
+    succeededAccounts: accountName('array', { items: 'string' }),
+    succeededAccountIds: id('array', { items: 'string' }),
+    failedAccounts: op('array', {
+        items: { type: 'object', children: { id: id(), name: accountName(), error: ERROR_SPEC } }
     }),
+    skippedAccounts: op('array', {
+        items: { type: 'object', children: { id: id(), name: accountName(), reason: op('string') } }
+    }),
+
+    // --- personal (off with includePersonal: false) ---
     // Kept on audit records (security events) even with includePersonal: false:
     // the source address is the point of an audit record (M3).
     remoteAddress: personal('string', { keepOnAudit: true }),
@@ -223,6 +240,7 @@ const FIELDS = Object.freeze({
     utcOffset: op('string', { pattern: /^[+-]\d{2}:\d{2}$/ }),
     logLevel: op('string', { oneOf: ['DEBUG', 'INFO', 'WARN', 'ERROR'] }),
     actualApiVerbose: op('boolean'),
+    includeAccountNames: op('boolean'),
     sinks: op('array', { items: { type: 'string', oneOf: ['console', 'file', 'syslog', 'websocket'] } }),
     customLogDir: op('boolean'),
     customDataDir: op('boolean'),
@@ -377,7 +395,9 @@ function sanitizeValue(spec, value, path, depth, ctx) {
             const childPath = `${path}.${key}`;
             if (!hasOwn(children, key)) { reject(ctx, childPath); continue; }
             const childSpec = children[key];
-            if (!admitted(childSpec, ctx)) { reject(ctx, childPath); continue; }
+            const gate = admitted(childSpec, ctx);
+            if (gate === OMIT) continue;
+            if (!gate) { reject(ctx, childPath); continue; }
             const clean = sanitizeValue(childSpec, value[key], childPath, depth + 1, ctx);
             if (clean !== DROP && clean !== undefined) out[key] = clean;
         }
@@ -392,7 +412,12 @@ function reject(ctx, path) {
     return DROP;
 }
 
+// true: emit. false: drop and count. OMIT: leave out silently (a configured
+// omission, not a refused field).
+const OMIT = Symbol('omit');
+
 function admitted(spec, ctx) {
+    if (spec.class === CLASS.ACCOUNT_NAME) return ctx.includeAccountNames ? true : OMIT;
     if (NEVER_EMITTED.has(spec.class)) return false;
     if (spec.class === CLASS.PERSONAL && !ctx.includePersonal && !(spec.keepOnAudit && ctx.audit)) return false;
     return true;
@@ -403,17 +428,21 @@ function admitted(spec, ctx) {
  * @param {Object} input - context or metadata, already secret-redacted
  * @param {Object} [options]
  * @param {boolean} [options.includePersonal=true] - emit class `personal`
+ * @param {boolean} [options.includeAccountNames=false] - emit class `account-name`
  * @param {boolean} [options.audit=false] - an audit record: keys marked
  *   keepOnAudit (remoteAddress) are emitted even without includePersonal
  * @returns {{fields: Object, dropped: number}} the allowed fields (flat) and
  *   how many keys, items or values were refused
  */
-function sanitizeFields(input, { includePersonal = true, audit = false } = {}) {
-    const ctx = { dropped: 0, paths: [], includePersonal, audit };
+function sanitizeFields(input, { includePersonal = true, includeAccountNames = false, audit = false } = {}) {
+    const ctx = { dropped: 0, paths: [], includePersonal, includeAccountNames, audit };
     const fields = {};
     if (input && typeof input === 'object' && !Array.isArray(input)) {
         for (const key of Object.keys(input)) {
-            if (!hasOwn(FIELDS, key) || !admitted(FIELDS[key], ctx)) { reject(ctx, key); continue; }
+            if (!hasOwn(FIELDS, key)) { reject(ctx, key); continue; }
+            const gate = admitted(FIELDS[key], ctx);
+            if (gate === OMIT) continue;
+            if (!gate) { reject(ctx, key); continue; }
             const clean = sanitizeValue(FIELDS[key], input[key], key, 1, ctx);
             if (clean !== DROP && clean !== undefined) fields[key] = clean;
         }
