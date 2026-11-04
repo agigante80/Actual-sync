@@ -22,6 +22,7 @@ const { createAutoRetry } = require('./lib/autoRetry');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, prepareSession, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts, persistPaymentSnapshot } = require('./lib/scheduleAlertsStep');
 const { bankSyncCounts, describeResultLengths } = require('./lib/bankSyncCounts');
+const { buildStartupRecord } = require('./lib/startupRecord');
 const { installConsoleBridge } = require('./lib/consoleBridge');
 
 // Get version from environment (CI build-arg) or package.json (#132)
@@ -113,10 +114,6 @@ try {
     if (config.logging?.actualApiVerbose === true) {
         logger.warn('logging.actualApiVerbose is on: @actual-app/api will print transaction data to stdout');
     }
-
-    logger.info('Configuration loaded successfully', {
-        serverCount: config.servers.length 
-    });
 
     const timezoneWarning = describeTimezoneFallback(config);
     if (timezoneWarning) logger.warn(timezoneWarning);
@@ -255,6 +252,14 @@ try {
             healthCheck.broadcastLog(level, message, metadata);
         }
     });
+
+    // One startup record, after every sink is attached so `sinks` is accurate (#443)
+    // A diagnostic must not stop the service from starting.
+    try {
+        logger.security('sys_startup', buildStartupRecord(config, logger));
+    } catch (error) {
+        logger.warn('Could not write the sys_startup record', { errorName: error.name });
+    }
 } catch (error) {
     // The root logger may not exist: the bootstrap logger writes redacted JSON lines to stderr (#442)
     bootstrap.error('Failed to load configuration', { error: error.message });

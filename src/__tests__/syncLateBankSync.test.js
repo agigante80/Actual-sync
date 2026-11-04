@@ -22,7 +22,8 @@ function makeLogger() {
         level: 'info',
         info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(),
         startTimer: () => () => 1,
-        setBroadcastCallback: jest.fn()
+        setBroadcastCallback: jest.fn(),
+        security: jest.fn(), activeSinks: () => ['console']
     };
     l.child = () => l;
     return l;

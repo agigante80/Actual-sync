@@ -204,12 +204,23 @@ error text is never logged.
 
 ### Startup record groups
 
-`sys_startup` carries these groups: versions (app, Node, @actual-app/api, pid,
-platform, container flag); timezone and UTC offset; log level, effective api
-verbose and active sinks; whether a custom log dir and data dir are set
-(booleans, not paths) and retention days; effective privacy flags; server count
-and schedules; enabled notification channels (booleans); dashboard bind
-address, auth mode and TLS; timeouts; config schema version.
+`sys_startup` (#443) is written once, after every sink is attached, through
+`logger.security()` (INFO, written whatever the configured level). Fields
+(built one by one in `src/lib/startupRecord.js`, never copied from the config):
+
+| Group | Fields |
+|---|---|
+| versions | `appVersion`, `nodeVersion`, `actualApiVersion` (resolved), `pid`, `platform`, `container` |
+| time | `timezone`, `utcOffset` (`+01:00`; cron schedules use this zone) |
+| logging | `logLevel`, `actualApiVerbose`, `sinks` (`console`, `file`, `syslog`, `websocket`), `customLogDir`, `customDataDir` (booleans, never paths), `retentionDays` (`null` when file logging is off) |
+| privacy | `actualApiVerbose`, `includeAccountNames` |
+| sync | `serverCount`, `schedules` (unique cron strings), `timeouts.phaseTimeoutSeconds` |
+| channels | `channels.{email,telegram,slack,discord,webhook,ntfy}` (booleans) |
+| dashboard | `dashboardEnabled`, `dashboardBind` (`host:port`), `dashboardAuth` (`none`, `basic`, `token`), `tls` |
+| config | `configSchemaVersion` (an integer in `startupRecord.js`, bumped when `config.schema.json` changes; never a hash of values) |
+
+No URLs, credentials, paths or server names. `tls` is always `false`: the
+HTTP server is plain http and TLS comes from a reverse proxy.
 
 ### Key mapping with actual-mcp-server
 
