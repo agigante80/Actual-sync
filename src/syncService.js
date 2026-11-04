@@ -41,6 +41,14 @@ function logOwnStack(log, error) {
     if (stack) log.debug('Error stack', { frames: stack });
 }
 
+/**
+ * failedAccounts as the log allowlist takes them: `error` is the classified
+ * object (#437, #438). The string form stays for notifications and history.
+ */
+function failedAccountsForLog(failedAccounts) {
+    return failedAccounts.map((a) => ({ id: a.id, name: a.name, error: a.errorInfo }));
+}
+
 function formatNextSync(nextInvocation) {
     // Ensure nextInvocation is a Date object
     if (!nextInvocation) return 'not scheduled';
@@ -377,9 +385,6 @@ async function runSyncBank(server, options = {}) {
     const succeededAccounts = [];
     const succeededAccountIds = []; // same order; the log keeps ids when names are off (#448)
     const failedAccounts = [];
-    // What the log records get: the same accounts, with the classified error
-    // object instead of the notification's text (#438, #448).
-    const failedAccountLog = [];
     let skippedAccounts = []; // accounts skipped (manual / closed) — see partitionSyncableAccounts (#98)
     // Per-account outcome for the notifications (#427), in processing order. The
     // shape is shared with #429 (persistence) and #430 (dashboard): keep it as is.
@@ -731,9 +736,9 @@ async function runSyncBank(server, options = {}) {
                     failedAccounts.push({
                         id: account.id,
                         name: account.name,
-                        error: failureInfo.code ? `${errorMsg} (${failureInfo.code})` : errorMsg
+                        error: failureInfo.code ? `${errorMsg} (${failureInfo.code})` : errorMsg,
+                        errorInfo: failureInfo
                     });
-                    failedAccountLog.push({ id: account.id, name: account.name, error: failureInfo });
                     recordAccountResult(account, 'failed');
                     accountTimer();
                     serverLogger.error('Error syncing bank for account', {
@@ -750,12 +755,8 @@ async function runSyncBank(server, options = {}) {
                         failedAccounts.push({
                             id: skipped.id,
                             name: skipped.name,
-                            error: 'Skipped: an earlier bank sync is still running in the session'
-                        });
-                        failedAccountLog.push({
-                            id: skipped.id,
-                            name: skipped.name,
-                            error: { type: 'Error', category: 'internal', safeMessage: 'Skipped: an earlier bank sync is still running in the session' }
+                            error: 'Skipped: an earlier bank sync is still running in the session',
+                            errorInfo: { category: 'timeout', safeMessage: 'Skipped: an earlier bank sync is still running in the session' }
                         });
                         recordAccountResult(skipped, 'failed');
                     }
@@ -850,7 +851,7 @@ async function runSyncBank(server, options = {}) {
             transactionsUpdated,
             succeededAccounts: succeededAccounts.length > 0 ? succeededAccounts : undefined,
             succeededAccountIds: succeededAccountIds.length > 0 ? succeededAccountIds : undefined,
-            failedAccounts: failedAccountLog.length > 0 ? failedAccountLog : undefined,
+            failedAccounts: failedAccounts.length > 0 ? failedAccountsForLog(failedAccounts) : undefined,
             encrypted: isEncrypted,
             durationMs
         });
@@ -910,7 +911,7 @@ async function runSyncBank(server, options = {}) {
                     serverName: name,
                     succeededCount: accountsSucceeded,
                     failedCount: accountsFailed,
-                    failedAccounts: failedAccountLog
+                    failedAccounts: failedAccountsForLog(failedAccounts)
                 });
             }
             
