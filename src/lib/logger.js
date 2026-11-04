@@ -9,6 +9,57 @@ const path = require('path');
 // which went ESM-only at v14 and could not be required under the CJS test runner). (#56)
 const { randomUUID } = require('crypto');
 const { createStream } = require('rotating-file-stream');
+
+// Log dir owner-only, log files owner read/write (D10, #446).
+const LOG_DIR_MODE = 0o700;
+const LOG_FILE_MODE = 0o600;
+let permissionWarningShown = false;
+
+/**
+ * chmod the log dir to 0700 and every existing log file in it to 0600.
+ * Never throws: a failure (not the owner, read-only mount) warns once with a
+ * static message, so no path or error text reaches the console.
+ */
+function tightenLogPermissions(logDir) {
+    if (process.platform === 'win32') return;
+    let failed = false;
+    // fchmod on an O_NOFOLLOW descriptor: no symlink is ever followed (CWE-59)
+    // and the check and the chmod act on the same inode (no TOCTOU, CWE-367).
+    const fchmodNoFollow = (target, flags, mode, wantDir) => {
+        let fd;
+        try {
+            fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK | flags);
+            const st = fs.fstatSync(fd);
+            if (wantDir ? !st.isDirectory() : !st.isFile()) { failed = true; return false; }
+            fs.fchmodSync(fd, mode);
+            return true;
+        } catch (error) {
+            failed = true;
+            return false;
+        } finally {
+            if (fd !== undefined) { try { fs.closeSync(fd); } catch (_) { /* ignore */ } }
+        }
+    };
+    try {
+        // A symlinked log dir is a normal Docker setup (a volume mount), and we
+        // write into its target anyway, so tighten the resolved directory. A
+        // symlink planted inside it would need write access to a dir that is
+        // 0700 and ours, so the write path is not hardened further here (#446).
+        const dir = fs.realpathSync(path.resolve(logDir));
+        fchmodNoFollow(dir, fs.constants.O_DIRECTORY, LOG_DIR_MODE, true);
+        for (const name of fs.readdirSync(dir)) {
+            if (!/\.(log|gz)$/.test(name)) continue;
+            // A non-regular .log/.gz entry (symlink, fifo) counts as a failure.
+            fchmodNoFollow(path.join(dir, name), 0, LOG_FILE_MODE, false);
+        }
+    } catch (error) {
+        failed = true;
+    }
+    if (failed && !permissionWarningShown) {
+        permissionWarningShown = true;
+        console.warn('Could not tighten log directory permissions to 0700/0600');
+    }
+}
 const dgram = require('dgram');
 const { SyslogStreamTransport } = require('./syslogTransport');
 
@@ -101,7 +152,7 @@ class Logger {
         if (this.logDir) {
             try {
                 if (!fs.existsSync(this.logDir)) {
-                    fs.mkdirSync(this.logDir, { recursive: true });
+                    fs.mkdirSync(this.logDir, { recursive: true, mode: LOG_DIR_MODE });
                     console.log(`✅ Created log directory: ${this.logDir}`);
                 }
                 // Test write permissions
@@ -116,6 +167,11 @@ class Logger {
             }
         }
         
+        // Tighten an existing dir and existing log files (D10, #446).
+        if (this.logDir && !options.inheritStreams) {
+            tightenLogPermissions(this.logDir);
+        }
+
         // Setup rotating file stream if enabled. Child loggers inherit the parent's
         // stream (see child()), so they must not open their own here: doing so would
         // orphan a stream — and, with time-based rotation, a never-cleared rotation
@@ -130,7 +186,8 @@ class Logger {
                     // and maxFiles behaves as documented (days of retention). Rotation
                     // fires on whichever trigger comes first: the interval or the size. (#106)
                     interval: this.rotation.interval || '1d',
-                    maxFiles: this.rotation.maxFiles
+                    maxFiles: this.rotation.maxFiles,
+                    mode: LOG_FILE_MODE
                 };
                 
                 // Add compress option if enabled
@@ -514,7 +571,7 @@ class Logger {
                     // Use simple daily files
                     const date = new Date().toISOString().split('T')[0];
                     const logFile = path.join(this.logDir, `${this.serviceName}-${date}.log`);
-                    fs.appendFileSync(logFile, fileLine + '\n', 'utf8');
+                    fs.appendFileSync(logFile, fileLine + '\n', { encoding: 'utf8', mode: LOG_FILE_MODE });
                 }
             } catch (error) {
                 console.error('Failed to write log to file:', error.message);
