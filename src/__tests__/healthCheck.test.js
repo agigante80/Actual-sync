@@ -314,7 +314,7 @@ describe('HealthCheckService', () => {
 
       expect(warn).toHaveBeenCalledWith('authn_login_fail', {
         reason: 'invalid_token', realm: 'dashboard', remoteAddress: '1.2.3.4'
-      });
+      }, { sourceKey: '1.2.3.4' });
     });
   });
 
@@ -921,7 +921,8 @@ describe('HealthCheckService', () => {
         expect(sixth.body.error).toMatch(/Too many failed authentication attempts/);
         expect(warn).toHaveBeenCalledWith(
           'authn_login_fail',
-          expect.objectContaining({ reason: 'throttled', remoteAddress: expect.any(String), limit: 5 })
+          expect.objectContaining({ reason: 'throttled', remoteAddress: expect.any(String), limit: 5 }),
+          expect.objectContaining({ sourceKey: expect.any(String) })
         );
         // Locked out for the window, even with the right token.
         expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(429);
@@ -1177,7 +1178,7 @@ describe('HealthCheckService', () => {
         const header = 'Basic ' + Buffer.from('my-pasted-secret:x').toString('base64');
         expect((await getWithAuth('/dashboard', header)).statusCode).toBe(401);
         expect(JSON.stringify(warn.mock.calls)).not.toContain('my-pasted-secret');
-        expect(warn).toHaveBeenCalledWith('authn_login_fail', expect.any(Object));
+        expect(warn).toHaveBeenCalledWith('authn_login_fail', expect.any(Object), expect.any(Object));
       } finally {
         await hc.stop();
       }
