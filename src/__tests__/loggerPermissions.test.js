@@ -79,4 +79,44 @@ describePosix('Logger file permissions (#446)', () => {
         expect(warns[0]).toHaveLength(1);
         expect(warns[0][0]).not.toContain(dir);
     });
+
+    test('does not chmod through a symlinked .log file', () => {
+        const dir = path.join(tmpDir, 'sym');
+        fs.mkdirSync(dir);
+        const target = path.join(tmpDir, 'target.txt');
+        fs.writeFileSync(target, 'x');
+        fs.chmodSync(target, 0o644);
+        fs.symlinkSync(target, path.join(dir, 'link.log'));
+        new Logger({ logDir: dir, rotation: { enabled: false } });
+        expect(mode(target)).toBe(0o644);
+    });
+
+    test('does not chmod through a symlinked log dir and warns', () => {
+        const real = path.join(tmpDir, 'real');
+        fs.mkdirSync(real);
+        fs.chmodSync(real, 0o755);
+        const link = path.join(tmpDir, 'linkdir');
+        fs.symlinkSync(real, link);
+        new Logger({ logDir: link, rotation: { enabled: false } });
+        expect(mode(real)).toBe(0o755);
+        expect(console.warn.mock.calls.some((c) => /permissions/.test(c[0]))).toBe(true);
+    });
+
+    test('one unchmoddable file does not stop the others', () => {
+        const dir = path.join(tmpDir, 'partial');
+        fs.mkdirSync(dir);
+        const a = path.join(dir, 'a.log');
+        const b = path.join(dir, 'b.log');
+        for (const f of [a, b]) { fs.writeFileSync(f, 'x'); fs.chmodSync(f, 0o664); }
+        const real = fs.chmodSync.bind(fs);
+        jest.spyOn(fs, 'chmodSync').mockImplementation((p, m) => {
+            if (path.basename(p) === 'a.log') throw new Error('EPERM');
+            return real(p, m);
+        });
+        expect(() => new Logger({ logDir: dir, rotation: { enabled: false } })).not.toThrow();
+        expect(mode(b)).toBe(0o600);
+        expect(mode(a)).toBe(0o664);
+        expect(mode(dir)).toBe(0o700);
+        expect(console.warn.mock.calls.filter((c) => /permissions/.test(c[0]))).toHaveLength(1);
+    });
 });

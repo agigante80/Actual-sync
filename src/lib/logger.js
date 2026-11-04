@@ -22,19 +22,33 @@ let permissionWarningShown = false;
  */
 function tightenLogPermissions(logDir) {
     if (process.platform === 'win32') return;
+    let failed = false;
     try {
-        fs.chmodSync(logDir, LOG_DIR_MODE);
-        for (const name of fs.readdirSync(logDir)) {
-            if (/\.(log|gz)$/.test(name)) {
-                const file = path.join(logDir, name);
-                if (fs.statSync(file).isFile()) fs.chmodSync(file, LOG_FILE_MODE);
+        // Never chmod through a symlink (CWE-59): the target may be anything.
+        if (fs.lstatSync(logDir).isSymbolicLink()) {
+            failed = true;
+        } else {
+            try {
+                fs.chmodSync(logDir, LOG_DIR_MODE);
+            } catch (error) {
+                failed = true;
+            }
+            for (const name of fs.readdirSync(logDir)) {
+                if (!/\.(log|gz)$/.test(name)) continue;
+                try {
+                    const file = path.join(logDir, name);
+                    if (fs.lstatSync(file).isFile()) fs.chmodSync(file, LOG_FILE_MODE);
+                } catch (error) {
+                    failed = true;
+                }
             }
         }
     } catch (error) {
-        if (!permissionWarningShown) {
-            permissionWarningShown = true;
-            console.warn('Could not tighten log directory permissions to 0700/0600');
-        }
+        failed = true;
+    }
+    if (failed && !permissionWarningShown) {
+        permissionWarningShown = true;
+        console.warn('Could not tighten log directory permissions to 0700/0600');
     }
 }
 const dgram = require('dgram');
