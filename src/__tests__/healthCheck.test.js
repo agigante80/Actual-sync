@@ -1345,6 +1345,17 @@ describe('HealthCheckService', () => {
       await hc.stop();
     });
 
+    test('includeAccounts=1 passes the flag through (#429); absent leaves filters unchanged', async () => {
+      const mockSyncHistory = { getHistory: jest.fn().mockReturnValue([{ id: 1, accounts: [] }]) };
+      const hc = historyService(mockSyncHistory);
+      await hc.start();
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/history?limit=5&includeAccounts=1`);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual([{ id: 1, accounts: [] }]);
+      expect(mockSyncHistory.getHistory).toHaveBeenCalledWith({ limit: 5, includeAccounts: true });
+      await hc.stop();
+    });
+
     test('omits the filter when serverName is blank, absent or repeated', async () => {
       const mockSyncHistory = { getHistory: jest.fn().mockReturnValue([]) };
       const hc = historyService(mockSyncHistory);
