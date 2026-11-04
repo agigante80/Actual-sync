@@ -71,7 +71,7 @@ describePosix('Logger file permissions (#446)', () => {
     test('a chmod failure never throws and warns once with a static message', () => {
         const dir = path.join(tmpDir, 'fail');
         fs.mkdirSync(dir);
-        jest.spyOn(fs, 'chmodSync').mockImplementation(() => { throw new Error(`EPERM ${dir}`); });
+        jest.spyOn(fs, 'fchmodSync').mockImplementation(() => { throw new Error(`EPERM ${dir}`); });
         expect(() => new Logger({ logDir: dir, rotation: { enabled: false } })).not.toThrow();
         expect(() => new Logger({ logDir: dir, rotation: { enabled: false } })).not.toThrow();
         const warns = console.warn.mock.calls.filter((c) => /permissions/.test(c[0]));
@@ -89,17 +89,23 @@ describePosix('Logger file permissions (#446)', () => {
         fs.symlinkSync(target, path.join(dir, 'link.log'));
         new Logger({ logDir: dir, rotation: { enabled: false } });
         expect(mode(target)).toBe(0o644);
+        // A non-regular .log entry counts as a failure, so the operator is told.
+        expect(console.warn.mock.calls.some((c) => /permissions/.test(c[0]))).toBe(true);
     });
 
-    test('does not chmod through a symlinked log dir and warns', () => {
+    test('a symlinked log dir (volume mount) is resolved and its real dir tightened', () => {
         const real = path.join(tmpDir, 'real');
         fs.mkdirSync(real);
         fs.chmodSync(real, 0o755);
         const link = path.join(tmpDir, 'linkdir');
         fs.symlinkSync(real, link);
+        const file = path.join(real, 'svc.log');
+        fs.writeFileSync(file, 'x');
+        fs.chmodSync(file, 0o664);
         new Logger({ logDir: link, rotation: { enabled: false } });
-        expect(mode(real)).toBe(0o755);
-        expect(console.warn.mock.calls.some((c) => /permissions/.test(c[0]))).toBe(true);
+        expect(mode(real)).toBe(0o700);
+        expect(mode(file)).toBe(0o600);
+        expect(console.warn.mock.calls.some((c) => /permissions/.test(c[0]))).toBe(false);
     });
 
     test('one unchmoddable file does not stop the others', () => {
@@ -108,10 +114,10 @@ describePosix('Logger file permissions (#446)', () => {
         const a = path.join(dir, 'a.log');
         const b = path.join(dir, 'b.log');
         for (const f of [a, b]) { fs.writeFileSync(f, 'x'); fs.chmodSync(f, 0o664); }
-        const real = fs.chmodSync.bind(fs);
-        jest.spyOn(fs, 'chmodSync').mockImplementation((p, m) => {
-            if (path.basename(p) === 'a.log') throw new Error('EPERM');
-            return real(p, m);
+        const realOpen = fs.openSync.bind(fs);
+        jest.spyOn(fs, 'openSync').mockImplementation((p, ...rest) => {
+            if (path.basename(String(p)) === 'a.log') throw new Error('EPERM');
+            return realOpen(p, ...rest);
         });
         expect(() => new Logger({ logDir: dir, rotation: { enabled: false } })).not.toThrow();
         expect(mode(b)).toBe(0o600);

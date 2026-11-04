@@ -23,25 +23,34 @@ let permissionWarningShown = false;
 function tightenLogPermissions(logDir) {
     if (process.platform === 'win32') return;
     let failed = false;
-    try {
-        // Never chmod through a symlink (CWE-59): the target may be anything.
-        if (fs.lstatSync(logDir).isSymbolicLink()) {
+    // fchmod on an O_NOFOLLOW descriptor: no symlink is ever followed (CWE-59)
+    // and the check and the chmod act on the same inode (no TOCTOU, CWE-367).
+    const fchmodNoFollow = (target, flags, mode, wantDir) => {
+        let fd;
+        try {
+            fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK | flags);
+            const st = fs.fstatSync(fd);
+            if (wantDir ? !st.isDirectory() : !st.isFile()) { failed = true; return false; }
+            fs.fchmodSync(fd, mode);
+            return true;
+        } catch (error) {
             failed = true;
-        } else {
-            try {
-                fs.chmodSync(logDir, LOG_DIR_MODE);
-            } catch (error) {
-                failed = true;
-            }
-            for (const name of fs.readdirSync(logDir)) {
-                if (!/\.(log|gz)$/.test(name)) continue;
-                try {
-                    const file = path.join(logDir, name);
-                    if (fs.lstatSync(file).isFile()) fs.chmodSync(file, LOG_FILE_MODE);
-                } catch (error) {
-                    failed = true;
-                }
-            }
+            return false;
+        } finally {
+            if (fd !== undefined) { try { fs.closeSync(fd); } catch (_) { /* ignore */ } }
+        }
+    };
+    try {
+        // A symlinked log dir is a normal Docker setup (a volume mount), and we
+        // write into its target anyway, so tighten the resolved directory. A
+        // symlink planted inside it would need write access to a dir that is
+        // 0700 and ours, so the write path is not hardened further here (#446).
+        const dir = fs.realpathSync(path.resolve(logDir));
+        fchmodNoFollow(dir, fs.constants.O_DIRECTORY, LOG_DIR_MODE, true);
+        for (const name of fs.readdirSync(dir)) {
+            if (!/\.(log|gz)$/.test(name)) continue;
+            // A non-regular .log/.gz entry (symlink, fifo) counts as a failure.
+            fchmodNoFollow(path.join(dir, name), 0, LOG_FILE_MODE, false);
         }
     } catch (error) {
         failed = true;
