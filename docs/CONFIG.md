@@ -171,7 +171,7 @@ Logging configuration. See **[docs/LOGGING.md](LOGGING.md)** for the full refere
 - **format** (string, default: `"pretty"`) — console format: `"pretty"` or `"json"`.
 - **fileFormat** (string, default: `"json"`) — log-file format; single-line JSON is recommended for shipping. Independent of `format`.
 - **redact** (array) — extra metadata key names to mask, on top of the always-on defaults. The default indicators are matched as case-insensitive substrings: `password`, `passwd`, `token`, `secret`, `apikey`, `api_key`, `authorization`, `credential`, `chatid` — so keys like `encryptionPassword` and `botToken` are covered too. Redaction applies across console/file/syslog/dashboard.
-- **logDir** (string|null, default: `"./logs"`) — log directory; `null` disables file logging.
+- **logDir** (string|null, default: `"./logs"`) — log directory; `null` disables file logging. The directory is created with mode 0700 and log files with 0600; existing ones are tightened at startup (POSIX only; a failed chmod logs one warning and never stops the service).
 - **rotation** (object) — `enabled`, `maxSize` (`"10M"`), `interval` (`"1d"`, daily), `maxFiles` (retention), `compress` (`"gzip"`).
 - **syslog** (object) — optional RFC 5424 syslog forwarding.
 - **performance** (object) — operation timing thresholds.

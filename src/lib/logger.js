@@ -9,6 +9,34 @@ const path = require('path');
 // which went ESM-only at v14 and could not be required under the CJS test runner). (#56)
 const { randomUUID } = require('crypto');
 const { createStream } = require('rotating-file-stream');
+
+// Log dir owner-only, log files owner read/write (D10, #446).
+const LOG_DIR_MODE = 0o700;
+const LOG_FILE_MODE = 0o600;
+let permissionWarningShown = false;
+
+/**
+ * chmod the log dir to 0700 and every existing log file in it to 0600.
+ * Never throws: a failure (not the owner, read-only mount) warns once with a
+ * static message, so no path or error text reaches the console.
+ */
+function tightenLogPermissions(logDir) {
+    if (process.platform === 'win32') return;
+    try {
+        fs.chmodSync(logDir, LOG_DIR_MODE);
+        for (const name of fs.readdirSync(logDir)) {
+            if (/\.(log|gz)$/.test(name)) {
+                const file = path.join(logDir, name);
+                if (fs.statSync(file).isFile()) fs.chmodSync(file, LOG_FILE_MODE);
+            }
+        }
+    } catch (error) {
+        if (!permissionWarningShown) {
+            permissionWarningShown = true;
+            console.warn('Could not tighten log directory permissions to 0700/0600');
+        }
+    }
+}
 const dgram = require('dgram');
 
 // Log levels
@@ -90,7 +118,7 @@ class Logger {
         if (this.logDir) {
             try {
                 if (!fs.existsSync(this.logDir)) {
-                    fs.mkdirSync(this.logDir, { recursive: true });
+                    fs.mkdirSync(this.logDir, { recursive: true, mode: LOG_DIR_MODE });
                     console.log(`✅ Created log directory: ${this.logDir}`);
                 }
                 // Test write permissions
@@ -105,6 +133,11 @@ class Logger {
             }
         }
         
+        // Tighten an existing dir and existing log files (D10, #446).
+        if (this.logDir && !options.inheritStreams) {
+            tightenLogPermissions(this.logDir);
+        }
+
         // Setup rotating file stream if enabled. Child loggers inherit the parent's
         // stream (see child()), so they must not open their own here: doing so would
         // orphan a stream — and, with time-based rotation, a never-cleared rotation
@@ -119,7 +152,8 @@ class Logger {
                     // and maxFiles behaves as documented (days of retention). Rotation
                     // fires on whichever trigger comes first: the interval or the size. (#106)
                     interval: this.rotation.interval || '1d',
-                    maxFiles: this.rotation.maxFiles
+                    maxFiles: this.rotation.maxFiles,
+                    mode: LOG_FILE_MODE
                 };
                 
                 // Add compress option if enabled
@@ -482,7 +516,7 @@ class Logger {
                     // Use simple daily files
                     const date = new Date().toISOString().split('T')[0];
                     const logFile = path.join(this.logDir, `${this.serviceName}-${date}.log`);
-                    fs.appendFileSync(logFile, fileLine + '\n', 'utf8');
+                    fs.appendFileSync(logFile, fileLine + '\n', { encoding: 'utf8', mode: LOG_FILE_MODE });
                 }
             } catch (error) {
                 console.error('Failed to write log to file:', error.message);
