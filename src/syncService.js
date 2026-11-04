@@ -4,7 +4,7 @@ const schedule = require('node-schedule'); // Import the scheduler
 const moment = require('moment-timezone');
 const cronstrue = require('cronstrue');
 const ConfigLoader = require('./lib/configLoader');
-const { createLogger } = require('./lib/logger');
+const { createLogger, withCorrelation, currentCorrelationId } = require('./lib/logger');
 const bootstrap = require('./lib/bootstrapLogger');
 const { buildLoggerConfig } = require('./lib/loggerConfig');
 const { HealthCheckService } = require('./services/healthCheck');
@@ -329,9 +329,8 @@ async function runSyncBank(server, options = {}) {
     // `format` is deprecated and ignored: one format per sink.
     const serverLogger = logger.child({ server: name }, { level: server.logging?.level });
 
-    // Create correlation ID for this sync operation
-    const correlationId = serverLogger.generateCorrelationId();
-    serverLogger.setCorrelationId(correlationId);
+    // The scope SyncQueue opened for this task; every record of this sync carries it.
+    const correlationId = currentCorrelationId();
     
     // Cancel any pending auto-retry if this is a manual sync
     if (!isAutomated) {
@@ -1090,7 +1089,6 @@ async function runSyncBank(server, options = {}) {
             // The catch above swallows shutdown errors, so this always runs.
             if (restoreConsole) restoreConsole();
         }
-        serverLogger.clearCorrelationId();
     }
 
     // #295 review, M3: the schedule-alerts write phase runs here, after the
@@ -1168,7 +1166,7 @@ async function run() {
                 servers: serversWithSchedule.map(s => s.name) 
             });
             
-            const job = schedule.scheduleJob({ rule: scheduleStr, tz: resolveTimezone(config) }, async () => {
+            const job = schedule.scheduleJob({ rule: scheduleStr, tz: resolveTimezone(config) }, () => withCorrelation(async () => {
                 logger.info('Scheduled sync starting', { 
                     schedule: scheduleStr,
                     servers: serversWithSchedule.map(s => s.name)
@@ -1178,7 +1176,7 @@ async function run() {
                     await autoRetry.runAutomated(server);
                 }
                 logger.info('Scheduled sync completed', { schedule: scheduleStr });
-            });
+            }));
             
             scheduledJobs.push({ schedule: scheduleStr, job, servers: serversWithSchedule });
         }

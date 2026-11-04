@@ -332,3 +332,18 @@ describe('SyncQueue size() (#273)', () => {
         expect(queue.size()).toBe(0);
     });
 });
+
+describe('SyncQueue correlation scope (#441)', () => {
+    test('each task runs in its own scope, not the previous task\'s', async () => {
+        const { SyncQueue } = require('../lib/syncQueue');
+        const { currentCorrelationId } = require('../lib/logger');
+        const queue = new SyncQueue();
+        const ids = await Promise.all([
+            queue.run('a', async () => currentCorrelationId()),
+            queue.run('b', async () => currentCorrelationId()),
+            queue.run('c', async () => currentCorrelationId())
+        ]);
+        expect(ids.every(Boolean)).toBe(true);
+        expect(new Set(ids).size).toBe(3);
+    });
+});
