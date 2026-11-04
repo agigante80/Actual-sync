@@ -417,9 +417,13 @@
             },
             "protocol": {
               "type": "string",
-              "description": "Protocol to use (udp or tcp)",
-              "enum": ["udp", "tcp"],
+              "description": "Transport: udp (plaintext, not an audit log), tcp (plaintext, RFC 6587 framing) or tls (RFC 5425, certificate verified)",
+              "enum": ["udp", "tcp", "tls"],
               "default": "udp"
+            },
+            "ca": {
+              "type": "string",
+              "description": "Path to a PEM CA certificate to trust for protocol tls (added to the default trust store; verification is never disabled)"
             },
             "facility": {
               "type": "integer",

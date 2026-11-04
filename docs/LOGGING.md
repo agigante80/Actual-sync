@@ -12,7 +12,7 @@ Actual-sync uses a custom structured logger with enterprise features:
 - **Secret redaction**: passwords, tokens, and other secrets are masked before anything is written (console, file, syslog, and the dashboard stream)
 - **Correlation IDs**: Track related log entries across operations
 - **File Logging**: Dated files with daily + size-based rotation and compression
-- **Centralized Logging**: Syslog support (UDP), redacted and RFC 5424 escaped
+- **Centralized Logging**: Syslog support (UDP, TCP, TLS), redacted and RFC 5424 escaped
 - **Performance Tracking**: Automatic operation timing
 - **Per-Server Config**: Override log levels per server
 - **Context Management**: Child loggers with inherited context
@@ -111,7 +111,8 @@ Use cases:
 | `syslog.enabled` | boolean | `false` | Send logs to syslog server |
 | `syslog.host` | string | `localhost` | Syslog server hostname |
 | `syslog.port` | integer | `514` | Syslog server port |
-| `syslog.protocol` | string | `udp` | Protocol: `udp` or `tcp` |
+| `syslog.protocol` | string | `udp` | Transport: `udp`, `tcp` or `tls` |
+| `syslog.ca` | string | none | PEM CA file to trust for `tls` (certificate verification is always on) |
 | `syslog.facility` | integer | `16` | Syslog facility code (0-23, 16=local0) |
 | **Performance** |
 | `performance.enabled` | boolean | `false` | Track operation performance |
@@ -251,6 +252,14 @@ Send logs to syslog server (RFC 5424):
 ```
 
 **Facility 16** = local0 (recommended for Actual-sync)
+
+**Transports**
+
+- `udp` (default): **plaintext and unreliable.** Datagrams are unencrypted, can be lost or reordered, and anyone on the path can read them. It is not an audit log. Use it only on a trusted network.
+- `tcp`: RFC 6587 octet-counting framing (`<len> <msg>`). Reliable, but still plaintext.
+- `tls`: TCP framing inside TLS (RFC 5425). The server certificate is always verified; set `syslog.ca` to a PEM file to trust a private CA. There is no option to disable verification.
+
+For `tcp` and `tls` the logger reconnects with exponential backoff (1s up to 30s). While disconnected, messages wait in a bounded in-memory queue of 1000; when full the oldest are dropped. Logging never throws or blocks on a down syslog server.
 
 ---
 
