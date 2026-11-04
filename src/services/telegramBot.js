@@ -5,10 +5,14 @@
  */
 
 const https = require('https');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { createLogger } = require('../lib/logger');
 const { resolveTimezone } = require('../lib/timezone');
+
+const AUTHZ_WARN_INTERVAL_MS = 60 * 60 * 1000;
+const AUTHZ_WARN_MAX_KEYS = 1000;
 
 class TelegramBotService {
   /**
@@ -337,10 +341,23 @@ class TelegramBotService {
     // Never log sender name, username, message text or chat ids (#435).
     // The command name is logged only when it is one of the bot's own commands.
     if (!authorized) {
-      this.logger.warn('Message from unauthorized chat rejected', {
-        event: 'authz_fail',
-        authorized: false
-      });
+      // At most one WARN per chat per hour, so a stranger spamming the bot cannot
+      // flood the logs. Keyed on a hash, so no chat id is kept in memory either.
+      const key = crypto.createHash('sha256').update(String(message.chat.id)).digest('hex').slice(0, 16);
+      const now = Date.now();
+      if (!this._authzWarned) this._authzWarned = new Map();
+      const last = this._authzWarned.get(key);
+      if (last === undefined || now - last >= AUTHZ_WARN_INTERVAL_MS) {
+        if (this._authzWarned.size >= AUTHZ_WARN_MAX_KEYS) {
+          this._authzWarned.delete(this._authzWarned.keys().next().value);
+        }
+        this._authzWarned.delete(key);
+        this._authzWarned.set(key, now);
+        this.logger.warn('Message from unauthorized chat rejected', {
+          event: 'authz_fail',
+          authorized: false
+        });
+      }
       return;
     }
 

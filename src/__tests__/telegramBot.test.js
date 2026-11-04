@@ -625,6 +625,26 @@ describe('TelegramBotService', () => {
         const out = allLogged(b);
         expect(out).not.toMatch(/789|456|Sensitive|Person|secretuser|hunter2|ping/);
       });
+
+      test('an unauthorized chat gets at most one WARN per hour, other chats still warn', async () => {
+        const b = makeBot();
+        const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+        for (let i = 0; i < 100; i++) await b.processUpdate(mk('789', '/ping'));
+        expect(b.logger.warn).toHaveBeenCalledTimes(1);
+        await b.processUpdate(mk('790', '/ping'));
+        expect(b.logger.warn).toHaveBeenCalledTimes(2);
+        now.mockReturnValue(1_000_000 + 60 * 60 * 1000);
+        await b.processUpdate(mk('789', '/ping'));
+        expect(b.logger.warn).toHaveBeenCalledTimes(3);
+        expect(JSON.stringify([...b._authzWarned.keys()])).not.toMatch(/789|790/);
+        now.mockRestore();
+      });
+
+      test('the per-chat limiter memory is bounded', async () => {
+        const b = makeBot();
+        for (let i = 0; i < 1100; i++) await b.processUpdate(mk(String(10000 + i), '/ping'));
+        expect(b._authzWarned.size).toBeLessThanOrEqual(1000);
+      });
     });
   });
   
