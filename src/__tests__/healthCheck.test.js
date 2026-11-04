@@ -302,7 +302,7 @@ describe('HealthCheckService', () => {
         trustProxy: 1,
         dashboardConfig: { enabled: true, auth: { type: 'token', token: 'right' } }
       });
-      const warn = jest.spyOn(svc.logger, 'warn').mockImplementation(() => {});
+      const warn = jest.spyOn(svc.logger, 'security').mockImplementation(() => {});
       await svc.start();
 
       await new Promise((resolve, reject) => {
@@ -312,7 +312,9 @@ describe('HealthCheckService', () => {
         }, (res) => { res.resume(); res.on('end', resolve); }).on('error', reject);
       });
 
-      expect(warn).toHaveBeenCalledWith('Dashboard token authentication failed', { remoteAddress: '1.2.3.4' });
+      expect(warn).toHaveBeenCalledWith('authn_login_fail', {
+        reason: 'invalid_token', realm: 'dashboard', remoteAddress: '1.2.3.4'
+      }, { sourceKey: '1.2.3.4' });
     });
   });
 
@@ -907,7 +909,7 @@ describe('HealthCheckService', () => {
 
     test('the failure after the limit gets 429 and a warn log, across routes', async () => {
       const hc = tokenService();
-      const warn = jest.spyOn(hc.logger, 'warn');
+      const warn = jest.spyOn(hc.logger, 'security');
       await hc.start();
       try {
         const paths = ['/dashboard', '/api/dashboard/status', '/api/dashboard/history', '/api/dashboard/accounts', '/dashboard'];
@@ -918,8 +920,9 @@ describe('HealthCheckService', () => {
         expect(sixth.statusCode).toBe(429);
         expect(sixth.body.error).toMatch(/Too many failed authentication attempts/);
         expect(warn).toHaveBeenCalledWith(
-          'Dashboard authentication throttled after repeated failures',
-          expect.objectContaining({ remoteAddress: expect.any(String), limit: 5 })
+          'authn_login_fail',
+          expect.objectContaining({ reason: 'throttled', remoteAddress: expect.any(String), limit: 5 }),
+          expect.objectContaining({ sourceKey: expect.any(String) })
         );
         // Locked out for the window, even with the right token.
         expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(429);
@@ -1132,6 +1135,36 @@ describe('HealthCheckService', () => {
       expect(hc.authFailures.sweeper).not.toBeNull();
     });
 
+    test('at logging.level error a failed and a good login both leave a record; 100 failures stay bounded (#444)', async () => {
+      const hc = tokenService({ authFailureLimit: 1000 });
+      hc.logger.format = 'json';
+      const written = [];
+      const grab = (line) => { try { written.push(JSON.parse(line)); } catch { /* not a record */ } };
+      const spies = ['log', 'warn', 'error'].map(m => jest.spyOn(console, m).mockImplementation(grab));
+      await hc.start();
+      try {
+        expect((await getWithAuth('/dashboard', 'Bearer wrong-token-xyz')).statusCode).toBe(401);
+        expect((await getWithAuth('/dashboard', 'Bearer correct-token')).statusCode).toBe(200);
+        const events = written.filter(r => r.category === 'security').map(r => r.event);
+        expect(events).toEqual(['authn_login_fail', 'authn_login_success']);
+        let refused = 1;
+        for (let i = 0; i < 100; i++) {
+          // The global rate limiter may answer some with 429; only the 401s are logins.
+          if ((await getWithAuth('/dashboard', 'Bearer wrong-token-xyz')).statusCode === 401) refused++;
+        }
+        const fails = written.filter(r => r.event === 'authn_login_fail');
+        expect(fails.length).toBeLessThanOrEqual(10);
+        hc.logger.close();
+        const sup = written.filter(r => r.event === 'security.suppressed');
+        expect(sup).toHaveLength(1);
+        expect(sup[0].suppressedCount + fails.length).toBe(refused);
+        expect(JSON.stringify(written)).not.toMatch(/wrong-token-xyz|correct-token/);
+      } finally {
+        spies.forEach(sp => sp.mockRestore());
+        await hc.stop();
+      }
+    });
+
     test('a failed basic login never logs the username, which may be a pasted password (#286)', async () => {
       const hc = makeService({
         port: testPort,
@@ -1139,13 +1172,13 @@ describe('HealthCheckService', () => {
         dashboardConfig: { enabled: true, auth: { type: 'basic', username: 'admin', password: 'test-password' } },
         loggerConfig: { level: 'ERROR' }
       });
-      const warn = jest.spyOn(hc.logger, 'warn').mockImplementation(() => {});
+      const warn = jest.spyOn(hc.logger, 'security').mockImplementation(() => {});
       await hc.start();
       try {
         const header = 'Basic ' + Buffer.from('my-pasted-secret:x').toString('base64');
         expect((await getWithAuth('/dashboard', header)).statusCode).toBe(401);
         expect(JSON.stringify(warn.mock.calls)).not.toContain('my-pasted-secret');
-        expect(warn).toHaveBeenCalledWith('Dashboard authentication failed', expect.any(Object));
+        expect(warn).toHaveBeenCalledWith('authn_login_fail', expect.any(Object), expect.any(Object));
       } finally {
         await hc.stop();
       }
@@ -1342,6 +1375,17 @@ describe('HealthCheckService', () => {
       expect(res.statusCode).toBe(200);
       expect(res.body).toEqual([{ server_name: 'A' }]);
       expect(mockSyncHistory.getHistory).toHaveBeenCalledWith({ limit: 25, serverName: 'A B' });
+      await hc.stop();
+    });
+
+    test('includeAccounts=1 passes the flag through (#429); absent leaves filters unchanged', async () => {
+      const mockSyncHistory = { getHistory: jest.fn().mockReturnValue([{ id: 1, accounts: [] }]) };
+      const hc = historyService(mockSyncHistory);
+      await hc.start();
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/history?limit=5&includeAccounts=1`);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual([{ id: 1, accounts: [] }]);
+      expect(mockSyncHistory.getHistory).toHaveBeenCalledWith({ limit: 5, includeAccounts: true });
       await hc.stop();
     });
 
@@ -1778,7 +1822,7 @@ describe('HealthCheckService', () => {
     });
     const mkHc = () => {
       const hc = makeService({ port: testPort, host: '127.0.0.1', loggerConfig: { level: 'ERROR' } });
-      hc.logger = { warn: jest.fn(), error: jest.fn(), info: jest.fn(), debug: jest.fn() };
+      hc.logger = { warn: jest.fn(), security: jest.fn(), error: jest.fn(), info: jest.fn(), debug: jest.fn() };
       return hc;
     };
 
@@ -2552,6 +2596,36 @@ describe('HealthCheckService', () => {
       const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/status`);
       expect(res.statusCode).toBe(200);
       expect(res.body.servers.Main.lastSyncTransactions).toEqual({ added: 7, updated: 3 });
+      await hc.stop();
+    });
+
+    test('account names from a status load never reach the open /metrics (#429)', async () => {
+      const mockSyncHistory = {
+        getLastSync: jest.fn().mockReturnValue({
+          status: 'success', accounts_succeeded: 1, accounts_failed: 0, accounts_skipped: 0,
+          transactions_added: 3, transactions_updated: 0
+        }),
+        getLastAccountResults: jest.fn().mockReturnValue([
+          { account_name: 'SENTINEL_ACCOUNT', transactions_added: 3, transactions_updated: 0 }
+        ])
+      };
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        syncHistory: mockSyncHistory,
+        getServers: () => [{ name: 'Main' }],
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+      hc.updateSyncStatus({ serverName: 'Main', status: 'success' });
+      const status = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/status`);
+      expect(status.body.servers.Main.lastAccountResults[0].account_name).toBe('SENTINEL_ACCOUNT');
+      const metrics = await httpGet(`http://127.0.0.1:${testPort}/metrics`);
+      expect(metrics.statusCode).toBe(200);
+      expect(JSON.stringify(metrics.body)).not.toContain('SENTINEL_ACCOUNT');
+      expect(metrics.body.servers.Main.lastAccountResults).toBeUndefined();
+      expect(metrics.body.servers.Main.lastSyncTransactions).toBeUndefined();
       await hc.stop();
     });
   });

@@ -72,6 +72,14 @@ const LOG_LEVELS = {
     DEBUG: 3
 };
 
+// Security audit floor (D7, #444): at most this many records per event and
+// source in a window; the rest are counted and reported in one
+// security.suppressed record. The table of sources is bounded.
+const SECURITY_LIMIT = 10;
+const SECURITY_WINDOW_MS = 60 * 1000;
+const SECURITY_MAX_SOURCES = 1000;
+const SECURITY_INFO_EVENTS = new Set(['authn_login_success', 'sys_startup', 'sys_shutdown', 'sys_config_change']);
+
 const LEVEL_NAMES = {
     0: 'ERROR',
     1: 'WARN',
@@ -130,7 +138,15 @@ class Logger {
         this.serviceName = options.serviceName || 'actual-sync';
         this.correlationId = null;
         this.broadcastCallback = options.broadcastCallback || null;
+        // A child resolves the callback through its parent at log time, so one set
+        // after the child was created (syncService attaches it last) still applies.
+        // broadcastState is shared by the whole family: while a callback runs, any
+        // log it triggers (e.g. a failed WebSocket send) is not broadcast again. (#440)
+        this.broadcastParent = null;
+        this.broadcastState = { active: false };
         this.context = options.context || {};
+        // Rate-limit state for security(); children share the parent's. (#444)
+        this.securityState = { sources: new Map() };
 
         // Rotation settings (defaults align with schema)
         this.rotation = options.rotation || {
@@ -242,6 +258,11 @@ class Logger {
      */
     setBroadcastCallback(callback) {
         this.broadcastCallback = callback;
+    }
+
+    getBroadcastCallback() {
+        if (this.broadcastCallback) return this.broadcastCallback;
+        return this.broadcastParent ? this.broadcastParent.getBroadcastCallback() : null;
     }
 
     /**
@@ -557,8 +578,9 @@ class Logger {
     /**
      * Write log entry
      */
-    log(level, message, meta = {}) {
-        if (!this.shouldLog(level)) {
+    log(level, message, meta = {}, { audit = false } = {}) {
+        // An audit record (security events) ignores the configured level. (#444)
+        if (!audit && !this.shouldLog(level)) {
             return;
         }
 
@@ -605,12 +627,16 @@ class Logger {
         }
 
         // Broadcast to WebSocket clients if callback is set (already-redacted). (#103)
-        if (this.broadcastCallback) {
+        const broadcast = this.getBroadcastCallback();
+        if (broadcast && !this.broadcastState.active) {
+            this.broadcastState.active = true;
             try {
-                this.broadcastCallback(level.toUpperCase(), safeMessage, safeMeta);
+                broadcast(level.toUpperCase(), safeMessage, safeMeta);
             } catch (error) {
                 // Don't let broadcast errors break logging
                 console.error('Failed to broadcast log:', error.message);
+            } finally {
+                this.broadcastState.active = false;
             }
         }
     }
@@ -655,6 +681,83 @@ class Logger {
     }
 
     /**
+     * Write a security event (D7, OWASP Logging Vocabulary name as `event`,
+     * `category: "security"`). It is an audit floor: written whatever the
+     * configured level, never sampled. Callers pass `remoteAddress` and
+     * static fields only, never bodies, user names, passwords or tokens. (#444)
+     *
+     * Rate limit: SECURITY_LIMIT records per event and source (the
+     * remoteAddress) per window. Past it records are counted, and one
+     * `security.suppressed` record with `suppressedCount` is written when the
+     * window ends, so a guess loop never looks like it stopped.
+     *
+     * @param {string} event - e.g. 'authn_login_fail'
+     * @param {Object} [fields] - flat fields; remoteAddress is the source key
+     * @param {Object} [opts]
+     * @param {number} [opts.dedupeMs] - log at most once per source per this
+     *   many ms and drop repeats silently ("once per session" events)
+     * @param {string} [opts.level] - 'INFO' or 'WARN'; default by event
+     * @param {string} [opts.sourceKey] - limiter key for the source; callers
+     *   pass the same key as their request limiter (IPv6 grouped by /56), so
+     *   rotating addresses inside one prefix share one budget. The record keeps
+     *   the full remoteAddress.
+     */
+    security(event, fields = {}, opts = {}) {
+        const state = this.securityState;
+        const source = String(opts.sourceKey ?? fields.remoteAddress ?? 'unknown');
+        // The realm is part of the key: a metrics scrape must not hide a
+        // dashboard login from the same address, nor share its budget.
+        const key = `${event}|${fields.realm ?? ''}|${source}`;
+        const now = Date.now();
+        const windowMs = opts.dedupeMs || SECURITY_WINDOW_MS;
+        let entry = state.sources.get(key);
+        if (entry && now - entry.start >= windowMs) {
+            this.flushSecurityEntry(key, entry);
+            entry = undefined;
+        }
+        if (!entry) {
+            if (state.sources.size >= SECURITY_MAX_SOURCES) {
+                const oldest = state.sources.keys().next().value;
+                this.flushSecurityEntry(oldest, state.sources.get(oldest));
+            }
+            entry = { start: now, count: 0, suppressed: 0, timer: null, fields: { remoteAddress: fields.remoteAddress }, event };
+            state.sources.set(key, entry);
+            if (!opts.dedupeMs) {
+                entry.timer = setTimeout(() => this.flushSecurityEntry(key, entry), windowMs);
+                if (entry.timer.unref) entry.timer.unref();
+            }
+        }
+        entry.count++;
+        if (opts.dedupeMs) {
+            if (entry.count > 1) return;
+        } else if (entry.count > SECURITY_LIMIT) {
+            entry.suppressed++;
+            return;
+        }
+        const level = opts.level || (SECURITY_INFO_EVENTS.has(event) ? 'INFO' : 'WARN');
+        // event and category go last so a caller field cannot overwrite them.
+        this.log(level, event, { ...fields, event, category: 'security' }, { audit: true });
+    }
+
+    /** Write the pending security.suppressed record of one source and forget it. */
+    flushSecurityEntry(key, entry) {
+        if (!entry) return;
+        if (entry.timer) clearTimeout(entry.timer);
+        const sources = this.securityState.sources;
+        if (sources.get(key) === entry) sources.delete(key);
+        if (entry.suppressed > 0) {
+            this.log('WARN', 'security.suppressed', {
+                ...entry.fields,
+                event: 'security.suppressed',
+                category: 'security',
+                suppressedEvent: entry.event,
+                suppressedCount: entry.suppressed
+            }, { audit: true });
+            entry.suppressed = 0;
+        }
+    }
+
+    /**
      * Create child logger with additional context
      */
     child(context = {}, options = {}) {
@@ -675,7 +778,9 @@ class Logger {
             }
         });
         childLogger.correlationId = this.correlationId;
-        childLogger.broadcastCallback = this.broadcastCallback;
+        childLogger.broadcastParent = this;
+        childLogger.broadcastState = this.broadcastState;
+        childLogger.securityState = this.securityState;
         // Share the parent's redaction set (including any custom keys)
         childLogger.redactIndicators = this.redactIndicators;
         // Share streams to avoid duplicates
@@ -724,7 +829,15 @@ class Logger {
     /**
      * Close logger and cleanup resources
      */
+    /** Write every pending security.suppressed count now (shutdown). (#444) */
+    flushSecurity() {
+        for (const [key, entry] of [...this.securityState.sources]) {
+            this.flushSecurityEntry(key, entry);
+        }
+    }
+
     close() {
+        this.flushSecurity();
         if (this.rotatingStream) {
             this.rotatingStream.end();
         }

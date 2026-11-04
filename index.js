@@ -5,6 +5,9 @@
  * Entry point for the application
  */
 
+// Crash handlers first, so an early crash is a classified record, not Node's raw printer (#439)
+require('./src/lib/crashHandlers').installCrashHandlers();
+
 const fs = require('fs');
 const bootstrap = require('./src/lib/bootstrapLogger');
 // If startup dies before the root logger exists, buffered records go to stderr as JSON (#442)

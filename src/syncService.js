@@ -67,8 +67,7 @@ function formatNextSync(nextInvocation) {
     }
 }
 
-// Log-level classifier for the global unhandledRejection handler (#105)
-const { classifyRejection } = require('./lib/rejectionClassifier');
+const { setCrashLogger } = require('./lib/crashHandlers');
 
 /**
  * Convert cron schedule to human-readable format
@@ -106,6 +105,7 @@ try {
     const loggerConfig = buildLoggerConfig(config.logging);
 
     logger = createLogger(loggerConfig);
+    setCrashLogger(logger);
     // Startup output buffered before the root logger existed (#442)
     bootstrap.flushTo(logger);
     
@@ -126,6 +126,7 @@ try {
         dbPath: config.syncHistory?.dbPath,
         retentionDays: config.syncHistory?.retentionDays || 90,
         loggerConfig: {
+            parent: logger,
             level: config.logging.level,
             format: config.logging.format,
             logDir: config.logging.logDir
@@ -138,6 +139,7 @@ try {
             syncHistory: syncHistory,
             includeDefaultMetrics: config.prometheus?.includeDefaultMetrics !== false,
             loggerConfig: {
+                parent: logger,
                 level: config.logging.level,
                 format: config.logging.format,
                 logDir: config.logging.logDir
@@ -150,6 +152,7 @@ try {
     notificationService = new NotificationService(
         config.notifications || {},
         {
+            parent: logger,
             level: config.logging.level,
             format: config.logging.format,
             logDir: config.logging.logDir
@@ -185,6 +188,7 @@ try {
                 notificationService: notificationService // /notify must reach the dispatch path (#169)
             },
             {
+                parent: logger,
                 level: config.logging.level,
                 format: config.logging.format,
                 logDir: config.logging.logDir
@@ -233,6 +237,7 @@ try {
             }));
         },
         loggerConfig: {
+            parent: logger,
             level: config.logging.level,
             format: config.logging.format,
             logDir: config.logging.logDir
@@ -850,6 +855,7 @@ async function runSyncBank(server, options = {}) {
                 accountsSkipped: skippedAccounts.length,
                 transactionsAdded,
                 transactionsUpdated,
+                accountResults: buildAccountResults(),
                 errorMessage,
                 correlationId
             });
@@ -1005,6 +1011,7 @@ async function runSyncBank(server, options = {}) {
                 accountsSkipped: skippedAccounts.length,
                 transactionsAdded,
                 transactionsUpdated,
+                accountResults: buildAccountResults(),
                 errorMessage: errorMessage,
                 errorCode: errorCode,
                 correlationId
@@ -1305,31 +1312,8 @@ async function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-    logger.error('Uncaught exception - service will continue', {
-        error: error.message,
-        stack: error.stack
-    });
-});
-
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-    // Extract meaningful information from reason
-    const reasonInfo = reason instanceof Error 
-        ? { message: reason.message, code: reason.code, stack: reason.stack }
-        : typeof reason === 'object' && reason !== null
-        ? { ...reason, toString: String(reason) }
-        : { value: reason, type: typeof reason };
-    
-    // Already-handled @actual-app/api rejections are logged at DEBUG to avoid
-    // double-counting them as errors; genuine ones stay at ERROR. (#105)
-    const level = classifyRejection(reason);
-    logger[level]('Unhandled promise rejection - service will continue', {
-        reason: reasonInfo,
-        promiseString: promise ? promise.toString() : 'no promise info'
-    });
-});
+// Uncaught exception, unhandled rejection and warning handlers are installed
+// first in index.js (crashHandlers, #439); they only need the logger from here.
 
 run().catch((error) => {
     logger.error('Fatal error during service initialization', { error: error.message, stack: error.stack });

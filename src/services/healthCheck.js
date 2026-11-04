@@ -27,6 +27,8 @@ const markParser = (parser) => (req, res, next) =>
 
 // A /ws/logs client with more than this queued is dropped (#445)
 const WS_MAX_BUFFERED_BYTES = 1024 * 1024;
+// A good dashboard login is logged once per source per hour (#444).
+const AUTH_SUCCESS_DEDUPE_MS = 60 * 60 * 1000;
 
 const configJson = markParser(express.json({ limit: '16kb' }));
 
@@ -149,7 +151,12 @@ class HealthCheckService {
     this.getCronSchedules = options.getCronSchedules;
     this.dashboardConfig = options.dashboardConfig || { enabled: true, auth: { type: 'none' } };
     this.metricsAuthConfig = options.metricsAuth || { type: 'none' };
-    this.logger = createLogger(options.loggerConfig || {});
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    const loggerConfig = options.loggerConfig || {};
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'HealthCheck' })
+      : createLogger(loggerConfig);
     
     this.app = express();
     // Opt-in only (#245). Behind a reverse proxy every request comes from the
@@ -369,11 +376,13 @@ class HealthCheckService {
         // only swept on a timer), so check resetTime or a lockout lasts up to
         // two windows.
         if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {
-          this.logger.warn(`${realm} authentication throttled after repeated failures`, {
+          this.logger.security('authn_login_fail', {
+            reason: 'throttled',
+            realm: realm.toLowerCase(),
             remoteAddress: req.ip,
             limit: this.authFailureLimit,
             windowMinutes: Math.round(this.authFailureWindowMs / 60000)
-          });
+          }, { sourceKey: ipKeyGenerator(req.ip || '') });
           return res.status(429).json({ error: 'Too many failed authentication attempts, try again later' });
         }
         this.checkRequestCredentials(req, res, next, authConfig, authType, realm);
@@ -411,12 +420,13 @@ class HealthCheckService {
         ok = this.isAllowedOrigin(candidate, req.headers.host);
       }
       if (ok) return next();
-      this.logger.warn('Request refused: origin not allowed', {
+      this.logger.security('authz_fail', {
+        reason: 'origin_not_allowed',
         method: req.method,
         path: req.path,
         origin: typeof candidate === 'string' ? candidate.slice(0, 200) : null,
         remoteAddress: req.ip
-      });
+      }, { sourceKey: ipKeyGenerator(req.ip || '') });
       return res.status(403).json({ error: 'origin_rejected' });
     };
     return checkOrigin;
@@ -628,7 +638,14 @@ class HealthCheckService {
    */
   checkRequestCredentials(req, res, next, authConfig, authType, realm) {
     const result = checkCredentials(req.headers, authConfig);
-    if (result.ok) return next();
+    if (result.ok) {
+      // Once per source per hour: Basic and bearer credentials have no session,
+      // so this stands in for "once per session". (#444)
+      this.logger.security('authn_login_success', {
+        realm: realm.toLowerCase(), remoteAddress: req.ip
+      }, { sourceKey: ipKeyGenerator(req.ip || ''), dedupeMs: AUTH_SUCCESS_DEDUPE_MS });
+      return next();
+    }
 
     if (result.reason === 'config') {
       return res.status(500).json({ error: 'Invalid authentication configuration' });
@@ -641,9 +658,9 @@ class HealthCheckService {
       }
       res.locals.authFailed = true;
       // Never log the username: users paste passwords into that field. (#286)
-      this.logger.warn(`${realm} authentication failed`, {
-        remoteAddress: req.ip
-      });
+      this.logger.security('authn_login_fail', {
+        reason: 'invalid_credentials', realm: realm.toLowerCase(), remoteAddress: req.ip
+      }, { sourceKey: ipKeyGenerator(req.ip || '') });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -652,9 +669,9 @@ class HealthCheckService {
       return res.status(401).json({ error: 'Authentication required' });
     }
     res.locals.authFailed = true;
-    this.logger.warn(`${realm} token authentication failed`, {
-      remoteAddress: req.ip
-    });
+    this.logger.security('authn_login_fail', {
+      reason: 'invalid_token', realm: realm.toLowerCase(), remoteAddress: req.ip
+    }, { sourceKey: ipKeyGenerator(req.ip || '') });
     return res.status(401).json({ error: 'Invalid token' });
   }
 
@@ -826,11 +843,13 @@ class HealthCheckService {
           const configuredServers = this.getServers();
           // Initialize all servers with default status
           configuredServers.forEach(server => {
-            const serverStatus = this.status.serverStatuses[server.name] || {
+            // A copy: the fields added below (history, per-account names) must
+            // not land on the live object, which the open /metrics returns (#429).
+            const serverStatus = { ...(this.status.serverStatuses[server.name] || {
               status: 'pending',
               lastSync: null,
               error: null
-            };
+            }) };
             
             // Get last sync status from sync history if available
             if (this.syncHistory) {
@@ -850,6 +869,10 @@ class HealthCheckService {
                     added: lastSync.transactions_added,
                     updated: lastSync.transactions_updated
                   };
+                  // Per-account counts of that sync (#429); NULL counts are unknown
+                  if (typeof this.syncHistory.getLastAccountResults === 'function') {
+                    serverStatus.lastAccountResults = this.syncHistory.getLastAccountResults(server.name);
+                  }
                 }
               } catch (error) {
                 this.logger.debug('Failed to get last sync status for server', { 
@@ -1241,7 +1264,8 @@ This test verifies that notifications are configured correctly and can reach the
               hasConfig: !!this.notificationService?.config,
               hasEmailConfig: !!this.notificationService?.config?.email,
               emailHost: this.notificationService?.config?.email?.host,
-              emailTo: this.notificationService?.config?.email?.to,
+              // A count, not the addresses: this line now reaches /ws/logs too (#440)
+              emailRecipients: [].concat(this.notificationService?.config?.email?.to || []).length,
               hasEmailTransporter: !!this.notificationService?.emailTransporter
             });
             if (!this.notificationService?.config?.email?.host || 
@@ -1505,6 +1529,8 @@ This test verifies that notifications are configured correctly and can reach the
       try {
         const limit = parseInt(req.query.limit) || 10;
         const filters = { limit };
+        // Opt-in per-account rows (#429); without the flag the response is unchanged.
+        if (['1', 'true'].includes(req.query.includeAccounts)) filters.includeAccounts = true;
         // The History tab's server filter (#288). A repeated ?serverName=a&serverName=b
         // arrives as an array; only a single non-empty string is a filter.
         const { serverName } = req.query;
@@ -2203,6 +2229,8 @@ This test verifies that notifications are configured correctly and can reach the
    * @returns {Promise<void>}
    */
   async stop() {
+    // A guess loop cut by SIGTERM must still show its suppressed count. (#444)
+    if (typeof this.logger?.flushSecurity === 'function') this.logger.flushSecurity();
     if (this.authFailures) this.authFailures.shutdown();
     if (this.metricsAuthFailures) this.metricsAuthFailures.shutdown();
     return new Promise((resolve, reject) => {
