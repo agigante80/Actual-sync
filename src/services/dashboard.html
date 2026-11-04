@@ -388,6 +388,18 @@
         .acct-badge.syncable { background: #064e3b; color: #6ee7b7; }
         .acct-badge.manual   { background: #334155; color: #cbd5e1; }
         .acct-badge.closed   { background: #422006; color: #fca5a5; }
+        .acct-info { display: flex; flex-direction: column; min-width: 0; }
+        .acct-name { overflow-wrap: anywhere; }
+        .acct-result { font-size: 0.75rem; color: #94a3b8; }
+        .acct-empty { color: #64748b; font-size: 0.9rem; }
+        .acct-hint { color: #64748b; font-size: 0.75rem; margin-top: 4px; }
+        .hist-toggle { background: none; border: 0; color: #60a5fa; cursor: pointer; padding: 0 6px 0 0; font-size: 0.9rem; }
+        #history-table .hist-detail td { background: #0f172a; padding: 8px 10px 8px 28px; }
+        .hist-accounts { list-style: none; margin: 0; padding: 0; font-size: 0.85rem; }
+        .hist-accounts li { padding: 2px 0; overflow-wrap: anywhere; }
+        .hist-account.failed { color: #ef4444; }
+        .hist-account.skipped { color: #94a3b8; }
+        .hist-detail-empty { color: #94a3b8; font-size: 0.85rem; }
         .acct-toggle { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #94a3b8; cursor: pointer; user-select: none; }
         /* Payments tab (#341) */
         .pay-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 15px; }
@@ -670,11 +682,12 @@
                                 <th>Status</th>
                                 <th>Duration</th>
                                 <th>Accounts</th>
+                                <th>Transactions</th>
                                 <th>Error</th>
                             </tr>
                         </thead>
                         <tbody id="history-body">
-                            <tr><td colspan="6" class="loading">Loading history...</td></tr>
+                            <tr><td colspan="7" class="loading">Loading history...</td></tr>
                         </tbody>
                     </table>
                 </div>

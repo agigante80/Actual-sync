@@ -5,7 +5,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Logger, createLogger, LOG_LEVELS, LEVEL_NAMES } = require('../lib/logger');
+const { Logger, createLogger, withCorrelation, currentCorrelationId, LOG_LEVELS, LEVEL_NAMES } = require('../lib/logger');
 const {
     createTempDir,
     cleanupTempDir,
@@ -140,36 +140,19 @@ describe('Logger', () => {
     });
 
     describe('Correlation IDs', () => {
-        test('should generate unique correlation IDs', () => {
+        test('a logger holds no id of its own; the running scope supplies it (#441)', () => {
             const logger = new Logger();
-            const id1 = logger.generateCorrelationId();
-            const id2 = logger.generateCorrelationId();
-            
-            expect(id1).toBeDefined();
-            expect(id2).toBeDefined();
+            expect(logger.correlationId).toBeNull();
+            withCorrelation(() => expect(logger.correlationId).toBe('test-id'), 'test-id');
+            expect(logger.correlationId).toBeNull();
+        });
+
+        test('withCorrelation generates a UUID when none is given', () => {
+            let id1; let id2;
+            withCorrelation(() => { id1 = currentCorrelationId(); });
+            withCorrelation(() => { id2 = currentCorrelationId(); });
+            expect(id1).toMatch(/^[a-f0-9-]{36}$/);
             expect(id1).not.toBe(id2);
-            expect(id1).toMatch(/^[a-f0-9-]{36}$/); // UUID format
-        });
-
-        test('should set and clear correlation ID', () => {
-            const logger = new Logger();
-            
-            expect(logger.correlationId).toBeNull();
-            
-            const id = logger.setCorrelationId('test-id');
-            expect(logger.correlationId).toBe('test-id');
-            expect(id).toBe('test-id');
-            
-            logger.clearCorrelationId();
-            expect(logger.correlationId).toBeNull();
-        });
-
-        test('should generate correlation ID if none provided to setCorrelationId', () => {
-            const logger = new Logger();
-            
-            const id = logger.setCorrelationId();
-            expect(logger.correlationId).toBeDefined();
-            expect(id).toMatch(/^[a-f0-9-]{36}$/);
         });
     });
 
@@ -198,9 +181,7 @@ describe('Logger', () => {
 
         test('should include correlation ID in formatted log', () => {
             const logger = new Logger({ format: 'json' });
-            logger.setCorrelationId('test-correlation-id');
-            
-            const formatted = emit(logger, 'Test message');
+            const formatted = withCorrelation(() => emit(logger, 'Test message'), 'test-correlation-id');
             const parsed = JSON.parse(formatted);
             
             expect(parsed.correlationId).toBe('test-correlation-id');
@@ -348,11 +329,9 @@ describe('Logger', () => {
     describe('Child Logger', () => {
         test('should create child logger with parent context', () => {
             const parent = new Logger({ level: 'DEBUG' });
-            parent.setCorrelationId('parent-id');
+            const child = withCorrelation(() => parent.child({ component: 'test' }), 'parent-id');
             
-            const child = parent.child({ component: 'test' });
-            
-            expect(child.correlationId).toBe('parent-id');
+            expect(child.correlationId).toBeNull();
             expect(child.level).toBe('DEBUG');
             expect(child.context).toEqual({ component: 'test' });
         });
@@ -464,7 +443,7 @@ describe('Logger', () => {
         test('masks a secret key in pretty format', () => {
             const logger = new Logger({ format: 'pretty', logDir: null });
             const line = emit(logger, 'auth', { password: 'hunter2' }, 'pretty');
-            expect(line).toContain('"password": "[REDACTED]"');
+            expect(line).toContain('"password":"[REDACTED]"');
             expect(line).not.toContain('hunter2');
         });
 
@@ -475,6 +454,21 @@ describe('Logger', () => {
             expect(line).not.toContain('e2e-secret');
             expect(line).toContain('[REDACTED]');
             expect(meta.server.encryptionPassword).toBe('e2e-secret'); // original untouched
+        });
+
+        test.each([
+            ['Slack hook', 'POST https://hooks.slack.com/services/T0AAA/B0BBB/SECRETxyz failed', 'SECRETxyz'],
+            ['Discord hook', 'https://discord.com/api/webhooks/123456789/SECRETxyz', 'SECRETxyz'],
+            ['Slack trigger', 'https://hooks.slack.com/triggers/E0AAA/12345/SECRETxyz', 'SECRETxyz'],
+            ['Slack workflow', 'https://hooks.slack.com/workflows/T0AAA/A0BBB/12345/SECRETxyz', 'SECRETxyz'],
+            ['Slack gov hook', 'https://hooks.slack-gov.com/services/T0AAA/B0BBB/SECRETxyz', 'SECRETxyz'],
+            ['Discord slack-compat hook', 'https://discord.com/api/webhooks/123456789/SECRETxyz/slack', 'SECRETxyz'],
+            ['discordapp hook','https://discordapp.com/api/v10/webhooks/123456789/SECRETxyz?wait=true', 'SECRETxyz']
+        ])('masks path-style %s secret (#431)', (_n, text, secret) => {
+            const logger = new Logger({ logDir: null });
+            const line = emit(logger, text, { url: text }, 'json');
+            expect(line).not.toContain(secret);
+            expect(line).toContain('[REDACTED]');
         });
 
         test('masks bot-token URLs embedded in string values', () => {
@@ -874,8 +868,7 @@ describe('Logger', () => {
                 syslog: { facility: 16 }
             });
             
-            const correlationId = logger.setCorrelationId('test-id-123');
-            const message = logger.formatSyslog('INFO', 'Test message', { key: 'value' });
+            const message = withCorrelation(() => logger.formatSyslog('INFO', 'Test message', { key: 'value' }), 'test-id-123');
             
             expect(message).toContain('<134>'); // priority: facility*8 + severity
             expect(message).toContain('actual-sync');
@@ -1027,13 +1020,12 @@ describe('Logger', () => {
             logSpy.mockRestore();
         });
 
-        test('should inherit correlation ID from parent', () => {
+        test('a child resolves the id from the running scope, not from its parent (#441)', () => {
             const logger = new Logger({ level: 'INFO' });
-            logger.setCorrelationId('parent-id');
-            
             const childLogger = logger.child({ component: 'test' });
             
-            expect(childLogger.correlationId).toBe('parent-id');
+            expect(childLogger.correlationId).toBeNull();
+            withCorrelation(() => expect(childLogger.correlationId).toBe('scope-id'), 'scope-id');
         });
 
         test('should share streams with parent', () => {
@@ -1089,5 +1081,108 @@ describe('Logger', () => {
             
             expect(closeSpy).toHaveBeenCalled();
         });
+    });
+
+    describe('reserved keys (#433)', () => {
+        const emit = (logger, level, msg, meta) =>
+            JSON.parse(logger.serialize(level, msg, logger.context, meta, 'json'));
+
+        test('context and meta cannot overwrite reserved keys', () => {
+            const logger = new Logger({
+                serviceName: 'svc',
+                context: { level: 'debug', service: 'evil', timestamp: 'x', message: 'ctx', severity: 'z', seq: 9, schema: 's', event: 'e', version: 'v', component: 'c' }
+            });
+            const out = emit(logger, 'WARN', 'real', { level: 'trace', message: 'meta', service: 'm', component: 'm2' });
+            expect(out.level).toBe('WARN');
+            expect(out.message).toBe('real');
+            expect(out.service).toBe('svc');
+            expect(out.timestamp).not.toBe('x');
+            // The logger writes these itself (#436); the caller's values lose.
+            expect(out.severity).toBe(13);
+            expect(out.seq).not.toBe(9);
+            expect(out.schema).toBe(1);
+            expect(out.version).not.toBe('v');
+        });
+
+        test('event and component are caller-set: they pass through (D1, D7)', () => {
+            const logger = new Logger({ context: { component: 'telegram' } });
+            const out = emit(logger, 'WARN', 'm', { event: 'authz_fail' });
+            expect(out.event).toBe('authz_fail');
+            expect(out.component).toBe('telegram');
+        });
+
+        test('non-reserved context and meta still pass through', () => {
+            const logger = new Logger({ context: { server: 'A' } });
+            const out = emit(logger, 'INFO', 'm', { a: 1 });
+            expect(out.server).toBe('A');
+            expect(out.a).toBe(1);
+        });
+
+        test('child() level option sets the level without touching context', () => {
+            const parent = new Logger({ level: 'INFO' });
+            const child = parent.child({ server: 'A' }, { level: 'DEBUG' });
+            expect(child.level).toBe('DEBUG');
+            expect(child.context).toEqual({ server: 'A' });
+            expect(parent.level).toBe('INFO');
+        });
+
+        test('child() without options inherits the level', () => {
+            expect(new Logger({ level: 'WARN' }).child({}).level).toBe('WARN');
+        });
+    });
+});
+
+describe('control character escaping (#447)', () => {
+    const { escapeControlChars } = require('../lib/logger');
+    const forged = 'Sync for a\x1b[31mRED\n2026-11-04T00:00:00Z [ERROR] forged';
+
+    test('pretty: ticket string yields one line with visible escapes', () => {
+        const line = emit(new Logger({ format: 'pretty' }), forged);
+        expect(line.split('\n')).toHaveLength(1);
+        expect(line).toContain('a\\x1b[31mRED\\x0a2026-11-04T00:00:00Z [ERROR] forged');
+        expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    });
+
+    test('pretty: context and meta values stay on one line', () => {
+        const line = emit(new Logger({ format: 'pretty' }), 'm', { a: 'x\r\ny\u2028z\u202e', b: { c: '\u0085' } });
+        expect(line.split('\n')).toHaveLength(1);
+        expect(line).not.toMatch(/[\r\u0085\u2028\u202e]/);
+    });
+
+    test('escapes every listed class', () => {
+        const all = '\x00\x1f\x7f\x80\x9f\u2028\u2029\u202a\u202e\u2066\u2069';
+        expect(escapeControlChars(all)).toBe('\\x00\\x1f\\x7f\\x80\\x9f\\u2028\\u2029\\u202a\\u202e\\u2066\\u2069');
+        expect(escapeControlChars('plain text é')).toBe('plain text é');
+    });
+
+    test('json: no raw U+2028/2029, bidi, DEL or C1; still parses', () => {
+        const msg = 'a\u2028b\u2029c\u202ed\u2066e\x7ff\x85g\nh';
+        const line = emit(new Logger({ format: 'json' }), msg);
+        expect(line).not.toMatch(/[\u2028\u2029\u202a-\u202e\u2066-\u2069\x7f-\x9f]/);
+        expect(JSON.parse(line).message).toBe(msg);
+    });
+});
+
+describe('escaping on the fallback and syslog paths (#447 review)', () => {
+    const forged = 'Sync for a\x1b[31mRED\n2026-11-04T00:00:00Z [ERROR] forged';
+    class Boom { toJSON() { throw new Error('bad\nline'); } }
+
+    test.each(['pretty', 'json'])('serialization fallback (%s) stays one escaped line', (format) => {
+        const logger = new Logger({ logDir: null });
+        const line = logger.safeSerialize('info', forged, {}, { b: new Boom() }, format);
+        expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+        if (format === 'json') {
+            const rec = JSON.parse(line);
+            expect(rec.message).toBe(forged);
+            expect(rec.level).toBe('INFO');
+        }
+    });
+
+    test('syslog message and structured data carry no raw control characters', () => {
+        const logger = new Logger({ logDir: null });
+        logger.syslog = { facility: 16 };
+        const line = logger.formatSyslog('info', forged, {}, { a: 'x\ny' });
+        expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+        expect(line).toContain('a="x\\\\x0ay"');
     });
 });

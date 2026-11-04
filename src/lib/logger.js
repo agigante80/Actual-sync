@@ -8,8 +8,80 @@ const path = require('path');
 // Node's built-in v4 UUID generator — no external dependency (replaces `uuid`,
 // which went ESM-only at v14 and could not be required under the CJS test runner). (#56)
 const { randomUUID } = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
 const { createStream } = require('rotating-file-stream');
+const { passThrough } = require('./consoleBridge');
+
+// One scope per sync, HTTP request, Telegram update and scheduled job. Every
+// record written inside it carries its correlationId, whichever logger or
+// child wrote it, so overlapping work can be told apart. (#441, D4)
+const correlationScope = new AsyncLocalStorage();
+
+/**
+ * Run fn inside a correlation scope. Returns whatever fn returns, so an async
+ * fn stays awaitable. A nested scope replaces the outer id for its own span.
+ */
+function withCorrelation(fn, correlationId = randomUUID()) {
+    return correlationScope.run(correlationId, fn);
+}
+
+/** The correlationId of the running scope, or null outside any. */
+function currentCorrelationId() {
+    return correlationScope.getStore() || null;
+}
+
+// Log dir owner-only, log files owner read/write (D10, #446).
+const LOG_DIR_MODE = 0o700;
+const LOG_FILE_MODE = 0o600;
+let permissionWarningShown = false;
+
+/**
+ * chmod the log dir to 0700 and every existing log file in it to 0600.
+ * Never throws: a failure (not the owner, read-only mount) warns once with a
+ * static message, so no path or error text reaches the console.
+ */
+function tightenLogPermissions(logDir) {
+    if (process.platform === 'win32') return;
+    let failed = false;
+    // fchmod on an O_NOFOLLOW descriptor: no symlink is ever followed (CWE-59)
+    // and the check and the chmod act on the same inode (no TOCTOU, CWE-367).
+    const fchmodNoFollow = (target, flags, mode, wantDir) => {
+        let fd;
+        try {
+            fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK | flags);
+            const st = fs.fstatSync(fd);
+            if (wantDir ? !st.isDirectory() : !st.isFile()) { failed = true; return false; }
+            fs.fchmodSync(fd, mode);
+            return true;
+        } catch (error) {
+            failed = true;
+            return false;
+        } finally {
+            if (fd !== undefined) { try { fs.closeSync(fd); } catch (_) { /* ignore */ } }
+        }
+    };
+    try {
+        // A symlinked log dir is a normal Docker setup (a volume mount), and we
+        // write into its target anyway, so tighten the resolved directory. A
+        // symlink planted inside it would need write access to a dir that is
+        // 0700 and ours, so the write path is not hardened further here (#446).
+        const dir = fs.realpathSync(path.resolve(logDir));
+        fchmodNoFollow(dir, fs.constants.O_DIRECTORY, LOG_DIR_MODE, true);
+        for (const name of fs.readdirSync(dir)) {
+            if (!/\.(log|gz)$/.test(name)) continue;
+            // A non-regular .log/.gz entry (symlink, fifo) counts as a failure.
+            fchmodNoFollow(path.join(dir, name), 0, LOG_FILE_MODE, false);
+        }
+    } catch (error) {
+        failed = true;
+    }
+    if (failed && !permissionWarningShown) {
+        permissionWarningShown = true;
+        console.warn('Could not tighten log directory permissions to 0700/0600');
+    }
+}
 const dgram = require('dgram');
+const { SyslogStreamTransport } = require('./syslogTransport');
 
 // Log levels
 const LOG_LEVELS = {
@@ -19,12 +91,47 @@ const LOG_LEVELS = {
     DEBUG: 3
 };
 
+// Security audit floor (D7, #444): at most this many records per event and
+// source in a window; the rest are counted and reported in one
+// security.suppressed record. The table of sources is bounded.
+const SECURITY_LIMIT = 10;
+const SECURITY_WINDOW_MS = 60 * 1000;
+const SECURITY_MAX_SOURCES = 1000;
+const SECURITY_INFO_EVENTS = new Set(['authn_login_success', 'sys_startup', 'sys_shutdown', 'sys_config_change']);
+
 const LEVEL_NAMES = {
     0: 'ERROR',
     1: 'WARN',
     2: 'INFO',
     3: 'DEBUG'
 };
+
+// Keys owned by the logger; context and meta cannot set them (#433, design D1).
+const RESERVED_KEYS = new Set([
+    'timestamp', 'level', 'severity', 'message', 'event',
+    'service', 'version', 'component', 'seq', 'schema'
+]);
+
+// `event` and `component` are reserved names in the record shape, but the
+// caller sets them (D1 component children, D7 audit events such as
+// authz_fail), so they pass through. Only the keys the logger itself writes
+// are stripped from context and meta.
+const CALLER_SET_KEYS = new Set(['event', 'component']);
+const LOGGER_OWNED_KEYS = new Set([...RESERVED_KEYS].filter((k) => !CALLER_SET_KEYS.has(k)));
+
+// Record contract (#436, docs/LOGGING.md): every record carries the app
+// version, a per-process `seq` and the schema number. The OTel severity numbers
+// are fixed by the convention.
+const RECORD_SCHEMA = 1;
+const SEVERITY_NUMBERS = { ERROR: 17, WARN: 13, INFO: 9, DEBUG: 5 };
+// resolveVersion() honours the VERSION build arg, so a dev image reports
+// 1.x.y-dev+sha like the rest of the app, not the package.json release.
+const APP_VERSION = require('./version').resolveVersion() || 'unknown';
+let recordSeq = 0;
+
+const withoutReserved = (obj) => Object.fromEntries(
+    Object.entries(obj || {}).filter(([k]) => !LOGGER_OWNED_KEYS.has(k))
+);
 
 class Logger {
     constructor(options = {}) {
@@ -58,9 +165,16 @@ class Logger {
         // Only use provided logDir if it's not undefined (null is valid for disabling)
         this.logDir = (options.logDir !== undefined) ? options.logDir : defaultLogDir;
         this.serviceName = options.serviceName || 'actual-sync';
-        this.correlationId = null;
         this.broadcastCallback = options.broadcastCallback || null;
+        // A child resolves the callback through its parent at log time, so one set
+        // after the child was created (syncService attaches it last) still applies.
+        // broadcastState is shared by the whole family: while a callback runs, any
+        // log it triggers (e.g. a failed WebSocket send) is not broadcast again. (#440)
+        this.broadcastParent = null;
+        this.broadcastState = { active: false };
         this.context = options.context || {};
+        // Rate-limit state for security(); children share the parent's. (#444)
+        this.securityState = { sources: new Map() };
 
         // Rotation settings (defaults align with schema)
         this.rotation = options.rotation || {
@@ -90,7 +204,7 @@ class Logger {
         if (this.logDir) {
             try {
                 if (!fs.existsSync(this.logDir)) {
-                    fs.mkdirSync(this.logDir, { recursive: true });
+                    fs.mkdirSync(this.logDir, { recursive: true, mode: LOG_DIR_MODE });
                     console.log(`✅ Created log directory: ${this.logDir}`);
                 }
                 // Test write permissions
@@ -105,6 +219,11 @@ class Logger {
             }
         }
         
+        // Tighten an existing dir and existing log files (D10, #446).
+        if (this.logDir && !options.inheritStreams) {
+            tightenLogPermissions(this.logDir);
+        }
+
         // Setup rotating file stream if enabled. Child loggers inherit the parent's
         // stream (see child()), so they must not open their own here: doing so would
         // orphan a stream — and, with time-based rotation, a never-cleared rotation
@@ -119,7 +238,8 @@ class Logger {
                     // and maxFiles behaves as documented (days of retention). Rotation
                     // fires on whichever trigger comes first: the interval or the size. (#106)
                     interval: this.rotation.interval || '1d',
-                    maxFiles: this.rotation.maxFiles
+                    maxFiles: this.rotation.maxFiles,
+                    mode: LOG_FILE_MODE
                 };
                 
                 // Add compress option if enabled
@@ -145,7 +265,19 @@ class Logger {
         // Setup syslog client if enabled (child loggers inherit the parent's).
         this.syslogClient = null;
         if (this.syslog.enabled && !options.inheritStreams) {
-            this.syslogClient = dgram.createSocket(this.syslog.protocol === 'tcp' ? 'tcp4' : 'udp4');
+            const proto = this.syslog.protocol;
+            if (proto === 'tcp' || proto === 'tls') {
+                // Stream transports use net/tls (dgram has no tcp type). (#432)
+                this.syslogClient = new SyslogStreamTransport({
+                    host: this.syslog.host,
+                    port: this.syslog.port,
+                    protocol: proto,
+                    ca: this.syslog.ca,
+                    onError: (err) => passThrough(() => console.error('Syslog transport error:', err.message))
+                });
+            } else {
+                this.syslogClient = dgram.createSocket('udp4');
+            }
         }
     }
     
@@ -154,6 +286,11 @@ class Logger {
      */
     setBroadcastCallback(callback) {
         this.broadcastCallback = callback;
+    }
+
+    getBroadcastCallback() {
+        if (this.broadcastCallback) return this.broadcastCallback;
+        return this.broadcastParent ? this.broadcastParent.getBroadcastCallback() : null;
     }
 
     /**
@@ -173,25 +310,11 @@ class Logger {
     }
 
     /**
-     * Set correlation ID for tracking related log entries
+     * The correlation ID of the scope this call runs in (see withCorrelation).
+     * A logger holds none of its own, so a child never copies a stale one. (#441)
      */
-    setCorrelationId(id) {
-        this.correlationId = id || randomUUID();
-        return this.correlationId;
-    }
-
-    /**
-     * Clear correlation ID
-     */
-    clearCorrelationId() {
-        this.correlationId = null;
-    }
-
-    /**
-     * Generate correlation ID
-     */
-    generateCorrelationId() {
-        return randomUUID();
+    get correlationId() {
+        return currentCorrelationId();
     }
 
     /**
@@ -205,6 +328,10 @@ class Logger {
         return str
             // https://api.telegram.org/bot<id>:<token>/...  ->  bot[REDACTED]
             .replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot[REDACTED]')
+            // Path-style webhook secrets (#431): Slack /services/T/B/<secret>,
+            // Discord /api[/vN]/webhooks/<id>/<token> (discord.com, discordapp.com)
+            .replace(/(hooks\.slack(?:-gov)?\.com\/)[^\s"'?#<>]+/gi, '$1[REDACTED]')
+            .replace(/(discord(?:app)?\.com\/api(?:\/v\d+)?\/webhooks\/)[^\s"'?#<>]+/gi, '$1[REDACTED]')
             // URL userinfo credentials: scheme://user:secret@host  ->  user:[REDACTED]@host
             .replace(/(\/\/[^/:@\s]+):[^/@\s]+@/g, '$1:[REDACTED]@')
             // Authorization: Bearer <token>
@@ -329,35 +456,44 @@ class Logger {
      * separate from redaction so log() can redact once and serialize per
      * destination (console + file) without re-cloning. (#103, #104)
      */
-    serialize(level, safeMessage, safeContext, safeMeta, format) {
+    serialize(level, safeMessage, safeContext, safeMeta, format, seq = ++recordSeq) {
         const timestamp = new Date().toISOString();
+        safeContext = withoutReserved(safeContext);
+        safeMeta = withoutReserved(safeMeta);
+        // Logger-owned keys were stripped above, so caller fields cannot
+        // overwrite them; they lead the record to match docs/LOGGING.md (#433).
         const logEntry = {
             timestamp,
             level: level.toUpperCase(),
+            severity: SEVERITY_NUMBERS[level.toUpperCase()],
             service: this.serviceName,
+            version: APP_VERSION,
             message: safeMessage,
-            ...safeContext,
-            ...safeMeta
+            seq,
+            schema: RECORD_SCHEMA
         };
-
+        Object.assign(logEntry, safeContext, safeMeta);
         if (this.correlationId) {
+            // Not reserved, but the logger's own id still wins, as before #433.
             logEntry.correlationId = this.correlationId;
         }
 
         if (format === 'json') {
-            return JSON.stringify(logEntry);
+            // JSON.stringify leaves U+2028/2029, DEL, C1 and bidi raw; they can only
+            // occur inside strings, so escaping the output keeps it valid JSON. (#447)
+            return escapeControlChars(JSON.stringify(logEntry), true);
         }
 
         // Pretty format for console
         const correlationStr = this.correlationId ? ` [${this.correlationId.substring(0, 8)}]` : '';
         const contextStr = Object.keys(safeContext).length > 0
-            ? ` [${JSON.stringify(safeContext)}]`
+            ? ` [${escapeControlChars(JSON.stringify(safeContext))}]`
             : '';
         const metaStr = Object.keys(safeMeta).length > 0
-            ? ` ${JSON.stringify(safeMeta, null, 2)}`
+            ? ` ${escapeControlChars(JSON.stringify(safeMeta))}`
             : '';
 
-        return `${timestamp} [${level.toUpperCase()}]${correlationStr}${contextStr} ${safeMessage}${metaStr}`;
+        return `${timestamp} [${level.toUpperCase()}]${correlationStr}${contextStr} ${escapeControlChars(safeMessage)}${metaStr}`;
     }
 
     /**
@@ -365,11 +501,22 @@ class Logger {
      * (e.g. a class instance with a throwing toJSON) could otherwise make
      * JSON.stringify throw on the console path; a log call must never throw. (#103)
      */
-    safeSerialize(level, safeMessage, safeContext, safeMeta, format) {
+    safeSerialize(level, safeMessage, safeContext, safeMeta, format, seq = ++recordSeq) {
         try {
-            return this.serialize(level, safeMessage, safeContext, safeMeta, format);
+            return this.serialize(level, safeMessage, safeContext, safeMeta, format, seq);
         } catch (error) {
-            return `${new Date().toISOString()} [${level.toUpperCase()}] ${safeMessage} [log serialization error: ${error.message}]`;
+            // The fallback is an output path too: escape it like serialize() (#447),
+            // and keep json format valid JSON. Plain strings cannot make this throw.
+            const ts = new Date().toISOString();
+            if (format === 'json') {
+                return escapeControlChars(JSON.stringify({
+                    timestamp: ts, level: level.toUpperCase(),
+                    severity: SEVERITY_NUMBERS[level.toUpperCase()], service: this.serviceName,
+                    version: APP_VERSION, message: String(safeMessage), seq, schema: RECORD_SCHEMA,
+                    serializationError: String(error && error.message)
+                }), true);
+            }
+            return `${ts} [${level.toUpperCase()}] ${escapeControlChars(safeMessage)} [log serialization error: ${escapeControlChars(error && error.message)}]`;
         }
     }
 
@@ -388,8 +535,8 @@ class Logger {
         // values are escaped per RFC 5424 6.3.3 (\, ", ]) so quotes/brackets in the
         // value cannot terminate the structured-data element early. (#103, M5)
         const escapeSd = (s) => String(s).replace(/([\\"\]])/g, '\\$1');
-        const encode = (v) => escapeSd(v !== null && typeof v === 'object' ? JSON.stringify(v) : v);
-        const correlationStr = this.correlationId ? `correlationId="${this.correlationId}"` : '';
+        const encode = (v) => escapeSd(escapeControlChars(v !== null && typeof v === 'object' ? JSON.stringify(v) : v));
+        const correlationStr = this.correlationId ? `correlationId="${escapeSd(this.correlationId)}"` : '';
         const contextStr = Object.entries(safeContext)
             .map(([k, v]) => `${k}="${encode(v)}"`)
             .join(' ');
@@ -401,7 +548,7 @@ class Logger {
             .filter(s => s)
             .join(' ');
 
-        return `<${priority}>1 ${timestamp} ${hostname} ${appName} ${pid} - [${structuredData}] ${safeMessage}`;
+        return `<${priority}>1 ${timestamp} ${hostname} ${appName} ${pid} - [${structuredData}] ${escapeControlChars(safeMessage)}`;
     }
     
     /**
@@ -425,6 +572,10 @@ class Logger {
 
         try {
             const syslogMessage = this.formatSyslog(level, safeMessage, safeContext, safeMeta);
+            if (this.syslogClient instanceof SyslogStreamTransport) {
+                this.syslogClient.write(syslogMessage);
+                return;
+            }
             const buffer = Buffer.from(syslogMessage);
             
             this.syslogClient.send(
@@ -435,7 +586,7 @@ class Logger {
                 this.syslog.host,
                 (err) => {
                     if (err) {
-                        console.error('Failed to send to syslog:', err.message);
+                        passThrough(() => console.error('Failed to send to syslog:', err.message));
                     }
                 }
             );
@@ -447,8 +598,9 @@ class Logger {
     /**
      * Write log entry
      */
-    log(level, message, meta = {}) {
-        if (!this.shouldLog(level)) {
+    log(level, message, meta = {}, { audit = false } = {}) {
+        // An audit record (security events) ignores the configured level. (#444)
+        if (!audit && !this.shouldLog(level)) {
             return;
         }
 
@@ -468,21 +620,23 @@ class Logger {
 
         // Console uses the human-friendly format; the file uses the (default JSON)
         // single-line file format so logs stay machine-parseable. (#104)
-        const consoleLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.format);
+        // One seq per record, shared by the console and file renderings.
+        const seq = ++recordSeq;
+        const consoleLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.format, seq);
         const consoleMethod = level === 'ERROR' ? 'error' : level === 'WARN' ? 'warn' : 'log';
         console[consoleMethod](consoleLine);
 
         // File output if configured. A file-write failure must never break logging.
         if (this.logDir) {
             try {
-                const fileLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.fileFormat);
+                const fileLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.fileFormat, seq);
                 if (this.rotatingStream) {
                     this.rotatingStream.write(fileLine + '\n');
                 } else {
                     // Use simple daily files
                     const date = new Date().toISOString().split('T')[0];
                     const logFile = path.join(this.logDir, `${this.serviceName}-${date}.log`);
-                    fs.appendFileSync(logFile, fileLine + '\n', 'utf8');
+                    fs.appendFileSync(logFile, fileLine + '\n', { encoding: 'utf8', mode: LOG_FILE_MODE });
                 }
             } catch (error) {
                 console.error('Failed to write log to file:', error.message);
@@ -495,12 +649,18 @@ class Logger {
         }
 
         // Broadcast to WebSocket clients if callback is set (already-redacted). (#103)
-        if (this.broadcastCallback) {
+        const broadcast = this.getBroadcastCallback();
+        if (broadcast && !this.broadcastState.active) {
+            this.broadcastState.active = true;
             try {
-                this.broadcastCallback(level.toUpperCase(), safeMessage, safeMeta);
+                // The live view gets the correlation id too, so it can group lines (#441).
+                const id = this.correlationId;
+                broadcast(level.toUpperCase(), safeMessage, id ? { ...safeMeta, correlationId: id } : safeMeta);
             } catch (error) {
                 // Don't let broadcast errors break logging
                 console.error('Failed to broadcast log:', error.message);
+            } finally {
+                this.broadcastState.active = false;
             }
         }
     }
@@ -545,11 +705,91 @@ class Logger {
     }
 
     /**
+     * Write a security event (D7, OWASP Logging Vocabulary name as `event`,
+     * `category: "security"`). It is an audit floor: written whatever the
+     * configured level, never sampled. Callers pass `remoteAddress` and
+     * static fields only, never bodies, user names, passwords or tokens. (#444)
+     *
+     * Rate limit: SECURITY_LIMIT records per event and source (the
+     * remoteAddress) per window. Past it records are counted, and one
+     * `security.suppressed` record with `suppressedCount` is written when the
+     * window ends, so a guess loop never looks like it stopped.
+     *
+     * @param {string} event - e.g. 'authn_login_fail'
+     * @param {Object} [fields] - flat fields; remoteAddress is the source key
+     * @param {Object} [opts]
+     * @param {number} [opts.dedupeMs] - log at most once per source per this
+     *   many ms and drop repeats silently ("once per session" events)
+     * @param {string} [opts.level] - 'INFO' or 'WARN'; default by event
+     * @param {string} [opts.sourceKey] - limiter key for the source; callers
+     *   pass the same key as their request limiter (IPv6 grouped by /56), so
+     *   rotating addresses inside one prefix share one budget. The record keeps
+     *   the full remoteAddress.
+     */
+    security(event, fields = {}, opts = {}) {
+        const state = this.securityState;
+        const source = String(opts.sourceKey ?? fields.remoteAddress ?? 'unknown');
+        // The realm is part of the key: a metrics scrape must not hide a
+        // dashboard login from the same address, nor share its budget.
+        const key = `${event}|${fields.realm ?? ''}|${source}`;
+        const now = Date.now();
+        const windowMs = opts.dedupeMs || SECURITY_WINDOW_MS;
+        let entry = state.sources.get(key);
+        if (entry && now - entry.start >= windowMs) {
+            this.flushSecurityEntry(key, entry);
+            entry = undefined;
+        }
+        if (!entry) {
+            if (state.sources.size >= SECURITY_MAX_SOURCES) {
+                const oldest = state.sources.keys().next().value;
+                this.flushSecurityEntry(oldest, state.sources.get(oldest));
+            }
+            entry = { start: now, count: 0, suppressed: 0, timer: null, fields: { remoteAddress: fields.remoteAddress }, event };
+            state.sources.set(key, entry);
+            if (!opts.dedupeMs) {
+                entry.timer = setTimeout(() => this.flushSecurityEntry(key, entry), windowMs);
+                if (entry.timer.unref) entry.timer.unref();
+            }
+        }
+        entry.count++;
+        if (opts.dedupeMs) {
+            if (entry.count > 1) return;
+        } else if (entry.count > SECURITY_LIMIT) {
+            entry.suppressed++;
+            return;
+        }
+        const level = opts.level || (SECURITY_INFO_EVENTS.has(event) ? 'INFO' : 'WARN');
+        // event and category go last so a caller field cannot overwrite them.
+        this.log(level, event, { ...fields, event, category: 'security' }, { audit: true });
+    }
+
+    /** Write the pending security.suppressed record of one source and forget it. */
+    flushSecurityEntry(key, entry) {
+        if (!entry) return;
+        if (entry.timer) clearTimeout(entry.timer);
+        const sources = this.securityState.sources;
+        if (sources.get(key) === entry) sources.delete(key);
+        if (entry.suppressed > 0) {
+            // The count spans many requests, so no single correlation id fits it:
+            // write it outside any scope rather than under whichever request
+            // happened to trigger the flush (#441).
+            correlationScope.exit(() => this.log('WARN', 'security.suppressed', {
+                ...entry.fields,
+                event: 'security.suppressed',
+                category: 'security',
+                suppressedEvent: entry.event,
+                suppressedCount: entry.suppressed
+            }, { audit: true }));
+            entry.suppressed = 0;
+        }
+    }
+
+    /**
      * Create child logger with additional context
      */
-    child(context = {}) {
+    child(context = {}, options = {}) {
         const childLogger = new Logger({
-            level: this.level,
+            level: options.level || this.level,
             format: this.format,
             fileFormat: this.fileFormat,
             logDir: this.logDir,
@@ -564,8 +804,9 @@ class Logger {
                 thresholds: this.performanceThresholds
             }
         });
-        childLogger.correlationId = this.correlationId;
-        childLogger.broadcastCallback = this.broadcastCallback;
+        childLogger.broadcastParent = this;
+        childLogger.broadcastState = this.broadcastState;
+        childLogger.securityState = this.securityState;
         // Share the parent's redaction set (including any custom keys)
         childLogger.redactIndicators = this.redactIndicators;
         // Share streams to avoid duplicates
@@ -591,11 +832,8 @@ class Logger {
                         : duration > this.performanceThresholds.slow ? 'INFO' 
                         : 'DEBUG';
             
-            // Temporarily restore correlation ID if it changed
-            const currentCorrelationId = this.correlationId;
-            this.correlationId = startCorrelationId;
-            
-            this.log(level, `Performance: ${operationName}`, {
+            // Report under the id the timer started in, even if it stops elsewhere.
+            const emitTimed = () => this.log(level, `Performance: ${operationName}`, {
                 ...metadata,
                 duration,
                 durationMs: duration,
@@ -603,10 +841,12 @@ class Logger {
                 slow: duration > this.performanceThresholds.slow,
                 verySlow: duration > this.performanceThresholds.verySlow
             });
-            
-            // Restore current correlation ID
-            this.correlationId = currentCorrelationId;
-            
+            if (startCorrelationId) {
+                withCorrelation(emitTimed, startCorrelationId);
+            } else {
+                emitTimed();
+            }
+
             return duration;
         };
     }
@@ -614,7 +854,15 @@ class Logger {
     /**
      * Close logger and cleanup resources
      */
+    /** Write every pending security.suppressed count now (shutdown). (#444) */
+    flushSecurity() {
+        for (const [key, entry] of [...this.securityState.sources]) {
+            this.flushSecurityEntry(key, entry);
+        }
+    }
+
     close() {
+        this.flushSecurity();
         if (this.rotatingStream) {
             this.rotatingStream.end();
         }
@@ -622,6 +870,26 @@ class Logger {
             this.syslogClient.close();
         }
     }
+}
+
+/**
+ * Replace control and line-breaking characters with visible escapes so one log
+ * call is exactly one line and cannot forge entries or drive the terminal
+ * (CWE-117). Covers C0 (incl. CR/LF/ESC), DEL, C1, U+2028/2029 and the bidi
+ * controls U+202A-202E and U+2066-2069. (#447)
+ * @param {*} value Coerced with String().
+ * @param {boolean} [json] Always use \\uNNNN (valid inside a JSON string).
+ * @returns {string}
+ */
+function escapeControlChars(value, json = false) {
+    return String(value).replace(
+        /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
+        (c) => {
+            const code = c.charCodeAt(0);
+            const hex = code.toString(16).padStart(json || code > 0xff ? 4 : 2, '0');
+            return (json || code > 0xff ? '\\u' : '\\x') + hex;
+        }
+    );
 }
 
 /**
@@ -655,6 +923,9 @@ function createLogger(options = {}) {
 module.exports = {
     Logger,
     createLogger,
+    withCorrelation,
+    currentCorrelationId,
+    escapeControlChars,
     LOG_LEVELS,
     LEVEL_NAMES
 };

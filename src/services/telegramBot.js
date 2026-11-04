@@ -5,10 +5,14 @@
  */
 
 const https = require('https');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { createLogger } = require('../lib/logger');
+const { createLogger, withCorrelation } = require('../lib/logger');
 const { resolveTimezone } = require('../lib/timezone');
+
+const AUTHZ_WARN_INTERVAL_MS = 60 * 60 * 1000;
+const AUTHZ_WARN_MAX_KEYS = 1000;
 
 class TelegramBotService {
   /**
@@ -37,10 +41,11 @@ class TelegramBotService {
     };
 
     this.services = services;
-    this.logger = createLogger({
-      component: 'TelegramBot',
-      ...loggerConfig
-    });
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'TelegramBot' })
+      : createLogger({ component: 'TelegramBot', ...loggerConfig });
 
     this.lastUpdateId = 0;
     this.polling = false;
@@ -323,34 +328,49 @@ class TelegramBotService {
   /**
    * Process an update
    */
-  async processUpdate(update) {
+  processUpdate(update) {
+    // One scope per update, so its lines and the sync it may start group together (#441).
+    return withCorrelation(() => this.handleUpdate(update));
+  }
+
+  async handleUpdate(update) {
     if (!update.message || !update.message.text) {
       return;
     }
 
     const message = update.message;
     const text = message.text.trim();
-    const from = message.from;
 
-    // Log all incoming messages
-    this.logger.info('Telegram message received', {
-      from: `${from.first_name} ${from.last_name || ''}`.trim(),
-      username: from.username,
-      chatId: message.chat.id,
-      text: text
-    });
+    const command = text.split(' ')[0].toLowerCase();
+    const authorized = message.chat.id.toString() === this.config.chatId.toString();
 
-    // Check if it's from the configured chat
-    if (message.chat.id.toString() !== this.config.chatId.toString()) {
-      this.logger.warn('Message from unauthorized chat', {
-        chatId: message.chat.id,
-        configuredChatId: this.config.chatId
-      });
+    // Never log sender name, username, message text or chat ids (#435).
+    // The command name is logged only when it is one of the bot's own commands.
+    if (!authorized) {
+      // At most one WARN per chat per hour, so a stranger spamming the bot cannot
+      // flood the logs. Keyed on a hash, so no chat id is kept in memory either.
+      const key = crypto.createHash('sha256').update(String(message.chat.id)).digest('hex').slice(0, 16);
+      const now = Date.now();
+      if (!this._authzWarned) this._authzWarned = new Map();
+      const last = this._authzWarned.get(key);
+      if (last === undefined || now - last >= AUTHZ_WARN_INTERVAL_MS) {
+        if (this._authzWarned.size >= AUTHZ_WARN_MAX_KEYS) {
+          this._authzWarned.delete(this._authzWarned.keys().next().value);
+        }
+        this._authzWarned.delete(key);
+        this._authzWarned.set(key, now);
+        // Audit floor: written whatever logging.level is (D7, #444).
+        this.logger.security('authz_fail', { authorized: false });
+      }
       return;
     }
 
+    this.logger.info('Telegram message received', {
+      command: this.commands[command] ? command : 'unknown',
+      authorized: true
+    });
+
     // Check if it's a command
-    const command = text.split(' ')[0].toLowerCase();
     if (this.commands[command]) {
       try {
         const args = text.split(' ').slice(1);
@@ -364,7 +384,7 @@ class TelegramBotService {
       }
     } else {
       // Not a recognized command
-      this.logger.info('Non-command message received', { text });
+      this.logger.info('Non-command message received');
       await this.sendMessage(
         `I received your message: "${text}"\n\n` +
         `I don't understand that command. Type /help to see available commands.`

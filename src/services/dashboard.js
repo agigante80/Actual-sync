@@ -184,34 +184,56 @@ async function loadAccounts() {
     }
 }
 
+// Build a text-only element: account and server names are untrusted, so
+// they are only ever set through textContent. (#430)
+function textEl(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    node.textContent = text;
+    return node;
+}
+
 function renderAccounts() {
     const container = document.getElementById('accounts-list');
     if (!container) return;
     const showClosed = document.getElementById('show-closed-accounts')?.checked;
+    container.textContent = '';
 
     if (!accountsData || accountsData.length === 0) {
-        container.innerHTML = accountsUnavailable
-            ? '<div style="color:#64748b;font-size:0.9rem;">Account data unavailable.</div>'
-            : '<div style="color:#64748b;font-size:0.9rem;">No account data yet — run a sync.</div>';
+        container.appendChild(textEl('div', 'acct-empty', accountsUnavailable
+            ? 'Account data unavailable.'
+            : 'No account data yet, run a sync.'));
         return;
     }
 
-    const badge = (c) => `<span class="acct-badge ${c}">${c}</span>`;
-    container.innerHTML = accountsData.map(group => {
-        const accounts = (group.accounts || []).filter(a => showClosed || a.classification !== 'closed');
-        const hiddenClosed = (group.accounts || []).length - accounts.length;
-        const rows = accounts.length
-            ? accounts.map(a => `
-                <div class="acct-row ${a.classification}">
-                    <span>${escapeHtml(a.name || a.id)}</span>
-                    ${badge(a.classification)}
-                </div>`).join('')
-            : `<div style="color:#64748b;font-size:0.85rem;">No open accounts.</div>`;
-        const hint = (!showClosed && hiddenClosed > 0)
-            ? `<div style="color:#64748b;font-size:0.75rem;margin-top:4px;">${hiddenClosed} closed hidden</div>`
-            : '';
-        return `<div class="acct-server"><div class="acct-server-name">${escapeHtml(group.server)}</div>${rows}${hint}</div>`;
-    }).join('');
+    for (const group of accountsData) {
+        const all = group.accounts || [];
+        const accounts = all.filter(a => showClosed || a.classification !== 'closed');
+        const hiddenClosed = all.length - accounts.length;
+        const box = textEl('div', 'acct-server');
+        box.appendChild(textEl('div', 'acct-server-name', group.server));
+        if (accounts.length) {
+            for (const a of accounts) {
+                const row = textEl('div', `acct-row ${a.classification}`);
+                const info = textEl('div', 'acct-info');
+                info.appendChild(textEl('span', 'acct-name', a.name || a.id));
+                // Last sync result of this account (#430)
+                if (a.lastResult) {
+                    const when = group.lastSyncAt ? `, ${formatTime(group.lastSyncAt)}` : '';
+                    info.appendChild(textEl('span', 'acct-result', `last sync: ${formatAccountResult(a.lastResult)}${when}`));
+                }
+                row.appendChild(info);
+                row.appendChild(textEl('span', `acct-badge ${a.classification}`, a.classification));
+                box.appendChild(row);
+            }
+        } else {
+            box.appendChild(textEl('div', 'acct-empty', 'No open accounts.'));
+        }
+        if (!showClosed && hiddenClosed > 0) {
+            box.appendChild(textEl('div', 'acct-hint', `${hiddenClosed} closed hidden`));
+        }
+        container.appendChild(box);
+    }
 }
 
 function updateServersList(servers) {
@@ -296,6 +318,18 @@ function updateServersList(servers) {
             }
         }
         
+        // Per-sync transaction totals for the last sync (#424)
+        let transactionCountsText = '';
+        if (status.lastSyncTransactions) {
+            const txCounts = formatTransactionCounts(
+                status.lastSyncTransactions.added,
+                status.lastSyncTransactions.updated
+            );
+            if (txCounts !== '-') {
+                transactionCountsText = `<br><span style="color: #94a3b8; font-size: 0.85em;">Transactions: ${txCounts}</span>`;
+            }
+        }
+
         // Version compatibility badge (#158): each server's running version + verdict
         let versionBadge = '';
         if (status.serverVersion || status.versionVerdict) {
@@ -327,6 +361,7 @@ function updateServersList(servers) {
                 <div class="server-info">
                     Last sync: ${lastSyncText}
                     ${accountCountsText}
+                    ${transactionCountsText}
                     ${versionBadge}
                     ${scheduleInfo}
                     ${errorDisplay}
@@ -594,6 +629,31 @@ function formatAccountCounts(succeeded, failed, skipped) {
     const k = Number(skipped) || 0;
     if (s === 0 && f === 0 && k === 0) return '-';
     return `${s} synced · ${f} failed · ${k} skipped`;
+}
+
+// Render the per-sync transaction totals: "N added · M updated". Returns '-'
+// when both are zero or absent (rows written before #391 hold NULL). Values
+// are coerced to numbers, so the result is safe to place in markup (#424).
+function formatTransactionCounts(added, updated) {
+    const a = Number(added) || 0;
+    const u = Number(updated) || 0;
+    if (a === 0 && u === 0) return '-';
+    return `${a} added · ${u} updated`;
+}
+
+// One account's result of a sync as short text (#430): "5 new", "no new",
+// "count unknown", "failed" or "skipped". "M updated" is appended when > 0.
+// Counts are NULL when unknown (never 0), so NULL is not "no new". Returns
+// plain text; callers must place it with textContent.
+function formatAccountResult(a) {
+    if (!a) return '';
+    if (a.status === 'failed') return 'failed';
+    if (a.status === 'skipped') return 'skipped';
+    const added = a.transactions_added;
+    if (added === null || added === undefined) return 'count unknown';
+    const updated = Number(a.transactions_updated) || 0;
+    const base = Number(added) > 0 ? `${Number(added)} new` : 'no new';
+    return updated > 0 ? `${base}, ${updated} updated` : base;
 }
 
 function formatTime(isoString) {
@@ -938,13 +998,14 @@ async function loadAnalyticsTab() {
 // Each change of the filter or limit select starts a load; only the newest
 // one may render, so a slow earlier response cannot overwrite it. (#288)
 let historyRequestSeq = 0;
+let historyRecords = []; // rows behind the table, for the account expander (#430)
 async function loadHistoryTab() {
     const seq = ++historyRequestSeq;
     try {
         const serverFilter = document.getElementById('history-server-filter')?.value || '';
         const limit = document.getElementById('history-limit')?.value || 50;
         
-        let url = `/api/dashboard/history?limit=${limit}`;
+        let url = `/api/dashboard/history?limit=${limit}&includeAccounts=1`;
         if (serverFilter) {
             url += `&serverName=${encodeURIComponent(serverFilter)}`;
         }
@@ -957,17 +1018,18 @@ async function loadHistoryTab() {
         // A 401/503 reply is an error object, not rows: say so instead of
         // leaving the previous filter's rows under the new label.
         if (!Array.isArray(history)) {
-            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center;">Failed to load sync history (HTTP ${escapeHtml(response.status)})</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="7" style="text-align: center;">Failed to load sync history (HTTP ${escapeHtml(response.status)})</td></tr>`;
             return;
         }
         if (history.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No sync history available</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center;">No sync history available</td></tr>';
             return;
         }
 
-        tbody.innerHTML = history.map(record => `
+        historyRecords = history;
+        tbody.innerHTML = history.map((record, index) => `
             <tr>
-                <td>${formatTime(record.timestamp)}</td>
+                <td><button class="hist-toggle" data-action="toggleHistoryRow" data-arg="${index}" aria-expanded="false" aria-label="Show accounts of this sync">&#9656;</button>${formatTime(record.timestamp)}</td>
                 <td>${escapeHtml(record.server_name)}</td>
                 <td>
                     <span class="status-icon ${escapeHtml(record.status)}"></span>
@@ -975,6 +1037,7 @@ async function loadHistoryTab() {
                 </td>
                 <td>${record.duration_ms ? record.duration_ms + 'ms' : '-'}</td>
                 <td>${formatAccountCounts(record.accounts_succeeded, record.accounts_failed, record.accounts_skipped)}</td>
+                <td>${formatTransactionCounts(record.transactions_added, record.transactions_updated)}</td>
                 <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(record.error_message || '-')}">
                     ${record.error_message ? `<span style="color: #ef4444;">${escapeHtml(record.error_message)}</span>` : '-'}
                 </td>
@@ -983,6 +1046,42 @@ async function loadHistoryTab() {
     } catch (error) {
         console.error('Failed to load history:', error);
     }
+}
+
+// Expand or collapse one History row into its per-account results (#430).
+// Rows recorded before #429 carry no account rows: say so rather than "no new".
+// Everything from the API is placed with textContent.
+function toggleHistoryRow(index, button) {
+    const tr = button.closest('tr');
+    if (!tr) return;
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains('hist-detail')) {
+        next.remove();
+        button.setAttribute('aria-expanded', 'false');
+        button.textContent = '\u25B8';
+        return;
+    }
+    const record = historyRecords[Number(index)];
+    if (!record) return;
+    const detail = document.createElement('tr');
+    detail.className = 'hist-detail';
+    const td = document.createElement('td');
+    td.colSpan = 7;
+    const accounts = Array.isArray(record.accounts) ? record.accounts : [];
+    if (accounts.length === 0) {
+        td.appendChild(textEl('div', 'hist-detail-empty', 'Per-account breakdown not available for this sync.'));
+    } else {
+        const ul = document.createElement('ul');
+        ul.className = 'hist-accounts';
+        for (const a of accounts) {
+            ul.appendChild(textEl('li', `hist-account ${a.status}`, `${a.account_name || a.account_id}: ${formatAccountResult(a)}`));
+        }
+        td.appendChild(ul);
+    }
+    detail.appendChild(td);
+    tr.after(detail);
+    button.setAttribute('aria-expanded', 'true');
+    button.textContent = '\u25BE';
 }
 
 // Load Settings Tab
@@ -1480,14 +1579,18 @@ async function loadRecentActivity() {
             const countsDisplay = counts !== '-'
                 ? `<span style="color: #64748b;"> · ${counts}</span>`
                 : '';
+            const txCounts = formatTransactionCounts(record.transactions_added, record.transactions_updated);
+            const txDisplay = txCounts !== '-'
+                ? `<span style="color: #64748b;"> · ${txCounts}</span>`
+                : '';
 
             return `
                 <div style="padding: 8px 0; border-bottom: 1px solid #334155;">
                     <span style="color: ${color};">${icon}</span>
                     <span style="color: #e2e8f0;">${formatTime(record.timestamp)}</span>
-                    <span style="color: #94a3b8;"> - ${record.server_name}</span>
+                    <span style="color: #94a3b8;"> - ${escapeHtml(record.server_name)}</span>
                     <span style="color: #64748b;"> ${duration}</span>
-                    ${countsDisplay}
+                    ${countsDisplay}${txDisplay}
                 </div>
             `;
         }).join('');
@@ -3648,6 +3751,7 @@ setInterval(() => {
 const CLICK_ACTIONS = {
     switchTab: (arg, el) => switchTab(arg, el),
     loadHistoryTab: () => loadHistoryTab(),
+    toggleHistoryRow: (arg, el) => toggleHistoryRow(arg, el),
     resetHistory: (arg) => resetHistory(arg),
     resetServerHistory: () => resetServerHistory(),
     testNotification: (arg) => testNotification(arg),

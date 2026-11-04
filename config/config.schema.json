@@ -252,7 +252,7 @@
               },
               "format": {
                 "type": "string",
-                "description": "Log output format for this server",
+                "description": "Deprecated and ignored: the format is set per sink, not per server",
                 "enum": ["pretty", "json"]
               }
             }
@@ -350,6 +350,11 @@
           "description": "Additional metadata key names to mask as [REDACTED] in all log output, on top of the always-on defaults. The defaults are matched as case-insensitive substrings: password, passwd, token, secret, apikey, api_key, authorization, credential, chatid (so encryptionPassword, botToken, etc. are covered).",
           "items": { "type": "string", "minLength": 1 }
         },
+        "actualApiVerbose": {
+          "type": "boolean",
+          "description": "UNSAFE. When true, the @actual-app/api library prints its own verbose output, which includes transactions (payees, amounts, notes), to the console. Default false: Actual-sync passes verbose:false to api.init. Global only.",
+          "default": false
+        },
         "logDir": {
           "type": ["string", "null"],
           "description": "Directory for log files (set to null to disable file logging). For Docker deployments, use /app/logs. Defaults to './logs' if not specified.",
@@ -417,9 +422,13 @@
             },
             "protocol": {
               "type": "string",
-              "description": "Protocol to use (udp or tcp)",
-              "enum": ["udp", "tcp"],
+              "description": "Transport: udp (plaintext, not an audit log), tcp (plaintext, RFC 6587 framing) or tls (RFC 5425, certificate verified)",
+              "enum": ["udp", "tcp", "tls"],
               "default": "udp"
+            },
+            "ca": {
+              "type": "string",
+              "description": "Path to a PEM CA certificate to trust for protocol tls (added to the default trust store; verification is never disabled)"
             },
             "facility": {
               "type": "integer",

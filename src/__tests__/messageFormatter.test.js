@@ -243,7 +243,7 @@ describe('MessageFormatter', () => {
 
     test('Discord failed section includes the per-account error message', () => {
       const d = discordText(MessageFormatter.formatSyncNotification(base));
-      expect(d).toContain('Sabadell *5650');
+      expect(d).toContain('Sabadell \\\\*5650'); // JSON of the backslash-escaped asterisk (#428)
       expect(d).toContain('Failed syncing account');
     });
 
@@ -430,8 +430,12 @@ describe('MessageFormatter', () => {
     });
 
     test('templates are byte-identical to the pre-#391 output when both counts are 0', () => {
+      // Freeze the clock: the payloads embed a timestamp, and a tick between the
+      // two calls made this fail now and then.
+      jest.useFakeTimers({ now: new Date('2026-11-04T05:00:00Z') });
       const without = MessageFormatter.formatSyncNotification(base);
       const zero = MessageFormatter.formatSyncNotification({ ...base, transactionsAdded: 0, transactionsUpdated: 0 });
+      jest.useRealTimers();
       for (const key of ['text', 'html', 'slack', 'discord', 'ntfy']) {
         expect(zero[key]).toEqual(without[key]);
       }
@@ -464,6 +468,229 @@ describe('MessageFormatter', () => {
         accountsProcessed: 1, accountsFailed: 1, succeededAccounts: ['A'], failedAccounts: [{ name: 'F' }], skippedAccounts: []
       }).ntfy;
       expect(partial.level).toBe('failure');
+    });
+  });
+
+  describe('per-account transaction counts (#427)', () => {
+    const r = (id, name, added, updated = 0, extra = {}) =>
+      ({ id, name, status: 'synced', added, updated, countsKnown: true, ...extra });
+    const build = (accountResults, extra = {}) => MessageFormatter.formatSyncNotification({
+      status: 'success',
+      serverName: 'Vega II',
+      duration: 1000,
+      accountsProcessed: accountResults.length,
+      accountsFailed: 0,
+      succeededAccounts: accountResults.map(a => a.name),
+      transactionsAdded: 20,
+      transactionsUpdated: 0,
+      accountResults,
+      ...extra
+    });
+    const three = [r('1', 'Account 1', 5), r('2', 'Account 2', 0), r('3', 'Account 3', 15)];
+
+    test('text lists each synced account with its count', () => {
+      const { text } = build(three);
+      expect(text).toContain('  • Account 1: 5 new transactions\n');
+      expect(text).toContain('  • Account 2: no new transactions\n');
+      expect(text).toContain('  • Account 3: 15 new transactions\n');
+      expect(text).toContain('Transactions: 20 new, 0 updated');
+    });
+
+    test('singular for one, and updated only when above 0', () => {
+      const { text } = build([r('1', 'A', 1, 2), r('2', 'B', 1), r('3', 'C', 0, 3)]);
+      expect(text).toContain('• A: 1 new transaction, 2 updated\n');
+      expect(text).toContain('• B: 1 new transaction\n');
+      expect(text).toContain('• C: 0 new transactions, 3 updated\n');
+    });
+
+    test('a late success reads count unknown, never no new transactions', () => {
+      const { text, html, slack, discord } = build([r('1', 'Late', 0, 0, { countsKnown: false })]);
+      expect(text).toContain('• Late: synced, count unknown');
+      expect(text).not.toContain('no new transactions');
+      expect(html).toContain('Late: synced, count unknown');
+      expect(JSON.stringify(slack)).toContain('Late: synced, count unknown');
+      expect(JSON.stringify(discord)).toContain('Late: synced, count unknown');
+    });
+
+    test('html, slack and discord carry the per-account lines', () => {
+      const { html, slack, discord } = build(three);
+      expect(html).toContain('Account 1: 5 new transactions');
+      expect(html).toContain('Account 3: 15 new transactions');
+      const slackText = JSON.stringify(slack);
+      expect(slackText).toContain('Account 2: no new transactions');
+      const field = discord.embeds[0].fields.find(f => f.name.includes('Synced'));
+      expect(field.value).toContain('Account 1: 5 new transactions');
+    });
+
+    test('failed and skipped accounts keep their lines and are not in the synced list', () => {
+      const { text } = build([r('1', 'Good', 2), { id: '2', name: 'Bad', status: 'failed', added: 0, updated: 0, countsKnown: false }], {
+        failedAccounts: [{ name: 'Bad', error: 'boom' }],
+        skippedAccounts: [{ name: 'Manual', reason: 'not-linked' }],
+        accountsFailed: 1
+      });
+      expect(text).toContain('• Good: 2 new transactions');
+      expect(text).toContain('  • Bad\n    boom');
+      expect(text).toContain('• Manual (not-linked)');
+      expect(text).not.toContain('Bad: ');
+    });
+
+    test('without accountResults the synced list is the bare names as before', () => {
+      const { text } = MessageFormatter.formatSyncNotification({
+        status: 'success', serverName: 's', duration: 5, accountsProcessed: 1, accountsFailed: 0,
+        succeededAccounts: ['Checking']
+      });
+      expect(text).toContain('  • Checking\n');
+      expect(text).not.toContain('Checking:');
+    });
+
+    test('account names are escaped in html, slack and discord lines', () => {
+      const evil = '<b>x</b> & *y* @everyone';
+      const { html, slack, discord } = build([r('1', evil, 1)]);
+      expect(html).not.toContain('<b>x</b>');
+      expect(html).toContain('&lt;b&gt;x&lt;/b&gt; &amp;');
+      expect(JSON.stringify(slack)).toContain('&lt;b&gt;x&lt;/b&gt; &amp;');
+      const field = discord.embeds[0].fields.find(f => f.name.includes('Synced'));
+      expect(field.value).not.toContain('@everyone');
+      expect(field.value).toContain('\\*y\\*');
+    });
+
+    test('40 accounts stay within the Discord field and Slack section limits with "and N more"', () => {
+      const many = Array.from({ length: 40 }, (_, i) => r(String(i), `Account number ${i}`, i));
+      const { slack, discord } = build(many);
+      const field = discord.embeds[0].fields.find(f => f.name.includes('Synced'));
+      expect(field.value.length).toBeLessThanOrEqual(1024);
+      expect(field.value).toMatch(/…and \d+ more$/);
+      const section = slack.blocks.find(b => b.text && b.text.text.includes('Synced:'));
+      expect(section.text.text.length).toBeLessThanOrEqual(3000);
+      expect(section.text.text).toMatch(/…and \d+ more/);
+    });
+
+    test('generic payload adds accountResults and keeps the existing fields', () => {
+      const { generic } = build(three);
+      expect(generic.accountResults).toEqual(three);
+      expect(generic.succeededAccounts).toEqual(['Account 1', 'Account 2', 'Account 3']);
+      expect(generic.transactionsAdded).toBe(20);
+      expect(generic.accounts).toEqual({ synced: 3, failed: 0, skipped: 0 });
+    });
+
+    test('generic accountResults is an empty array when the caller passes none', () => {
+      const { generic } = MessageFormatter.formatSyncNotification({
+        status: 'success', serverName: 's', duration: 5, accountsProcessed: 0, accountsFailed: 0
+      });
+      expect(generic.accountResults).toEqual([]);
+    });
+  });
+
+  describe('HTML escaping (#428)', () => {
+    const evil = '<img src=x onerror=alert(1)>';
+
+    test('escapes server, account, error and skipped values in the sync html', () => {
+      const f = MessageFormatter.formatSyncNotification({
+        status: 'failure',
+        serverName: evil,
+        duration: 1000,
+        error: 'boom <script>x</script>',
+        errorCode: 'E<1>',
+        accountsProcessed: 1,
+        accountsFailed: 1,
+        succeededAccounts: ['Tom & "Jerry\'s" <b>'],
+        failedAccounts: [{ name: '<i>bad</i>', error: '"quoted" & <u>' }],
+        skippedAccounts: [{ name: 'S<1>', reason: '<closed>' }]
+      });
+      expect(f.html).not.toContain(evil);
+      expect(f.html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      expect(f.html).toContain('Tom &amp; &quot;Jerry&#39;s&quot; &lt;b&gt;');
+      expect(f.html).toContain('&lt;i&gt;bad&lt;/i&gt;');
+      expect(f.html).toContain('&quot;quoted&quot; &amp; &lt;u&gt;');
+      expect(f.html).toContain('boom &lt;script&gt;x&lt;/script&gt;');
+      expect(f.html).toContain('E&lt;1&gt;');
+      expect(f.html).toContain('S&lt;1&gt; (&lt;closed&gt;)');
+      expect(f.html).not.toContain('<script>');
+      // text format is unchanged (raw values)
+      expect(f.text).toContain(evil);
+    });
+
+    test('escapes startup html values', () => {
+      const f = MessageFormatter.formatStartupNotification({
+        version: '1.0<x>',
+        serverNames: evil,
+        schedules: 'a & b',
+        nextSync: '<soon>'
+      });
+      expect(f.html).not.toContain(evil);
+      expect(f.html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      expect(f.html).toContain('a &amp; b');
+      expect(f.html).toContain('&lt;soon&gt;');
+    });
+  });
+  describe('Slack and Discord escaping (#428)', () => {
+    const slackEvil = '<https://evil.example|Re-link here> <!channel>';
+    const link = '[Re-link](https://evil.example)';
+    const result = {
+      status: 'failure',
+      serverName: '<!here> srv',
+      duration: 1000,
+      error: slackEvil,
+      errorCode: '<!everyone>',
+      accountsProcessed: 1,
+      accountsFailed: 1,
+      succeededAccounts: [link],
+      failedAccounts: [{ name: link, error: slackEvil }],
+      skippedAccounts: [{ name: link, reason: '<!channel>' }]
+    };
+
+    test('Slack payload carries no raw mrkdwn control sequences from values', () => {
+      const json = JSON.stringify(MessageFormatter.formatSyncNotification(result).slack);
+      expect(json).not.toContain('<https://evil.example');
+      expect(json).not.toContain('<!channel>');
+      expect(json).not.toContain('<!here>');
+      expect(json).not.toContain('<!everyone>');
+      expect(json).toContain('&lt;https://evil.example|Re-link here&gt; &lt;!channel&gt;');
+    });
+
+    test('Discord payload cannot form a masked link or mention from values', () => {
+      const fields = MessageFormatter.formatSyncNotification(result).discord.embeds[0].fields;
+      const all = fields.map((f) => f.value).join('\n');
+      expect(all).not.toContain('[Re-link](https');
+      expect(all).toContain('\\[Re-link\\]\\(https://evil.example\\)');
+      expect(all).not.toMatch(/<!(channel|here|everyone)>/);
+    });
+  });
+
+  describe('HTML builder source guard (#428)', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const src = fs.readFileSync(path.join(__dirname, '../lib/messageFormatter.js'), 'utf8');
+    // Internal, non-user values that may be interpolated raw.
+    const ALLOW = new Set(['bgColor', 'content.emoji', 'content.statusText', 'synced', 'failed', 'skipped']);
+
+    function body(name) {
+      const start = src.indexOf(`static ${name}(`);
+      const next = src.indexOf('\n  static ', start + 1);
+      return src.slice(start, next === -1 ? undefined : next);
+    }
+    function interpolations(text) {
+      const out = [];
+      let i = text.indexOf('${');
+      while (i !== -1) {
+        let depth = 1;
+        let j = i + 2;
+        while (j < text.length && depth > 0) {
+          if (text[j] === '{') depth += 1;
+          else if (text[j] === '}') depth -= 1;
+          j += 1;
+        }
+        out.push(text.slice(i + 2, j - 1).trim());
+        i = text.indexOf('${', j);
+      }
+      return out;
+    }
+
+    test.each(['_formatHtml', '_formatStartupHtml'])('%s wraps every interpolation in escapeHtml', (name) => {
+      const found = interpolations(body(name));
+      expect(found.length).toBeGreaterThan(4);
+      const bad = found.filter((e) => !ALLOW.has(e) && !/^escapeHtml\(.*\)$/.test(e));
+      expect(bad).toEqual([]);
     });
   });
 });

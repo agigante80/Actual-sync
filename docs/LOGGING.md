@@ -12,7 +12,7 @@ Actual-sync uses a custom structured logger with enterprise features:
 - **Secret redaction**: passwords, tokens, and other secrets are masked before anything is written (console, file, syslog, and the dashboard stream)
 - **Correlation IDs**: Track related log entries across operations
 - **File Logging**: Dated files with daily + size-based rotation and compression
-- **Centralized Logging**: Syslog support (UDP), redacted and RFC 5424 escaped
+- **Centralized Logging**: Syslog support (UDP, TCP, TLS), redacted and RFC 5424 escaped
 - **Performance Tracking**: Automatic operation timing
 - **Per-Server Config**: Override log levels per server
 - **Context Management**: Child loggers with inherited context
@@ -34,6 +34,7 @@ Configure global logging in `config/config.json`:
     "format": "pretty",       // console format (pretty | json)
     "fileFormat": "json",     // file format (json recommended; single line per entry)
     "redact": [],             // extra secret key names to mask (defaults always apply)
+    "actualApiVerbose": false, // UNSAFE if true: @actual-app/api prints transactions (payees, amounts, notes)
     "logDir": "./logs",
     "rotation": {
       "enabled": true,      // Default: true (recommended)
@@ -71,8 +72,7 @@ Override log levels for specific servers:
       "name": "Main Budget",
       "url": "https://actual.example.com",
       "logging": {
-        "level": "DEBUG",
-        "format": "json"
+        "level": "DEBUG"
       }
     },
     {
@@ -89,7 +89,10 @@ Override log levels for specific servers:
 Use cases:
 - **DEBUG for problematic servers**: Get detailed logs for servers with issues
 - **WARN for stable servers**: Reduce noise from well-functioning servers
-- **JSON for automated analysis**: Use structured output for specific servers
+
+**Deprecated: per-server `format`.** It is still accepted so existing configs load, but it is ignored (it never took effect). Output format is chosen per sink with `logging.format` (console) and `logging.fileFormat` (file). Remove `format` from your `servers[].logging` blocks.
+
+Reserved fields `timestamp`, `level`, `severity`, `message`, `service`, `version`, `seq` and `schema` are set by the logger and cannot be overwritten by context or metadata; such keys passed in context or metadata are dropped. `event` and `component` are also reserved names, but the caller sets them (a component child logger, an audit event such as `authz_fail`).
 
 ### Configuration Options
 
@@ -111,7 +114,8 @@ Use cases:
 | `syslog.enabled` | boolean | `false` | Send logs to syslog server |
 | `syslog.host` | string | `localhost` | Syslog server hostname |
 | `syslog.port` | integer | `514` | Syslog server port |
-| `syslog.protocol` | string | `udp` | Protocol: `udp` or `tcp` |
+| `syslog.protocol` | string | `udp` | Transport: `udp`, `tcp` or `tls` |
+| `syslog.ca` | string | none | PEM CA file to trust for `tls` (certificate verification is always on) |
 | `syslog.facility` | integer | `16` | Syslog facility code (0-23, 16=local0) |
 | **Performance** |
 | `performance.enabled` | boolean | `false` | Track operation performance |
@@ -137,7 +141,82 @@ Use cases:
 - `INFO`: INFO + WARN + ERROR (default)
 - `DEBUG`: All messages
 
-**Level discipline (keep the error log honest):** `ERROR` is for problems that need a human. A failure the service *recovered* from (a retry, a transient remote 429/5xx, a network blip) is `WARN` or `DEBUG`, never `ERROR`. Logging expected, self-healing events at `ERROR` buries the real failures and inflates alerts. For example, transient Telegram polling failures and already-handled `@actual-app/api` rejections are logged at `DEBUG`.
+**Crash records (#439):** `uncaughtException`, `unhandledRejection` and `warning` handlers are installed first in `index.js`. They log a static message with `event: sys_crash` (or `process.warning`) and a classified `error: { type, code, category, safeMessage }`. The upstream message and the rejection object are never logged; frames appear only in a DEBUG record. A crash before the logger exists (while the service is still loading) writes one JSON line with the frames to stderr and exits 1. An already-handled `@actual-app/api` rejection is `process.rejection_benign` at WARN. Before the logger exists, one JSON line goes to stderr.
+
+**Level discipline (keep the error log honest):** `ERROR` is for problems that need a human. A failure the service *recovered* from (a retry, a transient remote 429/5xx, a network blip) is `WARN` or `DEBUG`, never `ERROR`. Logging expected, self-healing events at `ERROR` buries the real failures and inflates alerts. For example, transient Telegram polling failures are logged at `DEBUG`; already-handled `@actual-app/api` rejections are `process.rejection_benign` at `WARN`.
+
+---
+
+## Record contract (convention version 1)
+
+This section is the shared convention with actual-mcp-server. Both repos keep a
+copy; each states the version it follows, so drift shows in a diff.
+
+**Convention version: 1.** Actual-sync follows version 1. Design:
+`docs/plans/logging-architecture.md`.
+
+### Record schema
+
+Every JSON record validates against [`log-record.schema.json`](log-record.schema.json).
+Required: `timestamp` (UTC ISO 8601, milliseconds), `level`, `severity`
+(OpenTelemetry SeverityNumber: ERROR 17, WARN 13, INFO 9, DEBUG 5), `service`,
+`version` (app version), `message`, `seq` (per-process counter starting at 1,
+so gaps and reordering are visible) and `schema` (`1`). Optional: `component`,
+`event`, `correlationId`, `server`, `fields`, `error`.
+
+- `message` is a string literal, never interpolated. Data goes in fields.
+- `event` is a dotted name from the catalogue below, so alerting does not
+  depend on wording.
+- The keys `timestamp`, `level`, `severity`, `message`, `service`, `version`,
+  `seq` and `schema` are written by the logger and cannot be overwritten by
+  context or fields. `event` and `component` are reserved names that callers
+  set (child loggers, audit events).
+- Context and fields are still written flat. The field allowlist (#437) moves
+  them under `fields` and closes the schema.
+
+### Event catalogue
+
+| Event | Level | Meaning |
+|---|---|---|
+| `sync.account.completed` | INFO | One account finished syncing |
+| `third_party.console` | per call | `@actual-app/api` console output through the bridge |
+| `process.rejection_benign` | WARN | An allowlisted, already-handled rejection (#105). Same name in actual-mcp-server |
+| `security.suppressed` | WARN | The security rate limiter tripped; carries `suppressedCount` |
+| `authn_login_success` | INFO | Dashboard login accepted (once per session) |
+| `authn_login_fail` | WARN | Dashboard login refused |
+| `authz_fail` | WARN | Unauthorized Telegram chat or refused origin |
+| `input_validation_fail` | WARN | Rejected API input |
+| `sys_startup`, `sys_shutdown` | INFO | Process lifecycle |
+| `sys_crash` | ERROR | Uncaught exception or rejection |
+| `sys_config_change` | INFO | A setting, payment rule or server changed (our name; OWASP has no exact term) |
+
+Security events use the OWASP Logging Vocabulary names verbatim, carry
+`category: "security"`, may carry `remoteAddress`, and never carry request
+bodies, message text or user names. New events are added to this table with
+the change that emits them.
+
+### Error categories
+
+A logged error is `error: { type, code, httpStatus, category, safeMessage }`.
+`category` is one of `timeout`, `auth`, `upstream_unavailable`, `rate_limited`,
+`not_found`, `validation`, `conflict`, `cancelled`, `internal`. Raw upstream
+error text is never logged.
+
+### Startup record groups
+
+`sys_startup` carries these groups: versions (app, Node, @actual-app/api, pid,
+platform, container flag); timezone and UTC offset; log level, effective api
+verbose and active sinks; whether a custom log dir and data dir are set
+(booleans, not paths) and retention days; effective privacy flags; server count
+and schedules; enabled notification channels (booleans); dashboard bind
+address, auth mode and TLS; timeouts; config schema version.
+
+### Key mapping with actual-mcp-server
+
+| Concept | Actual-sync | actual-mcp-server |
+|---|---|---|
+| component | `component` | `module` |
+| correlation | `correlationId` | `sessionId`, `requestId` |
 
 ---
 
@@ -177,6 +256,20 @@ The file line is always a single line, even when the console is `pretty`.
 
 ---
 
+## Actual API console output
+
+`@actual-app/api` prints warnings and errors straight to the console, whatever `actualApiVerbose` says. During each sync session Actual-sync routes that output through its own logger as one static record per call: `event: "third_party.console"`, `component: "actual-api"`, message `Actual API console output`. The upstream arguments are dropped (they can carry transactions or upstream text), so the record has the configured level, format and redaction but no payload. `console.error` maps to ERROR, `warn` to WARN, `log`/`info`/`group` to INFO and `debug` to DEBUG. With `actualApiVerbose: true` a masked `consolePreview` (first 300 characters) is added; these records are never sent to `/ws/logs`.
+
+## Startup output before the logger exists
+
+The startup banner, config validation warnings and config load failures go
+through the bootstrap logger (`src/lib/bootstrapLogger.js`, #442), not raw
+`console` calls. It needs no config: the built-in secret redaction and control
+character escaping apply to every record. Records are buffered and replayed
+into the root logger as soon as it is created (so they follow `logging.level`
+and `logging.format`). If startup dies first (validation failure, config load
+error), the buffered records are written to stderr as JSON lines.
+
 ## 🔒 Secret Redaction
 
 Every value is redacted before it is written to **any** destination (console, file, syslog, and the dashboard WebSocket). You never have to remember to scrub metadata.
@@ -202,7 +295,7 @@ Add your own keys (the defaults always apply):
 - INFO: live log stream (`/ws/logs`) connections.
 - DEBUG: `/health`, `/metrics` and Prometheus scrapes.
 
-Behind a reverse proxy the HTTP lines show the real client IP only when `healthCheck.trustProxy` is set; otherwise they show the proxy's address. The `/ws/logs` lines follow the same rule: the forwarded client with `healthCheck.trustProxy`, otherwise the TCP peer, which behind a proxy is the proxy. Log files follow the file retention (`rotation.maxFiles`, 30 days by default). Console output is kept by whatever collects it: under Docker, stdout is kept until the container is removed unless you set log rotation on the container (for example `logging: { driver: json-file, options: { max-size: 10m, max-file: "3" } }` in Compose).
+Behind a reverse proxy the HTTP lines show the real client IP only when `healthCheck.trustProxy` is set; otherwise they show the proxy's address. The `/ws/logs` lines follow the same rule: the forwarded client with `healthCheck.trustProxy`, otherwise the TCP peer, which behind a proxy is the proxy. Log files follow the file retention (`rotation.maxFiles`, 30 days by default). Console output is kept by whatever collects it: under Docker, stdout is kept until the container is removed unless you set log rotation on the container (for example `logging: { driver: json-file, options: { max-size: 10m, max-file: "5" } }` in Compose).
 
 Notes:
 - Non-secret data is preserved, including `Date`, `Buffer`, and `Error` values (an `Error` keeps its `message`, `stack`, `code`, `cause`, and custom fields such as `statusCode`, all redacted).
@@ -252,6 +345,14 @@ Send logs to syslog server (RFC 5424):
 
 **Facility 16** = local0 (recommended for Actual-sync)
 
+**Transports**
+
+- `udp` (default): **plaintext and unreliable.** Datagrams are unencrypted, can be lost or reordered, and anyone on the path can read them. It is not an audit log. Use it only on a trusted network.
+- `tcp`: RFC 6587 octet-counting framing (`<len> <msg>`). Reliable, but still plaintext.
+- `tls`: TCP framing inside TLS (RFC 5425). The server certificate is always verified; set `syslog.ca` to a PEM file to trust a private CA. There is no option to disable verification.
+
+For `tcp` and `tls` the logger reconnects with exponential backoff (1s up to 30s). While disconnected, messages wait in a bounded in-memory queue of 1000; when full the oldest are dropped. Logging never throws or blocks on a down syslog server.
+
 ---
 
 ## ⏱️ Performance Tracking
@@ -298,6 +399,13 @@ Search by correlation ID:
 ```bash
 grep "a1b2c3d4" logs/actual-sync-2025-12-09.log
 ```
+
+Every sync, HTTP request, Telegram update and scheduled job runs in its own
+scope (Node `AsyncLocalStorage`). Every record written inside it carries that
+scope's `correlationId`, from any logger or child, without passing a logger
+around. A sync started by a scheduled job or a Telegram command gets its own id
+for its own lines (the id stored in sync history). Child loggers carry
+`component` and similar bindings only, never a correlation id.
 
 ---
 
@@ -353,17 +461,24 @@ endTimer({ metadata: 'value' }); // Logs duration automatically
 
 ## 🚨 Alertable Security Events
 
-These WARN lines are worth an alert rule in your log pipeline:
+These are security events (#444, design D7). They are an audit floor: written
+whatever `logging.level` is, so `level: error` does not hide a guessing loop.
+They carry `category: "security"` and the OWASP Logging Vocabulary name as
+`event`, plus `remoteAddress`, and never a body, a user name, a password or a
+token.
 
-| Message | Meaning |
+| `event` | Meaning |
 |---|---|
-| `Dashboard authentication failed` / `Dashboard token authentication failed` | One wrong dashboard credential, with `remoteAddress` only (the typed username is never logged, since users paste passwords into it) |
-| `Dashboard authentication throttled after repeated failures` | A client already has 10 failed logins in the current 15 minute window and is refused with 429 (#246). It is written for every refused request, not once per lockout, so a burst of these is a guessing attempt or a stale tab still polling with an old credential |
-| `Metrics authentication failed` / `Metrics token authentication failed` / `Metrics authentication throttled after repeated failures` | The same three for `healthCheck.auth` on `/metrics` and `/metrics/prometheus` (#247). A steady stream at the scrape interval is a Prometheus with a stale credential |
-| `WebSocket handshake refused` | A `/ws/logs` connection was refused, with the status and reason |
+| `authn_login_fail` | One refused dashboard or metrics credential (`reason`: `invalid_credentials`, `invalid_token` or `throttled`; `realm`: `dashboard` or `metrics`). `throttled` means the client already has 10 failed logins in the current 15 minute window and is refused with 429 (#246). A steady stream at the scrape interval on `realm: metrics` is a Prometheus with a stale credential (#247) |
+| `authn_login_success` | A good dashboard or metrics credential, logged at INFO at most once per source address per hour (Basic and bearer have no session) |
+| `authz_fail` | A refused request origin (`reason: origin_not_allowed`) or a message from an unauthorized Telegram chat |
+| `security.suppressed` | The per-source limiter tripped: more than 10 records of one event from one address in a minute. One record per window carries `suppressedEvent`, `remoteAddress` and `suppressedCount`, so a guess loop never looks like it stopped |
+
+`WebSocket handshake refused` (a `/ws/logs` connection refused, with the status
+and reason) is still a plain WARN line.
 
 ```bash
-grep "authentication throttled" logs/actual-sync-*.log
+grep '"category":"security"' logs/actual-sync-*.log
 ```
 
 ## 🔎 Searching Logs
@@ -499,7 +614,7 @@ services:
       driver: json-file
       options:
         max-size: "10m"
-        max-file: "3"
+        max-file: "5"
 ```
 
 View logs:

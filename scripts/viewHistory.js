@@ -16,6 +16,9 @@
 
 const { SyncHistoryService } = require('../src/services/syncHistory');
 const ConfigLoader = require('../src/lib/configLoader');
+const bootstrap = require('../src/lib/bootstrapLogger');
+// ConfigLoader warnings are buffered; write them to stderr as JSON lines at exit (#442)
+bootstrap.installExitDump();
 
 // Parse command line arguments
 const args = process.argv.slice(2);

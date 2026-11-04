@@ -170,10 +170,11 @@ Logging configuration. See **[docs/LOGGING.md](LOGGING.md)** for the full refere
 - **level** (string, default: `"INFO"`) — verbosity: `"DEBUG"`, `"INFO"`, `"WARN"`, `"ERROR"`.
 - **format** (string, default: `"pretty"`) — console format: `"pretty"` or `"json"`.
 - **fileFormat** (string, default: `"json"`) — log-file format; single-line JSON is recommended for shipping. Independent of `format`.
+- **actualApiVerbose** (boolean, default `false`) - UNSAFE. The `@actual-app/api` library is verbose by default and prints transactions (payees, amounts, notes) to the console. Actual-sync passes `verbose: false` to `api.init`. Set `true` only to debug the library, and never in shared or collected logs. Global only.
 - **redact** (array) — extra metadata key names to mask, on top of the always-on defaults. The default indicators are matched as case-insensitive substrings: `password`, `passwd`, `token`, `secret`, `apikey`, `api_key`, `authorization`, `credential`, `chatid` — so keys like `encryptionPassword` and `botToken` are covered too. Redaction applies across console/file/syslog/dashboard.
-- **logDir** (string|null, default: `"./logs"`) — log directory; `null` disables file logging.
+- **logDir** (string|null, default: `"./logs"`) — log directory; `null` disables file logging. The directory is created with mode 0700 and log files with 0600; existing ones are tightened at startup (POSIX only; a failed chmod logs one warning and never stops the service).
 - **rotation** (object) — `enabled`, `maxSize` (`"10M"`), `interval` (`"1d"`, daily), `maxFiles` (retention), `compress` (`"gzip"`).
-- **syslog** (object) — optional RFC 5424 syslog forwarding.
+- **syslog** (object): optional RFC 5424 syslog forwarding (`protocol`: `udp` is plaintext and not an audit log, `tcp`, or `tls` with certificate verification and optional `ca` path; see LOGGING.md).
 - **performance** (object) — operation timing thresholds.
 
 > **Scope:** `rotation`, `syslog`, `performance`, `fileFormat`, and the extra `redact` keys apply to the main application logger (log files are a single shared stream). Per-component loggers inherit `level`/`format`/`logDir`; the always-on secret redaction defaults still apply everywhere.

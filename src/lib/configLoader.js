@@ -7,6 +7,7 @@ const addFormats = require('ajv-formats');
 const { resolveSchemaPath } = require('./configBootstrap');
 const { checkUniqueIds, deriveRuleId } = require('./scheduleAlertRules');
 const { validateScheduleAlert } = require('./scheduleAlertValidation');
+const bootstrap = require('./bootstrapLogger');
 
 // AJV combinator keywords whose failures are pure structural noise: when an
 // allOf/if-then/anyOf branch fails, AJV (allErrors:true) ALSO emits the concrete
@@ -122,7 +123,7 @@ class ConfigLoader {
             const fileKeys = new Set(config.servers.map(s => `${normalizeServerUrl(s.url)}|${s.syncId}`));
             const envKey = `${normalizeServerUrl(envServer.url)}|${envServer.syncId}`;
             if (fileKeys.has(envKey)) {
-                console.warn(
+                bootstrap.warn(
                     `⚠️  The ACTUAL_SYNC_SERVER_* environment variables describe a budget already ` +
                     `present in config.json (same url + syncId); using the config.json entry and ignoring the env vars.`
                 );
@@ -168,7 +169,7 @@ class ConfigLoader {
                 const message =
                     `Configuration is invalid — it does not match the schema:\n${hard.join('\n')}`;
                 if (!isConfigStrict()) {
-                    console.warn(
+                    bootstrap.warn(
                         `⚠️  ${message}\n` +
                         `CONFIG_STRICT is off: downgraded to a warning — fix these; they hard-fail once the escape hatch is removed. ` +
                         `(CONFIG_STRICT only affects schema validation, not the business-logic checks below.)`
@@ -187,7 +188,7 @@ class ConfigLoader {
             // or a forward/backward-compatible field. AJV reports them via
             // additionalProperties:false (#123); unknown keys are ignored at runtime.
             if (unknownKeys.length) {
-                console.warn(
+                bootstrap.warn(
                     `⚠️  Configuration has ${unknownKeys.length === 1 ? 'an unknown property' : 'unknown properties'} ` +
                     `(advisory — likely a typo; unknown keys are ignored, not fatal):\n${unknownKeys.join('\n')}`
                 );
@@ -343,6 +344,8 @@ class ConfigLoader {
         }
         config.logging.level = (config.logging.level ?? 'INFO').toUpperCase();
         config.logging.format = config.logging.format ?? 'pretty';
+        // UNSAFE opt-in: lets @actual-app/api print transactions. (#425)
+        config.logging.actualApiVerbose = config.logging.actualApiVerbose === true;
         // logDir defaults to './logs' in logger constructor if not specified
         // Don't set a default here to allow logger to use its own logic
     }
@@ -374,7 +377,7 @@ class ConfigLoader {
             if (server.url.startsWith('http://') && 
                 !server.url.includes('localhost') && 
                 !server.url.includes('127.0.0.1')) {
-                console.warn(
+                bootstrap.warn(
                     `⚠️  Warning: Server "${server.name}" uses unencrypted HTTP connection.\n` +
                     `   Consider using HTTPS for production: ${server.url}`
                 );
@@ -382,7 +385,7 @@ class ConfigLoader {
 
             // Warn about weak passwords
             if (server.password && server.password.length < 8) {
-                console.warn(
+                bootstrap.warn(
                     `⚠️  Warning: Server "${server.name}" has a weak password (< 8 characters).\n` +
                     `   Consider using a stronger password for security.`
                 );
@@ -391,7 +394,7 @@ class ConfigLoader {
             // Warn about default passwords
             if (server.password === 'hunter2' || server.password === 'password' || 
                 server.password === 'your_password_here') {
-                console.warn(
+                bootstrap.warn(
                     `⚠️  Warning: Server "${server.name}" appears to use a default/example password.\n` +
                     `   Please change to a secure password before production use.`
                 );
@@ -420,7 +423,7 @@ class ConfigLoader {
             const groups = dupBudgetKeys.map(k =>
                 config.servers.filter((_, i) => budgetKeys[i] === k).map(s => `"${s.name}"`).join(' + ')
             );
-            console.warn(
+            bootstrap.warn(
                 `⚠️  Warning: the same budget (url + syncId) is configured more than once: ${groups.join('; ')}.\n` +
                 `   It will be synced multiple times (duplicate bank-syncs, notifications and dashboard entries). Remove the duplicate entry.`
             );
@@ -432,7 +435,7 @@ class ConfigLoader {
         const dataDirs = config.servers.map(s => path.resolve(s.dataDir));
         const dupDirs = [...new Set(dataDirs.filter((d, i) => dataDirs.indexOf(d) !== i))];
         if (dupDirs.length > 0) {
-            console.warn(
+            bootstrap.warn(
                 `⚠️  Warning: multiple servers share the same data directory: ${dupDirs.join(', ')}.\n` +
                 `   Each server needs its own dataDir to avoid budget-cache collisions.`
             );
@@ -445,7 +448,7 @@ class ConfigLoader {
         const hcHost = config.healthCheck && config.healthCheck.host;
         // Safe binds: IPv4/IPv6 wildcard + loopback. (#94)
         if (hcHost && !['0.0.0.0', '::', '::1', '127.0.0.1', 'localhost'].includes(hcHost)) {
-            console.warn(
+            bootstrap.warn(
                 `⚠️  Warning: healthCheck.host is set to "${hcHost}".\n` +
                 `   In containers use "0.0.0.0" — a specific host IP may not be bindable (EADDRNOTAVAIL) and the dashboard will be unreachable.`
             );
@@ -491,7 +494,7 @@ class ConfigLoader {
             }
         }
         if (trustProxy === true) {
-            console.warn(
+            bootstrap.warn(
                 `⚠️  Warning: healthCheck.trustProxy is true, which trusts X-Forwarded-For from any client.\n` +
                 `   If the service is reachable without the proxy, clients can fake their IP and bypass rate limiting. Prefer a hop count (1) or the proxy's CIDR.`
             );
@@ -507,7 +510,7 @@ class ConfigLoader {
             ['token', 'username', 'password'].some((key) => metricsAuth[key])) {
             // A credential value with type "none" (or no type) is the example
             // config left half edited: /metrics stays open and nothing would say so.
-            console.warn('healthCheck.auth has a credential but type is "none": /metrics and /metrics/prometheus stay open. Set healthCheck.auth.type to "basic" or "token".');
+            bootstrap.warn('healthCheck.auth has a credential but type is "none": /metrics and /metrics/prometheus stay open. Set healthCheck.auth.type to "basic" or "token".');
         }
         if (metricsAuthType !== 'none') {
             const isSet = (key) => typeof metricsAuth[key] === 'string' && metricsAuth[key].length > 0;
@@ -627,7 +630,7 @@ class ConfigLoader {
                     block: server.scheduleAlerts, notificationsConfig, skipSchema: true, schemaOnly: true
                 });
                 if (allChannels.code === 'invalid_template') {
-                    console.warn(
+                    bootstrap.warn(
                         `scheduleAlerts template (server "${server.name}") fails on a channel that is not configured; ` +
                         `dashboard rules without a channels restriction will be skipped at sync: ${allChannels.template.message}`
                     );

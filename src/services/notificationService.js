@@ -15,7 +15,8 @@ const {
   truncateCodePoints,
   truncateWithEllipsis,
   DISCORD_CONTENT_MAX,
-  SLACK_TEXT_MAX
+  SLACK_TEXT_MAX,
+  TELEGRAM_TEXT_MAX
 } = require('../lib/channelEscape');
 
 // Public icon + name used to brand notifications. Recipient services (Slack/
@@ -113,10 +114,11 @@ class NotificationService {
       }
     };
 
-    this.logger = createLogger({
-      component: 'NotificationService',
-      ...loggerConfig
-    });
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'NotificationService' })
+      : createLogger({ component: 'NotificationService', ...loggerConfig });
 
     // Test seam only (#257): never read from config, so a fake-channel server
     // can be swapped in without a config key someone could point at production.
@@ -225,9 +227,12 @@ class NotificationService {
         && isMuted('telegram')) muted.push('telegram');
 
     for (const channel of ['slack', 'discord', 'generic']) {
-      for (const entry of this.config.webhooks?.[channel] || []) {
+      const entries = this.config.webhooks?.[channel] || [];
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
         if (entry.enabled === false) continue;
-        if (isMuted(channel, entry)) muted.push(`webhooks.${channel}[${entry.name || entry.url}]`);
+        // Label only, never the URL: the secret lives in the path (#431).
+        if (isMuted(channel, entry)) muted.push(`webhooks.${channel}[${entry.name || `${channel}#${i}`}]`);
       }
     }
 
@@ -459,6 +464,7 @@ class NotificationService {
    * @param {number} result.accountsFailed - Failed account count
    * @param {Array} result.succeededAccounts - Successful account names
    * @param {Array} result.failedAccounts - Failed accounts with errors
+   * @param {Array} result.accountResults - Per-account { id, name, status, added, updated, countsKnown } (#427)
    * @param {number} result.transactionsAdded - Transactions the bank sync imported (#391)
    * @param {number} result.transactionsUpdated - Existing transactions it matched and updated (#391)
    * @param {string} result.error - Error message (for failures)
@@ -478,6 +484,7 @@ class NotificationService {
       succeededAccounts = [],
       failedAccounts = [],
       skippedAccounts = [],
+      accountResults = [],
       transactionsAdded = 0,
       transactionsUpdated = 0,
       error,
@@ -554,6 +561,7 @@ class NotificationService {
       succeededAccounts,
       failedAccounts,
       skippedAccounts,
+      accountResults,
       transactionsAdded,
       transactionsUpdated,
       error,
@@ -588,7 +596,9 @@ class NotificationService {
 
       // Send Telegram
       if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) && allow('telegram')) {
-        const success = await this.sendTelegramMessage(formatted.text);
+        // Plain text (no parse_mode); a long per-account list must not exceed
+        // Telegram's 4096 limit, or the API rejects the whole message (#427).
+        const success = await this.sendTelegramMessage(truncateWithEllipsis(formatted.text, TELEGRAM_TEXT_MAX));
         results.telegram = success;
       }
 
@@ -1116,15 +1126,18 @@ Please investigate and resolve the issue.
     this._brandPayload(payload, 'icon_url');
 
     const results = [];
-    for (const webhook of this.config.webhooks.slack) {
+    for (const [i, webhook] of this.config.webhooks.slack.entries()) {
       if (webhook.enabled === false) continue; // #169: enabled:false wins everywhere
       try {
         const result = await this.sendWebhook(webhook.url, payload);
         results.push({ webhook: webhook.name || webhook.url, success: true, result });
       } catch (error) {
+        // Never log the URL: the secret is in the path (#431). Channel + status only.
         this.logger.error('Failed to send Slack webhook', {
-          webhook: webhook.name || webhook.url,
-          error: error.message
+          channel: 'slack',
+          label: webhook.name || `slack#${i}`,
+          statusCode: error.statusCode,
+          code: error.code
         });
         results.push({ webhook: webhook.name || webhook.url, success: false, error: error.message });
       }
@@ -1180,15 +1193,18 @@ Please investigate and resolve the issue.
     this._suppressDiscordMentions(payload);
 
     const results = [];
-    for (const webhook of this.config.webhooks.discord) {
+    for (const [i, webhook] of this.config.webhooks.discord.entries()) {
       if (webhook.enabled === false) continue; // #169: enabled:false wins everywhere
       try {
         const result = await this.sendWebhook(webhook.url, payload);
         results.push({ webhook: webhook.name || webhook.url, success: true, result });
       } catch (error) {
+        // Never log the URL: the secret is in the path (#431). Channel + status only.
         this.logger.error('Failed to send Discord webhook', {
-          webhook: webhook.name || webhook.url,
-          error: error.message
+          channel: 'discord',
+          label: webhook.name || `discord#${i}`,
+          statusCode: error.statusCode,
+          code: error.code
         });
         results.push({ webhook: webhook.name || webhook.url, success: false, error: error.message });
       }
@@ -1252,7 +1268,7 @@ Please investigate and resolve the issue.
         });
       });
 
-      req.on('timeout', () => req.destroy(new Error('Webhook request timed out')));
+      req.on('timeout', () => req.destroy(Object.assign(new Error('Webhook request timed out'), { code: 'ETIMEDOUT' })));
       req.on('error', reject);
       req.write(body);
       req.end();
@@ -1355,7 +1371,9 @@ Please investigate and resolve the issue.
 
       // Send Telegram
       if ((this.config.telegram?.enabled || this.config.webhooks?.telegram?.length > 0) && allow('telegram')) {
-        const success = await this.sendTelegramMessage(formatted.text);
+        // Plain text (no parse_mode); a long per-account list must not exceed
+        // Telegram's 4096 limit, or the API rejects the whole message (#427).
+        const success = await this.sendTelegramMessage(truncateWithEllipsis(formatted.text, TELEGRAM_TEXT_MAX));
         results.telegram = success;
       }
 

@@ -43,7 +43,13 @@ the per-account outcome, on **both** success and failure:
   what the bank shows: a split transaction counts its parent plus each part,
   and a newly linked account's first sync includes its starting-balance
   transaction.
-- **✅ Synced** — bank-linked accounts that synced.
+- **✅ Synced**: each bank-linked account that synced, with its own count:
+  `Account 1: 5 new transactions`, `Account 2: no new transactions`,
+  `Account 3: 1 new transaction, 2 updated` (`, M updated` only when M is above
+  0). An account whose bank sync finished after its 60 s timeout reads
+  `synced, count unknown`, because its result arrived too late to be read; it is
+  never shown as `no new transactions`. On Slack and Discord a long list is cut
+  with `…and N more`.
 - **❌ Failed** — accounts whose bank sync errored (with the error). This appears on
   the failure path too — e.g. a single rate-limited account shows up here rather
   than only as a terse top-level error.
@@ -226,6 +232,9 @@ The JSON payload:
   "transactionsAdded": 2,
   "transactionsUpdated": 1,
   "succeededAccounts": ["..."],
+  "accountResults": [
+    { "id": "...", "name": "...", "status": "synced", "added": 5, "updated": 0, "countsKnown": true }
+  ],
   "failedAccounts": [{ "name": "...", "error": "..." }],
   "skippedAccounts": [{ "name": "...", "reason": "not-linked" }],
   "timestamp": "<ISO8601>"
@@ -235,6 +244,12 @@ The JSON payload:
 `transactionsAdded` and `transactionsUpdated` are integers and always present:
 `0` when nothing was imported or updated, or when the bank sync did not report
 counts. They are counts only; no transaction ids, payees or amounts are sent.
+
+`accountResults` has one entry per account (synced, failed and skipped), with
+`status` one of `synced`, `failed` or `skipped`. `added` and `updated` are
+integers; `countsKnown` is `false` when the count could not be read (a late
+success) and for failed and skipped accounts, whose `added` and `updated` are 0.
+`succeededAccounts` stays the list of synced account names.
 
 #### ntfy Settings
 

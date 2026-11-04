@@ -22,8 +22,6 @@ function makeLogger() {
         level: 'info',
         info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(),
         startTimer: () => () => 1,
-        generateCorrelationId: () => 'cid',
-        setCorrelationId: jest.fn(), clearCorrelationId: jest.fn(),
         setBroadcastCallback: jest.fn()
     };
     l.child = () => l;
@@ -35,7 +33,7 @@ function makeLogger() {
  * `script(actual, advance)` drives the late settlements.
  * Resolves to { recorded, actual }.
  */
-async function runSync(accountIds, bankCalls, script, { failEvaluation = false } = {}) {
+async function runSync(accountIds, bankCalls, script, { failEvaluation = false, logging = {} } = {}) {
     jest.resetModules();
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'late-bank-'));
@@ -56,7 +54,7 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false }
         shutdown: jest.fn().mockResolvedValue(undefined),
         q: () => { const b = { filter: () => b, select: () => b }; return b; },
         aqlQuery: jest.fn().mockResolvedValue({
-            data: accountIds.map(id => ({ id, name: id, closed: false, account_sync_source: 'goCardless' }))
+            data: accountIds.map(id => ({ id, name: id, closed: false, account_sync_source: id.startsWith('manual') ? null : 'goCardless' }))
         }),
         runBankSync: jest.fn(({ accountId }) => bankCalls[accountId]())
     };
@@ -68,11 +66,12 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false }
             servers: [{ name: 's1', url: 'http://x', password: 'p', syncId: 'b', dataDir }],
             // 1 s phase timeout: also the length of the drain after a call timeout
             sync: { maxRetries: 0, baseRetryDelayMs: 1, schedule: '0 0 * * *', phaseTimeoutSeconds: 1 },
-            logging: { level: 'error', format: 'text' },
+            logging: { level: 'error', format: 'text', ...logging },
             prometheus: { enabled: false }
         });
     });
-    jest.doMock('../lib/logger', () => ({ createLogger: () => makeLogger() }));
+    const loggers = [];
+    jest.doMock('../lib/logger', () => ({ ...jest.requireActual('../lib/logger'), createLogger: () => { const l = makeLogger(); loggers.push(l); return l; } }));
     jest.doMock('../lib/versionInfo', () => ({
         fetchServerVersion: async () => null,
         getClientVersion: () => '1.0.0',
@@ -113,7 +112,7 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false }
             await until(() => recordSync.mock.calls.length > 0 || i > 3);
         }
         expect(exit).not.toHaveBeenCalled();
-        return { recorded: recordSync.mock.calls[0]?.[0], actual, persist, notified: notifySync.mock.calls[0]?.[0] };
+        return { loggers, recorded: recordSync.mock.calls[0]?.[0], actual, persist, notified: notifySync.mock.calls[0]?.[0] };
     } finally {
         process.argv = argv;
         exit.mockRestore();
@@ -121,6 +120,19 @@ async function runSync(accountIds, bankCalls, script, { failEvaluation = false }
         fs.rmSync(dataDir, { recursive: true, force: true });
     }
 }
+
+describe('sync correlation scope (#441)', () => {
+    afterEach(() => jest.dontMock('@actual-app/api'));
+
+    test('the id recorded in history is the scope the Actual calls run in', async () => {
+        let seen = null;
+        const { recorded } = await runSync(['a1'], {
+            a1: () => { seen = require('../lib/logger').currentCorrelationId(); return Promise.resolve(); }
+        }, async (advance, started) => { await started(); await advance(10); });
+        expect(recorded.correlationId).toMatch(/^[a-f0-9-]{36}$/);
+        expect(seen).toBe(recorded.correlationId);
+    });
+});
 
 describe('a timed-out runBankSync that settles late (#284)', () => {
     afterEach(() => jest.dontMock('@actual-app/api'));
@@ -253,5 +265,119 @@ describe('transaction counts from runBankSync (#391)', () => {
             a2: () => Promise.resolve({ newTransactions: ['t1'], matchedTransactions: [] })
         }, started);
         expect(recorded).toMatchObject({ status: 'partial', transactionsAdded: 1, transactionsUpdated: 0 });
+    });
+});
+
+describe('accountResults for notifications (#427)', () => {
+    afterEach(() => jest.dontMock('@actual-app/api'));
+    const drive = async (advance, begin) => { await begin(); await advance(1000); };
+
+    test('normal sync: per-account counts, in account order', async () => {
+        const { notified } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.resolve({ newTransactions: ['t1', 't2'], matchedTransactions: ['t3'] }),
+            a2: () => Promise.resolve({ newTransactions: [], matchedTransactions: [] })
+        }, drive);
+        expect(notified.accountResults).toEqual([
+            { id: 'a1', name: 'a1', status: 'synced', added: 2, updated: 1, countsKnown: true },
+            { id: 'a2', name: 'a2', status: 'synced', added: 0, updated: 0, countsKnown: true }
+        ]);
+        expect(notified.succeededAccounts).toEqual(['a1', 'a2']);
+    });
+
+    test('#429 recordSync receives the same accountResults as the notification', async () => {
+        const { notified, recorded } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.resolve({ newTransactions: ['t1'], matchedTransactions: [] }),
+            a2: () => Promise.resolve({ newTransactions: [], matchedTransactions: [] })
+        }, drive);
+        expect(recorded.accountResults).toEqual(notified.accountResults);
+        expect(recorded.accountResults).toHaveLength(2);
+    });
+
+    test('#98 "No new transactions" is synced with known zero counts', async () => {
+        const { notified } = await runSync(['a1'], {
+            a1: () => Promise.reject(new Error('No new transactions'))
+        }, drive);
+        expect(notified.accountResults).toEqual([
+            { id: 'a1', name: 'a1', status: 'synced', added: 0, updated: 0, countsKnown: true }
+        ]);
+    });
+
+    test('#284 late success is synced with countsKnown false', async () => {
+        const slow = deferred();
+        const { notified } = await runSync(['a1'], { a1: () => slow.promise }, async (advance, begin) => {
+            await begin();
+            await advance(60000);
+            slow.resolve({ newTransactions: ['x'] });
+            await advance(2000);
+        });
+        expect(notified.accountResults).toEqual([
+            { id: 'a1', name: 'a1', status: 'synced', added: 0, updated: 0, countsKnown: false }
+        ]);
+    });
+
+    test('a failed account is status failed; the others keep their counts', async () => {
+        const { notified } = await runSync(['a1', 'a2'], {
+            a1: () => Promise.reject(new Error('bank said no')),
+            a2: () => Promise.resolve({ newTransactions: ['t1'] })
+        }, drive);
+        expect(notified.accountResults).toEqual([
+            { id: 'a1', name: 'a1', status: 'failed', added: 0, updated: 0, countsKnown: false },
+            { id: 'a2', name: 'a2', status: 'synced', added: 1, updated: 0, countsKnown: true }
+        ]);
+    });
+
+    test('a manual account is status skipped, listed after the synced ones', async () => {
+        const { notified } = await runSync(['manual1', 'a1'], {
+            a1: () => Promise.resolve({ newTransactions: ['t1'] })
+        }, drive);
+        expect(notified.accountResults).toEqual([
+            { id: 'a1', name: 'a1', status: 'synced', added: 1, updated: 0, countsKnown: true },
+            { id: 'manual1', name: 'manual1', status: 'skipped', added: 0, updated: 0, countsKnown: false }
+        ]);
+    });
+
+    test('accounts left unstarted by a stuck session are failed', async () => {
+        const never = deferred();
+        const { notified } = await runSync(['a1', 'a2'], {
+            a1: () => never.promise, a2: () => Promise.resolve()
+        }, async (advance, begin) => { await begin(); await advance(60000); await advance(3000); });
+        expect(notified.accountResults.map(a => [a.id, a.status])).toEqual([['a1', 'failed'], ['a2', 'failed']]);
+    });
+});
+
+describe('api.init verbose flag (#425)', () => {
+    afterEach(() => jest.dontMock('@actual-app/api'));
+    const drive = async (advance, begun) => { await begun(); await advance(1000); };
+    const calls = { a1: () => Promise.resolve() };
+
+    test('defaults to verbose:false so loot-core does not print transactions', async () => {
+        const { actual } = await runSync(['a1'], calls, drive);
+        expect(actual.init).toHaveBeenCalledWith(expect.objectContaining({ verbose: false }));
+    });
+
+    test('logging.actualApiVerbose:true opts in to verbose:true', async () => {
+        const { actual } = await runSync(['a1'], calls, drive, { logging: { actualApiVerbose: true } });
+        expect(actual.init).toHaveBeenCalledWith(expect.objectContaining({ verbose: true }));
+    });
+
+    const verboseWarns = (loggers) => loggers
+        .flatMap(l => l.warn.mock.calls)
+        .filter(c => String(c[0]).includes('actualApiVerbose'));
+
+    test('startup logs one static WARN when the unsafe flag is on', async () => {
+        const { loggers } = await runSync(['a1'], calls, drive, { logging: { actualApiVerbose: true } });
+        const warns = verboseWarns(loggers);
+        expect(warns).toHaveLength(1);
+        expect(warns[0]).toEqual(['logging.actualApiVerbose is on: @actual-app/api will print transaction data to stdout']);
+    });
+
+    test('no WARN when the flag is off', async () => {
+        const { loggers } = await runSync(['a1'], calls, drive);
+        expect(verboseWarns(loggers)).toHaveLength(0);
+    });
+
+    test('a non-boolean value never enables verbose', async () => {
+        const { actual } = await runSync(['a1'], calls, drive, { logging: { actualApiVerbose: 'yes' } });
+        expect(actual.init).toHaveBeenCalledWith(expect.objectContaining({ verbose: false }));
     });
 });

@@ -4,7 +4,8 @@ const schedule = require('node-schedule'); // Import the scheduler
 const moment = require('moment-timezone');
 const cronstrue = require('cronstrue');
 const ConfigLoader = require('./lib/configLoader');
-const { createLogger } = require('./lib/logger');
+const { createLogger, withCorrelation, currentCorrelationId } = require('./lib/logger');
+const bootstrap = require('./lib/bootstrapLogger');
 const { buildLoggerConfig } = require('./lib/loggerConfig');
 const { HealthCheckService } = require('./services/healthCheck');
 const { SyncHistoryService } = require('./services/syncHistory');
@@ -20,7 +21,8 @@ const { createShutdownGate, resolveShutdownWaitMs } = require('./lib/shutdownGat
 const { createAutoRetry } = require('./lib/autoRetry');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, prepareSession, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts, persistPaymentSnapshot } = require('./lib/scheduleAlertsStep');
-const { bankSyncCounts } = require('./lib/bankSyncCounts');
+const { bankSyncCounts, describeResultLengths } = require('./lib/bankSyncCounts');
+const { installConsoleBridge } = require('./lib/consoleBridge');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -65,8 +67,7 @@ function formatNextSync(nextInvocation) {
     }
 }
 
-// Log-level classifier for the global unhandledRejection handler (#105)
-const { classifyRejection } = require('./lib/rejectionClassifier');
+const { setCrashLogger } = require('./lib/crashHandlers');
 
 /**
  * Convert cron schedule to human-readable format
@@ -104,8 +105,16 @@ try {
     const loggerConfig = buildLoggerConfig(config.logging);
 
     logger = createLogger(loggerConfig);
+    setCrashLogger(logger);
+    // Startup output buffered before the root logger existed (#442)
+    bootstrap.flushTo(logger);
     
-    logger.info('Configuration loaded successfully', { 
+    // Static message only: the flag makes @actual-app/api print transactions. (#425)
+    if (config.logging?.actualApiVerbose === true) {
+        logger.warn('logging.actualApiVerbose is on: @actual-app/api will print transaction data to stdout');
+    }
+
+    logger.info('Configuration loaded successfully', {
         serverCount: config.servers.length 
     });
 
@@ -117,6 +126,7 @@ try {
         dbPath: config.syncHistory?.dbPath,
         retentionDays: config.syncHistory?.retentionDays || 90,
         loggerConfig: {
+            parent: logger,
             level: config.logging.level,
             format: config.logging.format,
             logDir: config.logging.logDir
@@ -129,6 +139,7 @@ try {
             syncHistory: syncHistory,
             includeDefaultMetrics: config.prometheus?.includeDefaultMetrics !== false,
             loggerConfig: {
+                parent: logger,
                 level: config.logging.level,
                 format: config.logging.format,
                 logDir: config.logging.logDir
@@ -141,6 +152,7 @@ try {
     notificationService = new NotificationService(
         config.notifications || {},
         {
+            parent: logger,
             level: config.logging.level,
             format: config.logging.format,
             logDir: config.logging.logDir
@@ -176,6 +188,7 @@ try {
                 notificationService: notificationService // /notify must reach the dispatch path (#169)
             },
             {
+                parent: logger,
                 level: config.logging.level,
                 format: config.logging.format,
                 logDir: config.logging.logDir
@@ -224,6 +237,7 @@ try {
             }));
         },
         loggerConfig: {
+            parent: logger,
             level: config.logging.level,
             format: config.logging.format,
             logDir: config.logging.logDir
@@ -242,11 +256,10 @@ try {
         }
     });
 } catch (error) {
-    // Fallback to console if logger not initialized
-    console.error('❌ Failed to load configuration:');
-    console.error(error.message);
-    console.error('\nPlease ensure config/config.json exists and is valid.');
-    console.error('See config/config.example.json for reference.');
+    // The root logger may not exist: the bootstrap logger writes redacted JSON lines to stderr (#442)
+    bootstrap.error('Failed to load configuration', { error: error.message });
+    bootstrap.error('Please ensure config/config.json exists and is valid. See config/config.example.json for reference.');
+    bootstrap.dumpToStderr(); // no-op once the root logger took the records
     process.exit(1);
 }
 
@@ -303,6 +316,7 @@ async function runSyncBank(server, options = {}) {
     // Set once this sync touches the session; until then its finally must not
     // call shutdown(), which would close a session a late call still uses.
     let sessionOpened = false;
+    let restoreConsole = null; // undoes the #426 console bridge
     // Set by the schedule-alerts read phase (#295 review, M3) while the
     // session is still open; the write phase runs after the session is shut
     // down and after endTimer()/recordSync(), see the call after `finally` below.
@@ -311,21 +325,12 @@ async function runSyncBank(server, options = {}) {
     // the auto-retry policy reads this status instead of waiting for an error.
     let syncOutcome = 'failure';
     
-    // Create server-specific logger with per-server log level if configured
-    const serverLogger = server.logging ? logger.child({
-        server: name,
-        ...(server.logging.level && { level: server.logging.level }),
-        ...(server.logging.format && { format: server.logging.format })
-    }) : logger.child({ server: name });
-    
-    // Override logger level if server-specific level is set
-    if (server.logging?.level) {
-        serverLogger.level = server.logging.level;
-    }
-    
-    // Create correlation ID for this sync operation
-    const correlationId = serverLogger.generateCorrelationId();
-    serverLogger.setCorrelationId(correlationId);
+    // Per-server level is a child option, never a log field (#433). Per-server
+    // `format` is deprecated and ignored: one format per sink.
+    const serverLogger = logger.child({ server: name }, { level: server.logging?.level });
+
+    // The scope SyncQueue opened for this task; every record of this sync carries it.
+    const correlationId = currentCorrelationId();
     
     // Cancel any pending auto-retry if this is a manual sync
     if (!isAutomated) {
@@ -360,6 +365,26 @@ async function runSyncBank(server, options = {}) {
     const succeededAccounts = [];
     const failedAccounts = [];
     let skippedAccounts = []; // accounts skipped (manual / closed) — see partitionSyncableAccounts (#98)
+    // Per-account outcome for the notifications (#427), in processing order. The
+    // shape is shared with #429 (persistence) and #430 (dashboard): keep it as is.
+    const processedResults = [];
+    const recordAccountResult = (account, status, counts = null) => {
+        processedResults.push({
+            id: account.id,
+            name: account.name,
+            status,
+            added: counts ? counts.added : 0,
+            updated: counts ? counts.updated : 0,
+            countsKnown: Boolean(counts)
+        });
+    };
+    // Processed accounts first, then the ones that were never attempted.
+    const buildAccountResults = () => [
+        ...processedResults,
+        ...skippedAccounts.map(a => ({
+            id: a.id, name: a.name, status: 'skipped', added: 0, updated: 0, countsKnown: false
+        }))
+    ];
     // Version compatibility (#154): populated at connect time, reused by the error
     // path (#155) to explain a server-ahead "No budget file is open" failure.
     let serverVersion = null;
@@ -403,10 +428,16 @@ async function runSyncBank(server, options = {}) {
 
         serverLogger.info(`Connecting to Actual server`, { url });
         sessionOpened = true;
+        // @actual-app/api prints warn/error to the global console whatever
+        // `verbose` says; route it through our logger for this session. (#426)
+        restoreConsole = installConsoleBridge(serverLogger, { verbose: config.logging?.actualApiVerbose === true });
         await api.init({
             serverURL: url,
             password: password,
             dataDir: dataDir,
+            // The library defaults to verbose and prints transactions (payees,
+            // amounts, notes). Off unless logging.actualApiVerbose is true. (#425)
+            verbose: config.logging?.actualApiVerbose === true,
         });
         serverLogger.info('Connected to Actual server');
 
@@ -600,18 +631,23 @@ async function runSyncBank(server, options = {}) {
                     // can resolve before background sync operations fully complete
                     await new Promise(resolve => setTimeout(resolve, 500));
                     
-                    // The result carries transaction ids: keep them at debug level
-                    // and let only the two counts leave this loop. (#391)
+                    // The result carries transaction data and its shape depends on the
+                    // @actual-app/api version. Log only the two counts, the key names
+                    // and array lengths, never the result itself. (#391, #434)
+                    const counts = bankSyncCounts(result);
                     serverLogger.debug('runBankSync result', {
                         accountId: account.id,
                         accountName: account.name,
-                        result: result
+                        added: counts.added,
+                        updated: counts.updated,
+                        keys: result && typeof result === 'object' ? Object.keys(result) : [],
+                        lengths: describeResultLengths(result)
                     });
-                    const counts = bankSyncCounts(result);
                     transactionsAdded += counts.added;
                     transactionsUpdated += counts.updated;
                     accountsSucceeded++;
                     succeededAccounts.push(account.name);
+                    recordAccountResult(account, 'synced', counts);
                     const accountDuration = accountTimer();
                     serverLogger.info('Bank sync completed for account', { 
                         accountId: account.id,
@@ -629,6 +665,7 @@ async function runSyncBank(server, options = {}) {
                         if (!sessionStuck && lateBankSync === 'ok') {
                             accountsSucceeded++;
                             succeededAccounts.push(account.name);
+                            recordAccountResult(account, 'synced'); // late: counts unknown
                             accountTimer();
                             // Its result arrived after withTimeout gave up, so its
                             // transaction counts are not known and add 0. (#391)
@@ -654,6 +691,7 @@ async function runSyncBank(server, options = {}) {
                     if (errorMsg && /no new transactions|no transactions found|nothing to sync/i.test(errorMsg)) {
                         accountsSucceeded++;
                         succeededAccounts.push(account.name);
+                        recordAccountResult(account, 'synced', { added: 0, updated: 0 });
                         accountTimer();
                         serverLogger.info('No new transactions for account', {
                             accountId: account.id,
@@ -674,6 +712,7 @@ async function runSyncBank(server, options = {}) {
                         name: account.name,
                         error: errorMsg
                     });
+                    recordAccountResult(account, 'failed');
                     accountTimer();
                     serverLogger.error('Error syncing bank for account', {
                         accountId: account.id,
@@ -691,6 +730,7 @@ async function runSyncBank(server, options = {}) {
                             name: skipped.name,
                             error: 'Skipped: an earlier bank sync is still running in the session'
                         });
+                        recordAccountResult(skipped, 'failed');
                     }
                     serverLogger.error('A timed-out bank sync is still running; skipped the remaining accounts', {
                         skipped: accounts.length - accountIndex - 1
@@ -814,6 +854,7 @@ async function runSyncBank(server, options = {}) {
                 accountsSkipped: skippedAccounts.length,
                 transactionsAdded,
                 transactionsUpdated,
+                accountResults: buildAccountResults(),
                 errorMessage,
                 correlationId
             });
@@ -856,6 +897,7 @@ async function runSyncBank(server, options = {}) {
                     succeededAccounts: succeededAccounts,
                     failedAccounts: failedAccounts,
                     skippedAccounts: skippedAccounts,
+                    accountResults: buildAccountResults(),
                     transactionsAdded,
                     transactionsUpdated,
                     error: errorMessage,
@@ -968,6 +1010,7 @@ async function runSyncBank(server, options = {}) {
                 accountsSkipped: skippedAccounts.length,
                 transactionsAdded,
                 transactionsUpdated,
+                accountResults: buildAccountResults(),
                 errorMessage: errorMessage,
                 errorCode: errorCode,
                 correlationId
@@ -1000,6 +1043,7 @@ async function runSyncBank(server, options = {}) {
                     succeededAccounts: succeededAccounts,
                     failedAccounts: failedAccounts,
                     skippedAccounts: skippedAccounts,
+                    accountResults: buildAccountResults(),
                     transactionsAdded,
                     transactionsUpdated,
                     error: errorMessage,
@@ -1042,8 +1086,9 @@ async function runSyncBank(server, options = {}) {
                     error: shutdownErrorMessage
                 });
             }
+            // The catch above swallows shutdown errors, so this always runs.
+            if (restoreConsole) restoreConsole();
         }
-        serverLogger.clearCorrelationId();
     }
 
     // #295 review, M3: the schedule-alerts write phase runs here, after the
@@ -1086,8 +1131,6 @@ async function run() {
                     requestedServer: serverName,
                     availableServers: servers.map(s => s.name)
                 });
-                console.error(`\n❌ Error: Server "${serverName}" not found in configuration.`);
-                console.error(`\nAvailable servers: ${servers.map(s => s.name).join(', ')}\n`);
                 process.exit(1);
             }
             logger.info('Force running bank sync for specific server', { 
@@ -1123,7 +1166,7 @@ async function run() {
                 servers: serversWithSchedule.map(s => s.name) 
             });
             
-            const job = schedule.scheduleJob({ rule: scheduleStr, tz: resolveTimezone(config) }, async () => {
+            const job = schedule.scheduleJob({ rule: scheduleStr, tz: resolveTimezone(config) }, () => withCorrelation(async () => {
                 logger.info('Scheduled sync starting', { 
                     schedule: scheduleStr,
                     servers: serversWithSchedule.map(s => s.name)
@@ -1133,7 +1176,7 @@ async function run() {
                     await autoRetry.runAutomated(server);
                 }
                 logger.info('Scheduled sync completed', { schedule: scheduleStr });
-            });
+            }));
             
             scheduledJobs.push({ schedule: scheduleStr, job, servers: serversWithSchedule });
         }
@@ -1267,31 +1310,8 @@ async function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-    logger.error('Uncaught exception - service will continue', {
-        error: error.message,
-        stack: error.stack
-    });
-});
-
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-    // Extract meaningful information from reason
-    const reasonInfo = reason instanceof Error 
-        ? { message: reason.message, code: reason.code, stack: reason.stack }
-        : typeof reason === 'object' && reason !== null
-        ? { ...reason, toString: String(reason) }
-        : { value: reason, type: typeof reason };
-    
-    // Already-handled @actual-app/api rejections are logged at DEBUG to avoid
-    // double-counting them as errors; genuine ones stay at ERROR. (#105)
-    const level = classifyRejection(reason);
-    logger[level]('Unhandled promise rejection - service will continue', {
-        reason: reasonInfo,
-        promiseString: promise ? promise.toString() : 'no promise info'
-    });
-});
+// Uncaught exception, unhandled rejection and warning handlers are installed
+// first in index.js (crashHandlers, #439); they only need the logger from here.
 
 run().catch((error) => {
     logger.error('Fatal error during service initialization', { error: error.message, stack: error.stack });

@@ -54,6 +54,32 @@ Each sync operation is recorded with:
 | `error_code` | TEXT | Error code if failed |
 | `correlation_id` | TEXT | UUID for tracking |
 
+### Per-account results (`sync_history_account`)
+
+Each sync also writes one row per processed account, in the same transaction as
+its `sync_history` row (#429):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sync_id` | INTEGER | `sync_history.id` of the sync |
+| `account_id` | TEXT | Actual account id |
+| `account_name` | TEXT | Account name (already stored in `account_metadata`) |
+| `status` | TEXT | `synced`, `failed` or `skipped` |
+| `transactions_added` | INTEGER | New transactions; `NULL` = unknown (late success), never `0` |
+| `transactions_updated` | INTEGER | Updated transactions; `NULL` = unknown |
+
+Only counts are stored: no payees, amounts, notes or per-account error text
+(errors stay in `sync_history.error_message`). Rows are removed with their sync
+by retention cleanup and by the history resets. The table is created with
+`CREATE TABLE IF NOT EXISTS`, so existing databases gain it on startup with no
+data loss; syncs recorded earlier simply have no account rows.
+
+Read access: `getHistory({ includeAccounts: true })` attaches `accounts` to each
+row, `getLastAccountResults(serverName)` returns the last sync's rows,
+`GET /api/dashboard/history?includeAccounts=1` returns the `accounts` arrays
+(without the flag the response is unchanged), and `/api/dashboard/status`
+carries `lastAccountResults` per server.
+
 > **Schema migrations:** New columns are added additively at startup. A database
 > created by an older version is migrated in place via a guarded `ALTER TABLE`
 > (checked against `PRAGMA table_info`), so the migration is idempotent and

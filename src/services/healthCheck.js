@@ -9,7 +9,8 @@ const express = require('express');
 const helmet = require('helmet');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const path = require('path');
-const { createLogger } = require('../lib/logger');
+const { randomUUID } = require('crypto');
+const { createLogger, withCorrelation } = require('../lib/logger');
 const { MessageFormatter } = require('../lib/messageFormatter');
 const { resolveVersion } = require('../lib/version');
 const { checkCredentials, WsTicketStore } = require('../lib/dashboardCredentials');
@@ -22,8 +23,16 @@ const { resolveTimezone } = require('../lib/timezone');
 // markParser tags an error with fromBodyParser so jsonBodyErrors can tell a
 // body-parser failure from a 4xx raised by a route. A corrupt gzip body arrives
 // as createError(400, zlibErr) with no `type`, so only a marker works. (#259)
+// The rest of the chain is re-entered in the request's correlation scope as a
+// safeguard (#441): raw-body 3 already keeps it, but a parser that resumes from
+// plain socket events would drop it.
 const markParser = (parser) => (req, res, next) =>
-  parser(req, res, (e) => next(e && Object.assign(e, { fromBodyParser: true })));
+  parser(req, res, (e) => withCorrelation(() => next(e && Object.assign(e, { fromBodyParser: true })), req.correlationId));
+
+// A /ws/logs client with more than this queued is dropped (#445)
+const WS_MAX_BUFFERED_BYTES = 1024 * 1024;
+// A good dashboard login is logged once per source per hour (#444).
+const AUTH_SUCCESS_DEDUPE_MS = 60 * 60 * 1000;
 
 const configJson = markParser(express.json({ limit: '16kb' }));
 
@@ -146,9 +155,22 @@ class HealthCheckService {
     this.getCronSchedules = options.getCronSchedules;
     this.dashboardConfig = options.dashboardConfig || { enabled: true, auth: { type: 'none' } };
     this.metricsAuthConfig = options.metricsAuth || { type: 'none' };
-    this.logger = createLogger(options.loggerConfig || {});
+    // A `parent` logger makes this a child of the main logger, so it shares the
+    // main level, format, sinks and redaction (#440).
+    const loggerConfig = options.loggerConfig || {};
+    this.logger = loggerConfig.parent
+      ? loggerConfig.parent.child({ component: 'HealthCheck' })
+      : createLogger(loggerConfig);
     
     this.app = express();
+    // One correlation scope per request (#441), first in the chain so every line
+    // a request logs carries its id, the X-Forwarded-For warning below included.
+    // markParser re-enters it after body parsing as a safeguard: raw-body 3
+    // already binds its callback with AsyncResource, so the scope survives today.
+    this.app.use((req, res, next) => {
+      if (!req.correlationId) req.correlationId = randomUUID();
+      withCorrelation(next, req.correlationId);
+    });
     // Opt-in only (#245). Behind a reverse proxy every request comes from the
     // proxy's address, so the per-IP rate limit becomes one shared bucket and
     // auth-failure logs name the proxy. Trusting X-Forwarded-For on a directly
@@ -199,6 +221,7 @@ class HealthCheckService {
     // "Tested up to" = the installed @actual-app/api client version (#154).
     this.testedUpTo = null;
     
+
     // Security headers first, so every response carries them: static assets,
     // the 401 from the auth middleware, and body-parser's own errors. (#243)
     this.app.disable('x-powered-by');
@@ -366,11 +389,13 @@ class HealthCheckService {
         // only swept on a timer), so check resetTime or a lockout lasts up to
         // two windows.
         if (seen && seen.resetTime > Date.now() && seen.totalHits >= this.authFailureLimit) {
-          this.logger.warn(`${realm} authentication throttled after repeated failures`, {
+          this.logger.security('authn_login_fail', {
+            reason: 'throttled',
+            realm: realm.toLowerCase(),
             remoteAddress: req.ip,
             limit: this.authFailureLimit,
             windowMinutes: Math.round(this.authFailureWindowMs / 60000)
-          });
+          }, { sourceKey: ipKeyGenerator(req.ip || '') });
           return res.status(429).json({ error: 'Too many failed authentication attempts, try again later' });
         }
         this.checkRequestCredentials(req, res, next, authConfig, authType, realm);
@@ -408,12 +433,13 @@ class HealthCheckService {
         ok = this.isAllowedOrigin(candidate, req.headers.host);
       }
       if (ok) return next();
-      this.logger.warn('Request refused: origin not allowed', {
+      this.logger.security('authz_fail', {
+        reason: 'origin_not_allowed',
         method: req.method,
         path: req.path,
         origin: typeof candidate === 'string' ? candidate.slice(0, 200) : null,
         remoteAddress: req.ip
-      });
+      }, { sourceKey: ipKeyGenerator(req.ip || '') });
       return res.status(403).json({ error: 'origin_rejected' });
     };
     return checkOrigin;
@@ -625,7 +651,14 @@ class HealthCheckService {
    */
   checkRequestCredentials(req, res, next, authConfig, authType, realm) {
     const result = checkCredentials(req.headers, authConfig);
-    if (result.ok) return next();
+    if (result.ok) {
+      // Once per source per hour: Basic and bearer credentials have no session,
+      // so this stands in for "once per session". (#444)
+      this.logger.security('authn_login_success', {
+        realm: realm.toLowerCase(), remoteAddress: req.ip
+      }, { sourceKey: ipKeyGenerator(req.ip || ''), dedupeMs: AUTH_SUCCESS_DEDUPE_MS });
+      return next();
+    }
 
     if (result.reason === 'config') {
       return res.status(500).json({ error: 'Invalid authentication configuration' });
@@ -638,9 +671,9 @@ class HealthCheckService {
       }
       res.locals.authFailed = true;
       // Never log the username: users paste passwords into that field. (#286)
-      this.logger.warn(`${realm} authentication failed`, {
-        remoteAddress: req.ip
-      });
+      this.logger.security('authn_login_fail', {
+        reason: 'invalid_credentials', realm: realm.toLowerCase(), remoteAddress: req.ip
+      }, { sourceKey: ipKeyGenerator(req.ip || '') });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -649,9 +682,9 @@ class HealthCheckService {
       return res.status(401).json({ error: 'Authentication required' });
     }
     res.locals.authFailed = true;
-    this.logger.warn(`${realm} token authentication failed`, {
-      remoteAddress: req.ip
-    });
+    this.logger.security('authn_login_fail', {
+      reason: 'invalid_token', realm: realm.toLowerCase(), remoteAddress: req.ip
+    }, { sourceKey: ipKeyGenerator(req.ip || '') });
     return res.status(401).json({ error: 'Invalid token' });
   }
 
@@ -823,11 +856,13 @@ class HealthCheckService {
           const configuredServers = this.getServers();
           // Initialize all servers with default status
           configuredServers.forEach(server => {
-            const serverStatus = this.status.serverStatuses[server.name] || {
+            // A copy: the fields added below (history, per-account names) must
+            // not land on the live object, which the open /metrics returns (#429).
+            const serverStatus = { ...(this.status.serverStatuses[server.name] || {
               status: 'pending',
               lastSync: null,
               error: null
-            };
+            }) };
             
             // Get last sync status from sync history if available
             if (this.syncHistory) {
@@ -841,6 +876,16 @@ class HealthCheckService {
                     failed: lastSync.accounts_failed,
                     skipped: lastSync.accounts_skipped
                   };
+                  // Per-sync transaction totals (#424). NULL on rows that
+                  // predate the columns; the dashboard renders that as '-'.
+                  serverStatus.lastSyncTransactions = {
+                    added: lastSync.transactions_added,
+                    updated: lastSync.transactions_updated
+                  };
+                  // Per-account counts of that sync (#429); NULL counts are unknown
+                  if (typeof this.syncHistory.getLastAccountResults === 'function') {
+                    serverStatus.lastAccountResults = this.syncHistory.getLastAccountResults(server.name);
+                  }
                 }
               } catch (error) {
                 this.logger.debug('Failed to get last sync status for server', { 
@@ -1232,7 +1277,8 @@ This test verifies that notifications are configured correctly and can reach the
               hasConfig: !!this.notificationService?.config,
               hasEmailConfig: !!this.notificationService?.config?.email,
               emailHost: this.notificationService?.config?.email?.host,
-              emailTo: this.notificationService?.config?.email?.to,
+              // A count, not the addresses: this line now reaches /ws/logs too (#440)
+              emailRecipients: [].concat(this.notificationService?.config?.email?.to || []).length,
               hasEmailTransporter: !!this.notificationService?.emailTransporter
             });
             if (!this.notificationService?.config?.email?.host || 
@@ -1496,6 +1542,8 @@ This test verifies that notifications are configured correctly and can reach the
       try {
         const limit = parseInt(req.query.limit) || 10;
         const filters = { limit };
+        // Opt-in per-account rows (#429); without the flag the response is unchanged.
+        if (['1', 'true'].includes(req.query.includeAccounts)) filters.includeAccounts = true;
         // The History tab's server filter (#288). A repeated ?serverName=a&serverName=b
         // arrives as an array; only a single non-empty string is a filter.
         const { serverName } = req.query;
@@ -1519,7 +1567,20 @@ This test verifies that notifications are configured correctly and can reach the
       }
 
       try {
-        res.json(this.syncHistory.getAllAccountMetadata());
+        const groups = this.syncHistory.getAllAccountMetadata();
+        // Each account's result in its server's latest sync (#430). NULL
+        // counts mean unknown; an account absent from that sync has none.
+        const sh = this.syncHistory;
+        const canResult = typeof sh.getLastAccountResults === 'function' && typeof sh.getLastSync === 'function';
+        res.json(!canResult ? groups : groups.map((group) => {
+          const results = new Map(sh.getLastAccountResults(group.server).map(r => [r.account_id, r]));
+          const last = sh.getLastSync(group.server);
+          return {
+            ...group,
+            lastSyncAt: last ? last.timestamp : null,
+            accounts: group.accounts.map(a => ({ ...a, lastResult: results.get(a.id) || null }))
+          };
+        }));
       } catch (error) {
         this.logger.error('Failed to get account metadata', { error: error.message });
         res.status(500).json({ error: 'Failed to retrieve account metadata' });
@@ -1979,17 +2040,33 @@ This test verifies that notifications are configured correctly and can reach the
       timestamp: new Date().toISOString()
     });
 
-    this.wsClients.forEach(client => {
+    const isDebug = String(level).toUpperCase() === 'DEBUG';
+    let dropped = 0;
+
+    for (const client of Array.from(this.wsClients)) {
       try {
-        if (client.readyState === 1) { // WebSocket.OPEN
-          client.send(logData);
+        if (client.readyState !== 1) continue; // WebSocket.OPEN
+        // DEBUG is sent only to viewers that opted in (#445)
+        if (isDebug && !client.wantsDebug) continue;
+        // A client that does not read lets the send buffer grow without
+        // bound in this process: drop it instead (#445)
+        if (client.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+          this.wsClients.delete(client);
+          client.terminate();
+          dropped++;
+          continue;
         }
+        client.send(logData);
       } catch (error) {
         this.logger.error('Failed to send log to WebSocket client', {
           error: error.message
         });
       }
-    });
+    }
+
+    if (dropped > 0) {
+      this.logger.warn('Dropped slow WebSocket log client(s) over the send buffer limit');
+    }
   }
 
   /**
@@ -2046,7 +2123,10 @@ This test verifies that notifications are configured correctly and can reach the
           ws.on('message', (data) => {
             try {
               const message = JSON.parse(data);
-              if (message.type === 'ping') {
+              if (message.type === 'subscribe') {
+                // Opt in or out of DEBUG records; the default is off (#445)
+                ws.wantsDebug = message.debug === true;
+              } else if (message.type === 'ping') {
                 // Respond to ping with pong
                 ws.isAlive = true;
                 ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
@@ -2175,6 +2255,8 @@ This test verifies that notifications are configured correctly and can reach the
    * @returns {Promise<void>}
    */
   async stop() {
+    // A guess loop cut by SIGTERM must still show its suppressed count. (#444)
+    if (typeof this.logger?.flushSecurity === 'function') this.logger.flushSecurity();
     if (this.authFailures) this.authFailures.shutdown();
     if (this.metricsAuthFailures) this.metricsAuthFailures.shutdown();
     return new Promise((resolve, reject) => {

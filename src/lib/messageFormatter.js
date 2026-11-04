@@ -5,6 +5,8 @@
  * Each channel receives the same information, just formatted for its platform.
  */
 
+const { escapeHtml, escapeSlack, escapeDiscordMarkdown } = require('./channelEscape');
+
 class MessageFormatter {
   /**
    * Format sync success/failure notification
@@ -16,6 +18,7 @@ class MessageFormatter {
    * @param {number} result.accountsFailed - Failed account count
    * @param {Array} result.succeededAccounts - Successful account names
    * @param {Array} result.failedAccounts - Failed accounts with errors
+   * @param {Array} result.accountResults - Per-account { id, name, status, added, updated, countsKnown } (#427)
    * @param {number} result.transactionsAdded - Transactions the bank sync imported (#391)
    * @param {number} result.transactionsUpdated - Existing transactions it matched and updated (#391)
    * @param {string} result.error - Error message (for failures)
@@ -63,6 +66,7 @@ class MessageFormatter {
       succeededAccounts: result.succeededAccounts || [],
       failedAccounts: result.failedAccounts || [],
       skippedAccounts: result.skippedAccounts || [],
+      accountResults: Array.isArray(result.accountResults) ? result.accountResults : [],
       transactionsAdded: this._count(result.transactionsAdded),
       transactionsUpdated: this._count(result.transactionsUpdated)
     };
@@ -94,6 +98,8 @@ class MessageFormatter {
         succeededAccounts: content.succeededAccounts,
         failedAccounts: content.failedAccounts,
         skippedAccounts: content.skippedAccounts,
+        // Additive (#427): per-account counts; succeededAccounts stays as names.
+        accountResults: content.accountResults,
         timestamp: new Date().toISOString()
       },
       ntfy: {
@@ -167,15 +173,45 @@ class MessageFormatter {
     return `${content.transactionsAdded} new, ${content.transactionsUpdated} updated`;
   }
 
+  /**
+   * The synced accounts as [{ name, text }], where text is the count wording:
+   * "5 new transactions", "1 new transaction, 2 updated", "no new transactions"
+   * or "synced, count unknown" (a late success, #284). Falls back to the bare
+   * names (text null) when the caller passed no accountResults. (#427)
+   */
+  static _syncedEntries(content) {
+    const synced = content.accountResults.filter(a => a && a.status === 'synced');
+    if (synced.length === 0) {
+      return content.succeededAccounts.map(name => ({ name, text: null }));
+    }
+    return synced.map(a => ({ name: a.name, text: this._accountCountText(a) }));
+  }
+
+  static _accountCountText(account) {
+    if (!account.countsKnown) return 'synced, count unknown';
+    const added = this._count(account.added);
+    const updated = this._count(account.updated);
+    if (!added && !updated) return 'no new transactions';
+    const base = `${added} new transaction${added === 1 ? '' : 's'}`;
+    return updated ? `${base}, ${updated} updated` : base;
+  }
+
+  // One synced line; `esc` escapes the account name for the target channel.
+  static _syncedLine(entry, esc = (v) => v) {
+    const name = esc(String(entry.name));
+    return entry.text ? `${name}: ${entry.text}` : name;
+  }
+
   static _truncateError(error) {
     if (!error) return '';
     return error.length > 80 ? error.substring(0, 77) + '...' : error;
   }
 
   // Render a failed-account line "• name: error" (error omitted when absent). (#108)
-  static _failedAccountLine(account) {
+  // `esc` is the channel's escaper (escapeSlack / escapeDiscordMarkdown). (#428)
+  static _failedAccountLine(account, esc = (v) => v) {
     const err = this._truncateError(account.error);
-    return err ? `• ${account.name}: ${err}` : `• ${account.name}`;
+    return err ? `• ${esc(account.name)}: ${esc(err)}` : `• ${esc(account.name)}`;
   }
 
   // Join account lines, capping the result at maxChars so it cannot exceed a
@@ -235,8 +271,8 @@ class MessageFormatter {
 
       if (synced > 0) {
         text += `\n✅ Synced:\n`;
-        content.succeededAccounts.forEach(name => {
-          text += `  • ${name}\n`;
+        this._syncedEntries(content).forEach(entry => {
+          text += `  • ${this._syncedLine(entry)}\n`;
         });
       }
 
@@ -289,24 +325,24 @@ class MessageFormatter {
     <div class="content">
       <div class="field">
         <span class="label">Server:</span>
-        <span class="value">${content.serverName}</span>
+        <span class="value">${escapeHtml(content.serverName)}</span>
       </div>
       <div class="field">
         <span class="label">Duration:</span>
-        <span class="value">${content.duration}</span>
+        <span class="value">${escapeHtml(content.duration)}</span>
       </div>`;
     
     if (!content.isSuccess && content.error) {
       html += `
       <div class="field">
         <span class="label">Error:</span>
-        <span class="value">${content.error}</span>
+        <span class="value">${escapeHtml(content.error)}</span>
       </div>`;
       if (content.errorCode) {
         html += `
       <div class="field">
         <span class="label">Code:</span>
-        <span class="value">${content.errorCode}</span>
+        <span class="value">${escapeHtml(content.errorCode)}</span>
       </div>`;
       }
     }
@@ -327,7 +363,7 @@ class MessageFormatter {
           html += `
       <div class="field">
         <span class="label">Transactions:</span>
-        <span class="value">${transactions}</span>
+        <span class="value">${escapeHtml(transactions)}</span>
       </div>`;
         }
       }
@@ -337,8 +373,8 @@ class MessageFormatter {
       <div class="field">
         <span class="label">✅ Synced Accounts:</span>
         <ul class="account-list">`;
-        content.succeededAccounts.forEach(name => {
-          html += `<li class="account-item">• ${name}</li>`;
+        this._syncedEntries(content).forEach(entry => {
+          html += `<li class="account-item">• ${escapeHtml(this._syncedLine(entry))}</li>`;
         });
         html += `</ul>
       </div>`;
@@ -350,9 +386,9 @@ class MessageFormatter {
         <span class="label">❌ Failed Accounts:</span>
         <ul class="account-list">`;
         content.failedAccounts.forEach(account => {
-          html += `<li class="account-item">• ${account.name}`;
+          html += `<li class="account-item">• ${escapeHtml(account.name)}`;
           if (account.error) {
-            html += `<div class="error-detail">${account.error}</div>`;
+            html += `<div class="error-detail">${escapeHtml(account.error)}</div>`;
           }
           html += `</li>`;
         });
@@ -366,7 +402,7 @@ class MessageFormatter {
         <span class="label">⏭️ Skipped (not bank-linked / closed):</span>
         <ul class="account-list">`;
         content.skippedAccounts.forEach(account => {
-          html += `<li class="account-item">• ${account.name} (${account.reason})</li>`;
+          html += `<li class="account-item">• ${escapeHtml(account.name)} (${escapeHtml(account.reason)})</li>`;
         });
         html += `</ul>
       </div>`;
@@ -396,8 +432,8 @@ class MessageFormatter {
         {
           type: 'section',
           fields: [
-            { type: 'mrkdwn', text: `*Server:*\n${content.serverName}` },
-            { type: 'mrkdwn', text: `*Duration:*\n${content.duration}` }
+            { type: 'mrkdwn', text: `*Server:*\n${escapeSlack(content.serverName)}` },
+            { type: 'mrkdwn', text: `*Duration:*\n${escapeSlack(content.duration)}` }
           ]
         }
       ]
@@ -409,7 +445,7 @@ class MessageFormatter {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Error:*\n${content.error}${content.errorCode ? `\n*Code:* ${content.errorCode}` : ''}`
+          text: `*Error:*\n${escapeSlack(content.error)}${content.errorCode ? `\n*Code:* ${escapeSlack(content.errorCode)}` : ''}`
         }
       });
     }
@@ -432,15 +468,15 @@ class MessageFormatter {
       }
       let accountsText = '';
       if (synced > 0) {
-        accountsText += `*✅ Synced:*\n${this._joinCapped(content.succeededAccounts.map(n => `• ${n}`), 900)}`;
+        accountsText += `*✅ Synced:*\n${this._joinCapped(this._syncedEntries(content).map(e => `• ${this._syncedLine(e, escapeSlack)}`), 900)}`;
       }
       if (failed > 0) {
         if (accountsText) accountsText += '\n\n';
-        accountsText += `*❌ Failed:*\n${this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a)), 900)}`;
+        accountsText += `*❌ Failed:*\n${this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a, escapeSlack)), 900)}`;
       }
       if (skipped > 0) {
         if (accountsText) accountsText += '\n\n';
-        accountsText += `*⏭️ Skipped (not bank-linked / closed):*\n${this._joinCapped(content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`), 900)}`;
+        accountsText += `*⏭️ Skipped (not bank-linked / closed):*\n${this._joinCapped(content.skippedAccounts.map(a => `• ${escapeSlack(a.name)} (${escapeSlack(a.reason)})`), 900)}`;
       }
       if (accountsText) {
         payload.blocks.push({ type: 'section', text: { type: 'mrkdwn', text: accountsText } });
@@ -454,14 +490,14 @@ class MessageFormatter {
     const color = content.isSuccess ? (content.hasIssues ? 15844367 : 5025616) : 15158332; // Warning, Green, Red
     
     const fields = [
-      { name: 'Server', value: content.serverName, inline: true },
-      { name: 'Duration', value: content.duration, inline: true }
+      { name: 'Server', value: escapeDiscordMarkdown(content.serverName), inline: true },
+      { name: 'Duration', value: escapeDiscordMarkdown(content.duration), inline: true }
     ];
     
     if (!content.isSuccess && content.error) {
-      fields.push({ name: 'Error', value: content.error });
+      fields.push({ name: 'Error', value: escapeDiscordMarkdown(content.error) });
       if (content.errorCode) {
-        fields.push({ name: 'Code', value: content.errorCode, inline: true });
+        fields.push({ name: 'Code', value: escapeDiscordMarkdown(content.errorCode), inline: true });
       }
     }
 
@@ -476,13 +512,13 @@ class MessageFormatter {
         fields.push({ name: 'Transactions', value: transactions });
       }
       if (synced > 0) {
-        fields.push({ name: '✅ Synced Accounts', value: this._joinCapped(content.succeededAccounts.map(n => `• ${n}`), 1000) });
+        fields.push({ name: '✅ Synced Accounts', value: this._joinCapped(this._syncedEntries(content).map(e => `• ${this._syncedLine(e, escapeDiscordMarkdown)}`), 1000) });
       }
       if (failed > 0) {
-        fields.push({ name: '❌ Failed Accounts', value: this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a)), 1000) });
+        fields.push({ name: '❌ Failed Accounts', value: this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a, escapeDiscordMarkdown)), 1000) });
       }
       if (skipped > 0) {
-        fields.push({ name: '⏭️ Skipped (not bank-linked / closed)', value: this._joinCapped(content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`), 1000) });
+        fields.push({ name: '⏭️ Skipped (not bank-linked / closed)', value: this._joinCapped(content.skippedAccounts.map(a => `• ${escapeDiscordMarkdown(a.name)} (${escapeDiscordMarkdown(a.reason)})`), 1000) });
       }
     }
     
@@ -524,15 +560,15 @@ class MessageFormatter {
 <body>
   <div class="container">
     <div class="header">
-      <h2>${content.title}</h2>
+      <h2>${escapeHtml(content.title)}</h2>
     </div>
     <div class="content">
       <p>✅ <strong>Service is now running</strong></p>
-      <p>📦 <strong>Version:</strong> ${content.version}</p>
-      <p><strong>Servers:</strong> ${content.serverNames}</p>
+      <p>📦 <strong>Version:</strong> ${escapeHtml(content.version)}</p>
+      <p><strong>Servers:</strong> ${escapeHtml(content.serverNames)}</p>
       <h3>Schedules:</h3>
-      <pre>${content.schedules}</pre>
-      <p><strong>Next sync:</strong> ${content.nextSync}</p>
+      <pre>${escapeHtml(content.schedules)}</pre>
+      <p><strong>Next sync:</strong> ${escapeHtml(content.nextSync)}</p>
     </div>
   </div>
 </body>
