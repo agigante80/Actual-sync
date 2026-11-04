@@ -393,6 +393,55 @@ describe('MessageFormatter', () => {
     });
   });
 
+  describe('transaction counts (#391)', () => {
+    const base = {
+      status: 'success', serverName: 'My Budget', duration: 1200,
+      accountsProcessed: 2, accountsFailed: 0,
+      succeededAccounts: ['Checking', 'Savings'], failedAccounts: [], skippedAccounts: []
+    };
+
+    test('the generic payload carries both counts', () => {
+      const g = MessageFormatter.formatSyncNotification({ ...base, transactionsAdded: 2, transactionsUpdated: 1 }).generic;
+      expect(g.transactionsAdded).toBe(2);
+      expect(g.transactionsUpdated).toBe(1);
+    });
+
+    test('the generic payload reports 0 when the counts are absent or malformed', () => {
+      expect(MessageFormatter.formatSyncNotification(base).generic).toMatchObject({ transactionsAdded: 0, transactionsUpdated: 0 });
+      const bad = MessageFormatter.formatSyncNotification({ ...base, transactionsAdded: -3, transactionsUpdated: '4' }).generic;
+      expect(bad).toMatchObject({ transactionsAdded: 0, transactionsUpdated: 0 });
+      const fractional = MessageFormatter.formatSyncNotification({ ...base, transactionsAdded: 1.5 }).generic;
+      expect(fractional.transactionsAdded).toBe(0);
+    });
+
+    test('every template shows the counts line when a count is nonzero', () => {
+      const f = MessageFormatter.formatSyncNotification({ ...base, transactionsAdded: 2, transactionsUpdated: 1 });
+      expect(f.text).toContain('Accounts: 2 synced, 0 failed, 0 skipped\nTransactions: 2 new, 1 updated\n');
+      expect(f.html).toContain('<span class="label">Transactions:</span>');
+      expect(f.html).toContain('<span class="value">2 new, 1 updated</span>');
+      expect(JSON.stringify(f.slack)).toContain('*Transactions:* 2 new, 1 updated');
+      expect(f.discord.embeds[0].fields).toContainEqual({ name: 'Transactions', value: '2 new, 1 updated' });
+      expect(f.ntfy.message).toContain('Transactions: 2 new, 1 updated');
+    });
+
+    test('a single nonzero count still shows the line, with the other as 0', () => {
+      const f = MessageFormatter.formatSyncNotification({ ...base, transactionsAdded: 0, transactionsUpdated: 3 });
+      expect(f.text).toContain('Transactions: 0 new, 3 updated');
+    });
+
+    test('templates are byte-identical to the pre-#391 output when both counts are 0', () => {
+      const without = MessageFormatter.formatSyncNotification(base);
+      const zero = MessageFormatter.formatSyncNotification({ ...base, transactionsAdded: 0, transactionsUpdated: 0 });
+      for (const key of ['text', 'html', 'slack', 'discord', 'ntfy']) {
+        expect(zero[key]).toEqual(without[key]);
+      }
+      expect(zero.text).not.toContain('Transactions');
+      expect(zero.html).not.toContain('Transactions');
+      expect(JSON.stringify(zero.slack)).not.toContain('Transactions');
+      expect(JSON.stringify(zero.discord)).not.toContain('Transactions');
+    });
+  });
+
   describe('ntfy fields (#112)', () => {
     test('sync ntfy has title/message/level/tags; level reflects outcome', () => {
       const ok = MessageFormatter.formatSyncNotification({

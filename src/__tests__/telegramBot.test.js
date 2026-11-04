@@ -419,6 +419,19 @@ describe('TelegramBotService', () => {
         expect(bot.config.notifyOnSuccess).toBe('errors_only');
       });
       
+      test('should change notification mode to activity (#392)', async () => {
+        const bot = new TelegramBotService(
+          { botToken: '123:ABC', chatId: '456', notifyOnSuccess: 'always' },
+          {}
+        );
+        bot.sendMessage = jest.fn().mockResolvedValue(true);
+
+        await bot.handleNotify(['activity']);
+
+        expect(bot.config.notifyOnSuccess).toBe('activity_only');
+        expect(bot.sendMessage).toHaveBeenCalledWith(expect.stringContaining('imported or updated transactions'));
+      });
+
       test('should change notification mode to never', async () => {
         const bot = new TelegramBotService(
           { botToken: '123:ABC', chatId: '456' },

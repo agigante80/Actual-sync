@@ -153,6 +153,8 @@ class SyncHistoryService {
         accounts_succeeded INTEGER,
         accounts_failed INTEGER,
         accounts_skipped INTEGER,
+        transactions_added INTEGER,
+        transactions_updated INTEGER,
         error_message TEXT,
         error_code TEXT,
         correlation_id TEXT,
@@ -364,6 +366,15 @@ class SyncHistoryService {
       this.logger.info('Migrated sync_history: added accounts_skipped column');
     }
 
+    // #391: run-level transaction counts from runBankSync. Rows written
+    // before the migration read as NULL (unknown), not 0.
+    for (const column of ['transactions_added', 'transactions_updated']) {
+      if (!hasColumn(column)) {
+        this.db.exec(`ALTER TABLE sync_history ADD COLUMN ${column} INTEGER`);
+        this.logger.info(`Migrated sync_history: added ${column} column`);
+      }
+    }
+
     // #295 review, H5: schedule_alerts.channel, added to an existing
     // database created before per-destination ledger keying existed.
     // Existing rows read as NULL for it: a row written back when there was
@@ -550,6 +561,8 @@ class SyncHistoryService {
    * @param {number} record.accountsSucceeded - Number of accounts succeeded
    * @param {number} record.accountsFailed - Number of accounts failed
    * @param {number} record.accountsSkipped - Number of accounts skipped (manual/closed)
+   * @param {number} record.transactionsAdded - Transactions the bank sync imported (#391)
+   * @param {number} record.transactionsUpdated - Existing transactions the bank sync matched and updated (#391)
    * @param {string} record.errorMessage - Error message if failed
    * @param {string} record.errorCode - Error code if failed
    * @param {string} record.correlationId - Correlation ID for tracking
@@ -567,10 +580,12 @@ class SyncHistoryService {
           accounts_succeeded,
           accounts_failed,
           accounts_skipped,
+          transactions_added,
+          transactions_updated,
           error_message,
           error_code,
           correlation_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const result = stmt.run(
@@ -582,6 +597,8 @@ class SyncHistoryService {
         record.accountsSucceeded || 0,
         record.accountsFailed || 0,
         record.accountsSkipped || 0,
+        record.transactionsAdded || 0,
+        record.transactionsUpdated || 0,
         record.errorMessage || null,
         record.errorCode || null,
         record.correlationId || null

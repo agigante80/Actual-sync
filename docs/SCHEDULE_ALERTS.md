@@ -36,14 +36,20 @@ For each server with a `scheduleAlerts` block:
    configured rule against them.
 2. Each rule watches one schedule (`schedule: "Rent - Apartment"`) or every schedule whose name
    starts with a prefix (`schedulePrefix: "Rent"`, one alert per match).
-3. For every occurrence of a watched schedule, a matching transaction is looked for by two means:
+3. The occurrence dates of each watched schedule come from Actual itself
+   (`getScheduleDates`, @actual-app/api 26.11.0 or later; #298), one call per watched schedule
+   over a window from 90 days before today to 180 days after. They are the same dates Actual shows,
+   including its weekend handling ("move to Friday/Monday"). A schedule whose dates cannot be read,
+   for example `skipWeekend` with no weekend direction set, is reported `cannotCheck`
+   (`reason: "error"`) with a warning, while every other rule is still evaluated.
+4. For every occurrence of a watched schedule, a matching transaction is looked for by two means:
    Actual's own transaction-to-schedule link (authoritative, regardless of amount) or an
    account + payee match within an early/grace window around the occurrence date.
-4. What happened for each occurrence in the look-back window (up to 90 days: twice the schedule's longest interval, at least 7) becomes zero or one event
+5. What happened for each occurrence in the look-back window (up to 90 days: twice the schedule's longest interval, at least 7) becomes zero or one event
    of its own, so several overdue occurrences can each produce one: `missing`,
    `wrongAmount`, `cannotCheck`, `resolved`, or (for a rule matching no schedule) `ruleUnmatched`.
    See [Event types](#event-types).
-5. Each event is de-duplicated against a ledger (the `schedule_alerts` table in the sync-history
+6. Each event is de-duplicated against a ledger (the `schedule_alerts` table in the sync-history
    database) before it is rendered and sent, so the same event does not repeat on every sync.
 
 A server with no `scheduleAlerts` block never calls `getSchedules()` - this feature has no cost for
@@ -117,7 +123,7 @@ Exactly one of `schedule` or `schedulePrefix` is required.
 |---|---|---|
 | `missing` | No matching transaction by the deadline, and the account is synced past it. | Repeats every `remindEveryDays`, if set. |
 | `wrongAmount` | A matching transaction posted in-window, but its amount is outside tolerance. | One-time; not repeated. |
-| `cannotCheck` | The account's last sync is stale (`reason: "stale"`), not yet past the deadline (`reason: "not-synced"`), the rule's own window configuration is unsound (`reason: "interval-violation"`, see below), or the rule threw while being evaluated (`reason: "error"`). | Never a false `missing`. An account that was never bank-synced (no `last_sync` yet) always gives `cannotCheck` (`reason: "stale"`) until its first sync. The built-in message has its own wording per reason; only `stale` and `not-synced` mention the bank connection. |
+| `cannotCheck` | The account's last sync is stale (`reason: "stale"`), not yet past the deadline (`reason: "not-synced"`), the rule's own window configuration is unsound (`reason: "interval-violation"`, see below), or the rule threw while being evaluated or its schedule's dates could not be read from Actual (`reason: "error"`). | Never a false `missing`. An account that was never bank-synced (no `last_sync` yet) always gives `cannotCheck` (`reason: "stale"`) until its first sync. The built-in message has its own wording per reason; only `stale` and `not-synced` mention the bank connection. |
 | `resolved` | A payment previously reported `missing` later posts, on time or late. | Closes out the alert; no manual dismissal needed. Also sent when a one-off schedule with an open `missing` is marked completed, or any schedule with an open `missing` is deleted in Actual, or a rule's target is edited so it no longer names the schedule (see below). |
 | `ruleUnmatched` | A rule's `schedule`/`schedulePrefix` matches no schedule in Actual (renamed, deleted, or a typo). | Sent once per destination while the rule stays unmatched; sent again only after the rule matched a schedule again and later unmatched (see below). |
 
@@ -537,3 +543,10 @@ A server with a `scheduleAlerts` block can also have rules created in the dashbo
   Databases written by a pre-release development build of this feature (ledger keys of the form
   `slack:#ops`, before the hash was always appended) may see one extra re-send of open alerts after
   upgrading; no released version wrote those keys (#297 round 1, L2).
+- **A schedule with many occurrences can stall a sync (#298).** Occurrence dates come from Actual's
+  `getScheduleDates`, which expands the rule synchronously. For a schedule that ends after a number
+  of occurrences, Actual walks from the first date for every date it returns, so a daily or weekly
+  schedule with hundreds of occurrences that started years ago can take seconds or more. The phase
+  timeout cannot interrupt it, because nothing else runs until it returns. A call that takes more
+  than 3 seconds logs a warning naming the schedule; ending such a schedule on a date instead of a
+  count avoids the cost.

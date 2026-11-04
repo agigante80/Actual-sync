@@ -657,8 +657,8 @@
       "properties": {
         "notifyOnSuccess": {
           "type": "string",
-          "description": "Global default for when to send sync notifications, overridable per channel. 'always' sends on every result; 'errors_only' sends on failure and partial but not success; 'never' turns the channel off entirely (failures included). Test notifications always send.",
-          "enum": ["always", "errors_only", "never"],
+          "description": "Global default for when to send sync notifications, overridable per channel. 'always' sends on every result; 'errors_only' sends on failure and partial but not success; 'activity_only' sends on failure and partial, and on success only when the sync imported or updated at least one transaction; 'never' turns the channel off entirely (failures included). Test notifications always send.",
+          "enum": ["always", "errors_only", "activity_only", "never"],
           "default": "always"
         },
         "email": {
@@ -669,7 +669,7 @@
             "notifyOnSuccess": {
               "type": "string",
               "description": "When to send sync notifications by email. Overrides notifications.notifyOnSuccess.",
-              "enum": ["always", "errors_only", "never"]
+              "enum": ["always", "errors_only", "activity_only", "never"]
             },
             "enabled": {
               "type": "boolean",
@@ -761,7 +761,7 @@
             "notifyOnSuccess": {
               "type": "string",
               "description": "When to send sync notifications to Telegram. Overrides notifications.notifyOnSuccess. Also settable at runtime with the /notify bot command.",
-              "enum": ["always", "errors_only", "never"]
+              "enum": ["always", "errors_only", "activity_only", "never"]
             },
             "pollInterval": {
               "type": "integer",
@@ -834,7 +834,7 @@
                   "notifyOnSuccess": {
                     "type": "string",
                     "description": "When to send sync notifications to this webhook. Overrides notifications.notifyOnSuccess.",
-                    "enum": ["always", "errors_only", "never"]
+                    "enum": ["always", "errors_only", "activity_only", "never"]
                   }
                 },
                 "required": ["url"]
@@ -864,7 +864,7 @@
                   "notifyOnSuccess": {
                     "type": "string",
                     "description": "When to send sync notifications to this webhook. Overrides notifications.notifyOnSuccess.",
-                    "enum": ["always", "errors_only", "never"]
+                    "enum": ["always", "errors_only", "activity_only", "never"]
                   }
                 },
                 "required": ["url"]
@@ -890,7 +890,7 @@
                   "notifyOnSuccess": {
                     "type": "string",
                     "description": "When to send sync notifications to this webhook. Overrides notifications.notifyOnSuccess.",
-                    "enum": ["always", "errors_only", "never"]
+                    "enum": ["always", "errors_only", "activity_only", "never"]
                   },
                   "enabled": {
                     "type": "boolean",
@@ -921,7 +921,7 @@
             "notifyOnSuccess": {
               "type": "string",
               "description": "When to send sync notifications to ntfy. Overrides notifications.notifyOnSuccess.",
-              "enum": ["always", "errors_only", "never"]
+              "enum": ["always", "errors_only", "activity_only", "never"]
             },
             "enabled": {
               "type": "boolean",

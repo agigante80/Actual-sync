@@ -47,8 +47,8 @@ module.exports = [
         id: '169-bypass-ignored', ticket: '#169',
         desc: 'dashboard test notifications no longer bypass the gate',
         file: 'src/services/notificationService.js',
-        anchor: '      bypassThresholds || this.shouldNotifyChannel(channel, status, entry);',
-        mutant: '      this.shouldNotifyChannel(channel, status, entry);',
+        anchor: '      bypassThresholds || this.shouldNotifyChannel(channel, status, entry, { transactionsAdded, transactionsUpdated });',
+        mutant: '      this.shouldNotifyChannel(channel, status, entry, { transactionsAdded, transactionsUpdated });',
         tests: 'notificationService'
     },
     {
@@ -1593,13 +1593,31 @@ module.exports = [
         mutant: '      const scheduleAlertsRetentionDays = this.retentionDays;',
         tests: 'syncHistory'
     },
+    // #298: occurrence dates come from Actual's getScheduleDates; the
+    // vendored weekend roll this slot used to guard was deleted with it.
     {
-        id: '258-weekend-skip-mode-inverted', ticket: '#258',
-        desc: 'a "before" weekend solve mode rolls a Saturday to Monday instead of back to Friday (the before/after branches are swapped)',
-        file: 'src/lib/vendor/actualSchedules.js',
-        anchor: "    if (solveMode === 'after') {\n      return d.nextMonday(date);\n    } else if (solveMode === 'before') {\n      return d.previousFriday(date);\n    }",
-        mutant: "    if (solveMode === 'after') {\n      return d.previousFriday(date);\n    } else if (solveMode === 'before') {\n      return d.nextMonday(date);\n    }",
-        tests: 'actualSchedules.vendor'
+        id: '298-missing-dates-treated-as-none', ticket: '#298',
+        desc: 'a schedule with no dates read from Actual is treated as having no occurrences (silently never alerting) instead of cannotCheck',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "  if (!Array.isArray(dates)) throw new Error('no occurrence dates were read from Actual for this schedule');",
+        mutant: "  if (!Array.isArray(dates)) return [];",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '298-duplicate-dates-kept', ticket: '#298',
+        desc: 'a date Actual returns twice becomes two occurrences instead of one',
+        file: 'src/lib/scheduleAlerts.js',
+        anchor: "    if (seen.has(key)) continue;\n",
+        mutant: "",
+        tests: 'scheduleAlerts.test'
+    },
+    {
+        id: '298-timeout-swallowed-per-schedule', ticket: '#298',
+        desc: 'a phase timeout on one getScheduleDates call is stored per schedule, so a stuck session waits out the timeout once for every bound schedule',
+        file: 'src/lib/scheduleAlertsStep.js',
+        anchor: "            if (error && error.code === 'PHASE_TIMEOUT') throw tagError(error, 'actual_read_failed');\n",
+        mutant: "",
+        tests: 'scheduleAlertsSync'
     },
 
     // ---- #258 additional guards from PR #295 review round 1 ----------------
@@ -4184,5 +4202,47 @@ module.exports = [
         anchor: ' && r.item.source === source).length;',
         mutant: ' ).length;',
         tests: 'dashboardPayments'
+    },
+
+    // ---- #392 notifyOnSuccess activity_only -----------------------------------
+    {
+        id: '392-activity-ignores-counts', ticket: '#392',
+        desc: 'activity_only sends every success, quiet ones included (the transaction counts are ignored)',
+        file: 'src/services/notificationService.js',
+        anchor: "      return status !== 'success' || (counts?.transactionsAdded ?? 0) + (counts?.transactionsUpdated ?? 0) > 0;",
+        mutant: '      return true;',
+        tests: 'notificationService'
+    },
+    {
+        id: '392-activity-drops-updated', ticket: '#392',
+        desc: 'activity_only counts only imported transactions, so a success that only updated existing ones is suppressed',
+        file: 'src/services/notificationService.js',
+        anchor: " + (counts?.transactionsUpdated ?? 0) > 0;",
+        mutant: ' > 0;',
+        tests: 'notificationService'
+    },
+    {
+        id: '392-activity-suppresses-failure', ticket: '#392',
+        desc: 'activity_only suppresses a failure or partial sync with no transaction activity',
+        file: 'src/services/notificationService.js',
+        anchor: "      return status !== 'success' || (counts",
+        mutant: "      return (counts",
+        tests: 'notificationService'
+    },
+    {
+        id: '392-counts-not-passed', ticket: '#392',
+        desc: 'notifySync does not pass the run counts to the gate, so activity_only never sends a success',
+        file: 'src/services/notificationService.js',
+        anchor: 'this.shouldNotifyChannel(channel, status, entry, { transactionsAdded, transactionsUpdated });',
+        mutant: 'this.shouldNotifyChannel(channel, status, entry);',
+        tests: 'notificationService'
+    },
+    {
+        id: '392-telegram-activity-unmapped', ticket: '#392',
+        desc: '/notify activity is rejected as an unknown mode',
+        file: 'src/services/telegramBot.js',
+        anchor: "const validModes = ['always', 'errors', 'activity', 'never'];",
+        mutant: "const validModes = ['always', 'errors', 'never'];",
+        tests: 'telegramBot'
     }
 ];

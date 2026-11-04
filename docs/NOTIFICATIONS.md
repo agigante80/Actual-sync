@@ -33,6 +33,16 @@ Every sync notification (across Telegram/text, Slack, Discord and email) explain
 the per-account outcome, on **both** success and failure:
 
 - An **`Accounts: N synced, M failed, K skipped`** summary line.
+- A **`Transactions: N new, M updated`** line: how many transactions the bank
+  sync imported, and how many existing ones it matched and updated, summed over
+  the run. It appears only when at least one count is nonzero, so a quiet sync
+  looks exactly as it did before the line existed. The counts come from Actual
+  itself (`runBankSync`, `@actual-app/api` 26.11.0 or later). An account whose
+  bank sync finished after its 60 s timeout adds 0, because its result arrived
+  too late to be read. The numbers are Actual's own, so they can differ from
+  what the bank shows: a split transaction counts its parent plus each part,
+  and a newly linked account's first sync includes its starting-balance
+  transaction.
 - **✅ Synced** — bank-linked accounts that synced.
 - **❌ Failed** — accounts whose bank sync errored (with the error). This appears on
   the failure path too — e.g. a single rate-limited account shows up here rather
@@ -109,18 +119,22 @@ Decides **which sync results reach a channel**. Every channel supports it and th
 |------|-----------|-----------|-----------|---------|-------------------|
 | `always` (default) | send | send | send¹ | send | send |
 | `errors_only` | — | send | send¹ | send | send |
+| `activity_only` | send² | send | send¹ | send | send |
 | `never` | — | — | — | — | send |
 
 ¹ Failures additionally pass through [thresholds](#notification-thresholds) and [rate limiting](#rate-limiting), which are unchanged and apply to failures only.
 
+² Only when the sync imported or updated at least one transaction (the counts on the Transactions line, see below); a quiet success sends nothing. On an `@actual-app/api` older than 26.11.0 the counts are always 0, so this mode then behaves like `errors_only`.
+
 **Key points:**
 
 - **`partial` counts as an error.** A sync where some accounts failed is a failure signal, so `errors_only` reports it. (This matches ntfy, which already maps partial to `priorityOnFailure`.)
-- **`never` turns the channel off entirely**, failures included. It is an explicit opt-out, not a noise filter. The guarantee that holds is narrower: **`always` and `errors_only` never suppress a failure.**
+- **`never` turns the channel off entirely**, failures included. It is an explicit opt-out, not a noise filter. The guarantee that holds is narrower: **`always`, `errors_only` and `activity_only` never suppress a failure.**
 
   > ⚠️ **Upgrading from 1.10.x or earlier?** `notifyOnSuccess` previously existed in the schema but gated nothing — a channel set to `never` still received everything, failures included. From 1.11.0 it works, so that same config now receives **nothing at all**. If you meant "don't tell me about successful syncs", you want **`errors_only`**, not `never`. The service logs a `WARN` at startup naming every channel it has muted.
 - **Test notifications always send**, on every mode including `never` — otherwise you could not verify a channel you had muted. `enabled: false` still wins over everything.
-- **Startup notifications** have no sync status, so `errors_only` does not apply to them; only `never` suppresses them.
+- **Startup notifications** have no sync status, so `errors_only` and `activity_only` do not apply to them; only `never` suppresses them.
+- **`activity_only` follows the same precedence** as the other modes (webhook entry, then channel, then global), and a channel set to it is not listed as muted at startup.
 
 **Resolution order** — first value found wins:
 
@@ -144,7 +158,7 @@ Decides **which sync results reach a channel**. Every channel supports it and th
 
 Above: everything defaults to `errors_only`; email overrides back to `always`; the `alerts` Discord webhook inherits `errors_only` while `audit-log` records every sync.
 
-> **Telegram note:** the `/notify` bot command uses `errors` where the config key uses `errors_only` — same mode, two spellings. `/notify` changes take effect immediately. They persist across restarts **only if** `notifications.telegram.notifyOnSuccess` is unset in config — an explicit config value wins on restart, and the bot says so when you set the mode.
+> **Telegram note:** the `/notify` bot command uses `errors` where the config key uses `errors_only`, and `activity` for `activity_only`: same modes, two spellings. `/notify` changes take effect immediately. They persist across restarts **only if** `notifications.telegram.notifyOnSuccess` is unset in config — an explicit config value wins on restart, and the bot says so when you set the mode.
 
 #### Email Settings
 
@@ -158,7 +172,7 @@ Above: everything defaults to `errors_only`; email overrides back to `always`; t
 | `auth.pass` | string | Yes* | - | SMTP password or app password |
 | `from` | string | Yes* | - | From email address |
 | `to` | array | Yes* | - | Recipient email addresses |
-| `notifyOnSuccess` | string | No | inherits | `always`, `errors_only`, or `never` — see [Notification mode](#notification-mode-notifyonsuccess) |
+| `notifyOnSuccess` | string | No | inherits | `always`, `errors_only`, `activity_only`, or `never` — see [Notification mode](#notification-mode-notifyonsuccess) |
 
 *Required when email is enabled
 
@@ -173,7 +187,7 @@ Each webhook type (Slack, Discord, Telegram) accepts an array of webhook configu
 | `name` | string | No | Descriptive name for logs |
 | `url` | string | Yes | Webhook URL |
 | `enabled` | boolean | No | Set `false` to disable without removing (default `true`) |
-| `notifyOnSuccess` | string | No | `always`, `errors_only`, or `never` for this entry — see [Notification mode](#notification-mode-notifyonsuccess) |
+| `notifyOnSuccess` | string | No | `always`, `errors_only`, `activity_only`, or `never` for this entry — see [Notification mode](#notification-mode-notifyonsuccess) |
 
 **Telegram (Legacy Webhooks - deprecated):**
 
@@ -196,7 +210,7 @@ These entries are also the **one exception** to [`notifyOnSuccess`](#notificatio
 | `name` | string | No | Descriptive name for logs |
 | `url` | string | Yes | Destination the JSON payload is POSTed to |
 | `enabled` | boolean | No | Set `false` to disable without removing (default `true`) |
-| `notifyOnSuccess` | string | No | `always`, `errors_only`, or `never` for this entry — see [Notification mode](#notification-mode-notifyonsuccess) |
+| `notifyOnSuccess` | string | No | `always`, `errors_only`, `activity_only`, or `never` for this entry — see [Notification mode](#notification-mode-notifyonsuccess) |
 | `headers` | object | No | Extra HTTP headers (e.g. `Authorization`, `Priority`). Secrets are redacted in logs. |
 | `contentType` | string | No | Override request Content-Type (default `application/json`) |
 
@@ -209,12 +223,18 @@ The JSON payload:
   "durationMs": 1200,
   "message": "Sync Successful",
   "accounts": { "synced": 9, "failed": 0, "skipped": 3 },
+  "transactionsAdded": 2,
+  "transactionsUpdated": 1,
   "succeededAccounts": ["..."],
   "failedAccounts": [{ "name": "...", "error": "..." }],
   "skippedAccounts": [{ "name": "...", "reason": "not-linked" }],
   "timestamp": "<ISO8601>"
 }
 ```
+
+`transactionsAdded` and `transactionsUpdated` are integers and always present:
+`0` when nothing was imported or updated, or when the bank sync did not report
+counts. They are counts only; no transaction ids, payees or amounts are sent.
 
 #### ntfy Settings
 
@@ -227,7 +247,7 @@ The JSON payload:
 | `token` | string | No | Access token sent as `Authorization: Bearer <token>` (redacted in logs) |
 | `priorityOnFailure` | string | No | Priority for failures (default `high`). **Partial syncs use this too** — a partial counts as a failure. |
 | `priorityOnSuccess` | string | No | Priority for success/info (default `default`) |
-| `notifyOnSuccess` | string | No | `always`, `errors_only`, or `never` — see [Notification mode](#notification-mode-notifyonsuccess) |
+| `notifyOnSuccess` | string | No | `always`, `errors_only`, `activity_only`, or `never` — see [Notification mode](#notification-mode-notifyonsuccess) |
 | `tags` | array | No | Base tags/emoji added to every notification |
 | `icon` | string | No | Icon URL shown in the notification (sent as the `Icon` header). Defaults to the Actual-sync project icon; set to an empty string `""` to send no icon (e.g. on an air-gapped network, or set `notifications.branding: false`). |
 
@@ -249,7 +269,7 @@ Tip: ntfy users can also just point a `webhooks.generic` entry at their topic fo
 | `botToken` | string | Yes* | - | Bot token from @BotFather |
 | `chatId` | string | Yes** | - | Chat ID (user, group, or channel) |
 | `chatIds` | array | No** | - | One or more chat IDs (alternative to `chatId`). The first entry is used for outbound notifications; the bot also accepts numeric IDs. |
-| `notifyOnSuccess` | string | No | inherits | Notification mode: `always`, `errors_only`, or `never` — see [Notification mode](#notification-mode-notifyonsuccess). Also settable at runtime with [`/notify`](#notify-mode), which uses `errors` for `errors_only`. |
+| `notifyOnSuccess` | string | No | inherits | Notification mode: `always`, `errors_only`, `activity_only`, or `never` — see [Notification mode](#notification-mode-notifyonsuccess). Also settable at runtime with [`/notify`](#notify-mode), which uses `errors` for `errors_only` and `activity` for `activity_only`. |
 | `pollInterval` | integer | No | `2000` | Polling interval in milliseconds for the interactive bot (minimum 100) |
 
 *Required when Telegram bot is enabled. **Provide either `chatId` or `chatIds` (at least one).
@@ -461,14 +481,16 @@ Changes notification preferences. Without arguments, shows current mode.
 
 **Modes:**
 - `always` - Get notified on every sync (success or failure)
-- `errors` - Get notified only on failures (default)
-- `never` - No sync notifications (commands still work)
+- `errors` - Get notified only on failures and partial syncs
+- `activity` - Failures and partial syncs, plus successful syncs that imported or updated transactions
+- `never` - No notifications at all, including failures (commands still work)
 
 **Examples:**
 ```
 /notify
 /notify always
 /notify errors
+/notify activity
 /notify never
 ```
 
@@ -483,11 +505,12 @@ You will receive sync notifications.
 ```
 ⚙️ Current notification mode: errors_only
 
-Usage: /notify [always|errors|never]
+Usage: /notify [always|errors|activity|never]
 
-• always - Notify on all syncs
-• errors - Notify only on failures (default)
-• never - No sync notifications (commands still work)
+• always - Notify on all syncs (default)
+• errors - Notify only on failures and partial syncs
+• activity - Failures and partial syncs, plus successful syncs that imported or updated transactions
+• never - No notifications at all, INCLUDING failures (commands still work)
 ```
 
 #### `/errors [limit]`

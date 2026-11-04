@@ -1,27 +1,20 @@
 /**
- * Vendored schedule helpers from Actual Budget (#258).
+ * Vendored cadence wording from Actual Budget (#258, trimmed in #298).
  *
  * Actual Budget (https://github.com/actualbudget/actual) is MIT-licensed.
- * These functions are not exported by `@actual-app/api`, so `getSchedules()`
- * gives us the raw recurrence config but nothing that expands it into
- * occurrence dates or renders Actual's own cadence wording. This file ports
- * the minimum needed for that, kept import-clean (only `@rschedule/*` and
- * `date-fns`, see `actualSchedules.vendor.test.js`) so it can be dropped once
- * Actual exports these helpers itself (tracking issue to be filed upstream;
- * link it here once opened).
+ * `@actual-app/api` 26.11.0 added `getScheduleDates` (actualbudget/actual#9020),
+ * so occurrence dates now come from Actual itself and the recurrence expansion
+ * that used to live here (`recurConfigToRSchedule`, `getDateWithSkippedWeekend`,
+ * `parseRecurDate`, the `RSchedule` wrapper and its `@rschedule/*` setup) is
+ * gone. What is left renders Actual's own cadence wording, which the api does
+ * not export. It stays import-clean (only `date-fns`, see
+ * `actualSchedules.vendor.test.js`) so it can be dropped once Actual exports it.
  *
  * Provenance:
  * - Upstream repository: https://github.com/actualbudget/actual
  * - Vendored from npm package @actual-app/core@26.9.0
  * - Upstream commit (tag v26.9.0): 59fe126f637d858c061e1eeedbef5436c8f2225a
  * - Ported from:
- *   - packages/loot-core/src/shared/schedules.ts
- *     -> `recurConfigToRSchedule`, `getDateWithSkippedWeekend`
- *   - packages/loot-core/src/server/rules/rule-utils.ts
- *     -> `parseRecurDate` (simplified: throws a plain Error instead of
- *        Actual's internal RuleError, which this project does not use)
- *   - packages/loot-core/src/server/util/rschedule.ts
- *     -> the `RSchedule` wrapper class and its `@rschedule/*` setup
  *   - packages/desktop-client/src/util/schedule.ts
  *     -> `getRecurringDescription` (Actual's own cadence wording, e.g.
  *        "Every month on the 5th"). Actual's `t()` (i18next) is replaced by
@@ -31,6 +24,7 @@
  *        Actual's own `schedule.test.ts` fixtures exactly. `monthUtils.format`
  *        calls are ported to plain `date-fns` (`monthUtils.format(date, fmt,
  *        locale)` is itself a thin wrapper over `date-fns.format`).
+ *   - `monthUtils.parseDate` -> `parseDate`
  *
  * License: MIT (see https://github.com/actualbudget/actual/blob/master/LICENSE.txt)
  */
@@ -38,15 +32,10 @@
 'use strict';
 
 // Import allow-list enforced by actualSchedules.vendor.test.js: this file may
-// only import from `@rschedule/*` and `date-fns`, so it stays a drop-in
-// replacement for whatever Actual eventually exports, and never grows a
-// dependency on the rest of this codebase.
-require('@rschedule/standard-date-adapter/setup');
-const { Schedule: OriginalSchedule } = require('@rschedule/core/generators');
+// only import `date-fns`, so it stays a drop-in replacement for whatever
+// Actual eventually exports, and never grows a dependency on the rest of this
+// codebase.
 const d = require('date-fns');
-
-/** Wrapper class, exactly as Actual defines it (constructor behavior when bundled). */
-class RSchedule extends OriginalSchedule {}
 
 /**
  * Parse a plain `YYYY-MM-DD` / `YYYY-MM` / `YYYY` string into a local Date
@@ -66,123 +55,6 @@ function parseDate(value) {
     return new Date(parseInt(year, 10), parseInt(month, 10) - 1, 1, 12);
   }
   return new Date(parseInt(year, 10), 0, 1, 12);
-}
-
-/**
- * Format a Date/`YYYY-MM-DD` value as `yyyy-MM-dd`, matching
- * `monthUtils.dayFromDate`.
- * @param {Date|string} value
- * @returns {string}
- */
-function dayFromDate(value) {
-  return d.format(value instanceof Date ? value : parseDate(value), 'yyyy-MM-dd');
-}
-
-/**
- * Convert Actual's `RecurConfig` (a schedule's `date` field, when recurring)
- * into the `@rschedule` rule option(s) it represents. Ported unchanged from
- * `packages/loot-core/src/shared/schedules.ts`.
- *
- * @param {Object} config
- * @returns {Object[]} one or more rschedule `IRuleOptions`
- */
-function recurConfigToRSchedule(config) {
-  const base = {
-    start: parseDate(config.start),
-    frequency: config.frequency.toUpperCase(),
-    byHourOfDay: [12]
-  };
-
-  if (config.interval) {
-    base.interval = config.interval;
-  }
-
-  switch (config.endMode) {
-    case 'after_n_occurrences':
-      base.count = config.endOccurrences;
-      break;
-    case 'on_date':
-      base.end = parseDate(config.endDate);
-      break;
-    default:
-      break;
-  }
-
-  const abbrevDay = (name) => name.slice(0, 2).toUpperCase();
-
-  switch (config.frequency) {
-    case 'daily':
-      return [base];
-    case 'weekly':
-      return [base];
-    case 'monthly':
-      if (config.patterns && config.patterns.length > 0) {
-        const days = config.patterns.filter((p) => p.type === 'day');
-        const dayNames = config.patterns.filter((p) => p.type !== 'day');
-
-        return [
-          days.length > 0 && { ...base, byDayOfMonth: days.map((p) => p.value) },
-          dayNames.length > 0 && {
-            ...base,
-            byDayOfWeek: dayNames.map((p) => [abbrevDay(p.type), p.value])
-          }
-        ].filter(Boolean);
-      }
-      return [base];
-    case 'yearly':
-      return [base];
-    default:
-      throw new Error('Invalid recurring date config');
-  }
-}
-
-/**
- * Move a weekend date to the nearest weekday, exactly as Actual's own
- * "avoid weekends" schedule option does. Ported unchanged from
- * `packages/loot-core/src/shared/schedules.ts`.
- *
- * @param {Date} date
- * @param {'after'|'before'} solveMode
- * @returns {Date}
- */
-function getDateWithSkippedWeekend(date, solveMode) {
-  if (d.isWeekend(date)) {
-    if (solveMode === 'after') {
-      return d.nextMonday(date);
-    } else if (solveMode === 'before') {
-      return d.previousFriday(date);
-    }
-    throw new Error('Unknown weekend solve mode, this should not happen!');
-  }
-  return date;
-}
-
-/**
- * Build an `RSchedule` instance for a schedule's recurring `date` config, the
- * same object shape Actual's rule engine works with. Simplified from
- * `packages/loot-core/src/server/rules/rule-utils.ts`: Actual wraps parse
- * failures in its internal `RuleError`, which this project has no equivalent
- * of or use for, so a plain `Error` is thrown instead.
- *
- * @param {Object} desc - a schedule's recurring `date` config
- * @returns {{ type: 'recur', schedule: RSchedule }}
- */
-function parseRecurDate(desc) {
-  try {
-    const rules = recurConfigToRSchedule(desc);
-    return {
-      type: 'recur',
-      schedule: new RSchedule({
-        rrules: rules,
-        data: {
-          skipWeekend: desc.skipWeekend,
-          weekendSolve: desc.weekendSolveMode
-        }
-      })
-    };
-  } catch (e) {
-    throw new Error(`Invalid recurring schedule config: ${e.message}`);
-  }
 }
 
 /** Identity "translation" function: this project has no i18n layer (#258). */
@@ -319,11 +191,6 @@ function getRecurringDescription(config, dateFormat, locale) {
 }
 
 module.exports = {
-  RSchedule,
   parseDate,
-  dayFromDate,
-  recurConfigToRSchedule,
-  getDateWithSkippedWeekend,
-  parseRecurDate,
   getRecurringDescription
 };

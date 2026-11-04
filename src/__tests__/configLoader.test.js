@@ -304,6 +304,23 @@ describe('ConfigLoader', () => {
                 expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();
             });
 
+            test('accepts activity_only at every level (#392)', () => {
+                const cfg = createMockConfig({
+                    notifications: {
+                        notifyOnSuccess: 'activity_only',
+                        email: { enabled: false, notifyOnSuccess: 'activity_only' },
+                        ntfy: { enabled: false, notifyOnSuccess: 'activity_only' },
+                        telegram: { enabled: false, notifyOnSuccess: 'activity_only' },
+                        webhooks: {
+                            slack: [{ name: 's', url: 'https://hooks.slack.com/x', notifyOnSuccess: 'activity_only' }],
+                            discord: [{ name: 'd', url: 'https://discord.com/api/webhooks/x', notifyOnSuccess: 'activity_only' }],
+                            generic: [{ name: 'g', url: 'https://example.com/hook', notifyOnSuccess: 'activity_only' }]
+                        }
+                    }
+                });
+                expect(() => loader.validateConfig(cfg, realSchema)).not.toThrow();
+            });
+
             test.each([
                 ['global', { notifyOnSuccess: 'errorsOnly' }],
                 ['email', { email: { enabled: false, notifyOnSuccess: 'errorsOnly' } }],

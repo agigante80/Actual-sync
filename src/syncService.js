@@ -20,6 +20,7 @@ const { createShutdownGate, resolveShutdownWaitMs } = require('./lib/shutdownGat
 const { createAutoRetry } = require('./lib/autoRetry');
 const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, prepareSession, DEFAULT_PHASE_TIMEOUT_SECONDS } = require('./lib/actualTimeouts');
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts, persistPaymentSnapshot } = require('./lib/scheduleAlertsStep');
+const { bankSyncCounts } = require('./lib/bankSyncCounts');
 
 // Get version from environment (CI build-arg) or package.json (#132)
 const { resolveVersion } = require('./lib/version');
@@ -350,6 +351,12 @@ async function runSyncBank(server, options = {}) {
     let accountsProcessed = 0;
     let accountsSucceeded = 0;
     let accountsFailed = 0;
+    // Run-level transaction counts from runBankSync's result (#391). Since
+    // @actual-app/api 26.11.0 (actualbudget/actual#8998) it resolves to
+    // { newTransactions, matchedTransactions, updatedAccounts }; older versions
+    // resolve undefined, which counts as 0.
+    let transactionsAdded = 0;
+    let transactionsUpdated = 0;
     const succeededAccounts = [];
     const failedAccounts = [];
     let skippedAccounts = []; // accounts skipped (manual / closed) — see partitionSyncableAccounts (#98)
@@ -593,11 +600,16 @@ async function runSyncBank(server, options = {}) {
                     // can resolve before background sync operations fully complete
                     await new Promise(resolve => setTimeout(resolve, 500));
                     
+                    // The result carries transaction ids: keep them at debug level
+                    // and let only the two counts leave this loop. (#391)
                     serverLogger.debug('runBankSync result', {
                         accountId: account.id,
                         accountName: account.name,
                         result: result
                     });
+                    const counts = bankSyncCounts(result);
+                    transactionsAdded += counts.added;
+                    transactionsUpdated += counts.updated;
                     accountsSucceeded++;
                     succeededAccounts.push(account.name);
                     const accountDuration = accountTimer();
@@ -618,7 +630,9 @@ async function runSyncBank(server, options = {}) {
                             accountsSucceeded++;
                             succeededAccounts.push(account.name);
                             accountTimer();
-                            serverLogger.info('Bank sync finished after its timeout; counted as succeeded', {
+                            // Its result arrived after withTimeout gave up, so its
+                            // transaction counts are not known and add 0. (#391)
+                            serverLogger.info('Bank sync finished after its timeout; counted as succeeded, transaction counts unknown (0 added, 0 updated)', {
                                 accountId: account.id,
                                 accountName: account.name
                             });
@@ -765,6 +779,8 @@ async function runSyncBank(server, options = {}) {
             accountsProcessed,
             accountsSucceeded,
             accountsFailed,
+            transactionsAdded,
+            transactionsUpdated,
             succeededAccounts: succeededAccounts.length > 0 ? succeededAccounts : undefined,
             failedAccounts: failedAccounts.length > 0 ? failedAccounts : undefined,
             encrypted: isEncrypted,
@@ -796,11 +812,13 @@ async function runSyncBank(server, options = {}) {
                 accountsSucceeded,
                 accountsFailed,
                 accountsSkipped: skippedAccounts.length,
+                transactionsAdded,
+                transactionsUpdated,
                 errorMessage,
                 correlationId
             });
         }
-        
+
         // Record metrics in Prometheus
         // Note: Partial status recorded as success but with accountsFailed count for monitoring
         if (prometheusService) {
@@ -838,6 +856,8 @@ async function runSyncBank(server, options = {}) {
                     succeededAccounts: succeededAccounts,
                     failedAccounts: failedAccounts,
                     skippedAccounts: skippedAccounts,
+                    transactionsAdded,
+                    transactionsUpdated,
                     error: errorMessage,
                     errorCode: errorCode,
                     correlationId,
@@ -946,6 +966,8 @@ async function runSyncBank(server, options = {}) {
                 accountsSucceeded,
                 accountsFailed,
                 accountsSkipped: skippedAccounts.length,
+                transactionsAdded,
+                transactionsUpdated,
                 errorMessage: errorMessage,
                 errorCode: errorCode,
                 correlationId
@@ -978,6 +1000,8 @@ async function runSyncBank(server, options = {}) {
                     succeededAccounts: succeededAccounts,
                     failedAccounts: failedAccounts,
                     skippedAccounts: skippedAccounts,
+                    transactionsAdded,
+                    transactionsUpdated,
                     error: errorMessage,
                     errorCode: errorCode,
                     correlationId,
