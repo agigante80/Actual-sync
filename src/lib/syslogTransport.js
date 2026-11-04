@@ -32,6 +32,7 @@ class SyslogStreamTransport {
         this.maxBackoffMs = opts.maxBackoffMs || 30000;
         this.stallTimeoutMs = opts.stallTimeoutMs || 30000;
         this.waitingDrain = false;
+        this.reported = false;
         this.onError = opts.onError || (() => {});
         this.queue = [];
         this.dropped = 0;
@@ -80,7 +81,10 @@ class SyslogStreamTransport {
         // A collector that accepts the connection but stops reading would hold
         // frames in the socket buffer for ever: destroy on a write stall, which
         // triggers 'close' and the normal reconnect.
-        socket.setTimeout(this.stallTimeoutMs, () => {
+        // setTimeout(ms, cb) would register cb with once(): after the first idle
+        // timeout the check would be gone. A persistent listener fires on every one.
+        socket.setTimeout(this.stallTimeoutMs);
+        socket.on('timeout', () => {
             // Decide on bytes actually pending, not the drain flag: small writes
             // below the high-water mark never set it. An idle healthy socket has 0.
             if (this.socket === socket && socket.writableLength > 0) {
@@ -91,6 +95,7 @@ class SyslogStreamTransport {
         socket.on(this.useTls ? 'secureConnect' : 'connect', () => {
             if (this.socket !== socket) return;
             this.connected = true;
+            this.reported = false;
             this.backoff = this.minBackoffMs;
             this._flush();
         });
@@ -104,6 +109,10 @@ class SyslogStreamTransport {
     }
 
     _report(err) {
+        // One report per outage: a collector down for hours would otherwise
+        // print one error per reconnect attempt. Reset on a successful connect.
+        if (this.reported) return;
+        this.reported = true;
         try { this.onError(err); } catch (_) { /* never throw into logging */ }
     }
 

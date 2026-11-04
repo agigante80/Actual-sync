@@ -104,6 +104,35 @@ describe('SyslogStreamTransport over TCP', () => {
         await new Promise(r => slow.close(r));
     });
 
+    test('stall detection still works after an idle timeout has fired', async () => {
+        const stalled = [];
+        const slow = net.createServer((s) => { stalled.push(s); s.pause(); });
+        const slowPort = await listen(slow);
+        const t = new SyslogStreamTransport({ host: '127.0.0.1', port: slowPort, protocol: 'tcp', maxQueue: 10, stallTimeoutMs: 150 });
+        await waitFor(() => t.connected);
+        await new Promise(r => setTimeout(r, 400)); // idle past the timeout at least twice
+        expect(t.connected).toBe(true);
+        const big = 'x'.repeat(64 * 1024);
+        for (let i = 0; i < 200; i++) t.write(big);
+        await waitFor(() => !t.connected, 3000);
+        t.close();
+        stalled.forEach(s => s.destroy());
+        await new Promise(r => slow.close(r));
+    });
+
+    test('reports one error per outage, not one per reconnect attempt', async () => {
+        await new Promise(r => server.close(r));
+        const errors = [];
+        const t = new SyslogStreamTransport({ host: '127.0.0.1', port, protocol: 'tcp', minBackoffMs: 10, maxBackoffMs: 20, onError: e => errors.push(e) });
+        await new Promise(r => setTimeout(r, 300));
+        expect(errors.length).toBe(1);
+        server = makeServer();
+        await new Promise(r => server.listen(port, '127.0.0.1', r));
+        await waitFor(() => t.connected);
+        expect(t.reported).toBe(false);
+        t.close();
+    });
+
     test('write never throws, even after close or with odd input, or if onError throws', () => {
         const t = new SyslogStreamTransport({ host: '127.0.0.1', port, protocol: 'tcp', onError: () => { throw new Error('x'); } });
         expect(() => t.write(undefined)).not.toThrow();
