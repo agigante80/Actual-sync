@@ -10,6 +10,7 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { createStream } = require('rotating-file-stream');
 const dgram = require('dgram');
+const { SyslogStreamTransport } = require('./syslogTransport');
 
 // Log levels
 const LOG_LEVELS = {
@@ -145,7 +146,19 @@ class Logger {
         // Setup syslog client if enabled (child loggers inherit the parent's).
         this.syslogClient = null;
         if (this.syslog.enabled && !options.inheritStreams) {
-            this.syslogClient = dgram.createSocket(this.syslog.protocol === 'tcp' ? 'tcp4' : 'udp4');
+            const proto = this.syslog.protocol;
+            if (proto === 'tcp' || proto === 'tls') {
+                // Stream transports use net/tls (dgram has no tcp type). (#432)
+                this.syslogClient = new SyslogStreamTransport({
+                    host: this.syslog.host,
+                    port: this.syslog.port,
+                    protocol: proto,
+                    ca: this.syslog.ca,
+                    onError: (err) => console.error('Syslog transport error:', err.message)
+                });
+            } else {
+                this.syslogClient = dgram.createSocket('udp4');
+            }
         }
     }
     
@@ -393,7 +406,7 @@ class Logger {
         // value cannot terminate the structured-data element early. (#103, M5)
         const escapeSd = (s) => String(s).replace(/([\\"\]])/g, '\\$1');
         const encode = (v) => escapeSd(v !== null && typeof v === 'object' ? JSON.stringify(v) : v);
-        const correlationStr = this.correlationId ? `correlationId="${this.correlationId}"` : '';
+        const correlationStr = this.correlationId ? `correlationId="${escapeSd(this.correlationId)}"` : '';
         const contextStr = Object.entries(safeContext)
             .map(([k, v]) => `${k}="${encode(v)}"`)
             .join(' ');
@@ -429,6 +442,10 @@ class Logger {
 
         try {
             const syslogMessage = this.formatSyslog(level, safeMessage, safeContext, safeMeta);
+            if (this.syslogClient instanceof SyslogStreamTransport) {
+                this.syslogClient.write(syslogMessage);
+                return;
+            }
             const buffer = Buffer.from(syslogMessage);
             
             this.syslogClient.send(
