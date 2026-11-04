@@ -399,4 +399,18 @@ describe('api.init verbose flag (#425)', () => {
         const { actual } = await runSync(['a1'], calls, drive, { logging: { actualApiVerbose: 'yes' } });
         expect(actual.init).toHaveBeenCalledWith(expect.objectContaining({ verbose: false }));
     });
+
+    test('a failed account keeps its upstream code for the operator (#438 M3)', async () => {
+        const slow = deferred();
+        const upstream = Object.assign(new Error('SENTINEL_PAYEE'), { code: 'ITEM_LOGIN_REQUIRED' });
+        const { notified } = await runSync(['a1'], {
+            a1: () => slow.promise
+        }, async (advance, started) => {
+            await started();
+            await advance(60000);
+            slow.reject(upstream);
+            await advance(2000);
+        });
+        expect(notified.failedAccounts[0].error).toBe('Authentication failed (ITEM_LOGIN_REQUIRED)');
+    });
 });

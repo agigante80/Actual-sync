@@ -16,7 +16,7 @@
 
 const fs = require('fs');
 const { classifyRejection } = require('./rejectionClassifier');
-const { classifyError } = require('./errorClassifier');
+const { classifyError, realFrames } = require('./errorClassifier');
 
 const SAFE_CODE = /^[A-Za-z0-9_.-]{1,40}$/;
 
@@ -33,8 +33,8 @@ const describeCrash = classifyError;
 // Frames only: the first stack line repeats the message.
 function framesOf(error) {
     if (!(error instanceof Error) || typeof error.stack !== 'string') return undefined;
-    const frames = error.stack.split('\n').filter(l => l.trim().startsWith('at ')).slice(0, 15);
-    return frames.length ? frames.join('\n') : undefined;
+    const header = String(error);
+    return realFrames(error.stack.startsWith(header) ? error.stack.slice(header.length) : '');
 }
 
 function writeStderr(level, event, message, error, stack) {

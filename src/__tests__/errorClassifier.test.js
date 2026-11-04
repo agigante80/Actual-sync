@@ -93,7 +93,7 @@ describe('classifyError', () => {
         }, { warn() {}, debug() {} });
         const c = classifyError(enhanced);
         expect(c.category).toBe('upstream_unavailable');
-        expect(c.safeMessage).toBe('Network connection to Actual Budget server failed.');
+        expect(c.safeMessage).toMatch(/^Network connection to Actual Budget server failed\. /);
         expect(JSON.stringify(c)).not.toContain(SENTINEL);
     });
 });
@@ -117,7 +117,7 @@ describe('sanitizeErrorMeta', () => {
             error: `bad ${SENTINEL}`, originalError: new Error(SENTINEL),
             errorMessage: SENTINEL, errorStack: SENTINEL, errorName: SENTINEL,
             stack: `Error: ${SENTINEL}\n    at f (/app/x.js:1:1)`, accountId: 'a1'
-        });
+        }, { debug: true });
         expect(JSON.stringify(out)).not.toContain(SENTINEL);
         expect(out.error.category).toBeDefined();
         expect(out.stack).toBe('    at f (/app/x.js:1:1)');
@@ -198,5 +198,53 @@ describe('sync_history migration (#438)', () => {
         const third = new SyncHistoryService({ dbPath, ...quiet });
         expect(third.db.prepare('SELECT error_message m FROM sync_history WHERE id = 3').get().m).toBe('Our own text');
         third.close();
+    });
+});
+
+describe('review round 1 (#438)', () => {
+    test('M1: a stack field is dropped unless the record is DEBUG', () => {
+        const meta = { error: 'x', stack: 'Error: x\n    at f (/app/x.js:1:1)' };
+        expect(sanitizeErrorMeta(meta, { debug: false }).stack).toBeUndefined();
+        expect(sanitizeErrorMeta(meta).stack).toBeUndefined();
+        expect(sanitizeErrorMeta(meta, { debug: true }).stack).toMatch(/at f/);
+    });
+
+    test('M1: an ERROR record with a stack field at INFO level has no stack', () => {
+        const lines = [];
+        const spy = jest.spyOn(console, 'error').mockImplementation((l) => lines.push(l));
+        try {
+            new Logger({ format: 'json', level: 'INFO', logDir: null })
+                .error('m', { stack: 'Error: x\n    at f (/app/x.js:1:1)' });
+        } finally { spy.mockRestore(); }
+        expect(JSON.parse(lines[0]).stack).toBeUndefined();
+    });
+
+    test('M3: ITEM_LOGIN_REQUIRED and INVALID_ACCESS_TOKEN are auth', () => {
+        for (const code of ['ITEM_LOGIN_REQUIRED', 'INVALID_ACCESS_TOKEN']) {
+            expect(classifyError(Object.assign(new Error('x'), { code })).category).toBe('auth');
+        }
+    });
+
+    test('L1: a one-word uppercase string that is not a known code is not copied into code', () => {
+        expect(classifyError('RossiMarco'.toUpperCase()).code).toBeUndefined();
+        expect(classifyError('ITEM_LOGIN_REQUIRED').code).toBe('ITEM_LOGIN_REQUIRED');
+    });
+
+    test('L2: message lines that start with "at " are not stack frames', () => {
+        const e = new Error('Payee list:\n    at Rossi Marco 120.00 EUR');
+        expect(ownFrames(e) || '').not.toContain('Rossi');
+        const out = sanitizeErrorMeta({ stack: e.stack }, { debug: true });
+        expect(JSON.stringify(out)).not.toContain('Rossi');
+        expect(sanitizeErrorMeta({ stack: 'at Rossi Marco 120.00 EUR' }, { debug: true }).stack).toBeUndefined();
+    });
+
+    test('L2: a DEBUG logger record of that error carries no payee', () => {
+        const lines = [];
+        const spy = jest.spyOn(console, 'error').mockImplementation((l) => lines.push(l));
+        try {
+            new Logger({ format: 'json', level: 'DEBUG', logDir: null })
+                .error(new Error('Payee list:\n    at Rossi Marco 120.00 EUR'));
+        } finally { spy.mockRestore(); }
+        expect(lines.join('\n')).not.toContain('Rossi');
     });
 });

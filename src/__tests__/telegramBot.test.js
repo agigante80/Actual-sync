@@ -1049,7 +1049,7 @@ describe('TelegramBotService', () => {
       const calls = mockRequest.write.mock.calls;
       expect(calls.some(call => {
         const payload = JSON.parse(call[0]);
-        return payload.text.includes('Sync failed: ') && !payload.text.includes('Connection failed');
+        return payload.text.includes('Sync failed: Unexpected error (details withheld)') && !payload.text.includes('Connection failed');
       })).toBe(true);
     });
     

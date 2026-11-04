@@ -48,7 +48,18 @@ describe('enhanceActualApiError', () => {
             const error = Object.assign(new Error('raw'), { type: 'PostError', reason: 'budget not found' });
             const err = enhanceActualApiError(error, ctx(), logger);
             expect(err.message).toContain('budget not found');
-            expect(logger.debug).toHaveBeenCalledWith('PostError detected with reason', { reason: 'budget not found' });
+            expect(logger.debug).toHaveBeenCalledWith('PostError detected', {
+                error: expect.objectContaining({ category: expect.any(String), safeMessage: expect.any(String) })
+            });
+            expect(JSON.stringify(logger.debug.mock.calls)).not.toContain('budget not found');
+        });
+
+        test('the own message keeps every troubleshooting line, not only the first (#438 M3)', () => {
+            const error = Object.assign(new Error('raw'), { type: 'PostError', reason: 'network-failure' });
+            const err = enhanceActualApiError(error, ctx(), makeLogger());
+            const shown = err[Symbol.for('actual-sync.ownError')].safeMessage;
+            expect(shown).toContain('Network connection to Actual Budget server failed.');
+            expect(shown).toContain('Verify the server password is correct.');
         });
 
         test('toString includes PostError: PostError: → extracts inner message', () => {

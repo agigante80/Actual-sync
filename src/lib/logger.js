@@ -587,7 +587,7 @@ class Logger {
         let safeMessage, safeContext, safeMeta;
         try {
             // Error-carrying keys are classified first: upstream text never reaches a record (#438).
-            meta = sanitizeErrorMeta(meta);
+            meta = sanitizeErrorMeta(meta, { debug: this.shouldLog('DEBUG') });
             safeMessage = this.maskSecrets(message);
             safeContext = this.redact(this.context);
             safeMeta = this.redact(meta);

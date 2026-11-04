@@ -719,7 +719,7 @@ async function runSyncBank(server, options = {}) {
                     accountsFailed++;
                     failedAccounts.push({
                         name: account.name,
-                        error: errorMsg
+                        error: failureInfo.code ? `${errorMsg} (${failureInfo.code})` : errorMsg
                     });
                     recordAccountResult(account, 'failed');
                     accountTimer();

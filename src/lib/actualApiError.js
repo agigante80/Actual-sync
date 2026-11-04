@@ -65,7 +65,7 @@ function enhanceActualApiError(error, context, logger) {
     // Check if this is a PostError with a reason field
     if (error?.type === 'PostError' && error?.reason) {
         originalError = error.reason;
-        logger.debug('PostError detected with reason', { reason: error.reason });
+        logger.debug('PostError detected', { error: classifyError(error) });
     }
 
     // Check the string representation for PostError pattern
@@ -135,7 +135,7 @@ function enhanceActualApiError(error, context, logger) {
     // The message above embeds upstream text. What may be shown is our own
     // headline for the matched failure, else the classified category (#438).
     const upstream = classifyError(originalError);
-    markOwnError(enhancedError, errorDetails.length > 0 ? errorDetails[0] : upstream.safeMessage, upstream.category);
+    markOwnError(enhancedError, errorDetails.length > 0 ? errorDetails.join(' ') : upstream.safeMessage, upstream.category);
     enhancedError.originalError = error;
     enhancedError.phase = phase;
     enhancedError.code = error?.code;

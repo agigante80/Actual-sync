@@ -43,6 +43,7 @@ const CODE_CATEGORY = {
     EHOSTUNREACH: 'upstream_unavailable', ENETUNREACH: 'upstream_unavailable',
     EPIPE: 'upstream_unavailable', ABORT_ERR: 'cancelled', ERR_CANCELED: 'cancelled',
     EAUTH: 'auth', ENOENT: 'not_found', ERR_INVALID_ARG_TYPE: 'validation',
+    ITEM_LOGIN_REQUIRED: 'auth', INVALID_ACCESS_TOKEN: 'auth',
     SQLITE_BUSY: 'conflict', SQLITE_LOCKED: 'conflict', SQLITE_CONSTRAINT: 'conflict'
 };
 
@@ -143,7 +144,8 @@ function finish(out) {
 function classifyError(value) {
     if (typeof value === 'string') {
         const allowed = allowlistedText(value);
-        const asCode = CODE_TOKEN.test(value.trim()) ? value.trim() : undefined;
+        const trimmed = value.trim();
+        const asCode = CODE_TOKEN.test(trimmed) && Object.prototype.hasOwnProperty.call(CODE_CATEGORY, trimmed) ? trimmed : undefined;
         const category = allowed?.category || (asCode && CODE_CATEGORY[asCode]) || categoryForText(value);
         return finish({
             type: 'string',
@@ -196,10 +198,25 @@ function classifyError(value) {
  */
 function ownFrames(error) {
     if (!(error instanceof Error) || typeof error.stack !== 'string') return undefined;
-    const frames = error.stack.split('\n').filter((l) => l.trim().startsWith('at '));
-    if (frames.length === 0) return undefined;
-    if (!ownOf(error) && /node_modules|@actual-app\/api|handlers\$1\.api\//.test(frames[0])) return undefined;
-    return frames.slice(0, 15).join('\n');
+    // Strip the header first: it is the message, and a message line can start with "at ".
+    const header = String(error);
+    const body = error.stack.startsWith(header) ? error.stack.slice(header.length) : '';
+    const frames = realFrames(body);
+    if (!frames) return undefined;
+    const first = frames.split('\n')[0];
+    if (!ownOf(error) && /node_modules|@actual-app\/api|handlers\$1\.api\//.test(first)) return undefined;
+    return frames;
+}
+
+/**
+ * Keep only lines that look like real stack frames: "at ..." with a file
+ * position (path:line:col) or a node: internal. Max 15 lines, or undefined.
+ */
+function realFrames(text) {
+    const frames = String(text).split('\n')
+        .filter((l) => l.trim().startsWith('at ') && /node:|:\d+:\d+\)?$/.test(l.trim()))
+        .slice(0, 15);
+    return frames.length ? frames.join('\n') : undefined;
 }
 
 const ERROR_KEYS = new Set(['error', 'originalError', 'err']);
@@ -215,7 +232,7 @@ function isClassified(value) {
  * no upstream text reaches a record. Returns a new object; never throws.
  * A value that already looks classified is rebuilt from known fields only.
  */
-function sanitizeErrorMeta(meta) {
+function sanitizeErrorMeta(meta, { debug = false } = {}) {
     if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return meta;
     const out = {};
     for (const key of Object.keys(meta)) {
@@ -223,11 +240,9 @@ function sanitizeErrorMeta(meta) {
         let value;
         try { value = meta[key]; } catch (_) { out[key] = '[unreadable]'; continue; }
         if (key === 'stack') {
-            // Frames only: the first stack line repeats the message.
-            if (typeof value === 'string') {
-                const frames = value.split('\n').filter((l) => l.trim().startsWith('at ')).slice(0, 15);
-                if (frames.length) out[key] = frames.join('\n');
-            }
+            // Frames only, and only at DEBUG: the first stack line repeats the message.
+            const frames = debug && typeof value === 'string' ? realFrames(value) : undefined;
+            if (frames) out[key] = frames;
         } else if (ERROR_KEYS.has(key) && value !== undefined && value !== null) {
             out[key] = isClassified(value)
                 ? finish({
@@ -250,5 +265,6 @@ module.exports = {
     classifyError,
     markOwnError,
     ownFrames,
+    realFrames,
     sanitizeErrorMeta
 };
