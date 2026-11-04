@@ -1246,7 +1246,8 @@ This test verifies that notifications are configured correctly and can reach the
               hasConfig: !!this.notificationService?.config,
               hasEmailConfig: !!this.notificationService?.config?.email,
               emailHost: this.notificationService?.config?.email?.host,
-              emailTo: this.notificationService?.config?.email?.to,
+              // A count, not the addresses: this line now reaches /ws/logs too (#440)
+              emailRecipients: [].concat(this.notificationService?.config?.email?.to || []).length,
               hasEmailTransporter: !!this.notificationService?.emailTransporter
             });
             if (!this.notificationService?.config?.email?.host || 
