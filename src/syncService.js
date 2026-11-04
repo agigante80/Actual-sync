@@ -105,7 +105,12 @@ try {
 
     logger = createLogger(loggerConfig);
     
-    logger.info('Configuration loaded successfully', { 
+    // Static message only: the flag makes @actual-app/api print transactions. (#425)
+    if (config.logging?.actualApiVerbose === true) {
+        logger.warn('logging.actualApiVerbose is on: @actual-app/api will print transaction data to stdout');
+    }
+
+    logger.info('Configuration loaded successfully', {
         serverCount: config.servers.length 
     });
 
@@ -407,6 +412,9 @@ async function runSyncBank(server, options = {}) {
             serverURL: url,
             password: password,
             dataDir: dataDir,
+            // The library defaults to verbose and prints transactions (payees,
+            // amounts, notes). Off unless logging.actualApiVerbose is true. (#425)
+            verbose: config.logging?.actualApiVerbose === true,
         });
         serverLogger.info('Connected to Actual server');
 
