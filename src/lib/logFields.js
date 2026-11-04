@@ -58,6 +58,8 @@ const ERROR_SPEC = op(['string', 'object'], {
 
 // The top-level result names runBankSync is known to return (#434, L1).
 const RESULT_KEYS = Object.freeze(['newTransactions', 'matchedTransactions', 'updatedAccounts', 'errors']);
+// A semver-like version string, as Actual reports it (e.g. 26.11.0, 25.1.0-beta.2).
+const VERSION_PATTERN = /^\d{1,4}\.\d{1,4}(\.\d{1,6})?(-[0-9A-Za-z.]{1,32})?$/;
 
 const FIELDS = Object.freeze({
     // --- envelope ---
@@ -225,8 +227,10 @@ const FIELDS = Object.freeze({
     // performance timer (logger.js), sync queue, schedule alert result
     operation: op('string'),
     // version compatibility record (syncService); versions are parsed digits
-    testedUpTo: op('string'),
-    serverVersion: op('string'),
+    // serverVersion comes from the server's /info reply, so the value must look
+    // like a version; anything else is dropped (security review of #437).
+    testedUpTo: op('string', { pattern: VERSION_PATTERN }),
+    serverVersion: op('string', { pattern: VERSION_PATTERN }),
     verdict: op('string'),
     slow: op('boolean'),
     verySlow: op('boolean'),
@@ -314,6 +318,7 @@ function sanitizeValue(spec, value, path, depth, ctx) {
     if (value === null) return null;
     if (!typeMatches(spec, value)) return reject(ctx, path);
     if (spec.oneOf && !spec.oneOf.includes(value)) return reject(ctx, path);
+    if (spec.pattern && !(typeof value === 'string' && spec.pattern.test(value))) return reject(ctx, path);
 
     const kind = typeOfValue(value);
     if (kind === 'array') {

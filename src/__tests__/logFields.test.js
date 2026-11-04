@@ -208,3 +208,14 @@ describe('audit records keep remoteAddress without includePersonal (M3)', () => 
         expect(sanitizeFields(input, { includePersonal: false }).fields).toEqual({});
     });
 });
+
+describe('version fields (security review of #437)', () => {
+    test('a version-shaped serverVersion is kept', () => {
+        expect(sanitizeFields({ serverVersion: '26.11.0', testedUpTo: '25.1.0-beta.2' }))
+            .toEqual({ fields: { serverVersion: '26.11.0', testedUpTo: '25.1.0-beta.2' }, dropped: 0 });
+    });
+    test('server-supplied text in serverVersion is dropped', () => {
+        expect(sanitizeFields({ serverVersion: '26.11.0 contact alice@example.com' }))
+            .toEqual({ fields: {}, dropped: 1 });
+    });
+});
