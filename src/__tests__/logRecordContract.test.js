@@ -41,6 +41,8 @@ describe('log record contract', () => {
         for (const r of records) {
             expect(validate(r) ? null : validate.errors).toBeNull();
         }
+        // The reserved-key attempt is the one call that drops fields, on purpose.
+        expect(takeDroppedFields().sort()).toEqual(['schema', 'seq', 'severity', 'version']);
     });
 
     test('severity numbers follow OpenTelemetry', () => {
@@ -64,6 +66,7 @@ describe('log record contract', () => {
 
     test('reserved keys cannot be overwritten by fields', () => {
         const [r] = capture(null, () => makeLogger().info('m', { seq: 999, schema: 7, version: 'x', severity: 1 }));
+        expect(takeDroppedFields()).toHaveLength(4);
         expect(r.seq).not.toBe(999);
         expect(r.schema).toBe(1);
         expect(r.version).toBe(pkg.version);

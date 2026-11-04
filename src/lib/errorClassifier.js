@@ -242,7 +242,8 @@ function sanitizeErrorMeta(meta, { debug = false } = {}) {
         if (key === 'stack') {
             // Frames only, and only at DEBUG: the first stack line repeats the message.
             const frames = debug && typeof value === 'string' ? realFrames(value) : undefined;
-            if (frames) out[key] = frames;
+            // Logged as `frames`: `stack` is a never field in the allowlist (#437).
+            if (frames) out.frames = frames;
         } else if (ERROR_KEYS.has(key) && value !== undefined && value !== null) {
             out[key] = isClassified(value)
                 ? finish({

@@ -5,7 +5,11 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Logger, createLogger, LOG_LEVELS, LEVEL_NAMES } = require('../lib/logger');
+const { Logger, createLogger, withCorrelation, currentCorrelationId, LOG_LEVELS, LEVEL_NAMES } = require('../lib/logger');
+
+// This file feeds the logger arbitrary shapes on purpose (redaction, formats,
+// sinks). The field allowlist is tested in logFields.test.js (#437).
+jest.mock('../lib/logFields', () => require('./helpers/openLogFields'));
 const {
     createTempDir,
     cleanupTempDir,
@@ -140,36 +144,19 @@ describe('Logger', () => {
     });
 
     describe('Correlation IDs', () => {
-        test('should generate unique correlation IDs', () => {
+        test('a logger holds no id of its own; the running scope supplies it (#441)', () => {
             const logger = new Logger();
-            const id1 = logger.generateCorrelationId();
-            const id2 = logger.generateCorrelationId();
-            
-            expect(id1).toBeDefined();
-            expect(id2).toBeDefined();
+            expect(logger.correlationId).toBeNull();
+            withCorrelation(() => expect(logger.correlationId).toBe('test-id'), 'test-id');
+            expect(logger.correlationId).toBeNull();
+        });
+
+        test('withCorrelation generates a UUID when none is given', () => {
+            let id1; let id2;
+            withCorrelation(() => { id1 = currentCorrelationId(); });
+            withCorrelation(() => { id2 = currentCorrelationId(); });
+            expect(id1).toMatch(/^[a-f0-9-]{36}$/);
             expect(id1).not.toBe(id2);
-            expect(id1).toMatch(/^[a-f0-9-]{36}$/); // UUID format
-        });
-
-        test('should set and clear correlation ID', () => {
-            const logger = new Logger();
-            
-            expect(logger.correlationId).toBeNull();
-            
-            const id = logger.setCorrelationId('test-id');
-            expect(logger.correlationId).toBe('test-id');
-            expect(id).toBe('test-id');
-            
-            logger.clearCorrelationId();
-            expect(logger.correlationId).toBeNull();
-        });
-
-        test('should generate correlation ID if none provided to setCorrelationId', () => {
-            const logger = new Logger();
-            
-            const id = logger.setCorrelationId();
-            expect(logger.correlationId).toBeDefined();
-            expect(id).toMatch(/^[a-f0-9-]{36}$/);
         });
     });
 
@@ -198,9 +185,7 @@ describe('Logger', () => {
 
         test('should include correlation ID in formatted log', () => {
             const logger = new Logger({ format: 'json' });
-            logger.setCorrelationId('test-correlation-id');
-            
-            const formatted = emit(logger, 'Test message');
+            const formatted = withCorrelation(() => emit(logger, 'Test message'), 'test-correlation-id');
             const parsed = JSON.parse(formatted);
             
             expect(parsed.correlationId).toBe('test-correlation-id');
@@ -354,11 +339,9 @@ describe('Logger', () => {
     describe('Child Logger', () => {
         test('should create child logger with parent context', () => {
             const parent = new Logger({ level: 'DEBUG' });
-            parent.setCorrelationId('parent-id');
+            const child = withCorrelation(() => parent.child({ component: 'test' }), 'parent-id');
             
-            const child = parent.child({ component: 'test' });
-            
-            expect(child.correlationId).toBe('parent-id');
+            expect(child.correlationId).toBeNull();
             expect(child.level).toBe('DEBUG');
             expect(child.context).toEqual({ component: 'test' });
         });
@@ -894,8 +877,7 @@ describe('Logger', () => {
                 syslog: { facility: 16 }
             });
             
-            const correlationId = logger.setCorrelationId('test-id-123');
-            const message = logger.formatSyslog('INFO', 'Test message', { key: 'value' });
+            const message = withCorrelation(() => logger.formatSyslog('INFO', 'Test message', { key: 'value' }), 'test-id-123');
             
             expect(message).toContain('<134>'); // priority: facility*8 + severity
             expect(message).toContain('actual-sync');
@@ -1047,13 +1029,12 @@ describe('Logger', () => {
             logSpy.mockRestore();
         });
 
-        test('should inherit correlation ID from parent', () => {
+        test('a child resolves the id from the running scope, not from its parent (#441)', () => {
             const logger = new Logger({ level: 'INFO' });
-            logger.setCorrelationId('parent-id');
-            
             const childLogger = logger.child({ component: 'test' });
             
-            expect(childLogger.correlationId).toBe('parent-id');
+            expect(childLogger.correlationId).toBeNull();
+            withCorrelation(() => expect(childLogger.correlationId).toBe('scope-id'), 'scope-id');
         });
 
         test('should share streams with parent', () => {

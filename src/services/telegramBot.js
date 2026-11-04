@@ -8,7 +8,7 @@ const https = require('https');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { createLogger } = require('../lib/logger');
+const { createLogger, withCorrelation } = require('../lib/logger');
 const { classifyError } = require('../lib/errorClassifier');
 const { resolveTimezone } = require('../lib/timezone');
 
@@ -219,7 +219,6 @@ class TelegramBotService {
 
     this.polling = true;
     this.logger.info('Telegram bot started', {
-      chatId: this.config.chatId,
       notifyOnSuccess: this.config.notifyOnSuccess
     });
 
@@ -280,7 +279,7 @@ class TelegramBotService {
       // A poll that works again after a persistent failure is worth one line, and
       // clears the suppression so a future failure is reported afresh. (#172)
       if (this.lastPollErrorKey) {
-        this.logger.info('Telegram polling recovered', { previousError: this.lastPollErrorKey });
+        this.logger.info('Telegram polling recovered', {});
         this.lastPollErrorKey = null;
       }
 
@@ -329,7 +328,12 @@ class TelegramBotService {
   /**
    * Process an update
    */
-  async processUpdate(update) {
+  processUpdate(update) {
+    // One scope per update, so its lines and the sync it may start group together (#441).
+    return withCorrelation(() => this.handleUpdate(update));
+  }
+
+  async handleUpdate(update) {
     if (!update.message || !update.message.text) {
       return;
     }
@@ -732,8 +736,7 @@ class TelegramBotService {
 
       // Trigger the sync (manual, so isAutomated=false and no retry)
       this.logger.info('Manual sync triggered via Telegram', {
-        server: serverName,
-        chatId: this.config.chatId
+        server: serverName
       });
 
       // Not awaited: syncs run one at a time (#265), so this can wait behind other

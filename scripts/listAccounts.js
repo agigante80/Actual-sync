@@ -8,6 +8,9 @@
 const actual = require('@actual-app/api');
 const fs = require('fs').promises;
 const ConfigLoader = require('../src/lib/configLoader');
+const bootstrap = require('../src/lib/bootstrapLogger');
+// ConfigLoader warnings are buffered; write them to stderr as JSON lines at exit (#442)
+bootstrap.installExitDump();
 const { createLogger } = require('../src/lib/logger');
 
 // Load environment variables

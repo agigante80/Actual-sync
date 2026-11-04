@@ -1139,7 +1139,7 @@ describe('HealthCheckService', () => {
       const hc = tokenService({ authFailureLimit: 1000 });
       hc.logger.format = 'json';
       const written = [];
-      const grab = (line) => { try { written.push(JSON.parse(line)); } catch { /* not a record */ } };
+      const grab = (line) => { try { const r = JSON.parse(line); written.push({ ...r, ...r.fields }); } catch { /* not a record */ } };
       const spies = ['log', 'warn', 'error'].map(m => jest.spyOn(console, m).mockImplementation(grab));
       await hc.start();
       try {
@@ -1432,6 +1432,43 @@ describe('HealthCheckService', () => {
         ] }
       ]);
       expect(mockSyncHistory.getAllAccountMetadata).toHaveBeenCalled();
+      await hc.stop();
+    });
+
+    test('adds each account\'s result in the latest sync, null when it has none (#430)', async () => {
+      const mockSyncHistory = {
+        getAllAccountMetadata: jest.fn().mockReturnValue([
+          { server: 'Main', accounts: [
+            { id: 'a1', name: 'Checking', classification: 'syncable', updatedAt: 't' },
+            { id: 'a2', name: 'New', classification: 'syncable', updatedAt: 't' }
+          ] },
+          { server: 'Empty', accounts: [{ id: 'b1', name: 'B', classification: 'manual', updatedAt: 't' }] }
+        ]),
+        getLastAccountResults: jest.fn((server) => (server === 'Main'
+          ? [{ account_id: 'a1', account_name: 'Checking', status: 'synced', transactions_added: 5, transactions_updated: null }]
+          : [])),
+        getLastSync: jest.fn((server) => (server === 'Main' ? { timestamp: '2026-11-04T10:00:00.000Z' } : null))
+      };
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        syncHistory: mockSyncHistory,
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/accounts`);
+      expect(res.statusCode).toBe(200);
+      const main = res.body.find(g => g.server === 'Main');
+      expect(main.lastSyncAt).toBe('2026-11-04T10:00:00.000Z');
+      expect(main.accounts[0].lastResult).toEqual({
+        account_id: 'a1', account_name: 'Checking', status: 'synced', transactions_added: 5, transactions_updated: null
+      });
+      expect(main.accounts[1].lastResult).toBeNull();
+      const empty = res.body.find(g => g.server === 'Empty');
+      expect(empty.lastSyncAt).toBeNull();
+      expect(empty.accounts[0].lastResult).toBeNull();
       await hc.stop();
     });
 

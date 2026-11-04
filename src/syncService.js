@@ -4,7 +4,8 @@ const schedule = require('node-schedule'); // Import the scheduler
 const moment = require('moment-timezone');
 const cronstrue = require('cronstrue');
 const ConfigLoader = require('./lib/configLoader');
-const { createLogger } = require('./lib/logger');
+const { createLogger, withCorrelation, currentCorrelationId } = require('./lib/logger');
+const bootstrap = require('./lib/bootstrapLogger');
 const { buildLoggerConfig } = require('./lib/loggerConfig');
 const { HealthCheckService } = require('./services/healthCheck');
 const { SyncHistoryService } = require('./services/syncHistory');
@@ -22,6 +23,7 @@ const { timedActual, withTimeout, PhaseTimeoutError, LateCalls, prepareSession, 
 const { maybeRunScheduleAlerts, maybeDeliverScheduleAlerts, persistPaymentSnapshot } = require('./lib/scheduleAlertsStep');
 const { bankSyncCounts, describeResultLengths } = require('./lib/bankSyncCounts');
 const { classifyError, ownFrames } = require('./lib/errorClassifier');
+const { buildStartupRecord } = require('./lib/startupRecord');
 const { installConsoleBridge } = require('./lib/consoleBridge');
 
 // Get version from environment (CI build-arg) or package.json (#132)
@@ -36,7 +38,7 @@ const VERSION = resolveVersion();
 /** Stack frames of our own errors, at DEBUG only (#438, D5). */
 function logOwnStack(log, error) {
     const stack = ownFrames(error);
-    if (stack) log.debug('Error stack', { stack });
+    if (stack) log.debug('Error stack', { frames: stack });
 }
 
 function formatNextSync(nextInvocation) {
@@ -112,15 +114,13 @@ try {
 
     logger = createLogger(loggerConfig);
     setCrashLogger(logger);
+    // Startup output buffered before the root logger existed (#442)
+    bootstrap.flushTo(logger);
     
     // Static message only: the flag makes @actual-app/api print transactions. (#425)
     if (config.logging?.actualApiVerbose === true) {
         logger.warn('logging.actualApiVerbose is on: @actual-app/api will print transaction data to stdout');
     }
-
-    logger.info('Configuration loaded successfully', {
-        serverCount: config.servers.length 
-    });
 
     const timezoneWarning = describeTimezoneFallback(config);
     if (timezoneWarning) logger.warn(timezoneWarning);
@@ -259,12 +259,19 @@ try {
             healthCheck.broadcastLog(level, message, metadata);
         }
     });
+
+    // One startup record, after every sink is attached so `sinks` is accurate (#443)
+    // A diagnostic must not stop the service from starting.
+    try {
+        logger.security('sys_startup', buildStartupRecord(config, logger));
+    } catch (error) {
+        logger.warn('Could not write the sys_startup record', { error: classifyError(error) });
+    }
 } catch (error) {
-    // Fallback to console if logger not initialized
-    console.error('❌ Failed to load configuration:');
-    console.error(error.message);
-    console.error('\nPlease ensure config/config.json exists and is valid.');
-    console.error('See config/config.example.json for reference.');
+    // The root logger may not exist: the bootstrap logger writes redacted JSON lines to stderr (#442)
+    bootstrap.error('Failed to load configuration', { error: error.message });
+    bootstrap.error('Please ensure config/config.json exists and is valid. See config/config.example.json for reference.');
+    bootstrap.dumpToStderr(); // no-op once the root logger took the records
     process.exit(1);
 }
 
@@ -334,9 +341,8 @@ async function runSyncBank(server, options = {}) {
     // `format` is deprecated and ignored: one format per sink.
     const serverLogger = logger.child({ server: name }, { level: server.logging?.level });
 
-    // Create correlation ID for this sync operation
-    const correlationId = serverLogger.generateCorrelationId();
-    serverLogger.setCorrelationId(correlationId);
+    // The scope SyncQueue opened for this task; every record of this sync carries it.
+    const correlationId = currentCorrelationId();
     
     // Cancel any pending auto-retry if this is a manual sync
     if (!isAutomated) {
@@ -400,7 +406,6 @@ async function runSyncBank(server, options = {}) {
     try {
         const syncType = isAutomated ? (retryAttempt > 0 ? `automated (retry ${retryAttempt})` : 'automated') : 'manual';
         serverLogger.info(`Starting ${syncType} sync for server: ${name}`, { 
-            url, 
             dataDir,
             isAutomated,
             retryAttempt,
@@ -432,7 +437,7 @@ async function runSyncBank(server, options = {}) {
             throw busy;
         }
 
-        serverLogger.info(`Connecting to Actual server`, { url });
+        serverLogger.info(`Connecting to Actual server`);
         sessionOpened = true;
         // @actual-app/api prints warn/error to the global console whatever
         // `verbose` says; route it through our logger for this session. (#426)
@@ -456,8 +461,7 @@ async function runSyncBank(server, options = {}) {
         serverLogger[compat.level]('Version compatibility', {
             testedUpTo: compat.testedUpTo,
             serverVersion: compat.serverVersion,
-            verdict: compat.verdict,
-            message: compat.message,
+            verdict: compat.verdict
         });
         if (healthCheck && typeof healthCheck.updateServerVersion === 'function') {
             healthCheck.updateServerVersion(name, {
@@ -1061,7 +1065,6 @@ async function runSyncBank(server, options = {}) {
             // The catch above swallows shutdown errors, so this always runs.
             if (restoreConsole) restoreConsole();
         }
-        serverLogger.clearCorrelationId();
     }
 
     // #295 review, M3: the schedule-alerts write phase runs here, after the
@@ -1104,8 +1107,6 @@ async function run() {
                     requestedServer: serverName,
                     availableServers: servers.map(s => s.name)
                 });
-                console.error(`\n❌ Error: Server "${serverName}" not found in configuration.`);
-                console.error(`\nAvailable servers: ${servers.map(s => s.name).join(', ')}\n`);
                 process.exit(1);
             }
             logger.info('Force running bank sync for specific server', { 
@@ -1141,7 +1142,7 @@ async function run() {
                 servers: serversWithSchedule.map(s => s.name) 
             });
             
-            const job = schedule.scheduleJob({ rule: scheduleStr, tz: resolveTimezone(config) }, async () => {
+            const job = schedule.scheduleJob({ rule: scheduleStr, tz: resolveTimezone(config) }, () => withCorrelation(async () => {
                 logger.info('Scheduled sync starting', { 
                     schedule: scheduleStr,
                     servers: serversWithSchedule.map(s => s.name)
@@ -1151,7 +1152,7 @@ async function run() {
                     await autoRetry.runAutomated(server);
                 }
                 logger.info('Scheduled sync completed', { schedule: scheduleStr });
-            });
+            }));
             
             scheduledJobs.push({ schedule: scheduleStr, job, servers: serversWithSchedule });
         }

@@ -171,8 +171,40 @@ so gaps and reordering are visible) and `schema` (`1`). Optional: `component`,
   `seq` and `schema` are written by the logger and cannot be overwritten by
   context or fields. `event` and `component` are reserved names that callers
   set (child loggers, audit events).
-- Context and fields are still written flat. The field allowlist (#437) moves
-  them under `fields` and closes the schema.
+- In JSON records the envelope keys (`event`, `component`, `correlationId`,
+  `server`, `error`, `category`, `droppedFieldCount`) sit at the top level and
+  every other registered field sits under `fields`. The pretty console format,
+  syslog and the dashboard stream keep the flat layout.
+
+### Field allowlist
+
+Every key a caller passes (as metadata or as child-logger context) is checked
+against the registry in `src/lib/logFields.js` after redaction. The registry
+gives each key a data class, a type and, for objects, the allowed child keys
+(maximum depth 3).
+
+| Class | Emitted | Examples |
+|---|---|---|
+| `op` | always | `durationMs`, `added`, `updated`, `attempt` |
+| `id` | always | `accountId`, `serverName`, `syncId` |
+| `personal` | by default; withheld when the logger has `includePersonal: false`. `remoteAddress` is the exception: security (audit) records keep it either way | `accountName`, `remoteAddress`, `dataDir` |
+| `upstream` | never | transaction rows, payees, notes, upstream error text |
+| `financial` | never | amounts, balances, account numbers |
+| `secret` | never | passwords, tokens, webhook URLs, chat ids |
+
+- A key that is not registered is dropped, with its value. So is a registered
+  key whose value has the wrong type, or an object with unregistered child
+  keys or nesting deeper than 3.
+- The record carries `droppedFieldCount` (a number, only when greater than 0).
+  It never names the dropped keys, because a key name can be data.
+- To log a new field, register it in `src/lib/logFields.js` with its class.
+  The test setup fails any test that drops a field, so a missing registration
+  shows up as a failing test, not as silently missing data.
+- Whether the `personal` class is emitted by default is decided in #448; until
+  then it is emitted.
+- `logging.redact` and the secret masking still run first. With the allowlist
+  they are defence in depth: they catch a secret-looking value under a
+  registered key.
 
 ### Event catalogue
 
@@ -212,8 +244,10 @@ the dashboard and every notification, so the three never disagree (#438):
   message may choose the category; the text is never copied.
 - The logger classifies every `error`, `originalError` and `err` value (an
   `Error` or a string) and every `Error` nested in a field. It drops
-  `errorMessage`, `errorStack` and `errorName`. A `stack` field keeps its frames
-  only (no message line).
+  `errorMessage`, `errorStack` and `errorName`. A `stack` field is written as
+  `frames`, with the frames only (no message line). In the allowlist, `error`
+  and `originalError` accept only the classified object: a string error is
+  dropped and counted.
 - Frames are logged at DEBUG only, and only for our own errors (first frame
   not inside `node_modules` or `@actual-app/api`).
 - `sync_history.error_message`, the per-account failures in a notification and
@@ -222,12 +256,23 @@ the dashboard and every notification, so the three never disagree (#438):
 
 ### Startup record groups
 
-`sys_startup` carries these groups: versions (app, Node, @actual-app/api, pid,
-platform, container flag); timezone and UTC offset; log level, effective api
-verbose and active sinks; whether a custom log dir and data dir are set
-(booleans, not paths) and retention days; effective privacy flags; server count
-and schedules; enabled notification channels (booleans); dashboard bind
-address, auth mode and TLS; timeouts; config schema version.
+`sys_startup` (#443) is written once, after every sink is attached, through
+`logger.security()` (INFO, written whatever the configured level). Fields
+(built one by one in `src/lib/startupRecord.js`, never copied from the config):
+
+| Group | Fields |
+|---|---|
+| versions | `appVersion`, `nodeVersion`, `actualApiVersion` (resolved), `pid`, `platform`, `container` |
+| time | `timezone`, `utcOffset` (`+01:00`; cron schedules use this zone) |
+| logging | `logLevel`, `actualApiVerbose`, `sinks` (`console`, `file`, `syslog`, `websocket`), `customLogDir`, `customDataDir` (booleans, never paths), `retentionDays` (`null` when file logging is off). `sinks` lists configured sinks, not reached ones: `websocket` is listed when the dashboard is enabled, even before a client connects |
+| privacy | `actualApiVerbose` (`includeAccountNames` arrives with #448) |
+| sync | `serverCount`, `cronSchedules` (unique cron strings), `timeouts.phaseTimeoutSeconds` |
+| channels | `channelsEnabled.{email,telegram,slack,discord,webhook,ntfy}` (booleans) |
+| dashboard | `dashboardEnabled`, `dashboardBind` (`host:port`), `dashboardAuth` (`none`, `basic`, `token`), `tls` |
+| config | `configSchemaVersion` (an integer in `startupRecord.js`, bumped when `config.schema.json` changes; never a hash of values) |
+
+No URLs, credentials, paths or server names. `tls` is always `false`: the
+HTTP server is plain http and TLS comes from a reverse proxy.
 
 ### Key mapping with actual-mcp-server
 
@@ -277,6 +322,16 @@ The file line is always a single line, even when the console is `pretty`.
 ## Actual API console output
 
 `@actual-app/api` prints warnings and errors straight to the console, whatever `actualApiVerbose` says. During each sync session Actual-sync routes that output through its own logger as one static record per call: `event: "third_party.console"`, `component: "actual-api"`, message `Actual API console output`. The upstream arguments are dropped (they can carry transactions or upstream text), so the record has the configured level, format and redaction but no payload. `console.error` maps to ERROR, `warn` to WARN, `log`/`info`/`group` to INFO and `debug` to DEBUG. With `actualApiVerbose: true` a masked `consolePreview` (first 300 characters) is added; these records are never sent to `/ws/logs`.
+
+## Startup output before the logger exists
+
+The startup banner, config validation warnings and config load failures go
+through the bootstrap logger (`src/lib/bootstrapLogger.js`, #442), not raw
+`console` calls. It needs no config: the built-in secret redaction and control
+character escaping apply to every record. Records are buffered and replayed
+into the root logger as soon as it is created (so they follow `logging.level`
+and `logging.format`). If startup dies first (validation failure, config load
+error), the buffered records are written to stderr as JSON lines.
 
 ## 🔒 Secret Redaction
 
@@ -383,12 +438,7 @@ Automatically log operation duration:
 
 Output:
 ```
-2025-12-09T13:00:05.891Z [INFO] Performance: sync-Main {
-  "duration": 5368,
-  "operation": "sync-Main",
-  "slow": true,
-  "verySlow": true
-}
+{"timestamp":"2025-12-09T13:00:05.891Z","level":"INFO","message":"Performance: sync-Main","fields":{"duration":5368,"durationMs":5368,"operation":"sync-Main","slow":true,"verySlow":true}}
 ```
 
 ---
@@ -407,6 +457,13 @@ Search by correlation ID:
 ```bash
 grep "a1b2c3d4" logs/actual-sync-2025-12-09.log
 ```
+
+Every sync, HTTP request, Telegram update and scheduled job runs in its own
+scope (Node `AsyncLocalStorage`). Every record written inside it carries that
+scope's `correlationId`, from any logger or child, without passing a logger
+around. A sync started by a scheduled job or a Telegram command gets its own id
+for its own lines (the id stored in sync history). Child loggers carry
+`component` and similar bindings only, never a correlation id.
 
 ---
 

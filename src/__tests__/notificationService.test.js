@@ -737,7 +737,7 @@ describe('NotificationService', () => {
       await service.sendNtfy({ title: 'T', message: 'm', level: 'success', tags: [] });
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining('invalid in an HTTP header'),
-        expect.objectContaining({ configured: 'https://x/icon-😀.png', sent: 'https://x/icon-.png' })
+        expect.objectContaining({ removedChars: 2 })
       );
       warn.mockRestore();
     });

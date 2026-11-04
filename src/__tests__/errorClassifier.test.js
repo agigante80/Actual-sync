@@ -120,7 +120,8 @@ describe('sanitizeErrorMeta', () => {
         }, { debug: true });
         expect(JSON.stringify(out)).not.toContain(SENTINEL);
         expect(out.error.category).toBeDefined();
-        expect(out.stack).toBe('    at f (/app/x.js:1:1)');
+        expect(out.stack).toBeUndefined();
+        expect(out.frames).toBe('    at f (/app/x.js:1:1)');
         expect(out.accountId).toBe('a1');
     });
 
@@ -146,6 +147,8 @@ describe('Logger never writes upstream text (#438)', () => {
             logger.warn('m', { error: err.message, errorMessage: err.message, errorStack: err.stack });
             logger.debug('m', { nested: { failure: err }, originalError: err });
             logger.info('m', { cause: err });
+            // nested and cause are not registered fields: the allowlist drops them too.
+            takeDroppedFields();
         } finally { spies.forEach((s) => s.mockRestore()); }
         const file = fs.readdirSync(dir).map((f) => fs.readFileSync(path.join(dir, f), 'utf8')).join('');
         expect(lines.length).toBe(5);
@@ -160,8 +163,9 @@ describe('Logger never writes upstream text (#438)', () => {
             try { new Logger({ format: 'json', level, logDir: null }).error(new Error('x')); } finally { spy.mockRestore(); }
             return JSON.parse(lines[0]);
         };
-        expect(run('INFO').stack).toBeUndefined();
-        expect(run('DEBUG').stack).toMatch(/at /);
+        expect(run('INFO').fields?.frames).toBeUndefined();
+        expect(run('DEBUG').fields.frames).toMatch(/at /);
+        expect(run('DEBUG').fields.stack).toBeUndefined();
     });
 });
 
@@ -204,9 +208,10 @@ describe('sync_history migration (#438)', () => {
 describe('review round 1 (#438)', () => {
     test('M1: a stack field is dropped unless the record is DEBUG', () => {
         const meta = { error: 'x', stack: 'Error: x\n    at f (/app/x.js:1:1)' };
-        expect(sanitizeErrorMeta(meta, { debug: false }).stack).toBeUndefined();
-        expect(sanitizeErrorMeta(meta).stack).toBeUndefined();
-        expect(sanitizeErrorMeta(meta, { debug: true }).stack).toMatch(/at f/);
+        expect(sanitizeErrorMeta(meta, { debug: false }).frames).toBeUndefined();
+        expect(sanitizeErrorMeta(meta).frames).toBeUndefined();
+        expect(sanitizeErrorMeta(meta, { debug: true }).frames).toMatch(/at f/);
+        expect(sanitizeErrorMeta(meta, { debug: true }).stack).toBeUndefined();
     });
 
     test('M1: an ERROR record with a stack field at INFO level has no stack', () => {
