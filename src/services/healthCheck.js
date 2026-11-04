@@ -1913,6 +1913,8 @@ This test verifies that notifications are configured correctly and can reach the
       // The allowlist takes `error` only as the classified object (#438). A
       // string comes from syncService, which builds it from classifier text
       // (never upstream text, so no account name, #448); an Error is classified.
+      // Only classifier text may be passed here as a string: it is copied into
+      // safeMessage as is.
       const errorRecord = syncResult.error instanceof Error
         ? classifyError(syncResult.error)
         : (errorText ? { type: 'Error', category: 'internal', safeMessage: errorText } : undefined);

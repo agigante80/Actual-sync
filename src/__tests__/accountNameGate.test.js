@@ -94,6 +94,13 @@ describe('account names in sync logs (#448)', () => {
         const exit = jest.spyOn(process, 'exit').mockImplementation(() => {});
         process.argv = ['node', 'syncService.js', '--force-run', '--server', 's1'];
         try {
+            // The real HealthCheckService is loaded; capture what the /ws/logs
+            // live view would be sent (the same registry syncService uses).
+            const { HealthCheckService } = require('../services/healthCheck');
+            jest.spyOn(HealthCheckService.prototype, 'broadcastLog')
+                .mockImplementation((level, message, metadata) => {
+                    broadcasts.push(JSON.stringify({ level, message, metadata }));
+                });
             require('../syncService');
             for (let i = 0; i < 40 && recordSync.mock.calls.length === 0; i++) {
                 for (let j = 0; j < 20; j++) await flush();
@@ -113,6 +120,7 @@ describe('account names in sync logs (#448)', () => {
 
     test('default config: ids are logged, no account name appears in any sink', async () => {
         await runSync();
+        expect(broadcasts.length).toBeGreaterThan(0);
         expect(recordSync).toHaveBeenCalled();
         const out = allOutput();
         expect(out).not.toContain('SENTINEL');
