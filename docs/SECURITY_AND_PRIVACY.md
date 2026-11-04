@@ -276,6 +276,7 @@ docker run --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 ..
 The Unraid template passes the same `--log-opt` flags in its extra parameters.
 
 - The 30-file rotation (`rotation.maxFiles`) applies to the optional file sink only. It does not limit stdout or the Docker log driver.
+- The compose file and the Unraid template both mount `/app/logs`, so the file sink is on and persisted by default in those setups. Set `logging.logDir: null` in config.json to turn it off and keep logs on stdout only.
 - Syslog over UDP is plaintext and best effort: anyone on the network path can read it and datagrams can be lost. It is not an audit log. Use it for convenience, not as the record of who did what.
 
 ---
