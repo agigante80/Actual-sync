@@ -32,7 +32,7 @@ class SyslogStreamTransport {
         this.maxBackoffMs = opts.maxBackoffMs || 30000;
         this.stallTimeoutMs = opts.stallTimeoutMs || 30000;
         this.waitingDrain = false;
-        this.reported = false;
+        this.reported = new Set();
         this.onError = opts.onError || (() => {});
         this.queue = [];
         this.dropped = 0;
@@ -95,7 +95,7 @@ class SyslogStreamTransport {
         socket.on(this.useTls ? 'secureConnect' : 'connect', () => {
             if (this.socket !== socket) return;
             this.connected = true;
-            this.reported = false;
+            this.reported = new Set();
             this.backoff = this.minBackoffMs;
             this._flush();
         });
@@ -109,10 +109,13 @@ class SyslogStreamTransport {
     }
 
     _report(err) {
-        // One report per outage: a collector down for hours would otherwise
-        // print one error per reconnect attempt. Reset on a successful connect.
-        if (this.reported) return;
-        this.reported = true;
+        // One report per distinct error per outage: a collector down for hours
+        // would otherwise print one error per reconnect attempt. Keyed on the
+        // code, so a change (refused, then a TLS certificate error) is always
+        // reported. Reset on a successful connect.
+        const key = (err && (err.code || err.message)) || 'unknown';
+        if (this.reported.has(key)) return;
+        this.reported.add(key);
         try { this.onError(err); } catch (_) { /* never throw into logging */ }
     }
 

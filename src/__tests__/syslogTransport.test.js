@@ -129,8 +129,18 @@ describe('SyslogStreamTransport over TCP', () => {
         server = makeServer();
         await new Promise(r => server.listen(port, '127.0.0.1', r));
         await waitFor(() => t.connected);
-        expect(t.reported).toBe(false);
+        expect(t.reported.size).toBe(0);
         t.close();
+    });
+
+    test('a different error during the same outage is still reported', () => {
+        const errors = [];
+        const t = new SyslogStreamTransport({ host: '127.0.0.1', port, protocol: 'tcp', onError: e => errors.push(e.code) });
+        t.close();
+        const mk = (code) => Object.assign(new Error(code), { code });
+        t._report(mk('ECONNREFUSED')); t._report(mk('ECONNREFUSED'));
+        t._report(mk('DEPTH_ZERO_SELF_SIGNED_CERT'));
+        expect(errors).toEqual(['ECONNREFUSED', 'DEPTH_ZERO_SELF_SIGNED_CERT']);
     });
 
     test('write never throws, even after close or with odd input, or if onError throws', () => {
