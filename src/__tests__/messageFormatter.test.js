@@ -243,7 +243,7 @@ describe('MessageFormatter', () => {
 
     test('Discord failed section includes the per-account error message', () => {
       const d = discordText(MessageFormatter.formatSyncNotification(base));
-      expect(d).toContain('Sabadell *5650');
+      expect(d).toContain('Sabadell \\\\*5650'); // JSON of the backslash-escaped asterisk (#428)
       expect(d).toContain('Failed syncing account');
     });
 
@@ -506,6 +506,76 @@ describe('MessageFormatter', () => {
       expect(f.html).toContain('&lt;img src=x onerror=alert(1)&gt;');
       expect(f.html).toContain('a &amp; b');
       expect(f.html).toContain('&lt;soon&gt;');
+    });
+  });
+  describe('Slack and Discord escaping (#428)', () => {
+    const slackEvil = '<https://evil.example|Re-link here> <!channel>';
+    const link = '[Re-link](https://evil.example)';
+    const result = {
+      status: 'failure',
+      serverName: '<!here> srv',
+      duration: 1000,
+      error: slackEvil,
+      errorCode: '<!everyone>',
+      accountsProcessed: 1,
+      accountsFailed: 1,
+      succeededAccounts: [link],
+      failedAccounts: [{ name: link, error: slackEvil }],
+      skippedAccounts: [{ name: link, reason: '<!channel>' }]
+    };
+
+    test('Slack payload carries no raw mrkdwn control sequences from values', () => {
+      const json = JSON.stringify(MessageFormatter.formatSyncNotification(result).slack);
+      expect(json).not.toContain('<https://evil.example');
+      expect(json).not.toContain('<!channel>');
+      expect(json).not.toContain('<!here>');
+      expect(json).not.toContain('<!everyone>');
+      expect(json).toContain('&lt;https://evil.example|Re-link here&gt; &lt;!channel&gt;');
+    });
+
+    test('Discord payload cannot form a masked link or mention from values', () => {
+      const fields = MessageFormatter.formatSyncNotification(result).discord.embeds[0].fields;
+      const all = fields.map((f) => f.value).join('\n');
+      expect(all).not.toContain('[Re-link](https');
+      expect(all).toContain('\\[Re-link\\]\\(https://evil.example\\)');
+      expect(all).not.toMatch(/<!(channel|here|everyone)>/);
+    });
+  });
+
+  describe('HTML builder source guard (#428)', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const src = fs.readFileSync(path.join(__dirname, '../lib/messageFormatter.js'), 'utf8');
+    // Internal, non-user values that may be interpolated raw.
+    const ALLOW = new Set(['bgColor', 'content.emoji', 'content.statusText', 'synced', 'failed', 'skipped']);
+
+    function body(name) {
+      const start = src.indexOf(`static ${name}(`);
+      const next = src.indexOf('\n  static ', start + 1);
+      return src.slice(start, next === -1 ? undefined : next);
+    }
+    function interpolations(text) {
+      const out = [];
+      let i = text.indexOf('${');
+      while (i !== -1) {
+        let depth = 1;
+        let j = i + 2;
+        while (j < text.length && depth > 0) {
+          if (text[j] === '{') depth += 1;
+          else if (text[j] === '}') depth -= 1;
+          j += 1;
+        }
+        out.push(text.slice(i + 2, j - 1).trim());
+        i = text.indexOf('${', j);
+      }
+      return out;
+    }
+
+    test.each(['_formatHtml', '_formatStartupHtml'])('%s wraps every interpolation in escapeHtml', (name) => {
+      const found = interpolations(body(name));
+      expect(found.length).toBeGreaterThan(4);
+      const bad = found.filter((e) => !ALLOW.has(e) && !/^escapeHtml\(.*\)$/.test(e));
+      expect(bad).toEqual([]);
     });
   });
 });

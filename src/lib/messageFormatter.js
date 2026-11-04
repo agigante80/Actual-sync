@@ -5,7 +5,7 @@
  * Each channel receives the same information, just formatted for its platform.
  */
 
-const { escapeHtml } = require('./channelEscape');
+const { escapeHtml, escapeSlack, escapeDiscordMarkdown } = require('./channelEscape');
 
 class MessageFormatter {
   /**
@@ -175,9 +175,10 @@ class MessageFormatter {
   }
 
   // Render a failed-account line "• name: error" (error omitted when absent). (#108)
-  static _failedAccountLine(account) {
+  // `esc` is the channel's escaper (escapeSlack / escapeDiscordMarkdown). (#428)
+  static _failedAccountLine(account, esc = (v) => v) {
     const err = this._truncateError(account.error);
-    return err ? `• ${account.name}: ${err}` : `• ${account.name}`;
+    return err ? `• ${esc(account.name)}: ${esc(err)}` : `• ${esc(account.name)}`;
   }
 
   // Join account lines, capping the result at maxChars so it cannot exceed a
@@ -398,8 +399,8 @@ class MessageFormatter {
         {
           type: 'section',
           fields: [
-            { type: 'mrkdwn', text: `*Server:*\n${content.serverName}` },
-            { type: 'mrkdwn', text: `*Duration:*\n${content.duration}` }
+            { type: 'mrkdwn', text: `*Server:*\n${escapeSlack(content.serverName)}` },
+            { type: 'mrkdwn', text: `*Duration:*\n${escapeSlack(content.duration)}` }
           ]
         }
       ]
@@ -411,7 +412,7 @@ class MessageFormatter {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Error:*\n${content.error}${content.errorCode ? `\n*Code:* ${content.errorCode}` : ''}`
+          text: `*Error:*\n${escapeSlack(content.error)}${content.errorCode ? `\n*Code:* ${escapeSlack(content.errorCode)}` : ''}`
         }
       });
     }
@@ -434,15 +435,15 @@ class MessageFormatter {
       }
       let accountsText = '';
       if (synced > 0) {
-        accountsText += `*✅ Synced:*\n${this._joinCapped(content.succeededAccounts.map(n => `• ${n}`), 900)}`;
+        accountsText += `*✅ Synced:*\n${this._joinCapped(content.succeededAccounts.map(n => `• ${escapeSlack(n)}`), 900)}`;
       }
       if (failed > 0) {
         if (accountsText) accountsText += '\n\n';
-        accountsText += `*❌ Failed:*\n${this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a)), 900)}`;
+        accountsText += `*❌ Failed:*\n${this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a, escapeSlack)), 900)}`;
       }
       if (skipped > 0) {
         if (accountsText) accountsText += '\n\n';
-        accountsText += `*⏭️ Skipped (not bank-linked / closed):*\n${this._joinCapped(content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`), 900)}`;
+        accountsText += `*⏭️ Skipped (not bank-linked / closed):*\n${this._joinCapped(content.skippedAccounts.map(a => `• ${escapeSlack(a.name)} (${escapeSlack(a.reason)})`), 900)}`;
       }
       if (accountsText) {
         payload.blocks.push({ type: 'section', text: { type: 'mrkdwn', text: accountsText } });
@@ -456,14 +457,14 @@ class MessageFormatter {
     const color = content.isSuccess ? (content.hasIssues ? 15844367 : 5025616) : 15158332; // Warning, Green, Red
     
     const fields = [
-      { name: 'Server', value: content.serverName, inline: true },
-      { name: 'Duration', value: content.duration, inline: true }
+      { name: 'Server', value: escapeDiscordMarkdown(content.serverName), inline: true },
+      { name: 'Duration', value: escapeDiscordMarkdown(content.duration), inline: true }
     ];
     
     if (!content.isSuccess && content.error) {
-      fields.push({ name: 'Error', value: content.error });
+      fields.push({ name: 'Error', value: escapeDiscordMarkdown(content.error) });
       if (content.errorCode) {
-        fields.push({ name: 'Code', value: content.errorCode, inline: true });
+        fields.push({ name: 'Code', value: escapeDiscordMarkdown(content.errorCode), inline: true });
       }
     }
 
@@ -478,13 +479,13 @@ class MessageFormatter {
         fields.push({ name: 'Transactions', value: transactions });
       }
       if (synced > 0) {
-        fields.push({ name: '✅ Synced Accounts', value: this._joinCapped(content.succeededAccounts.map(n => `• ${n}`), 1000) });
+        fields.push({ name: '✅ Synced Accounts', value: this._joinCapped(content.succeededAccounts.map(n => `• ${escapeDiscordMarkdown(n)}`), 1000) });
       }
       if (failed > 0) {
-        fields.push({ name: '❌ Failed Accounts', value: this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a)), 1000) });
+        fields.push({ name: '❌ Failed Accounts', value: this._joinCapped(content.failedAccounts.map(a => this._failedAccountLine(a, escapeDiscordMarkdown)), 1000) });
       }
       if (skipped > 0) {
-        fields.push({ name: '⏭️ Skipped (not bank-linked / closed)', value: this._joinCapped(content.skippedAccounts.map(a => `• ${a.name} (${a.reason})`), 1000) });
+        fields.push({ name: '⏭️ Skipped (not bank-linked / closed)', value: this._joinCapped(content.skippedAccounts.map(a => `• ${escapeDiscordMarkdown(a.name)} (${escapeDiscordMarkdown(a.reason)})`), 1000) });
       }
     }
     
