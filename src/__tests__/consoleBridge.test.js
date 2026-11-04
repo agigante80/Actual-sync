@@ -23,7 +23,7 @@ describe('console bridge (#426)', () => {
         for (const m of Object.keys(orig)) console[m] = orig[m];
     });
 
-    const records = () => out.filter(o => o.line.startsWith('{')).map(o => ({ m: o.m, ...JSON.parse(o.line) }));
+    const records = () => out.filter(o => o.line.startsWith('{')).map(o => { const r = JSON.parse(o.line); return { m: o.m, ...r, ...r.fields }; });
 
     test('warn goes through the logger as a static record without the arguments', () => {
         const restore = installConsoleBridge(logger);

@@ -49,6 +49,7 @@
     "level": "INFO",
     "format": "pretty",
     "fileFormat": "json",
+    "includeAccountNames": false,
     "logDir": "./logs",
     "rotation": {
       "enabled": true,

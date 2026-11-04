@@ -23,6 +23,8 @@
  * timeout and then answers; the affected sync fails and the next one recovers.
  */
 
+const { markOwnError } = require('./errorClassifier');
+
 const DEFAULT_PHASE_TIMEOUT_SECONDS = 300;
 
 // The calls runSyncBank makes that talk to the server or the budget file.
@@ -37,6 +39,8 @@ const TIMED_METHODS = ['init', 'downloadBudget', 'loadBudget', 'aqlQuery', 'sync
 class PhaseTimeoutError extends Error {
     constructor(phase, timeoutMs) {
         super(`Actual API call '${phase}' did not finish within ${Math.round(timeoutMs / 1000)}s`);
+        // Our own text (phase is one of TIMED_METHODS): safe to show (#438).
+        markOwnError(this, this.message, 'timeout');
         this.name = 'PhaseTimeoutError';
         this.code = 'PHASE_TIMEOUT';
         this.phase = phase;

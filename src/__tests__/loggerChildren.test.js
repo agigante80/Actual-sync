@@ -95,15 +95,15 @@ describe('children follow the parent broadcast callback (#440)', () => {
         expect(send).toHaveBeenCalledTimes(1);
     });
 
-    test('a configured redact key is masked in a HealthCheck line sent to syslog', () => {
-        const parent = new Logger({ logDir: null, level: 'DEBUG', redact: ['mycustomkey'] });
+    test('a secret in a HealthCheck line is masked in the syslog payload', () => {
+        const parent = new Logger({ logDir: null, level: 'DEBUG' });
         const sendSpy = jest.fn();
         parent.syslog = { enabled: true, host: 'localhost', port: 514, protocol: 'udp', facility: 16 };
         parent.syslogClient = { send: sendSpy };
         const hc = new HealthCheckService({ loggerConfig: { parent } });
         const log = jest.spyOn(console, 'log').mockImplementation(() => {});
         try {
-            hc.logger.info('x', { mycustomkey: 'topsecretvalue', ok: 1 });
+            hc.logger.info('x', { reason: 'token=topsecretvalue', count: 1 });
         } finally {
             log.mockRestore();
         }

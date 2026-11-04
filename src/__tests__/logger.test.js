@@ -6,6 +6,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { Logger, createLogger, withCorrelation, currentCorrelationId, LOG_LEVELS, LEVEL_NAMES } = require('../lib/logger');
+
+// This file feeds the logger arbitrary shapes on purpose (redaction, formats,
+// sinks). The field allowlist is tested in logFields.test.js (#437).
+jest.mock('../lib/logFields', () => require('./helpers/openLogFields'));
 const {
     createTempDir,
     cleanupTempDir,
@@ -266,9 +270,15 @@ describe('Logger', () => {
             expect(console.error).toHaveBeenCalled();
             const call = console.error.mock.calls[0][0];
             const parsed = JSON.parse(call);
-            expect(parsed.errorMessage).toBe('Test error');
-            expect(parsed.errorCode).toBe('TEST_CODE');
-            expect(parsed.errorStack).toBeDefined();
+            // Classified, never echoed (#438): no message, no stack message line.
+            expect(parsed.error).toEqual({
+                type: 'Error', code: 'TEST_CODE', category: 'internal',
+                safeMessage: 'Unexpected error (details withheld)'
+            });
+            expect(parsed.message).toBe('Unexpected error (details withheld)');
+            expect(call).not.toContain('Test error');
+            expect(parsed.errorMessage).toBeUndefined();
+            expect(parsed.errorStack).toBeUndefined();
         });
     });
 
@@ -647,14 +657,16 @@ describe('Logger', () => {
             expect(parsed.clientSecret).toBe('[REDACTED]');
         });
 
-        test('preserves an Error value in metadata (name/message/stack) (M4)', () => {
+        test('classifies an Error value in metadata instead of echoing it (M4, #438)', () => {
             const logger = new Logger({ logDir: null });
-            const err = Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' });
-            const parsed = JSON.parse(emit(logger, 'x', { cause: err }, 'json'));
-            expect(parsed.cause.name).toBe('Error');
-            expect(parsed.cause.message).toBe('connection refused');
-            expect(parsed.cause.code).toBe('ECONNREFUSED');
-            expect(typeof parsed.cause.stack).toBe('string');
+            const err = Object.assign(new Error('connection refused for Marco'), { code: 'ECONNREFUSED' });
+            const line = emit(logger, 'x', { cause: err }, 'json');
+            const parsed = JSON.parse(line);
+            expect(parsed.cause).toEqual({
+                type: 'Error', code: 'ECONNREFUSED', category: 'upstream_unavailable',
+                safeMessage: 'Upstream service unavailable'
+            });
+            expect(line).not.toContain('Marco');
         });
 
         test('syslog encodes nested objects instead of [object Object] (M5)', () => {
@@ -681,22 +693,19 @@ describe('Logger', () => {
             expect(sent).toContain('\\"');
         });
 
-        test('preserves Error custom fields (statusCode/errno) and cause; masks code (M4+)', () => {
+        test('keeps an Error status as httpStatus and drops its cause and custom fields (M4+, #438)', () => {
             const logger = new Logger({ logDir: null });
-            const err = Object.assign(new Error('connection refused'), {
+            const err = Object.assign(new Error('Category Rent to Marco'), {
                 statusCode: 429, errno: -111, syscall: 'connect'
             });
             err.cause = Object.assign(new Error('root'), { code: 'EROOT' });
-            const e = JSON.parse(emit(logger, 'x', { err }, 'json')).err;
-            expect(e.statusCode).toBe(429);
-            expect(e.errno).toBe(-111);
-            expect(e.syscall).toBe('connect');
-            expect(e.cause.message).toBe('root');
-
-            const masked = JSON.parse(emit(logger, 'x', {
-                err: Object.assign(new Error('x'), { code: 'token=leak123' })
-            }, 'json')).err;
-            expect(masked.code).toBe('token=[REDACTED]');
+            const line = emit(logger, 'x', { err }, 'json');
+            const e = JSON.parse(line).err;
+            expect(e).toEqual({
+                type: 'Error', httpStatus: 429, category: 'rate_limited', safeMessage: '429 Too Many Requests'
+            });
+            expect(line).not.toContain('Marco');
+            expect(line).not.toContain('root');
         });
 
         test('does not infinitely recurse / crash on a circular error cause chain', () => {

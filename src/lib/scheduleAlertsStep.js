@@ -46,6 +46,7 @@ const { evaluate, skipKey, occurrenceWindow, MAX_LOOKBACK_DAYS, LINKED_EARLY_WIN
 const { getRecurringDescription } = require('./vendor/actualSchedules');
 const { validateScheduleAlert } = require('./scheduleAlertValidation');
 const { deliver } = require('./scheduleAlertDelivery');
+const { classifyError } = require('./errorClassifier');
 
 // #295 review, M3: the deliver phase runs after the Actual session has
 // already closed, so a hung request here cannot leave the session open, but
@@ -331,7 +332,11 @@ async function evaluateScheduleAlerts({ api, server, serverName, timezone, now, 
     });
 
     for (const warning of warnings) {
-        logger.warn(warning.message, { ruleId: warning.ruleId, scheduleId: warning.scheduleId });
+        logger.warn(warning.message, {
+            ruleId: warning.ruleId,
+            scheduleId: warning.scheduleId,
+            ...(warning.error ? { error: classifyError(warning.error) } : {})
+        });
     }
 
     // #356: every schedule id Actual still has (completed and unbound ones

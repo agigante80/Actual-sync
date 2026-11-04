@@ -19,7 +19,8 @@ const LOGGER_CONFIG_KEYS = [
     'rotation',
     'syslog',
     'performance',
-    'redact'
+    'redact',
+    'includeAccountNames'
 ];
 
 /**

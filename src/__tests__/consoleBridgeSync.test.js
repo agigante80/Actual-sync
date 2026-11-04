@@ -118,6 +118,9 @@ describe('Actual API console output in a sync (#426)', () => {
             expect(text).not.toContain('SENTINEL_PAYEE');
             expect(text).not.toContain('-12345');
         }
+        // The fixture result carries a stray key and an unknown array; the
+        // allowlist drops them from the debug record (L1, #437).
+        expect(takeDroppedFields().sort()).toEqual(['keys[3]', 'keys[4]', 'lengths.details']);
         expect(broadcasts.join('\n')).not.toContain('third_party.console');
         expect(console.warn).toBe(before);
     });

@@ -58,11 +58,11 @@ describe('SyslogStreamTransport over TCP', () => {
             syslog: { enabled: true, host: '127.0.0.1', port, protocol: 'tcp', facility: 16 }
         });
         const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
-        expect(() => logger.info('hello', { a: 'x"y]z\\' })).not.toThrow();
+        expect(() => logger.info('hello', { reason: 'x"y]z\\' })).not.toThrow();
         spy.mockRestore();
         await waitFor(() => received.includes('hello'));
         expect(received).toMatch(/^\d+ <134>1 /);
-        expect(received).toContain('a="x\\"y\\]z\\\\"');
+        expect(received).toContain('reason="x\\"y\\]z\\\\"');
         const len = parseInt(received.split(' ')[0], 10);
         expect(Buffer.byteLength(received.slice(received.indexOf(' ') + 1))).toBe(len);
         logger.close();

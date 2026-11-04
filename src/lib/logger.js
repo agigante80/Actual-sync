@@ -11,6 +11,8 @@ const { randomUUID } = require('crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const { createStream } = require('rotating-file-stream');
 const { passThrough } = require('./consoleBridge');
+const { classifyError, ownFrames, sanitizeErrorMeta } = require('./errorClassifier');
+const { sanitizeFields, splitEnvelope } = require('./logFields');
 
 // One scope per sync, HTTP request, Telegram update and scheduled job. Every
 // record written inside it carries its correlationId, whichever logger or
@@ -165,6 +167,12 @@ class Logger {
         // Only use provided logDir if it's not undefined (null is valid for disabling)
         this.logDir = (options.logDir !== undefined) ? options.logDir : defaultLogDir;
         this.serviceName = options.serviceName || 'actual-sync';
+        // Field allowlist (D3, #437): class `personal` is emitted unless this is
+        // false. Account names have their own gate (#448): `personal` also covers
+        // paths and addresses, which logging.includeAccountNames must not enable.
+        this.includePersonal = options.includePersonal !== false;
+        // Class `account-name` is omitted unless this is exactly true (default off).
+        this.includeAccountNames = options.includeAccountNames === true;
         this.broadcastCallback = options.broadcastCallback || null;
         // A child resolves the callback through its parent at log time, so one set
         // after the child was created (syncService attaches it last) still applies.
@@ -288,6 +296,15 @@ class Logger {
         this.broadcastCallback = callback;
     }
 
+    /** Names of the destinations a record reaches now, for the sys_startup record (#443). */
+    activeSinks() {
+        const sinks = ['console'];
+        if (this.logDir) sinks.push('file');
+        if (this.syslog.enabled) sinks.push('syslog');
+        if (this.getBroadcastCallback()) sinks.push('websocket');
+        return sinks;
+    }
+
     getBroadcastCallback() {
         if (this.broadcastCallback) return this.broadcastCallback;
         return this.broadcastParent ? this.broadcastParent.getBroadcastCallback() : null;
@@ -372,30 +389,10 @@ class Logger {
         if (value === null || typeof value !== 'object') {
             return value;
         }
-        // Errors serialize to {} via JSON (message/stack are non-enumerable), so
-        // lift the useful fields explicitly. message/stack are masked; code, cause,
-        // and enumerable custom fields (statusCode, errno, syscall, ...) are kept
-        // and redacted. cause is followed cycle-safely.
+        // An Error is classified, never echoed: its message can be upstream text
+        // that secret masking does not catch (#438, D5).
         if (value instanceof Error) {
-            if (seen.has(value)) {
-                return '[Circular]';
-            }
-            seen.add(value);
-            const out = {
-                name: value.name,
-                message: this.maskSecrets(value.message),
-                stack: this.maskSecrets(value.stack)
-            };
-            if (value.code !== undefined) out.code = this.redactSafe(value.code, seen);
-            if (value.cause !== undefined) out.cause = this.redactSafe(value.cause, seen);
-            for (const key of Object.keys(value)) {
-                if (key in out) continue;
-                out[key] = this.shouldRedactKey(key)
-                    ? '[REDACTED]'
-                    : this.redactSafe(value[key], seen);
-            }
-            seen.delete(value);
-            return out;
+            return classifyError(value);
         }
         // Only clone/recurse into plain objects and arrays. Pass other object types
         // (Date, Buffer, RegExp, class instances) through unchanged so their
@@ -472,7 +469,13 @@ class Logger {
             seq,
             schema: RECORD_SCHEMA
         };
-        Object.assign(logEntry, safeContext, safeMeta);
+        // Envelope keys stay at the top; every other registered key moves under
+        // `fields` (D4, #437).
+        const ctxParts = splitEnvelope(safeContext);
+        const metaParts = splitEnvelope(safeMeta);
+        Object.assign(logEntry, ctxParts.envelope, metaParts.envelope);
+        const fields = { ...ctxParts.fields, ...metaParts.fields };
+        if (Object.keys(fields).length > 0) logEntry.fields = fields;
         if (this.correlationId) {
             // Not reserved, but the logger's own id still wins, as before #433.
             logEntry.correlationId = this.correlationId;
@@ -609,13 +612,24 @@ class Logger {
         // can never crash a log call. (#103, perf)
         let safeMessage, safeContext, safeMeta;
         try {
+            // Error-carrying keys are classified first: upstream text never reaches a record (#438).
+            meta = sanitizeErrorMeta(meta, { debug: this.shouldLog('DEBUG') });
             safeMessage = this.maskSecrets(message);
             safeContext = this.redact(this.context);
             safeMeta = this.redact(meta);
+            // Allowlist after redaction: only registered fields reach a sink (D3).
+            const ctx = sanitizeFields(safeContext, { includePersonal: this.includePersonal, includeAccountNames: this.includeAccountNames, audit });
+            const fld = sanitizeFields(safeMeta, { includePersonal: this.includePersonal, includeAccountNames: this.includeAccountNames, audit });
+            safeContext = ctx.fields;
+            safeMeta = fld.fields;
+            // Count only, never the key names (D3): a spread can turn data into keys.
+            const dropped = ctx.dropped + fld.dropped;
+            if (dropped > 0) safeMeta.droppedFieldCount = dropped;
         } catch (error) {
+            // The error text is not logged: it can echo the value that failed.
             safeMessage = typeof message === 'string' ? message : String(message);
             safeContext = {};
-            safeMeta = { logRedactionError: error.message };
+            safeMeta = { droppedFieldCount: 1 };
         }
 
         // Console uses the human-friendly format; the file uses the (default JSON)
@@ -669,16 +683,12 @@ class Logger {
      * Log error
      */
     error(message, meta = {}) {
-        // Handle Error objects
+        // Handle Error objects: classify, never echo the message (#438).
         if (message instanceof Error) {
-            meta = {
-                ...meta,
-                errorName: message.name,
-                errorMessage: message.message,
-                errorStack: message.stack,
-                errorCode: message.code
-            };
-            message = message.message;
+            const error = classifyError(message);
+            const stack = this.shouldLog('DEBUG') ? ownFrames(message) : undefined;
+            meta = { ...meta, error, ...(stack ? { frames: stack } : {}) };
+            message = error.safeMessage;
         }
         this.log('ERROR', message, meta);
     }
@@ -795,6 +805,8 @@ class Logger {
             logDir: this.logDir,
             serviceName: this.serviceName,
             context: { ...this.context, ...context },
+            includePersonal: this.includePersonal,
+            includeAccountNames: this.includeAccountNames,
             rotation: this.rotation,
             syslog: this.syslog,
             // Do not open new streams; the child shares the parent's below. (#106)
@@ -909,6 +921,7 @@ function createLogger(options = {}) {
                 fileFormat: config.logging.fileFormat || 'json',
                 logDir: config.logging.logDir || null,
                 redact: config.logging.redact,
+                includeAccountNames: config.logging.includeAccountNames,
                 rotation: config.logging.rotation,
                 ...options
             };
