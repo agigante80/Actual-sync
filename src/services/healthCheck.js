@@ -826,11 +826,13 @@ class HealthCheckService {
           const configuredServers = this.getServers();
           // Initialize all servers with default status
           configuredServers.forEach(server => {
-const serverStatus = this.status.serverStatuses[server.name] || {
+            // A copy: the fields added below (history, per-account names) must
+            // not land on the live object, which the open /metrics returns (#429).
+            const serverStatus = { ...(this.status.serverStatuses[server.name] || {
               status: 'pending',
               lastSync: null,
               error: null
-            };
+            }) };
             
             // Get last sync status from sync history if available
             if (this.syncHistory) {

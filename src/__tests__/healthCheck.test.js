@@ -2565,5 +2565,35 @@ describe('HealthCheckService', () => {
       expect(res.body.servers.Main.lastSyncTransactions).toEqual({ added: 7, updated: 3 });
       await hc.stop();
     });
+
+    test('account names from a status load never reach the open /metrics (#429)', async () => {
+      const mockSyncHistory = {
+        getLastSync: jest.fn().mockReturnValue({
+          status: 'success', accounts_succeeded: 1, accounts_failed: 0, accounts_skipped: 0,
+          transactions_added: 3, transactions_updated: 0
+        }),
+        getLastAccountResults: jest.fn().mockReturnValue([
+          { account_name: 'SENTINEL_ACCOUNT', transactions_added: 3, transactions_updated: 0 }
+        ])
+      };
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        syncHistory: mockSyncHistory,
+        getServers: () => [{ name: 'Main' }],
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+      hc.updateSyncStatus({ serverName: 'Main', status: 'success' });
+      const status = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/status`);
+      expect(status.body.servers.Main.lastAccountResults[0].account_name).toBe('SENTINEL_ACCOUNT');
+      const metrics = await httpGet(`http://127.0.0.1:${testPort}/metrics`);
+      expect(metrics.statusCode).toBe(200);
+      expect(JSON.stringify(metrics.body)).not.toContain('SENTINEL_ACCOUNT');
+      expect(metrics.body.servers.Main.lastAccountResults).toBeUndefined();
+      expect(metrics.body.servers.Main.lastSyncTransactions).toBeUndefined();
+      await hc.stop();
+    });
   });
 });
