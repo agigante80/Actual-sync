@@ -114,7 +114,10 @@ function installConsoleBridge(logger, options = {}) {
     // One child per install, not per upstream line: building a logger with a
     // logDir probes the directory on disk each time.
     const child = logger.child({ component: 'actual-api' });
-    child.broadcastCallback = null; // never to /ws/logs
+    // Never to /ws/logs: drop the link to the parent callback too, since a
+    // child finds it at log time (#440).
+    child.broadcastCallback = null;
+    child.broadcastParent = null;
     active = { logger, child, verbose: options.verbose === true };
     let done = false;
     return function restore() {
