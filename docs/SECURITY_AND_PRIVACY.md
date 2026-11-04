@@ -208,7 +208,7 @@ const limiter = rateLimit({
 3. **Sync Service → Logs**: Account IDs and sync status (no balances/amounts)
 
 **Privacy Controls**:
-- ✅ Sync service doesn't log transaction amounts
+- ✅ Sync service doesn't log transaction amounts, payees or the raw `runBankSync` result, even at DEBUG (only counts, key names and array lengths; covered by `src/__tests__/debugResultLeak.test.js`)
 - ✅ Sync service doesn't log account balances
 - ✅ Sync service doesn't log account numbers
 - ✅ Data cached locally in isolated directories per server
@@ -244,12 +244,40 @@ console.log(`Account ${account.name}: Balance is $${account.balance}`);
 **Current Implementation**:
 - No persistent storage of sync history
 - Data directories contain cached budget files
-- Logs retained based on system/container log rotation
+- Logs retained based on system/container log rotation (see "Log retention in Docker" below)
 
 **Recommendations**:
 - Clear old cache files periodically (>30 days)
 - Rotate logs regularly (daily/weekly)
 - Don't store logs in persistent cloud storage without encryption
+
+### Log retention in Docker (#451)
+
+In a container, stdout is the main log sink, and the Docker log driver keeps it. The default `json-file` driver has no size limit, so without a cap the container log grows until the container is removed and holds every logged account name and sync error for that time.
+
+Cap it in `docker-compose.yml` (the shipped file already does):
+
+```yaml
+services:
+  actual-sync:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+```
+
+The equivalent for `docker run`:
+
+```bash
+docker run --log-driver json-file --log-opt max-size=10m --log-opt max-file=5 ...
+```
+
+The Unraid template passes the same `--log-opt` flags in its extra parameters.
+
+- The 30-file rotation (`rotation.maxFiles`) applies to the optional file sink only. It does not limit stdout or the Docker log driver.
+- The compose file and the Unraid template both mount `/app/logs`, so the file sink is on and persisted by default in those setups. Set `logging.logDir: null` in config.json to turn it off and keep logs on stdout only.
+- Syslog over UDP is plaintext and best effort: anyone on the network path can read it and datagrams can be lost. It is not an audit log. Use it for convenience, not as the record of who did what.
 
 ---
 

@@ -343,6 +343,8 @@ class ConfigLoader {
         }
         config.logging.level = (config.logging.level ?? 'INFO').toUpperCase();
         config.logging.format = config.logging.format ?? 'pretty';
+        // UNSAFE opt-in: lets @actual-app/api print transactions. (#425)
+        config.logging.actualApiVerbose = config.logging.actualApiVerbose === true;
         // logDir defaults to './logs' in logger constructor if not specified
         // Don't set a default here to allow logger to use its own logic
     }

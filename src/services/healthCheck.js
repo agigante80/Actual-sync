@@ -25,6 +25,9 @@ const { resolveTimezone } = require('../lib/timezone');
 const markParser = (parser) => (req, res, next) =>
   parser(req, res, (e) => next(e && Object.assign(e, { fromBodyParser: true })));
 
+// A /ws/logs client with more than this queued is dropped (#445)
+const WS_MAX_BUFFERED_BYTES = 1024 * 1024;
+
 const configJson = markParser(express.json({ limit: '16kb' }));
 
 /**
@@ -1979,17 +1982,33 @@ This test verifies that notifications are configured correctly and can reach the
       timestamp: new Date().toISOString()
     });
 
-    this.wsClients.forEach(client => {
+    const isDebug = String(level).toUpperCase() === 'DEBUG';
+    let dropped = 0;
+
+    for (const client of Array.from(this.wsClients)) {
       try {
-        if (client.readyState === 1) { // WebSocket.OPEN
-          client.send(logData);
+        if (client.readyState !== 1) continue; // WebSocket.OPEN
+        // DEBUG is sent only to viewers that opted in (#445)
+        if (isDebug && !client.wantsDebug) continue;
+        // A client that does not read lets the send buffer grow without
+        // bound in this process: drop it instead (#445)
+        if (client.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+          this.wsClients.delete(client);
+          client.terminate();
+          dropped++;
+          continue;
         }
+        client.send(logData);
       } catch (error) {
         this.logger.error('Failed to send log to WebSocket client', {
           error: error.message
         });
       }
-    });
+    }
+
+    if (dropped > 0) {
+      this.logger.warn('Dropped slow WebSocket log client(s) over the send buffer limit');
+    }
   }
 
   /**
@@ -2046,7 +2065,10 @@ This test verifies that notifications are configured correctly and can reach the
           ws.on('message', (data) => {
             try {
               const message = JSON.parse(data);
-              if (message.type === 'ping') {
+              if (message.type === 'subscribe') {
+                // Opt in or out of DEBUG records; the default is off (#445)
+                ws.wantsDebug = message.debug === true;
+              } else if (message.type === 'ping') {
                 // Respond to ping with pong
                 ws.isAlive = true;
                 ws.send(JSON.stringify({ type: 'pong', timestamp: new Date().toISOString() }));
