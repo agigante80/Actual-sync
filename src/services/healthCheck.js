@@ -826,7 +826,7 @@ class HealthCheckService {
           const configuredServers = this.getServers();
           // Initialize all servers with default status
           configuredServers.forEach(server => {
-            const serverStatus = this.status.serverStatuses[server.name] || {
+const serverStatus = this.status.serverStatuses[server.name] || {
               status: 'pending',
               lastSync: null,
               error: null
@@ -843,6 +843,12 @@ class HealthCheckService {
                     succeeded: lastSync.accounts_succeeded,
                     failed: lastSync.accounts_failed,
                     skipped: lastSync.accounts_skipped
+                  };
+                  // Per-sync transaction totals (#424). NULL on rows that
+                  // predate the columns; the dashboard renders that as '-'.
+                  serverStatus.lastSyncTransactions = {
+                    added: lastSync.transactions_added,
+                    updated: lastSync.transactions_updated
                   };
                   // Per-account counts of that sync (#429); NULL counts are unknown
                   if (typeof this.syncHistory.getLastAccountResults === 'function') {

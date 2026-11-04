@@ -252,7 +252,7 @@
               },
               "format": {
                 "type": "string",
-                "description": "Log output format for this server",
+                "description": "Deprecated and ignored: the format is set per sink, not per server",
                 "enum": ["pretty", "json"]
               }
             }

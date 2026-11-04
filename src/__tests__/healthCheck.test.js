@@ -2542,4 +2542,28 @@ describe('HealthCheckService', () => {
       expect(JSON.parse(res.body)).toEqual({ error: 'Invalid token' });
     });
   });
+
+  describe('Dashboard status carries the last sync transaction totals (#424)', () => {
+    test('lastSyncTransactions mirrors the stored added and updated counts', async () => {
+      const mockSyncHistory = {
+        getLastSync: jest.fn().mockReturnValue({
+          status: 'success', accounts_succeeded: 2, accounts_failed: 0, accounts_skipped: 0,
+          transactions_added: 7, transactions_updated: 3
+        })
+      };
+      const hc = makeService({
+        port: testPort,
+        host: '127.0.0.1',
+        syncHistory: mockSyncHistory,
+        getServers: () => [{ name: 'Main' }],
+        dashboardConfig: { enabled: true, auth: { type: 'none' } },
+        loggerConfig: { level: 'ERROR' }
+      });
+      await hc.start();
+      const res = await httpGet(`http://127.0.0.1:${testPort}/api/dashboard/status`);
+      expect(res.statusCode).toBe(200);
+      expect(res.body.servers.Main.lastSyncTransactions).toEqual({ added: 7, updated: 3 });
+      await hc.stop();
+    });
+  });
 });
