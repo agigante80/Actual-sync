@@ -369,17 +369,24 @@ endTimer({ metadata: 'value' }); // Logs duration automatically
 
 ## 🚨 Alertable Security Events
 
-These WARN lines are worth an alert rule in your log pipeline:
+These are security events (#444, design D7). They are an audit floor: written
+whatever `logging.level` is, so `level: error` does not hide a guessing loop.
+They carry `category: "security"` and the OWASP Logging Vocabulary name as
+`event`, plus `remoteAddress`, and never a body, a user name, a password or a
+token.
 
-| Message | Meaning |
+| `event` | Meaning |
 |---|---|
-| `Dashboard authentication failed` / `Dashboard token authentication failed` | One wrong dashboard credential, with `remoteAddress` only (the typed username is never logged, since users paste passwords into it) |
-| `Dashboard authentication throttled after repeated failures` | A client already has 10 failed logins in the current 15 minute window and is refused with 429 (#246). It is written for every refused request, not once per lockout, so a burst of these is a guessing attempt or a stale tab still polling with an old credential |
-| `Metrics authentication failed` / `Metrics token authentication failed` / `Metrics authentication throttled after repeated failures` | The same three for `healthCheck.auth` on `/metrics` and `/metrics/prometheus` (#247). A steady stream at the scrape interval is a Prometheus with a stale credential |
-| `WebSocket handshake refused` | A `/ws/logs` connection was refused, with the status and reason |
+| `authn_login_fail` | One refused dashboard or metrics credential (`reason`: `invalid_credentials`, `invalid_token` or `throttled`; `realm`: `dashboard` or `metrics`). `throttled` means the client already has 10 failed logins in the current 15 minute window and is refused with 429 (#246). A steady stream at the scrape interval on `realm: metrics` is a Prometheus with a stale credential (#247) |
+| `authn_login_success` | A good dashboard or metrics credential, logged at INFO at most once per source address per hour (Basic and bearer have no session) |
+| `authz_fail` | A refused request origin (`reason: origin_not_allowed`) or a message from an unauthorized Telegram chat |
+| `security.suppressed` | The per-source limiter tripped: more than 10 records of one event from one address in a minute. One record per window carries `suppressedEvent`, `remoteAddress` and `suppressedCount`, so a guess loop never looks like it stopped |
+
+`WebSocket handshake refused` (a `/ws/logs` connection refused, with the status
+and reason) is still a plain WARN line.
 
 ```bash
-grep "authentication throttled" logs/actual-sync-*.log
+grep '"category":"security"' logs/actual-sync-*.log
 ```
 
 ## 🔎 Searching Logs

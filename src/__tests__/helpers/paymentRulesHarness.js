@@ -43,7 +43,7 @@ function createHarness() {
       dashboardConfig: { enabled: true, allowConfigWrites: true, auth: BASIC, ...dashboard }
     });
     state.svc.logger = {
-      debug() {}, info() {}, warn() {}, error: (msg, meta) => { state.errors.push([msg, meta]); }
+      debug() {}, info() {}, warn() {}, security() {}, error: (msg, meta) => { state.errors.push([msg, meta]); }
     };
     await state.svc.start();
     return state;
