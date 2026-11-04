@@ -90,12 +90,13 @@ services:
       retries: 3
       start_period: 40s
 
-    # Logging configuration
+    # Logging configuration (#451). stdout is the main log sink and the Docker
+    # log driver keeps it; json-file has no size limit by default, so cap it here.
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
-        max-file: "3"
+        max-file: "5"
 
     # Network configuration
     networks:
