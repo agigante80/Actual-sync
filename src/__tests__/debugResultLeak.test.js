@@ -124,7 +124,7 @@ describe('DEBUG logging of the runBankSync result (#434)', () => {
         // unknown array are dropped and counted, never written.
         expect(sinks.file).toContain('newTransactions');
         expect(sinks.file).not.toContain('payee_name');
-        expect(sinks.file).not.toContain('details');
+        expect(sinks.file).not.toContain('"details"'); // the key name; "(details withheld)" is our own text
         expect(takeDroppedFields().sort()).toEqual(['keys[3]', 'keys[4]', 'lengths.details']);
         expect(sinks.broadcast).toContain('runBankSync result');
     });

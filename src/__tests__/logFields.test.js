@@ -138,17 +138,19 @@ describe('sanitizeFields', () => {
     });
 
     test('a name child inside failedAccounts is omitted, its id and error stay (#448)', () => {
-        const input = { failedAccounts: [{ id: 'a1', name: 'Alice Joint', error: 'boom' }] };
-        expect(sanitizeFields(input).fields).toEqual({ failedAccounts: [{ id: 'a1', error: 'boom' }] });
+        const ERR = { type: 'Error', category: 'upstream', safeMessage: 'x' };
+        const input = { failedAccounts: [{ id: 'a1', name: 'Alice Joint', error: ERR }] };
+        expect(sanitizeFields(input).fields).toEqual({ failedAccounts: [{ id: 'a1', error: ERR }] });
         expect(sanitizeFields(input, { includeAccountNames: true }).fields).toEqual(input);
     });
 
-    test('the classified error object and the legacy string both pass', () => {
+    test('the classified error object passes; a string error is dropped (#438)', () => {
         const obj = { type: 'Error', code: 'E1', httpStatus: 503, category: 'timeout', safeMessage: 'x', stack: 'frames' };
         const out = sanitizeFields({ error: obj });
         expect(out.fields.error).toEqual({ type: 'Error', code: 'E1', httpStatus: 503, category: 'timeout', safeMessage: 'x' });
         expect(out.dropped).toBe(1);
-        expect(sanitizeFields({ error: 'boom' })).toEqual({ fields: { error: 'boom' }, dropped: 0 });
+        expect(sanitizeFields({ error: 'boom' })).toEqual({ fields: {}, dropped: 1 });
+        takeDroppedFields();
     });
 
     test('non-object input gives no fields', () => {

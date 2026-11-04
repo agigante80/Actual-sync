@@ -54,7 +54,9 @@ const never = (klass, type = 'string') => ({ class: klass, type });
 // The classified error object (D5). A plain string is accepted while the
 // older call sites still log error.message; #438 moves them to the object and
 // removes the string form.
-const ERROR_SPEC = op(['string', 'object'], {
+// Object only (#438): the logger classifies every top-level error value, so a
+// string here (a nested error.message) is upstream text and is dropped.
+const ERROR_SPEC = op('object', {
     children: {
         type: op('string'),
         code: op(['string', 'number']),
@@ -255,8 +257,8 @@ const FIELDS = Object.freeze({
     tls: op('boolean'),
     timeouts: op('object', { children: { phaseTimeoutSeconds: op('number') } }),
     configSchemaVersion: op('number'),
-    // An Error class name (TypeError, RangeError), never its message.
-    errorName: op('string', { pattern: /^[A-Za-z][A-Za-z0-9_]{0,63}$/ }),
+    // sync_history migration (#438): how many rows were rewritten.
+    rows: op('number'),
     currentTime: op('string'),
     cutoffDate: op('string'),
     mutedUntil: op('string'),
@@ -319,7 +321,9 @@ const FIELDS = Object.freeze({
     stack: never(CLASS.UPSTREAM),
     stackFirstLine: never(CLASS.UPSTREAM),
     toString: never(CLASS.UPSTREAM),
-    originalError: never(CLASS.UPSTREAM),
+    // Classified by sanitizeErrorMeta before the allowlist runs (#438), so it
+    // carries only type, code, status, category and our own text.
+    originalError: ERROR_SPEC,
     previousError: never(CLASS.UPSTREAM),
     messageId: never(CLASS.UPSTREAM),
     payee: never(CLASS.FINANCIAL),

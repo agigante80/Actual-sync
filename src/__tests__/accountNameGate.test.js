@@ -14,10 +14,16 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 
 describe('account names in sync logs (#448)', () => {
     let includeNames;
+    let failText;
+    let failAll;
+    let accountRows;
     let tmp, logDir, dataDir, consoleOut, broadcasts, actual, recordSync, spies;
 
     beforeEach(() => {
         includeNames = undefined;
+        failAll = false;
+        failText = 'Failed syncing account "SENTINEL Bob Savings."';
+        accountRows = null;
         jest.resetModules();
         jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
         tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'debug-leak-'));
@@ -36,14 +42,14 @@ describe('account names in sync logs (#448)', () => {
             shutdown: jest.fn().mockResolvedValue(undefined),
             q: () => { const b = { filter: () => b, select: () => b }; return b; },
             aqlQuery: jest.fn().mockResolvedValue({
-                data: [
+                data: accountRows || [
                     { id: 'a1', name: 'SENTINEL Alice Joint', closed: false, account_sync_source: 'goCardless' },
                     { id: 'a2', name: 'SENTINEL Bob Savings', closed: false, account_sync_source: 'goCardless' },
                     { id: 'a3', name: 'SENTINEL Cash Wallet', closed: false, account_sync_source: null }
                 ]
             }),
             runBankSync: jest.fn(async ({ accountId }) => {
-                if (accountId === 'a2') throw new Error('bank said no');
+                if (accountId === 'a2' || failAll) throw new Error(failText);
                 return { newTransactions: ['t1'], matchedTransactions: [], updatedAccounts: [accountId] };
             })
         };
@@ -65,12 +71,6 @@ describe('account names in sync logs (#448)', () => {
         }));
         jest.doMock('../services/syncHistory', () => ({
             SyncHistoryService: function () { this.recordSync = recordSync; this.persistAccountMetadata = jest.fn(); }
-        }));
-        jest.doMock('../services/healthCheck', () => ({
-            HealthCheckService: function () {
-                this.updateSyncStatus = jest.fn();
-                this.broadcastLog = (level, message, meta) => broadcasts.push(JSON.stringify({ level, message, meta }));
-            }
         }));
         jest.doMock('../services/notificationService', () => ({
             NotificationService: function () { this.recordSyncResult = jest.fn(); this.notifySync = jest.fn().mockResolvedValue(undefined); }
@@ -116,6 +116,7 @@ describe('account names in sync logs (#448)', () => {
         expect(recordSync).toHaveBeenCalled();
         const out = allOutput();
         expect(out).not.toContain('SENTINEL');
+        expect(out).toContain('Sync completed');
         for (const id of ['a1', 'a2', 'a3']) expect(out).toContain(id);
         expect(out).toContain('"succeededAccountIds"');
         expect(out).toContain('"failedAccounts"');
@@ -133,5 +134,41 @@ describe('account names in sync logs (#448)', () => {
         expect(out).toContain('SENTINEL Bob Savings');
         expect(out).toContain('SENTINEL Cash Wallet');
         expect(out).toContain('a2');
+    });
+
+    test('rate-limit wording without quotes does not leak the name either', async () => {
+        failText = 'Failed syncing account SENTINEL Bob Savings. Rate limit exceeded, retry later';
+        await runSync();
+        expect(recordSync).toHaveBeenCalled();
+        expect(allOutput()).not.toContain('SENTINEL');
+        takeDroppedFields();
+    });
+
+    test('every account failing: the real HealthCheckService "Sync status updated" line is scanned', async () => {
+        failAll = true;
+        accountRows = [
+            { id: 'a1', name: 'SENTINEL Alice Joint', closed: false, account_sync_source: 'goCardless' },
+            { id: 'a2', name: 'SENTINEL Bob Savings', closed: false, account_sync_source: 'goCardless' }
+        ];
+        failText = 'Failed syncing account "SENTINEL Bob Savings."';
+        await runSync();
+        expect(recordSync).toHaveBeenCalled();
+        const out = allOutput();
+        expect(out).toContain('Sync status updated');
+        expect(out).not.toContain('SENTINEL');
+        takeDroppedFields();
+    });
+
+    test('flag on: the name appears, and only in name fields', async () => {
+        includeNames = true;
+        await runSync();
+        expect(recordSync).toHaveBeenCalled();
+        const lines = allOutput().split('\n').filter(l => l.includes('SENTINEL'));
+        expect(lines.length).toBeGreaterThan(0);
+        for (const l of lines) {
+            // every occurrence sits in an accountName / name / succeededAccounts value
+            const stripped = l.replace(/"(accountName|name)":"SENTINEL [^"]*"/g, '').replace(/"succeededAccounts":\[[^\]]*\]/g, '');
+            expect(stripped).not.toContain('SENTINEL');
+        }
     });
 });
