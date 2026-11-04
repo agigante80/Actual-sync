@@ -6,6 +6,9 @@
  */
 
 const fs = require('fs');
+const bootstrap = require('./src/lib/bootstrapLogger');
+// If startup dies before the root logger exists, buffered records go to stderr as JSON (#442)
+bootstrap.installExitDump();
 const path = require('path');
 const { ensureConfig, resolveSchemaPath } = require('./src/lib/configBootstrap');
 const ConfigLoader = require('./src/lib/configLoader');
@@ -14,7 +17,7 @@ const ConfigLoader = require('./src/lib/configLoader');
 const { resolveVersion } = require('./src/lib/version');
 const VERSION = resolveVersion();
 
-console.log(`\n🏦 Starting Actual-sync v${VERSION}\n`);
+bootstrap.info(`Starting Actual-sync v${VERSION}`);
 
 // Validate environment and configuration before starting
 function validateStartup() {
@@ -55,7 +58,7 @@ function validateStartup() {
         }
     } else if (hasEnvServer) {
         // Env-var single-server setup: no config.json needed. (#120)
-        console.log('Using single-server configuration from ACTUAL_SYNC_SERVER_* environment variables (no config.json).');
+        bootstrap.info('Using single-server configuration from ACTUAL_SYNC_SERVER_* environment variables (no config.json).');
     } else if (!fs.existsSync(configDir)) {
         errors.push(
             'Configuration directory not found: config/\n' +
@@ -117,20 +120,18 @@ function validateStartup() {
 
     // Display warnings
     if (warnings.length > 0) {
-        console.warn('⚠️  Startup Warnings:');
-        warnings.forEach(warning => console.warn(`  - ${warning}`));
-        console.warn('');
+        warnings.forEach(warning => bootstrap.warn(warning));
     }
 
     // Display errors and exit if any
     if (errors.length > 0) {
-        console.error('❌ Startup Validation Failed:\n');
-        errors.forEach(error => console.error(`  ${error}\n`));
-        console.error('Please fix the above errors before starting the service.');
+        errors.forEach(error => bootstrap.error(error));
+        bootstrap.error('Startup validation failed. Please fix the above errors before starting the service.');
+        // The exit hook writes the buffered records to stderr as JSON lines
         process.exit(1);
     }
 
-    console.log('✅ Startup validation passed');
+    bootstrap.info('Startup validation passed');
 }
 
 // Run validation
