@@ -119,6 +119,16 @@ const RESERVED_KEYS = new Set([
 const CALLER_SET_KEYS = new Set(['event', 'component']);
 const LOGGER_OWNED_KEYS = new Set([...RESERVED_KEYS].filter((k) => !CALLER_SET_KEYS.has(k)));
 
+// Record contract (#436, docs/LOGGING.md): every record carries the app
+// version, a per-process `seq` and the schema number. The OTel severity numbers
+// are fixed by the convention.
+const RECORD_SCHEMA = 1;
+const SEVERITY_NUMBERS = { ERROR: 17, WARN: 13, INFO: 9, DEBUG: 5 };
+// resolveVersion() honours the VERSION build arg, so a dev image reports
+// 1.x.y-dev+sha like the rest of the app, not the package.json release.
+const APP_VERSION = require('./version').resolveVersion() || 'unknown';
+let recordSeq = 0;
+
 const withoutReserved = (obj) => Object.fromEntries(
     Object.entries(obj || {}).filter(([k]) => !LOGGER_OWNED_KEYS.has(k))
 );
@@ -446,7 +456,7 @@ class Logger {
      * separate from redaction so log() can redact once and serialize per
      * destination (console + file) without re-cloning. (#103, #104)
      */
-    serialize(level, safeMessage, safeContext, safeMeta, format) {
+    serialize(level, safeMessage, safeContext, safeMeta, format, seq = ++recordSeq) {
         const timestamp = new Date().toISOString();
         safeContext = withoutReserved(safeContext);
         safeMeta = withoutReserved(safeMeta);
@@ -455,8 +465,12 @@ class Logger {
         const logEntry = {
             timestamp,
             level: level.toUpperCase(),
+            severity: SEVERITY_NUMBERS[level.toUpperCase()],
             service: this.serviceName,
-            message: safeMessage
+            version: APP_VERSION,
+            message: safeMessage,
+            seq,
+            schema: RECORD_SCHEMA
         };
         Object.assign(logEntry, safeContext, safeMeta);
         if (this.correlationId) {
@@ -487,16 +501,18 @@ class Logger {
      * (e.g. a class instance with a throwing toJSON) could otherwise make
      * JSON.stringify throw on the console path; a log call must never throw. (#103)
      */
-    safeSerialize(level, safeMessage, safeContext, safeMeta, format) {
+    safeSerialize(level, safeMessage, safeContext, safeMeta, format, seq = ++recordSeq) {
         try {
-            return this.serialize(level, safeMessage, safeContext, safeMeta, format);
+            return this.serialize(level, safeMessage, safeContext, safeMeta, format, seq);
         } catch (error) {
             // The fallback is an output path too: escape it like serialize() (#447),
             // and keep json format valid JSON. Plain strings cannot make this throw.
             const ts = new Date().toISOString();
             if (format === 'json') {
                 return escapeControlChars(JSON.stringify({
-                    timestamp: ts, level: level.toUpperCase(), message: String(safeMessage),
+                    timestamp: ts, level: level.toUpperCase(),
+                    severity: SEVERITY_NUMBERS[level.toUpperCase()], service: this.serviceName,
+                    version: APP_VERSION, message: String(safeMessage), seq, schema: RECORD_SCHEMA,
                     serializationError: String(error && error.message)
                 }), true);
             }
@@ -604,14 +620,16 @@ class Logger {
 
         // Console uses the human-friendly format; the file uses the (default JSON)
         // single-line file format so logs stay machine-parseable. (#104)
-        const consoleLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.format);
+        // One seq per record, shared by the console and file renderings.
+        const seq = ++recordSeq;
+        const consoleLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.format, seq);
         const consoleMethod = level === 'ERROR' ? 'error' : level === 'WARN' ? 'warn' : 'log';
         console[consoleMethod](consoleLine);
 
         // File output if configured. A file-write failure must never break logging.
         if (this.logDir) {
             try {
-                const fileLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.fileFormat);
+                const fileLine = this.safeSerialize(level, safeMessage, safeContext, safeMeta, this.fileFormat, seq);
                 if (this.rotatingStream) {
                     this.rotatingStream.write(fileLine + '\n');
                 } else {

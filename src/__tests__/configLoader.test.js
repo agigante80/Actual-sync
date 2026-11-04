@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const ConfigLoader = require('../lib/configLoader');
+const bootstrap = require('../lib/bootstrapLogger');
 const {
     createTempDir,
     cleanupTempDir,
@@ -137,7 +138,7 @@ describe('ConfigLoader', () => {
             process.env.CONFIG_STRICT = 'false';
             try {
                 expect(() => loader.load()).not.toThrow();
-                expect(console.warn).toHaveBeenCalledWith(
+                expect(bootstrap.warn).toHaveBeenCalledWith(
                     expect.stringContaining('CONFIG_STRICT is off')
                 );
             } finally {
@@ -505,7 +506,7 @@ describe('ConfigLoader', () => {
             
             loader.validateLogic(config);
             
-            expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('unencrypted HTTP'));
+            expect(bootstrap.warn).toHaveBeenCalledWith(expect.stringContaining('unencrypted HTTP'));
         });
 
         test('should warn about weak passwords', () => {
@@ -518,7 +519,7 @@ describe('ConfigLoader', () => {
             
             loader.validateLogic(config);
             
-            expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('weak password'));
+            expect(bootstrap.warn).toHaveBeenCalledWith(expect.stringContaining('weak password'));
         });
 
         test('should warn about default passwords', () => {
@@ -531,19 +532,19 @@ describe('ConfigLoader', () => {
             
             loader.validateLogic(config);
 
-            expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('default/example password'));
+            expect(bootstrap.warn).toHaveBeenCalledWith(expect.stringContaining('default/example password'));
         });
 
         test('should warn when healthCheck.host is a specific routable IP (#94)', () => {
             for (const host of ['192.168.50.224', '10.0.0.1']) {
-                console.warn.mockClear();
+                bootstrap.warn.mockClear();
                 const config = {
                     servers: [{ name: 'Test', url: 'https://test.com', password: 'password123', syncId: 'id', dataDir: '/tmp' }],
                     sync: { maxRetries: 3, baseRetryDelayMs: 1000, schedule: '0 0 * * *' },
                     healthCheck: { port: 3000, host }
                 };
                 new ConfigLoader().validateLogic(config);
-                expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('healthCheck.host'));
+                expect(bootstrap.warn).toHaveBeenCalledWith(expect.stringContaining('healthCheck.host'));
             }
         });
 
@@ -567,7 +568,7 @@ describe('ConfigLoader', () => {
 
             test('#262 round 2 M1: a block template only an unconfigured channel rejects warns at startup', () => {
                 const slack = { webhooks: { slack: [{ name: 's', url: 'https://hooks.slack.com/x' }] } };
-                const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+                const warn = jest.spyOn(bootstrap, 'warn').mockImplementation(() => {});
                 try {
                     const cfg = baseConfig({ templates: { missing: 'Rent & bills {{name}}' }, alerts: [] }, slack);
                     expect(() => new ConfigLoader().validateLogic(cfg)).not.toThrow();
@@ -656,9 +657,9 @@ describe('ConfigLoader', () => {
 
             test('accepts hop counts, CIDRs and Express keywords without warning', () => {
                 for (const value of [1, '10.0.0.0/8', ['loopback', 'fd00::/8'], false, undefined]) {
-                    console.warn.mockClear();
+                    bootstrap.warn.mockClear();
                     expect(() => new ConfigLoader().validateLogic(withTrustProxy(value))).not.toThrow();
-                    expect(console.warn).not.toHaveBeenCalledWith(expect.stringContaining('trustProxy'));
+                    expect(bootstrap.warn).not.toHaveBeenCalledWith(expect.stringContaining('trustProxy'));
                 }
             });
 
@@ -677,7 +678,7 @@ describe('ConfigLoader', () => {
 
             test('warns that true lets any client fake its IP', () => {
                 new ConfigLoader().validateLogic(withTrustProxy(true));
-                expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('healthCheck.trustProxy is true'));
+                expect(bootstrap.warn).toHaveBeenCalledWith(expect.stringContaining('healthCheck.trustProxy is true'));
             });
         });
 
@@ -708,15 +709,15 @@ describe('ConfigLoader', () => {
             });
 
             test('a credential left under type none warns that /metrics stays open', () => {
-                console.warn.mockClear();
+                bootstrap.warn.mockClear();
                 new ConfigLoader().validateLogic(withMetricsAuth({ type: 'none', token: 'scrape-tok' }));
-                expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
-                console.warn.mockClear();
+                expect(bootstrap.warn).toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
+                bootstrap.warn.mockClear();
                 new ConfigLoader().validateLogic(withMetricsAuth({ username: 'prom', password: 'pw' }));
-                expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
-                console.warn.mockClear();
+                expect(bootstrap.warn).toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
+                bootstrap.warn.mockClear();
                 new ConfigLoader().validateLogic(withMetricsAuth({ type: 'none' }));
-                expect(console.warn).not.toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
+                expect(bootstrap.warn).not.toHaveBeenCalledWith(expect.stringContaining('type is "none"'));
             });
 
             test('none, absent, and a complete credential pass', () => {
@@ -729,14 +730,14 @@ describe('ConfigLoader', () => {
 
         test('should NOT warn for safe health hosts incl. IPv6 wildcard/loopback (#94)', () => {
             for (const host of ['0.0.0.0', '127.0.0.1', 'localhost', '::', '::1']) {
-                console.warn.mockClear();
+                bootstrap.warn.mockClear();
                 const config = {
                     servers: [{ name: 'Test', url: 'https://test.com', password: 'password123', syncId: 'id', dataDir: '/tmp' }],
                     sync: { maxRetries: 3, baseRetryDelayMs: 1000, schedule: '0 0 * * *' },
                     healthCheck: { port: 3000, host }
                 };
                 new ConfigLoader().validateLogic(config);
-                expect(console.warn).not.toHaveBeenCalledWith(expect.stringContaining('healthCheck.host'));
+                expect(bootstrap.warn).not.toHaveBeenCalledWith(expect.stringContaining('healthCheck.host'));
             }
         });
     });
@@ -872,7 +873,7 @@ describe('ConfigLoader', () => {
             loader.applyDefaults(cfg);
             loader.validateLogic(cfg);
         };
-        const warned = (re) => console.warn.mock.calls.some(c => re.test(String(c[0])));
+        const warned = (re) => bootstrap.warn.mock.calls.some(c => re.test(String(c[0])));
 
         test('warns when two servers share the same (url, syncId)', () => {
             run([srv({ name: 'One' }), srv({ name: 'Two', dataDir: '/tmp/b' })]);
@@ -888,7 +889,7 @@ describe('ConfigLoader', () => {
             // Uppercase host = same budget (host is case-insensitive)
             run([srv({ name: 'One', url: 'https://Host.Example.com', syncId: 'sx' }), srv({ name: 'Two', url: 'https://host.example.com', syncId: 'sx', dataDir: '/tmp/b' })]);
             expect(warned(/same budget/)).toBe(true);
-            console.warn.mockClear();
+            bootstrap.warn.mockClear();
             // Different-case PATHS are treated as distinct (paths can be case-sensitive)
             run([srv({ name: 'A', url: 'https://h.example.com/Budget', syncId: 'sy' }), srv({ name: 'B', url: 'https://h.example.com/budget', syncId: 'sy', dataDir: '/tmp/b' })]);
             expect(warned(/same budget/)).toBe(false);
@@ -1009,7 +1010,7 @@ describe('ConfigLoader', () => {
             const cfg = loader.load();
             expect(cfg.servers).toHaveLength(1);
             expect(cfg.servers[0].name).toBe('File');
-            expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('already present in config.json'));
+            expect(bootstrap.warn).toHaveBeenCalledWith(expect.stringContaining('already present in config.json'));
         });
     });
 });

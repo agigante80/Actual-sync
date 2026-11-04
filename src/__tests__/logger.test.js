@@ -1097,9 +1097,11 @@ describe('Logger', () => {
             expect(out.message).toBe('real');
             expect(out.service).toBe('svc');
             expect(out.timestamp).not.toBe('x');
-            for (const k of ['severity', 'seq', 'schema', 'version']) {
-                expect(out).not.toHaveProperty(k);
-            }
+            // The logger writes these itself (#436); the caller's values lose.
+            expect(out.severity).toBe(13);
+            expect(out.seq).not.toBe(9);
+            expect(out.schema).toBe(1);
+            expect(out.version).not.toBe('v');
         });
 
         test('event and component are caller-set: they pass through (D1, D7)', () => {
