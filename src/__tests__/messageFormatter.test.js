@@ -430,8 +430,12 @@ describe('MessageFormatter', () => {
     });
 
     test('templates are byte-identical to the pre-#391 output when both counts are 0', () => {
+      // Freeze the clock: the payloads embed a timestamp, and a tick between the
+      // two calls made this fail now and then.
+      jest.useFakeTimers({ now: new Date('2026-11-04T05:00:00Z') });
       const without = MessageFormatter.formatSyncNotification(base);
       const zero = MessageFormatter.formatSyncNotification({ ...base, transactionsAdded: 0, transactionsUpdated: 0 });
+      jest.useRealTimers();
       for (const key of ['text', 'html', 'slack', 'discord', 'ntfy']) {
         expect(zero[key]).toEqual(without[key]);
       }
