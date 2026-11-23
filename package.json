@@ -102,11 +102,11 @@
   },
   "devDependencies": {
     "@babel/parser": "7.29.9",
-    "@sinonjs/fake-timers": "15.4.0",
+    "@sinonjs/fake-timers": "15.5.0",
     "@types/jest": "^30.0.0",
     "jest": "^30.5.2",
     "js-yaml": "^5.5.0",
-    "knip": "^6.44.1",
-    "puppeteer": "^25.16.0"
+    "knip": "^6.45.1",
+    "puppeteer": "^25.18.1"
   }
 }
